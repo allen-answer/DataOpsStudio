@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    container_name: dataops-studio
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./config:/app/config
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./static:/app/static
+    restart: unless-stopped
