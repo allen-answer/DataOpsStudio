@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>多数据库数据对比工具</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body class="workspace-page">
+    <header class="topbar compact-topbar">
+      <div>
+        <h1>多数据库数据对比工具</h1>
+        <p>任务工作台 · 本地 JSON 配置 · Excel 导出</p>
+      </div>
+      <div class="top-actions">
+        <button class="button secondary" type="button" id="open-datasources">数据源</button>
+        <a class="button secondary" href="/history">执行历史</a>
+        <a class="button secondary" href="/lineage">SQL 血缘</a>
+        <a class="button secondary" href="/lineage/batch">多脚本分析</a>
+        <a class="button secondary" href="/config/export">导出配置</a>
+        <a class="button secondary" href="/api/drivers" target="_blank">驱动检测</a>
+        <button class="button" type="button" data-select-task="new-task">新增任务</button>
+      </div>
+    </header>
+
+    <main class="workspace-shell">
+      <aside class="workspace-sidebar">
+        <div class="sidebar-head">
+          <h2>任务</h2>
+          <div class="sidebar-search">
+            <input id="task-search" placeholder="搜索任务名 / 主键 / SQL">
+            <select id="task-mode-filter">
+              <option value="">全部模式</option>
+              <option value="single">单 SQL</option>
+              <option value="double">双 SQL</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="stat-strip">
+          <div><strong>{{ tasks|length }}</strong><span>任务</span></div>
+          <div><strong>{{ datasources|length }}</strong><span>数据源</span></div>
+          <div><strong>{{ history|length }}</strong><span>最近执行</span></div>
+        </div>
+
+        <div class="driver-strip">
+          {% for name, info in drivers.items() %}
+          <span class="{{ 'ok' if info.available else 'missing' }}">{{ name }} {{ '可用' if info.available else '缺失' }}</span>
+          {% endfor %}
+        </div>
+
+        <div class="workspace-task-list">
+          <button class="task-nav-item new-item {% if not tasks %}active{% endif %}" type="button" data-select-task="new-task" data-task-search="新增任务" data-task-mode="">
+            <strong>新增对比任务</strong>
+            <span>创建单 SQL / 双 SQL 对比任务</span>
+          </button>
+          {% for task in tasks %}
+          <button class="task-nav-item {% if loop.first %}active{% endif %}" type="button" data-select-task="{{ task.id }}" data-task-mode="{{ task.sql_mode.value }}" data-task-search="{{ task.name }} {{ task.key_columns|join(' ') }} {{ task.source_sql }} {{ task.target_sql }}">
+            <strong>{{ task.name }}</strong>
+            <span>{{ '单 SQL' if task.sql_mode.value == 'single' else '双 SQL' }} · keys: {{ task.key_columns|join(', ') }}</span>
+            <small>
+              {% for item in datasources %}{% if item.id == task.source_id %}{{ item.name }}{% endif %}{% endfor %}
+              →
+              {% for item in datasources %}{% if item.id == task.target_id %}{{ item.name }}{% endif %}{% endfor %}
+            </small>
+          </button>
+          {% else %}
+          <p class="empty sidebar-empty">暂无任务，先新建一个。</p>
+          {% endfor %}
+        </div>
+      </aside>
+
+      <section class="workspace-detail">
+        <article class="task-panel {% if tasks %}hidden{% endif %}" id="panel-new-task" data-task-panel="new-task">
+          <div class="detail-head">
+            <div>
+              <h2>新增对比任务</h2>
+              <p>配置数据源、SQL 和对比规则后保存到 config/tasks.json。</p>
+            </div>
+          </div>
+
+          <form class="detail-body task-form" action="/tasks" method="post">
+            <section class="detail-section">
+              <h3>基础配置</h3>
+              <div class="workspace-grid four">
+                <label><span>任务名称</span><input name="name" placeholder="任务名称" required></label>
+                <label>
+                  <span>源数据源</span>
+                  <select name="source_id" required>
+                    {% for item in datasources %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>目标数据源</span>
+                  <select name="target_id" required>
+                    {% for item in datasources %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>SQL 模式</span>
+                  <select name="sql_mode" required>
+                    <option value="single">单 SQL</option>
+                    <option value="double">双 SQL</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h3>SQL</h3>
+              <div class="sql-pane-grid">
+                <div class="sql-editor" data-sql-editor="source">
+                  <div class="sql-editor-head">
+                    <span>源 SQL</span>
+                    <div class="actions">
+                      <button class="button secondary compact-button" type="button" data-format-task-sql="source">格式化</button>
+                      <button class="button secondary compact-button" type="button" data-extract-task-fields="source">提取字段</button>
+                    </div>
+                  </div>
+                  <textarea name="source_sql" placeholder="源 SQL；单 SQL 模式下目标库也执行这一条 SQL" required></textarea>
+                  <div class="task-sql-assist" data-sql-assist-result="source" hidden></div>
+                </div>
+                <div class="sql-editor" data-sql-editor="target">
+                  <div class="sql-editor-head">
+                    <span>目标 SQL</span>
+                    <div class="actions">
+                      <button class="button secondary compact-button" type="button" data-format-task-sql="target">格式化</button>
+                      <button class="button secondary compact-button" type="button" data-extract-task-fields="target">提取字段</button>
+                    </div>
+                  </div>
+                  <textarea name="target_sql" placeholder="目标 SQL；双 SQL 模式必填"></textarea>
+                  <div class="task-sql-assist" data-sql-assist-result="target" hidden></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h3>对比规则</h3>
+              <div class="rule-strip">
+                <label><span>主键字段</span><input name="key_columns" placeholder="id,tenant_id" required></label>
+                <label><span>忽略字段</span><input name="ignore_columns" placeholder="etl_time,update_time"></label>
+                <label><span>数值容忍</span><input name="numeric_tolerance" type="number" step="any" min="0" placeholder="0.01"></label>
+                <label><span>最大查询行数</span><input name="max_rows" type="number" value="100000" min="1"></label>
+                <label><span>最大导出行数</span><input name="export_max_rows" type="number" value="50000" min="1"></label>
+                <label><span>查询分块行数</span><input name="fetch_chunk_size" type="number" value="5000" min="1"></label>
+              </div>
+            </section>
+
+            <details class="workspace-fold">
+              <summary>高级配置</summary>
+              <div class="fold-content">
+                <label class="mapping-field">
+                  <span>字段映射</span>
+                  <textarea name="column_mappings" placeholder="为空时按查询字段顺序自动映射；也可以手工填写：源字段 -> 目标字段"></textarea>
+                </label>
+                <div class="check-row">
+                  <label><input type="checkbox" name="trim_strings" value="true"> <span>去除字符串前后空格</span></label>
+                  <label><input type="checkbox" name="case_insensitive" value="true"> <span>字符串忽略大小写</span></label>
+                  <label><input type="checkbox" name="empty_as_null" value="true"> <span>空字符串视为空值</span></label>
+                  <label><input type="checkbox" name="stream_compare" value="true"> <span>流式分块对比（SQL 按主键排序）</span></label>
+                </div>
+              </div>
+            </details>
+
+            <div class="sticky-actions">
+              <button class="button" type="submit" {% if not datasources %}disabled{% endif %}>保存任务</button>
+            </div>
+          </form>
+        </article>
+
+        {% for task in tasks %}
+        {% set latest = latest_history_by_task.get(task.id) %}
+        <article class="task-panel {% if not loop.first %}hidden{% endif %}" id="panel-{{ task.id }}" data-task-panel="{{ task.id }}">
+          <div class="detail-head">
+            <div>
+              <h2>{{ task.name }}</h2>
+              <p>{{ '单 SQL' if task.sql_mode.value == 'single' else '双 SQL' }} · keys: {{ task.key_columns|join(', ') }}</p>
+              {% if latest %}
+              <div class="latest-task-run">
+                <span>最近执行：{{ latest.started_at }} · 耗时 {{ latest.elapsed_seconds }}s · diff {{ latest.summary.diff }} · same {{ latest.summary.same }}</span>
+                {% if latest.excel_filename %}<a href="/results/{{ latest.excel_filename }}">Excel</a>{% endif %}
+                <a href="/results/{{ latest.result_filename }}">JSON</a>
+              </div>
+              {% else %}
+              <div class="latest-task-run muted">暂无执行记录</div>
+              {% endif %}
+            </div>
+            <div class="detail-actions">
+              <form action="/tasks/{{ task.id }}/run" method="post"><button class="button" type="submit">执行</button></form>
+              <button class="button secondary" type="button" data-run-async="{{ task.id }}">后台执行</button>
+              <button class="button secondary" type="button" data-preview-task="{{ task.id }}" data-side="source">预览源</button>
+              <button class="button secondary" type="button" data-preview-task="{{ task.id }}" data-side="target">预览目标</button>
+              <form action="/tasks/{{ task.id }}/copy" method="post"><button class="button secondary" type="submit">复制</button></form>
+              <form action="/tasks/{{ task.id }}/delete" method="post"><button class="icon-button danger" title="删除" type="submit">×</button></form>
+            </div>
+          </div>
+
+          <form class="detail-body edit-task-form workspace-task-form" id="edit-{{ task.id }}" action="/tasks/{{ task.id }}/edit" method="post">
+            <section class="detail-section">
+              <h3>基础配置</h3>
+              <div class="workspace-grid four">
+                <label><span>任务名称</span><input name="name" value="{{ task.name }}" required></label>
+                <label>
+                  <span>源数据源</span>
+                  <select name="source_id" required>
+                    {% for item in datasources %}<option value="{{ item.id }}" {% if item.id == task.source_id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>目标数据源</span>
+                  <select name="target_id" required>
+                    {% for item in datasources %}<option value="{{ item.id }}" {% if item.id == task.target_id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>SQL 模式</span>
+                  <select name="sql_mode" required>
+                    <option value="single" {% if task.sql_mode.value == 'single' %}selected{% endif %}>单 SQL</option>
+                    <option value="double" {% if task.sql_mode.value == 'double' %}selected{% endif %}>双 SQL</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h3>SQL</h3>
+              <div class="sql-pane-grid">
+                <div class="sql-editor" data-sql-editor="source">
+                  <div class="sql-editor-head">
+                    <span>源 SQL</span>
+                    <div class="actions">
+                      <button class="button secondary compact-button" type="button" data-format-task-sql="source">格式化</button>
+                      <button class="button secondary compact-button" type="button" data-extract-task-fields="source">提取字段</button>
+                    </div>
+                  </div>
+                  <textarea name="source_sql" required>{{ task.source_sql }}</textarea>
+                  <div class="task-sql-assist" data-sql-assist-result="source" hidden></div>
+                </div>
+                <div class="sql-editor" data-sql-editor="target">
+                  <div class="sql-editor-head">
+                    <span>目标 SQL</span>
+                    <div class="actions">
+                      <button class="button secondary compact-button" type="button" data-format-task-sql="target">格式化</button>
+                      <button class="button secondary compact-button" type="button" data-extract-task-fields="target">提取字段</button>
+                    </div>
+                  </div>
+                  <textarea name="target_sql" placeholder="目标 SQL；双 SQL 模式必填">{{ task.target_sql }}</textarea>
+                  <div class="task-sql-assist" data-sql-assist-result="target" hidden></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h3>对比规则</h3>
+              <div class="rule-strip">
+                <label><span>主键字段</span><input name="key_columns" value="{{ task.key_columns|join(', ') }}" required></label>
+                <label><span>忽略字段</span><input name="ignore_columns" value="{{ task.rules.ignore_columns|join(', ') }}"></label>
+                <label><span>数值容忍</span><input name="numeric_tolerance" type="number" step="any" min="0" value="{{ task.rules.numeric_tolerance if task.rules.numeric_tolerance is not none else '' }}"></label>
+                <label><span>最大查询行数</span><input name="max_rows" type="number" min="1" value="{{ task.limits.max_rows }}"></label>
+                <label><span>最大导出行数</span><input name="export_max_rows" type="number" min="1" value="{{ task.limits.export_max_rows }}"></label>
+                <label><span>查询分块行数</span><input name="fetch_chunk_size" type="number" min="1" value="{{ task.limits.fetch_chunk_size }}"></label>
+              </div>
+            </section>
+
+            <details class="workspace-fold">
+              <summary>高级配置</summary>
+              <div class="fold-content">
+                <label class="mapping-field">
+                  <span>字段映射</span>
+                  <textarea name="column_mappings" placeholder="为空时按查询字段顺序自动映射；也可以手工填写：源字段 -> 目标字段">{% for source, target in task.rules.column_mappings.items() %}{{ source }} -> {{ target }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+                  <small>字段名不一致时填写。为空且两边列数一致时，会按查询字段顺序自动映射。</small>
+                </label>
+                <div class="check-row">
+                  <label><input type="checkbox" name="trim_strings" value="true" {% if task.rules.trim_strings %}checked{% endif %}> <span>去除字符串前后空格</span></label>
+                  <label><input type="checkbox" name="case_insensitive" value="true" {% if task.rules.case_insensitive %}checked{% endif %}> <span>字符串忽略大小写</span></label>
+                  <label><input type="checkbox" name="empty_as_null" value="true" {% if task.rules.empty_as_null %}checked{% endif %}> <span>空字符串视为空值</span></label>
+                  <label><input type="checkbox" name="stream_compare" value="true" {% if task.limits.stream_compare %}checked{% endif %}> <span>流式分块对比（SQL 按主键排序）</span></label>
+                </div>
+              </div>
+            </details>
+
+            <pre class="inline-output" id="task-output-{{ task.id }}" hidden></pre>
+
+            <div class="sticky-actions">
+              <button class="button" type="submit">保存修改</button>
+            </div>
+          </form>
+        </article>
+        {% endfor %}
+      </section>
+    </main>
+
+    <div class="drawer-backdrop" id="drawer-backdrop"></div>
+    <aside class="datasource-drawer" id="datasource-drawer" aria-label="数据源管理">
+      <div class="drawer-head">
+        <div>
+          <h2>数据源管理</h2>
+          <p>集中维护连接信息；任务里只引用这里的数据源。</p>
+        </div>
+        <button class="button secondary" type="button" id="close-datasources">收起</button>
+      </div>
+      <div class="drawer-body">
+        <form class="datasource-form" action="/config/import" method="post" enctype="multipart/form-data">
+          <div class="section-title">
+            <h2>配置导入 / 导出</h2>
+            <span>覆盖本地数据源和任务配置</span>
+          </div>
+          <div class="workspace-grid four">
+            <label><span>配置 JSON</span><input type="file" name="config_file" accept=".json" required></label>
+            <div class="form-end">
+              <button class="button" type="submit">导入配置</button>
+              <a class="button secondary" href="/config/export">导出配置</a>
+            </div>
+          </div>
+        </form>
+
+        <form class="datasource-form" action="/datasources" method="post">
+          <div class="section-title">
+            <h2>新增数据源</h2>
+            <span>保存到 config/datasources.json</span>
+          </div>
+          <div class="workspace-grid four">
+            <label><span>名称</span><input name="name" placeholder="名称" required></label>
+            <label>
+              <span>类型</span>
+              <select name="db_type" required>{% for db_type in db_types %}<option value="{{ db_type }}">{{ db_type }}</option>{% endfor %}</select>
+            </label>
+            <label><span>Host</span><input name="host" placeholder="Host" required></label>
+            <label><span>Port</span><input name="port" type="number" placeholder="Port" required></label>
+            <label><span>数据库 / 服务名</span><input name="database" placeholder="数据库 / 服务名"></label>
+            <label><span>用户名</span><input name="username" placeholder="用户名"></label>
+            <label><span>密码</span><input name="password" placeholder="密码" type="password"></label>
+            <div class="form-end"><button class="button" type="submit">添加数据源</button></div>
+          </div>
+        </form>
+
+        <div class="datasource-list">
+          {% for item in datasources %}
+          <article class="datasource-card">
+            <div>
+              <h3>{{ item.name }}</h3>
+              <p>{{ item.db_type.value }} · {{ item.host }}:{{ item.port }}{% if item.database %} · {{ item.database }}{% endif %}</p>
+              <div class="inline-test" id="test-ds-{{ item.id }}" hidden><pre class="inline-output"></pre></div>
+            </div>
+            <div class="actions">
+              <button class="button secondary" type="button" data-datasource-test="{{ item.id }}">测试</button>
+              <button class="button secondary" type="button" data-edit-toggle="ds-{{ item.id }}" aria-expanded="false">编辑</button>
+              <form action="/datasources/{{ item.id }}/delete" method="post"><button class="icon-button danger" title="删除" type="submit">×</button></form>
+            </div>
+            <form class="datasource-edit inline-edit" id="edit-ds-{{ item.id }}" action="/datasources/{{ item.id }}/edit" method="post" hidden>
+              <div class="workspace-grid four">
+                <label><span>名称</span><input name="name" value="{{ item.name }}" required></label>
+                <label>
+                  <span>类型</span>
+                  <select name="db_type" required>{% for db_type in db_types %}<option value="{{ db_type }}" {% if db_type == item.db_type.value %}selected{% endif %}>{{ db_type }}</option>{% endfor %}</select>
+                </label>
+                <label><span>Host</span><input name="host" value="{{ item.host }}" required></label>
+                <label><span>Port</span><input name="port" type="number" value="{{ item.port }}" required></label>
+                <label><span>数据库 / 服务名</span><input name="database" value="{{ item.database }}"></label>
+                <label><span>用户名</span><input name="username" value="{{ item.username }}"></label>
+                <label><span>密码</span><input name="password" placeholder="留空则保留原密码" type="password"></label>
+                <div class="form-end">
+                  <button class="button" type="submit">保存</button>
+                  <button class="button secondary" type="button" data-edit-toggle="ds-{{ item.id }}">取消</button>
+                </div>
+              </div>
+            </form>
+          </article>
+          {% else %}
+          <p class="empty">暂无数据源</p>
+          {% endfor %}
+        </div>
+      </div>
+    </aside>
+
+    <script>
+      const showOutput = (element, data) => {
+        element.hidden = false;
+        element.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      };
+
+      const selectTask = (id) => {
+        document.querySelectorAll("[data-task-panel]").forEach((panel) => {
+          panel.classList.toggle("hidden", panel.dataset.taskPanel !== id);
+        });
+        document.querySelectorAll("[data-select-task]").forEach((button) => {
+          button.classList.toggle("active", button.dataset.selectTask === id);
+        });
+      };
+
+      document.querySelectorAll("[data-select-task]").forEach((button) => {
+        button.addEventListener("click", () => selectTask(button.dataset.selectTask));
+      });
+
+      const filterTasks = () => {
+        const keyword = document.getElementById("task-search").value.trim().toLowerCase();
+        const mode = document.getElementById("task-mode-filter").value;
+        document.querySelectorAll(".task-nav-item").forEach((item) => {
+          const matchesText = !keyword || item.dataset.taskSearch.toLowerCase().includes(keyword);
+          const matchesMode = !mode || item.dataset.taskMode === mode || item.dataset.taskMode === "";
+          item.hidden = !(matchesText && matchesMode);
+        });
+      };
+      document.getElementById("task-search").addEventListener("input", filterTasks);
+      document.getElementById("task-mode-filter").addEventListener("change", filterTasks);
+
+      const drawer = document.getElementById("datasource-drawer");
+      const backdrop = document.getElementById("drawer-backdrop");
+      const openDrawer = () => {
+        drawer.classList.add("open");
+        backdrop.classList.add("open");
+      };
+      const closeDrawer = () => {
+        drawer.classList.remove("open");
+        backdrop.classList.remove("open");
+      };
+      document.getElementById("open-datasources").addEventListener("click", openDrawer);
+      document.getElementById("close-datasources").addEventListener("click", closeDrawer);
+      backdrop.addEventListener("click", closeDrawer);
+
+      document.querySelectorAll("[data-edit-toggle]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const form = document.getElementById(`edit-${button.dataset.editToggle}`);
+          const nextHidden = !form.hidden;
+          form.hidden = nextHidden;
+          document.querySelectorAll(`[data-edit-toggle="${button.dataset.editToggle}"]`).forEach((toggle) => {
+            toggle.setAttribute("aria-expanded", String(!nextHidden));
+            if (toggle.textContent.trim() !== "取消") {
+              toggle.textContent = nextHidden ? "编辑" : "收起";
+            }
+          });
+        });
+      });
+
+      const openEditForm = (id) => {
+        selectTask(id);
+        const form = document.getElementById(`edit-${id}`);
+        if (!form) {
+          return;
+        }
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+        const nameInput = form.querySelector('input[name="name"]');
+        if (nameInput) {
+          nameInput.focus();
+          nameInput.select();
+        }
+      };
+
+      const editTaskId = new URLSearchParams(window.location.search).get("edit_task");
+      if (editTaskId) {
+        openEditForm(editTaskId);
+      }
+
+      document.querySelectorAll("[data-datasource-test]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const id = button.dataset.datasourceTest;
+          const box = document.getElementById(`test-ds-${id}`);
+          const output = box.querySelector(".inline-output");
+          box.hidden = false;
+          output.textContent = "测试中...";
+          const response = await fetch(`/api/datasources/${id}/test`, { method: "POST" });
+          if (response.ok) {
+            const data = await response.json();
+            showOutput(output, `${data.message}（${data.elapsed_seconds}s）`);
+            return;
+          }
+          const error = await response.json().catch(async () => ({ detail: await response.text() }));
+          showOutput(output, error.detail || "连接失败");
+        });
+      });
+
+      document.querySelectorAll("[data-preview-task]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const id = button.dataset.previewTask;
+          const side = button.dataset.side;
+          const editForm = document.getElementById(`edit-${id}`);
+          const body = { side, limit: 20 };
+          if (editForm) {
+            body.datasource_id = editForm.querySelector(`[name="${side}_id"]`)?.value;
+            const sqlMode = editForm.querySelector('[name="sql_mode"]')?.value;
+            const sourceSql = editForm.querySelector('[name="source_sql"]')?.value || "";
+            const targetSql = editForm.querySelector('[name="target_sql"]')?.value || "";
+            body.sql = side === "target" && sqlMode === "double" ? targetSql : sourceSql;
+          }
+          const output = document.getElementById(`task-output-${id}`);
+          showOutput(output, "查询预览中...");
+          const response = await fetch(`/api/tasks/${id}/preview`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+          showOutput(output, response.ok ? await response.json() : await response.text());
+        });
+      });
+
+      const taskSqlAssist = async (button, mode) => {
+        const form = button.closest("form");
+        const side = button.dataset.formatTaskSql || button.dataset.extractTaskFields;
+        const textarea = form.querySelector(`[name="${side}_sql"]`);
+        const result = form.querySelector(`[data-sql-assist-result="${side}"]`);
+        const dialect = "";
+        result.hidden = false;
+        result.textContent = mode === "format" ? "格式化中..." : "提取字段中...";
+        const response = await fetch("/api/sql/assist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: textarea.value, dialect })
+        });
+        if (!response.ok) {
+          result.textContent = await response.text();
+          return;
+        }
+        const data = await response.json();
+        if (mode === "format") {
+          textarea.value = data.formatted_sql || textarea.value;
+        }
+        renderTaskSqlAssist(result, data, form);
+      };
+
+      document.querySelectorAll("[data-format-task-sql]").forEach((button) => {
+        button.addEventListener("click", () => taskSqlAssist(button, "format"));
+      });
+
+      document.querySelectorAll("[data-extract-task-fields]").forEach((button) => {
+        button.addEventListener("click", () => taskSqlAssist(button, "extract"));
+      });
+
+      const renderTaskSqlAssist = (container, data, form) => {
+        container.innerHTML = "";
+        const status = document.createElement("div");
+        status.className = `assist-status ${data.readonly_ok ? "ok" : "bad"}`;
+        status.textContent = data.readonly_ok ? "只读校验通过" : `只读校验未通过：${data.readonly_error}`;
+        container.appendChild(status);
+        container.appendChild(taskAssistSection("输出字段", data.output_columns || [], ""));
+        if ((data.output_columns || []).includes("*")) {
+          const note = document.createElement("div");
+          note.className = "assist-note";
+          note.textContent = "检测到 SELECT *，静态解析无法展开真实表字段；如需提取字段和候选主键，请在 SQL 中显式列出字段名。";
+          container.appendChild(note);
+        }
+        const keyCandidates = data.key_candidates?.length ? data.key_candidates : inferKeyCandidates(data.output_columns || []);
+        const keySection = taskAssistSection("候选主键提示", keyCandidates, "未识别到疑似 key 字段");
+        const fillButton = document.createElement("button");
+        fillButton.type = "button";
+        fillButton.className = "button secondary compact-button";
+        fillButton.textContent = "填入主键";
+        fillButton.disabled = !keyCandidates.length;
+        fillButton.addEventListener("click", () => {
+          const keyInput = form.querySelector('[name="key_columns"]');
+          keyInput.value = keyCandidates.join(", ");
+          keyInput.focus();
+        });
+        keySection.appendChild(fillButton);
+        container.appendChild(keySection);
+      };
+
+      const inferKeyCandidates = (columns) => {
+        return columns.filter((column) => {
+          const normalized = String(column).trim().replace(/^[`"\[]+|[`"\]]+$/g, "").split(".").pop().toLowerCase();
+          return ["id", "uuid", "no", "code", "cd"].includes(normalized)
+            || normalized.endsWith("_id")
+            || normalized.endsWith("_no")
+            || normalized.endsWith("_num")
+            || normalized.endsWith("_code")
+            || normalized.endsWith("_cd")
+            || normalized.includes("num");
+        }).slice(0, 20);
+      };
+
+      const taskAssistSection = (title, values, emptyText) => {
+        const section = document.createElement("div");
+        section.className = "task-assist-section";
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        section.appendChild(heading);
+        const list = document.createElement("div");
+        list.className = "pill-list";
+        if (!values.length) {
+          const empty = document.createElement("span");
+          empty.className = "muted";
+          empty.textContent = emptyText || "未识别到字段";
+          list.appendChild(empty);
+        } else {
+          values.forEach((value) => {
+            const pill = document.createElement("span");
+            pill.className = "assist-pill";
+            pill.textContent = value;
+            list.appendChild(pill);
+          });
+        }
+        section.appendChild(list);
+        return section;
+      };
+
+      document.querySelectorAll("[data-run-async]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const id = button.dataset.runAsync;
+          const output = document.getElementById(`task-output-${id}`);
+          showOutput(output, "提交后台任务...");
+          const response = await fetch(`/api/tasks/${id}/run-async`, { method: "POST" });
+          if (!response.ok) {
+            showOutput(output, await response.text());
+            return;
+          }
+          const job = await response.json();
+          let cancelButton = document.createElement("button");
+          cancelButton.type = "button";
+          cancelButton.className = "button danger compact-button";
+          cancelButton.textContent = "取消后台任务";
+          output.insertAdjacentElement("afterend", cancelButton);
+          cancelButton.addEventListener("click", async () => {
+            cancelButton.disabled = true;
+            const cancelResponse = await fetch(`/api/runs/${job.job_id}/cancel`, { method: "POST" });
+            showOutput(output, cancelResponse.ok ? await cancelResponse.json() : await cancelResponse.text());
+          });
+          const timer = setInterval(async () => {
+            const statusResponse = await fetch(`/api/runs/${job.job_id}`);
+            const status = await statusResponse.json();
+            showOutput(output, status);
+            if (["success", "failed", "cancelled"].includes(status.status)) {
+              clearInterval(timer);
+              cancelButton.remove();
+            }
+          }, 1200);
+        });
+      });
+    </script>
+  </body>
+</html>

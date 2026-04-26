@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>执行结果</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>执行结果</h1>
+        <p>结果文件已写入 results 目录。</p>
+      </div>
+      <a class="button secondary" href="/">返回</a>
+    </header>
+    <main class="layout">
+      {% if error %}
+      <section class="panel error">
+        <h2>执行失败</h2>
+        <p>{{ error }}</p>
+      </section>
+      {% else %}
+      <section class="panel">
+        <h2>汇总</h2>
+        <div class="summary-grid">
+          <div><strong>{{ result.summary.only_source }}</strong><span>only_source</span></div>
+          <div><strong>{{ result.summary.only_target }}</strong><span>only_target</span></div>
+          <div><strong>{{ result.summary.diff }}</strong><span>diff</span></div>
+          <div><strong>{{ result.summary.same }}</strong><span>same</span></div>
+          <div><strong>{{ result.source_rows }}</strong><span>源行数</span></div>
+          <div><strong>{{ result.target_rows }}</strong><span>目标行数</span></div>
+          <div><strong>{{ result.elapsed_seconds }}s</strong><span>耗时</span></div>
+        </div>
+        <div class="actions">
+          <a class="button" href="/results/{{ result.excel_filename }}">下载 Excel</a>
+          <a class="button secondary" href="/results/{{ result.result_filename }}">下载 JSON</a>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>样例</h2>
+        <pre>{{ samples_json }}</pre>
+      </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

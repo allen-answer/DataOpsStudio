@@ -1,0 +1,13 @@
+[
+  {
+    "id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "name": "new",
+    "db_type": "MySQL",
+    "host": "host.docker.internal",
+    "port": 3306,
+    "database": "appdb",
+    "username": "root",
+    "password": "root123456",
+    "extra": {}
+  }
+]

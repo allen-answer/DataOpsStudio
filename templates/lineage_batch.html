@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>多脚本 ETL 流程分析</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>多脚本 ETL 流程分析</h1>
+        <p>批量解析 .sql/.txt 脚本，汇总表级流转、跨脚本依赖和解析提示。</p>
+      </div>
+      <div class="top-actions">
+        <a class="button secondary" href="/lineage">单脚本血缘</a>
+        <a class="button secondary" href="/">返回首页</a>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <form class="lineage-form" action="/lineage/batch" method="post" enctype="multipart/form-data">
+          <div class="lineage-input-grid">
+            <label>
+              <span>SQL 方言</span>
+              <select name="dialect">
+                <option value="" {% if not dialect %}selected{% endif %}>自动</option>
+                <option value="mysql" {% if dialect == 'mysql' %}selected{% endif %}>MySQL / OceanBase MySQL</option>
+                <option value="oracle" {% if dialect == 'oracle' %}selected{% endif %}>Oracle</option>
+                <option value="tsql" {% if dialect == 'tsql' %}selected{% endif %}>T-SQL</option>
+                <option value="postgres" {% if dialect == 'postgres' %}selected{% endif %}>PostgreSQL</option>
+              </select>
+            </label>
+            <label>
+              <span>脚本文件</span>
+              <input type="file" name="sql_files" accept=".sql,.txt,.zip" multiple required>
+            </label>
+            <label>
+              <span>Schema 元数据</span>
+              <input type="file" name="schema_file" accept=".json,.sql,.txt,.zip" multiple>
+            </label>
+          </div>
+          <div class="lineage-action-bar">
+            <button class="button primary-action" type="submit">分析脚本包</button>
+          </div>
+        </form>
+      </section>
+
+      {% if error %}
+      <section class="panel error">
+        <h2>分析失败</h2>
+        <p>{{ error }}</p>
+      </section>
+      {% endif %}
+
+      {% if result %}
+      <section class="panel">
+        <div class="section-title">
+          <div>
+            <h2>导出结果</h2>
+            <p class="muted">导出的是当前已分析完成的脚本包结果。</p>
+          </div>
+          {% if exports %}
+          <div class="top-actions">
+            <a class="button secondary" href="/results/{{ exports.excel_filename }}">下载 Excel</a>
+            <a class="button secondary" href="/results/{{ exports.json_filename }}">下载 JSON</a>
+          </div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>流程图</h2>
+        <div class="lineage-graph lineage-graph-compact">
+          {% for item in result.table_groups %}
+          <div class="lineage-flow">
+            <div class="lineage-source-stack">
+              {% for source_table in item.source_tables %}
+              <span>{{ source_table }}</span>
+              {% endfor %}
+              {% for dependency_table in item.dependency_tables %}
+              <span class="lineage-dependency">{{ dependency_table }}<small>条件依赖</small></span>
+              {% endfor %}
+            </div>
+            <strong>→</strong>
+            <div class="lineage-target-stack">
+              <span class="lineage-target">{{ item.target_table }}</span>
+              {% if item.files %}
+              <small>{{ item.files|join(', ') }}</small>
+              {% endif %}
+            </div>
+          </div>
+          {% else %}
+          <p class="empty">未识别到可绘制的表级数据流</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>流程总览</h2>
+        <div class="summary-grid">
+          <div><strong>{{ result.summary.files }}</strong><span>脚本</span></div>
+          <div><strong>{{ result.summary.success_files }}</strong><span>成功</span></div>
+          <div><strong>{{ result.summary.failed_files }}</strong><span>失败</span></div>
+          <div><strong>{{ result.summary.read_tables }}</strong><span>读取表</span></div>
+          <div><strong>{{ result.summary.write_tables }}</strong><span>写入表</span></div>
+          <div><strong>{{ result.summary.table_edges }}</strong><span>表流转</span></div>
+          <div><strong>{{ result.summary.script_edges }}</strong><span>脚本依赖</span></div>
+          <div><strong>{{ result.summary.warnings }}</strong><span>提示</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>脚本清单</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>状态</th>
+                <th>语句数</th>
+                <th>读取表</th>
+                <th>写入表</th>
+                <th>变量</th>
+                <th>提示</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in result.files %}
+              <tr>
+                <td><code>{{ item.file_name }}</code></td>
+                <td>
+                  {{ item.status }}
+                  {% if item.error %}
+                  <details class="error-detail">
+                    <summary>查看原因</summary>
+                    <code>{{ item.error }}</code>
+                  </details>
+                  {% endif %}
+                </td>
+                <td>{{ item.statement_count }}</td>
+                <td>{{ item.read_tables|join(', ') }}</td>
+                <td>{{ item.write_tables|join(', ') }}</td>
+                <td>{{ item.variables|join(', ') }}</td>
+                <td>{% for warning in item.warnings %}{{ warning.type }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="7" class="empty">暂无脚本</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>表级数据流</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>来源表</th><th>目标表</th><th>类型</th><th>脚本</th><th>语句</th></tr></thead>
+            <tbody>
+              {% for item in result.table_edges %}
+              <tr>
+                <td>{{ item.source_table }}</td>
+                <td>{{ item.target_table }}</td>
+                <td>{{ item.edge_type }}</td>
+                <td><code>{{ item.file_name }}</code></td>
+                <td>{{ item.statement_index }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="5" class="empty">未识别到表级流转</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>跨脚本依赖</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>产出脚本</th><th>消费脚本</th><th>中间表</th></tr></thead>
+            <tbody>
+              {% for item in result.script_edges %}
+              <tr>
+                <td><code>{{ item.producer_file }}</code></td>
+                <td><code>{{ item.consumer_file }}</code></td>
+                <td>{{ item.table }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="3" class="empty">未识别到跨脚本依赖</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>风险提示</h2>
+        {% if result.summary.failed_files %}
+        <p class="assist-note">解析失败通常来自非标准厂商语法、脚本片段不完整、动态 SQL 拼接、过程控制语句，或 DDL/COMMENT 等非落表分析主体。失败文件会保留在导出结果中，其他可解析脚本仍会继续分析。</p>
+        {% endif %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>文件</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              {% for item in result.warnings %}
+              <tr>
+                <td><code>{{ item.file_name }}</code></td>
+                <td>{{ item.type }}</td>
+                <td>{{ item.message }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="3" class="empty">暂无提示</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

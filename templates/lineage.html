@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SQL 血缘分析</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>SQL 血缘分析</h1>
+        <p>基于 sqlglot 静态解析脚本，不连接数据库，不执行 SQL。</p>
+      </div>
+      <div class="top-actions">
+        <a class="button secondary" href="/lineage/batch">多脚本分析</a>
+        <a class="button secondary" href="/">返回首页</a>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <form class="lineage-form" action="/lineage" method="post" enctype="multipart/form-data">
+          <label>
+            <span>SQL 脚本</span>
+            <textarea class="lineage-sql" name="sql" placeholder="粘贴 SELECT / WITH / UNION / UNION ALL SQL，或在下方导入 .sql/.txt 文件">{{ sql }}</textarea>
+          </label>
+          <div class="lineage-input-grid">
+            <label>
+              <span>SQL 方言</span>
+              <select name="dialect">
+                <option value="" {% if not dialect %}selected{% endif %}>自动</option>
+                <option value="mysql" {% if dialect == 'mysql' %}selected{% endif %}>MySQL / OceanBase MySQL</option>
+                <option value="oracle" {% if dialect == 'oracle' %}selected{% endif %}>Oracle</option>
+                <option value="tsql" {% if dialect == 'tsql' %}selected{% endif %}>T-SQL</option>
+                <option value="postgres" {% if dialect == 'postgres' %}selected{% endif %}>PostgreSQL</option>
+              </select>
+            </label>
+            <label>
+              <span>导入 SQL / TXT 文件</span>
+              <input type="file" name="sql_file" accept=".sql,.txt">
+            </label>
+            <label>
+              <span>Schema 元数据</span>
+              <input type="file" name="schema_file" accept=".json,.sql,.txt,.zip" multiple>
+            </label>
+          </div>
+          <div class="lineage-action-bar">
+            <button class="button primary-action" type="submit">分析血缘</button>
+            <button class="button secondary" type="button" id="format-lineage-sql">格式化</button>
+            <button class="button secondary" type="submit" formaction="/lineage/export" formmethod="post" name="export_format" value="xlsx">导出 Excel</button>
+            <button class="button secondary" type="submit" formaction="/lineage/export" formmethod="post" name="export_format" value="json">导出 JSON</button>
+            <span class="muted" id="format-lineage-status"></span>
+          </div>
+        </form>
+      </section>
+
+      {% if error %}
+      <section class="panel error">
+        <h2>分析失败</h2>
+        <p>{{ error }}</p>
+      </section>
+      {% endif %}
+
+      {% if result %}
+      <section class="panel">
+        <h2>血缘图</h2>
+        <div class="lineage-graph">
+          {% for item in result.graph_groups %}
+          <div class="lineage-flow">
+            <div class="lineage-source-stack">
+              {% for source_table in item.source_tables %}
+              <span>{{ source_table }}</span>
+              {% endfor %}
+              {% for dependency_table in item.dependency_tables %}
+              <span class="lineage-dependency">{{ dependency_table }}<small>条件依赖</small></span>
+              {% endfor %}
+            </div>
+            <strong>→</strong>
+            <span class="lineage-target">{{ item.target_table }}</span>
+          </div>
+          {% else %}
+          <p class="empty">未识别到可绘制的表级血缘边</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>脚本变量</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>变量名</th><th>赋值</th></tr></thead>
+            <tbody>
+              {% for item in result.variables %}
+              <tr><td><code>{{ item.name }}</code></td><td><code>{{ item.assigned_value }}</code></td></tr>
+              {% else %}
+              <tr><td colspan="2" class="empty">未识别到变量或占位符</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>来源表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>表名</th><th>别名</th></tr></thead>
+            <tbody>
+              {% for item in result.tables %}
+              <tr><td>{{ item.table }}</td><td>{{ item.alias }}</td></tr>
+              {% else %}
+              <tr><td colspan="2" class="empty">未识别到来源表</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>字段血缘</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>分支</th>
+                <th>输出字段</th>
+                <th>来源字段</th>
+                <th>来源表</th>
+                <th>变量</th>
+                <th>处理逻辑</th>
+                <th>表达式</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in result.columns %}
+              <tr>
+                <td>{{ item.select_index }}</td>
+                <td>{{ item.output_column }}</td>
+                <td>{{ item.source_columns|join(', ') }}</td>
+                <td>{{ item.source_tables|join(', ') }}</td>
+                <td>{{ item.variables|join(', ') }}</td>
+                <td>{{ item.transform }}</td>
+                <td><code>{{ item.expression }}</code></td>
+              </tr>
+              {% else %}
+              <tr><td colspan="7" class="empty">未识别到输出字段</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>落表字段映射</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>语句</th>
+                <th>序号</th>
+                <th>目标表</th>
+                <th>目标字段</th>
+                <th>SELECT 输出</th>
+                <th>来源字段</th>
+                <th>来源表</th>
+                <th>变量</th>
+                <th>处理逻辑</th>
+                <th>表达式</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in result.insert_mappings %}
+              <tr>
+                <td>{{ item.statement_index }}</td>
+                <td>{{ item.position }}</td>
+                <td>{{ item.target_table }}</td>
+                <td>{{ item.target_column }}</td>
+                <td>{{ item.select_output_column }}</td>
+                <td>{{ item.source_columns|join(', ') }}</td>
+                <td>{{ item.source_tables|join(', ') }}</td>
+                <td>{{ item.variables|join(', ') }}</td>
+                <td>{{ item.transform }}</td>
+                <td><code>{{ item.expression }}</code></td>
+              </tr>
+              {% else %}
+              <tr><td colspan="10" class="empty">未识别到 INSERT 落表字段映射</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>条件与分支</h2>
+        <div class="lineage-result-grid">
+          <div>
+            <h3>JOIN</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>分支</th><th>类型</th><th>表/子查询</th><th>ON</th></tr></thead>
+                <tbody>
+                  {% for item in result.joins %}
+                  <tr><td>{{ item.select_index }}</td><td>{{ item.kind }}</td><td><code>{{ item.table }}</code></td><td><code>{{ item.on }}</code></td></tr>
+                  {% else %}
+                  <tr><td colspan="4" class="empty">无 JOIN</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <h3>WHERE / GROUP BY</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>类型</th><th>分支</th><th>内容</th></tr></thead>
+                <tbody>
+                  {% for item in result.filters %}
+                  <tr><td>WHERE</td><td>{{ item.select_index }}</td><td><code>{{ item.condition }}</code></td></tr>
+                  {% endfor %}
+                  {% for item in result.group_by %}
+                  <tr><td>GROUP BY</td><td>{{ item.select_index }}</td><td><code>{{ item.expression }}</code></td></tr>
+                  {% endfor %}
+                  {% if not result.filters and not result.group_by %}
+                  <tr><td colspan="3" class="empty">无 WHERE / GROUP BY</td></tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>UNION / UNION ALL</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>序号</th><th>类型</th><th>左分支</th><th>右分支</th></tr></thead>
+            <tbody>
+              {% for item in result.unions %}
+              <tr><td>{{ item.index }}</td><td>{{ item.type }}</td><td><code>{{ item.left }}</code></td><td><code>{{ item.right }}</code></td></tr>
+              {% else %}
+              <tr><td colspan="4" class="empty">无 UNION</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+    </main>
+    <script>
+      const formatButton = document.getElementById("format-lineage-sql");
+      if (formatButton) {
+        formatButton.addEventListener("click", async () => {
+          const status = document.getElementById("format-lineage-status");
+          const sqlInput = document.querySelector("[name='sql']");
+          const sql = document.querySelector("[name='sql']").value;
+          const dialect = document.querySelector("[name='dialect']").value;
+          status.textContent = "格式化中...";
+          const response = await fetch("/api/sql/assist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sql, dialect })
+          });
+          if (!response.ok) {
+            status.textContent = await response.text();
+            return;
+          }
+          const data = await response.json();
+          sqlInput.value = data.formatted_sql || sql;
+          status.textContent = "已格式化";
+          setTimeout(() => {
+            status.textContent = "";
+          }, 1600);
+        });
+      }
+    </script>
+  </body>
+</html>
