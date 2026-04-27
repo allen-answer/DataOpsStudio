@@ -331,7 +331,7 @@ def bootstrap():
         "drivers": detect_drivers(),
         "db_types": [item.value for item in DatabaseType],
         "sql_modes": [item.value for item in SqlMode],
-        "history": history[:50],
+        "history": history,
         "history_sheets": AVAILABLE_HISTORY_SHEETS,
     }
 

@@ -1,1 +1,28 @@
-[]
+[
+  {
+    "id": "5b113c944bcd444daba55cbdf8cce022",
+    "name": "111",
+    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "sql_mode": "single",
+    "source_sql": "select 1 from dual",
+    "target_sql": "",
+    "key_columns": [
+      "1"
+    ],
+    "rules": {
+      "ignore_columns": [],
+      "column_mappings": {},
+      "numeric_tolerance": null,
+      "trim_strings": false,
+      "case_insensitive": false,
+      "empty_as_null": false
+    },
+    "limits": {
+      "max_rows": 100000,
+      "export_max_rows": 50000,
+      "fetch_chunk_size": 5000,
+      "stream_compare": false
+    }
+  }
+]

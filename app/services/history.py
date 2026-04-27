@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
         excel_path = RESULTS_DIR / excel_name
         if task_id and data.get("task_id", "") != task_id:
             continue
+        sort_time = _history_sort_time(data, path)
         items.append(
             {
                 "run_id": run_id,
@@ -29,11 +31,12 @@ def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
                 "source_rows": data.get("source_rows", 0),
                 "target_rows": data.get("target_rows", 0),
                 "summary": data.get("summary", {}),
+                "sort_time": sort_time.isoformat(timespec="seconds"),
                 "result_filename": path.name,
                 "excel_filename": excel_name if excel_path.exists() else "",
             }
         )
-    return sorted(items, key=lambda item: item.get("started_at") or item["run_id"], reverse=True)
+    return sorted(items, key=lambda item: item["sort_time"], reverse=True)
 
 
 def delete_result(run_id: str) -> None:
@@ -45,3 +48,13 @@ def delete_result(run_id: str) -> None:
             deleted = True
     if not deleted:
         raise KeyError(run_id)
+
+
+def _history_sort_time(data: dict[str, Any], path: Path) -> datetime:
+    started_at = data.get("started_at")
+    if isinstance(started_at, str) and started_at.strip():
+        try:
+            return datetime.fromisoformat(started_at.strip())
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(path.stat().st_mtime)
