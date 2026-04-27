@@ -21,6 +21,7 @@ def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
         if task_id and data.get("task_id", "") != task_id:
             continue
         sort_time = _history_sort_time(data, path)
+        result_type = _classify_result(data)
         items.append(
             {
                 "run_id": run_id,
@@ -34,6 +35,7 @@ def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
                 "sort_time": sort_time.isoformat(timespec="seconds"),
                 "result_filename": path.name,
                 "excel_filename": excel_name if excel_path.exists() else "",
+                "type": result_type,
             }
         )
     return sorted(items, key=lambda item: item["sort_time"], reverse=True)
@@ -58,3 +60,9 @@ def _history_sort_time(data: dict[str, Any], path: Path) -> datetime:
         except ValueError:
             pass
     return datetime.fromtimestamp(path.stat().st_mtime)
+
+
+def _classify_result(data: dict[str, Any]) -> str:
+    if "files" in data or "table_edges" in data:
+        return "lineage"
+    return "compare"

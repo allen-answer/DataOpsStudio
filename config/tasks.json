@@ -1,14 +1,68 @@
 [
   {
     "id": "5b113c944bcd444daba55cbdf8cce022",
-    "name": "111",
+    "name": "[MySQL] 用户表对比",
     "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
     "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
     "sql_mode": "single",
-    "source_sql": "select 1 from dual",
-    "target_sql": "",
+    "source_sql": "SELECT * FROM users ORDER BY id",
+    "target_sql": "SELECT * FROM users ORDER BY id",
     "key_columns": [
-      "1"
+      "id"
+    ],
+    "rules": {
+      "ignore_columns": [
+        "created_at"
+      ],
+      "column_mappings": {},
+      "numeric_tolerance": null,
+      "trim_strings": false,
+      "case_insensitive": false,
+      "empty_as_null": false
+    },
+    "limits": {
+      "max_rows": 100000,
+      "export_max_rows": 50000,
+      "fetch_chunk_size": 5000,
+      "stream_compare": false
+    }
+  },
+  {
+    "id": "6c224d055bcd555eabb65dcdf9dde033",
+    "name": "[MySQL] 订单表对比",
+    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "sql_mode": "single",
+    "source_sql": "SELECT * FROM orders ORDER BY id",
+    "target_sql": "SELECT * FROM orders ORDER BY id",
+    "key_columns": [
+      "id"
+    ],
+    "rules": {
+      "ignore_columns": [],
+      "column_mappings": {},
+      "numeric_tolerance": null,
+      "trim_strings": false,
+      "case_insensitive": false,
+      "empty_as_null": false
+    },
+    "limits": {
+      "max_rows": 100000,
+      "export_max_rows": 50000,
+      "fetch_chunk_size": 5000,
+      "stream_compare": false
+    }
+  },
+  {
+    "id": "7d335e166cde666fbcb76ed0aeef144",
+    "name": "[MySQL] 用户+部门+订单关联查询",
+    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "sql_mode": "single",
+    "source_sql": "SELECT u.id, u.name, d.name AS dept_name, SUM(o.amount) AS total_amount FROM users u JOIN departments d ON u.dept_id = d.id LEFT JOIN orders o ON o.user_id = u.id GROUP BY u.id, u.name, d.name ORDER BY u.id",
+    "target_sql": "SELECT u.id, u.name, d.name AS dept_name, SUM(o.amount) AS total_amount FROM users u JOIN departments d ON u.dept_id = d.id LEFT JOIN orders o ON o.user_id = u.id GROUP BY u.id, u.name, d.name ORDER BY u.id",
+    "key_columns": [
+      "id"
     ],
     "rules": {
       "ignore_columns": [],

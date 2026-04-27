@@ -63,11 +63,16 @@ def spa_page() -> FileResponse:
 
 @router.get("/history", response_class=HTMLResponse)
 def history_page(request: Request, task_id: str = "") -> HTMLResponse:
+    all_history = list_result_history(task_id)
+    compare_history = [h for h in all_history if h.get("type") == "compare"]
+    lineage_history = [h for h in all_history if h.get("type") == "lineage"]
     return templates.TemplateResponse(
         request,
         "history.html",
         {
-            "history": list_result_history(task_id),
+            "history": all_history,
+            "compare_history": compare_history,
+            "lineage_history": lineage_history,
             "tasks": task_store.list(),
             "selected_task_id": task_id,
             "history_sheets": AVAILABLE_HISTORY_SHEETS,

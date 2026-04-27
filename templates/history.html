@@ -54,6 +54,7 @@
         </form>
       </section>
       <section class="panel">
+        <div class="section-title"><h2>数据对比历史</h2></div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -72,7 +73,7 @@
               </tr>
             </thead>
             <tbody>
-              {% for item in history %}
+              {% for item in compare_history %}
               <tr>
                 <td>
                   {% if item.excel_filename %}
@@ -101,7 +102,51 @@
                 </td>
               </tr>
               {% else %}
-              <tr><td colspan="11" class="empty">暂无执行历史</td></tr>
+              <tr><td colspan="11" class="empty">暂无数据对比历史</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title"><h2>血缘分析历史</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>运行 ID</th>
+                <th>时间</th>
+                <th>文件数</th>
+                <th>成功/失败</th>
+                <th>读表/写表</th>
+                <th>表边/脚本边</th>
+                <th>警告</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in lineage_history %}
+              <tr>
+                <td><code>{{ item.run_id }}</code></td>
+                <td>{{ item.started_at }}</td>
+                <td>{{ item.summary.files }}</td>
+                <td>{{ item.summary.success_files }} / {{ item.summary.failed_files }}</td>
+                <td>{{ item.summary.read_tables }} / {{ item.summary.write_tables }}</td>
+                <td>{{ item.summary.table_edges }} / {{ item.summary.script_edges }}</td>
+                <td>{{ item.summary.warnings }}</td>
+                <td>
+                  <div class="actions">
+                    {% if item.excel_filename %}<a class="button secondary" href="/results/{{ item.excel_filename }}">Excel</a>{% endif %}
+                    <a class="button secondary" href="/results/{{ item.result_filename }}">JSON</a>
+                    <form action="/history/{{ item.run_id }}/delete" method="post">
+                      <button class="icon-button danger" title="删除" type="submit">×</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="8" class="empty">暂无血缘分析历史</td></tr>
               {% endfor %}
             </tbody>
           </table>
