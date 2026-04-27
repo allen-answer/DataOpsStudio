@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import json
+import logging
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from concurrent.futures import Future
 from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 from app.services.runner import run_task
+from app.utils.paths import JOBS_FILE
 
+logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=2)
 _lock = Lock()
@@ -61,6 +64,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
         job["message"] = "正在取消"
         job["updated_at"] = datetime.now().isoformat(timespec="seconds")
         future = _futures.get(job_id)
+    _persist_jobs()
     if future is not None:
         future.cancel()
     return get_job(job_id)
@@ -92,6 +96,7 @@ def _run_job(job_id: str, task_id: str) -> None:
 def _set_job(job_id: str, data: dict[str, Any]) -> None:
     with _lock:
         _jobs[job_id] = data
+    _persist_jobs()
 
 
 def _patch_job(job_id: str, **changes: Any) -> None:
@@ -100,8 +105,45 @@ def _patch_job(job_id: str, **changes: Any) -> None:
             return
         _jobs[job_id].update(changes)
         _jobs[job_id]["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _persist_jobs()
 
 
 def _is_cancel_requested(job_id: str) -> bool:
     with _lock:
         return bool(_jobs.get(job_id, {}).get("cancel_requested"))
+
+
+def _persist_jobs() -> None:
+    try:
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = JOBS_FILE.with_name(f".{JOBS_FILE.name}.tmp")
+        with _lock:
+            snapshot = list(_jobs.values())
+        tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(JOBS_FILE)
+    except Exception:
+        logger.exception("Failed to persist job state")
+
+
+def _load_jobs_from_disk() -> None:
+    if not JOBS_FILE.exists():
+        return
+    try:
+        data = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return
+        for job in data:
+            job_id = job.get("job_id")
+            if not job_id:
+                continue
+            if job.get("status") in {"running", "queued", "cancelling"}:
+                job["status"] = "failed"
+                job["message"] = "执行失败"
+                job["error"] = "服务重启，任务中断"
+                job["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _jobs[job_id] = job
+    except Exception:
+        logger.exception("Failed to load job state from disk")
+
+
+_load_jobs_from_disk()

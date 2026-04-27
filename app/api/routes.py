@@ -865,12 +865,26 @@ def _schema_metadata_files(schema_files: list[UploadFile]) -> dict[str, list[str
     return merged or None
 
 
+_ZIP_MAX_FILES = 500
+_ZIP_MAX_DECOMPRESSED_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def _check_zip_safety(archive: zipfile.ZipFile) -> None:
+    entries = [e for e in archive.infolist() if not e.is_dir()]
+    if len(entries) > _ZIP_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Zip file contains too many files (max {_ZIP_MAX_FILES})")
+    total = sum(e.file_size for e in entries)
+    if total > _ZIP_MAX_DECOMPRESSED_BYTES:
+        raise HTTPException(status_code=400, detail=f"Zip file decompressed size exceeds limit ({_ZIP_MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB)")
+
+
 def _schema_metadata_from_zip(content: bytes) -> list[dict[str, list[str]]]:
     items: list[dict[str, list[str]]] = []
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Invalid schema metadata zip file") from exc
+    _check_zip_safety(archive)
     for item in archive.infolist():
         if item.is_dir():
             continue
@@ -913,6 +927,7 @@ def _scripts_from_zip(content: bytes) -> list[ScriptInput]:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Invalid zip file") from exc
+    _check_zip_safety(archive)
     for item in archive.infolist():
         if item.is_dir():
             continue

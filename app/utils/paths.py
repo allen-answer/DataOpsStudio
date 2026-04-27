@@ -9,6 +9,7 @@ RESULTS_DIR = BASE_DIR / "results"
 LOGS_DIR = BASE_DIR / "logs"
 DATASOURCES_FILE = CONFIG_DIR / "datasources.json"
 TASKS_FILE = CONFIG_DIR / "tasks.json"
+JOBS_FILE = CONFIG_DIR / "jobs.json"
 
 
 def ensure_dirs() -> None:

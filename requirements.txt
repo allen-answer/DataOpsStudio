@@ -6,6 +6,7 @@ pydantic>=2.6
 pandas>=2.2
 openpyxl>=3.1
 sqlglot>=26.0
+pytest>=8.0
 
 # Optional database drivers. Install only the drivers needed by your environment.
 # dmPython
