@@ -75,7 +75,7 @@ docker compose up --build -d app
 │   └── utils/                 # 日志、SQL 安全校验、路径工具
 ├── frontend/frontend/         # Vue 3 SPA 源码
 ├── static/spa/                # SPA 构建产物（生产用）
-├── templates/                 # Jinja2 经典页面
+├── templates/                 # （已弃用，保留兼容）
 ├── config/                    # 数据源和任务配置 JSON
 ├── tests/                     # 单元测试
 ├── main.py                    # 应用入口

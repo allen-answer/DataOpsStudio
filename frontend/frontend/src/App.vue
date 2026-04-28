@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { apiForm, apiGet, apiJson } from './api'
-import LineageGraph from './components/LineageGraph.vue'
+const LineageGraph = defineAsyncComponent(() => import('./components/LineageGraph.vue'))
+const SqlEditor = defineAsyncComponent(() => import('./components/SqlEditor.vue'))
 
 const views = [
   { id: 'datasource', label: '数据源管理' },
@@ -14,9 +15,14 @@ const views = [
 const activeView = ref('datasource')
 const loading = ref(false)
 const notice = ref('')
-const drawerOpen = ref(false)
+const noticeTimer = ref(null)
+const asyncPollTimer = ref(null)
 const selectedTaskId = ref('new')
 const previewOutput = ref('')
+const sourcePreviewData = ref(null)
+const targetPreviewData = ref(null)
+const sourceFields = ref([])
+const targetFields = ref([])
 const compareResult = ref(null)
 const asyncJob = ref(null)
 const asyncStatus = ref(null)
@@ -67,6 +73,9 @@ const datasourceDraft = reactive({
   username: '',
   password: '',
 })
+
+const editingDatasourceId = ref('')
+const editDraft = reactive({ name: '', db_type: '', host: '', port: 3306, database: '', username: '', password: '' })
 
 const lineage = reactive({
   sql: '',
@@ -182,6 +191,19 @@ const setActionStatus = (type, title, message = '') => {
   actionStatus.message = message
 }
 
+const setNotice = (msg) => {
+  notice.value = msg
+  if (noticeTimer.value) clearTimeout(noticeTimer.value)
+  if (msg) noticeTimer.value = setTimeout(() => { notice.value = '' }, 4000)
+}
+
+const stopAsyncPoll = () => {
+  if (asyncPollTimer.value) {
+    clearInterval(asyncPollTimer.value)
+    asyncPollTimer.value = null
+  }
+}
+
 const toErrorMessage = (error) => error?.message || String(error || '未知错误')
 const historyItemTaskLabel = (item) => item.task_name || (item.task_id ? `任务 ${item.task_id.slice(0, 8)}` : '非对比任务')
 const summaryValue = (item, key) => item.summary?.[key] ?? '-'
@@ -189,6 +211,16 @@ const summaryValue = (item, key) => item.summary?.[key] ?? '-'
 const loadHistory = async () => {
   state.history = await apiGet('/api/history')
   selectedHistory.value = new Set()
+}
+
+const deleteHistory = async (runId) => {
+  try {
+    await apiJson(`/api/history/${runId}`, 'DELETE')
+    state.history = state.history.filter(h => h.run_id !== runId)
+    selectedHistory.value.delete(runId)
+  } catch (error) {
+    setNotice(`删除失败：${toErrorMessage(error)}`)
+  }
 }
 
 const taskPayload = () => ({
@@ -238,8 +270,13 @@ const fillDraft = (task) => {
 }
 
 const selectTask = (id) => {
+  stopAsyncPoll()
   selectedTaskId.value = id
   previewOutput.value = ''
+  sourcePreviewData.value = null
+  targetPreviewData.value = null
+  sourceFields.value = []
+  targetFields.value = []
   compareResult.value = null
   asyncStatus.value = null
   setActionStatus(
@@ -251,7 +288,7 @@ const selectTask = (id) => {
 }
 
 const saveTask = async () => {
-  notice.value = '保存中...'
+  setNotice('保存中...')
   setActionStatus('running', '正在保存任务', '正在校验数据源、SQL 和主键配置。')
   try {
     if (selectedTaskId.value === 'new') {
@@ -263,10 +300,10 @@ const saveTask = async () => {
       const index = state.tasks.findIndex((task) => task.id === selectedTaskId.value)
       state.tasks[index] = updated
     }
-    notice.value = '任务已保存'
+    setNotice('任务已保存')
     setActionStatus('success', '任务已保存', '现在可以执行对比、预览或后台执行。')
   } catch (error) {
-    notice.value = '保存失败'
+    setNotice('保存失败')
     previewOutput.value = toErrorMessage(error)
     setActionStatus('error', '保存失败', toErrorMessage(error))
   }
@@ -325,7 +362,7 @@ const runAsync = async () => {
     asyncJob.value = await apiJson(`/api/tasks/${selectedTaskId.value}/run-async`, 'POST')
     asyncStatus.value = asyncJob.value
     setActionStatus('running', '后台任务已提交', `任务号：${asyncJob.value.job_id}`)
-    const timer = setInterval(async () => {
+    asyncPollTimer.value = setInterval(async () => {
       try {
         asyncStatus.value = await apiGet(`/api/runs/${asyncJob.value.job_id}`)
         if (asyncStatus.value.status === 'success' && asyncStatus.value.result) {
@@ -337,11 +374,11 @@ const runAsync = async () => {
           asyncStatus.value.error || `阶段：${asyncStatus.value.stage || '运行中'}`,
         )
         if (['success', 'failed', 'cancelled'].includes(asyncStatus.value.status)) {
-          clearInterval(timer)
+          stopAsyncPoll()
           await loadBootstrap({ keepTaskSelection: true })
         }
       } catch (error) {
-        clearInterval(timer)
+        stopAsyncPoll()
         setActionStatus('error', '后台状态查询失败', toErrorMessage(error))
       }
     }, 1200)
@@ -364,32 +401,59 @@ const cancelAsync = async () => {
 
 const previewTask = async (side) => {
   if (selectedTaskId.value === 'new') return
-  previewOutput.value = '预览中...'
-  compareResult.value = null
+  const previewRef = side === 'source' ? sourcePreviewData : targetPreviewData
+  previewRef.value = { loading: true }
   const sql = side === 'target' && taskDraft.sql_mode === 'double' ? taskDraft.target_sql : taskDraft.source_sql
   const datasourceId = side === 'target' ? taskDraft.target_id : taskDraft.source_id
   setActionStatus('running', side === 'target' ? '正在预览目标数据' : '正在预览源数据')
   try {
-    const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST', { side, sql, datasource_id: datasourceId, limit: 20 })
-    previewOutput.value = JSON.stringify(result, null, 2)
-    setActionStatus('success', '预览完成', `返回 ${result.rows?.length ?? 0} 行${result.truncated ? '，结果已截断' : ''}`)
+    const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST', { side, sql, datasource_id: datasourceId, limit: 3 })
+    previewRef.value = result
+    setActionStatus('success', '预览完成', `返回 ${result.rows?.length ?? 0} 行`)
   } catch (error) {
-    previewOutput.value = toErrorMessage(error)
+    previewRef.value = { error: toErrorMessage(error) }
     setActionStatus('error', '预览失败', toErrorMessage(error))
   }
 }
 
-const assistSql = async (side, fillKey = false) => {
+const extractFields = async (side) => {
   const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
-  setActionStatus('running', fillKey ? '正在推荐主键' : '正在提取字段')
+  setActionStatus('running', '正在提取字段')
   try {
     const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
-    if (fillKey && data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
-    previewOutput.value = JSON.stringify(data, null, 2)
-    setActionStatus('success', fillKey ? '主键推荐完成' : '字段提取完成', `识别字段 ${data.columns?.length ?? 0} 个`)
+    let columns = (data.output_columns || []).filter(c => !c.includes('*'))
+
+    if (columns.length === 0) {
+      if (!isSavedTask.value) {
+        setActionStatus('ready', '字段提取', 'SELECT * 需要查询数据库获取字段，请先保存任务')
+        return
+      }
+      setActionStatus('running', 'SELECT * 检测到，正在查询数据库获取字段...')
+      const datasourceId = side === 'source' ? taskDraft.source_id : taskDraft.target_id
+      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST', {
+        side, sql, datasource_id: datasourceId, limit: 1,
+      })
+      if (side === 'source') sourcePreviewData.value = result
+      else targetPreviewData.value = result
+      columns = Object.keys(result.rows?.[0] ?? {})
+    }
+
+    if (side === 'source') sourceFields.value = columns
+    else targetFields.value = columns
+    setActionStatus('success', '字段提取完成', `识别字段 ${columns.length} 个`)
   } catch (error) {
-    previewOutput.value = toErrorMessage(error)
-    setActionStatus('error', fillKey ? '主键推荐失败' : '字段提取失败', toErrorMessage(error))
+    setActionStatus('error', '字段提取失败', toErrorMessage(error))
+  }
+}
+
+const recommendKey = async () => {
+  setActionStatus('running', '正在推荐主键')
+  try {
+    const data = await apiJson('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
+    if (data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
+    setActionStatus('success', '主键推荐完成', `推荐：${data.key_candidates?.join(', ') || '无候选'}`)
+  } catch (error) {
+    setActionStatus('error', '主键推荐失败', toErrorMessage(error))
   }
 }
 
@@ -411,6 +475,35 @@ const formatSql = async (side) => {
   }
 }
 
+const startEditDatasource = (item) => {
+  editingDatasourceId.value = item.id
+  Object.assign(editDraft, { name: item.name, db_type: item.db_type, host: item.host, port: item.port, database: item.database, username: item.username, password: '' })
+}
+
+const cancelEditDatasource = () => { editingDatasourceId.value = '' }
+
+const updateDatasource = async (id) => {
+  try {
+    const updated = await apiJson(`/api/datasources/${id}`, 'PUT', editDraft)
+    const idx = state.datasources.findIndex(d => d.id === id)
+    if (idx !== -1) state.datasources[idx] = updated
+    editingDatasourceId.value = ''
+    setNotice('数据源已更新')
+  } catch (error) {
+    setNotice(`更新失败：${toErrorMessage(error)}`)
+  }
+}
+
+const deleteDatasource = async (id) => {
+  try {
+    await apiJson(`/api/datasources/${id}`, 'DELETE')
+    state.datasources = state.datasources.filter(d => d.id !== id)
+    setNotice('数据源已删除')
+  } catch (error) {
+    setNotice(`删除失败：${toErrorMessage(error)}`)
+  }
+}
+
 const createDatasource = async () => {
   await apiJson('/api/datasources', 'POST', datasourceDraft)
   Object.assign(datasourceDraft, { name: '', host: '', database: '', username: '', password: '' })
@@ -418,7 +511,12 @@ const createDatasource = async () => {
 }
 
 const testDatasource = async (id) => {
-  notice.value = JSON.stringify(await apiJson(`/api/datasources/${id}/test`, 'POST'))
+  try {
+    await apiJson(`/api/datasources/${id}/test`, 'POST')
+    setNotice('连接成功')
+  } catch (error) {
+    setNotice(`连接失败：${toErrorMessage(error)}`)
+  }
 }
 
 const analyzeLineage = async () => {
@@ -462,7 +560,7 @@ const analyzeBatch = async () => {
 
 const exportHistory = async () => {
   if (!selectedHistory.value.size) {
-    notice.value = '请先选择要导出的历史记录'
+    setNotice('请先选择要导出的历史记录')
     return
   }
   const form = new FormData()
@@ -475,7 +573,9 @@ const exportHistory = async () => {
   window.open(url, '_blank')
 }
 
+watch(activeView, stopAsyncPoll)
 onMounted(loadBootstrap)
+onUnmounted(stopAsyncPoll)
 </script>
 
 <template>
@@ -524,9 +624,7 @@ onMounted(loadBootstrap)
           <span v-if="loading" class="ml-3 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600">加载中</span>
         </div>
         <div class="flex items-center gap-3">
-          <a class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600" href="/config/export">config/datasources.json</a>
-          <button class="rounded-lg px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-blue-50 hover:text-blue-600" @click="activeView = 'datasource'">数据源管理</button>
-          <button class="rounded-lg bg-slate-900 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-slate-200 transition hover:bg-slate-800" @click="activeView = 'workbench'; selectTask('new')">快速对比</button>
+          <a class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600" href="/config/export">配置文件导出</a>
         </div>
       </header>
 
@@ -568,13 +666,38 @@ onMounted(loadBootstrap)
 
           <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
             <article v-for="item in state.datasources" :key="item.id" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md">
-              <div class="mb-4 flex items-start justify-between">
-                <div class="grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-sm font-black text-slate-600">DS</div>
-                <span class="rounded bg-green-100 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-green-700">已配置</span>
-              </div>
-              <h3 class="mb-1 font-bold text-slate-800">{{ item.name }}</h3>
-              <p class="sql-font mb-4 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
-              <div class="flex gap-2 border-t border-slate-100 pt-4"><button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="testDatasource(item.id)">测试连接</button></div>
+              <template v-if="editingDatasourceId === item.id">
+                <div class="mb-4 flex items-center justify-between">
+                  <span class="text-sm font-bold text-slate-700">编辑数据源</span>
+                  <button class="text-xs text-slate-400 hover:text-slate-700" @click="cancelEditDatasource">取消</button>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-sm">
+                  <input v-model="editDraft.name" class="col-span-2 border-none bg-slate-50 px-3 py-2" placeholder="名称">
+                  <select v-model="editDraft.db_type" class="border-none bg-slate-50 px-3 py-2"><option v-for="type in state.dbTypes" :key="type">{{ type }}</option></select>
+                  <input v-model="editDraft.port" class="border-none bg-slate-50 px-3 py-2" type="number" placeholder="Port">
+                  <input v-model="editDraft.host" class="col-span-2 border-none bg-slate-50 px-3 py-2" placeholder="Host">
+                  <input v-model="editDraft.database" class="col-span-2 border-none bg-slate-50 px-3 py-2" placeholder="数据库 / 服务名">
+                  <input v-model="editDraft.username" class="border-none bg-slate-50 px-3 py-2" placeholder="用户名">
+                  <input v-model="editDraft.password" class="border-none bg-slate-50 px-3 py-2" type="password" placeholder="密码（留空不修改）">
+                </div>
+                <div class="mt-4 flex gap-2 border-t border-slate-100 pt-4">
+                  <button class="flex-1 rounded-lg bg-blue-600 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="updateDatasource(item.id)">保存</button>
+                  <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="cancelEditDatasource">取消</button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="mb-4 flex items-start justify-between">
+                  <div class="grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-sm font-black text-slate-600">DS</div>
+                  <span class="rounded bg-green-100 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-green-700">已配置</span>
+                </div>
+                <h3 class="mb-1 font-bold text-slate-800">{{ item.name }}</h3>
+                <p class="sql-font mb-4 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
+                <div class="flex gap-2 border-t border-slate-100 pt-4">
+                  <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="testDatasource(item.id)">测试连接</button>
+                  <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="startEditDatasource(item)">编辑</button>
+                  <button class="rounded-lg border border-red-100 px-3 py-2 text-xs font-bold text-red-500 transition hover:bg-red-50" @click="deleteDatasource(item.id)">删除</button>
+                </div>
+              </template>
             </article>
           </div>
         </section>
@@ -614,8 +737,6 @@ onMounted(loadBootstrap)
                   <button class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="saveTask">{{ isSavedTask ? '保存修改' : '保存任务' }}</button>
                   <button class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="runTask">执行</button>
                   <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="runAsync">后台执行</button>
-                  <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="previewTask('source')">预览源</button>
-                  <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="previewTask('target')">预览目标</button>
                   <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="copyTask">复制</button>
                   <button class="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!isSavedTask" @click="deleteTask">删除</button>
                 </div>
@@ -651,16 +772,58 @@ onMounted(loadBootstrap)
                   <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <div class="mb-4 flex items-center justify-between">
                       <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-blue-500"></span><span class="text-sm font-bold uppercase tracking-wider text-slate-600">Source SQL</span></div>
-                      <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="assistSql('source')">提取字段</button><button class="rounded-lg bg-blue-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-700" @click="assistSql('source', true)">推荐主键</button></div>
+                      <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('source')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('source')">预览</button></div>
                     </div>
-                    <textarea v-model="taskDraft.source_sql" class="sql-font min-h-[300px] rounded-2xl border-4 border-slate-900 bg-slate-900 p-5 text-sm text-blue-200 shadow-inner outline-none transition focus:border-blue-500/30 focus:ring-0"></textarea>
+                    <SqlEditor v-model="taskDraft.source_sql" />
+                    <div v-if="sourceFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                      <span
+                        v-for="col in sourceFields" :key="col"
+                        class="cursor-pointer rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                        :title="'点击复制：' + col"
+                        @click="navigator.clipboard?.writeText(col)"
+                      >{{ col }}</span>
+                    </div>
+                    <div v-if="sourcePreviewData" class="mt-3">
+                      <p v-if="sourcePreviewData.loading" class="text-xs text-slate-400">预览中...</p>
+                      <p v-else-if="sourcePreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ sourcePreviewData.error }}</p>
+                      <template v-else>
+                        <p class="mb-2 text-xs text-slate-400">前 {{ sourcePreviewData.rows?.length ?? 0 }} 行</p>
+                        <div class="overflow-x-auto rounded-xl border border-slate-200">
+                          <table class="w-full text-xs">
+                            <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(sourcePreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
+                            <tbody><tr v-for="(row, i) in sourcePreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(sourcePreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
+                          </table>
+                        </div>
+                      </template>
+                    </div>
                   </div>
                   <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <div class="mb-4 flex items-center justify-between">
                       <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-orange-500"></span><span class="text-sm font-bold uppercase tracking-wider text-slate-600">Target SQL</span></div>
-                      <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="assistSql('target')">提取字段</button></div>
+                      <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('target')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('target')">预览</button></div>
                     </div>
-                    <textarea v-model="taskDraft.target_sql" class="sql-font min-h-[300px] rounded-2xl border-4 border-slate-900 bg-slate-900 p-5 text-sm text-blue-200 shadow-inner outline-none transition focus:border-blue-500/30 focus:ring-0" placeholder="双 SQL 模式填写"></textarea>
+                    <SqlEditor v-model="taskDraft.target_sql" placeholder="双 SQL 模式填写" />
+                    <div v-if="targetFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                      <span
+                        v-for="col in targetFields" :key="col"
+                        class="cursor-pointer rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                        :title="'点击复制：' + col"
+                        @click="navigator.clipboard?.writeText(col)"
+                      >{{ col }}</span>
+                    </div>
+                    <div v-if="targetPreviewData" class="mt-3">
+                      <p v-if="targetPreviewData.loading" class="text-xs text-slate-400">预览中...</p>
+                      <p v-else-if="targetPreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ targetPreviewData.error }}</p>
+                      <template v-else>
+                        <p class="mb-2 text-xs text-slate-400">前 {{ targetPreviewData.rows?.length ?? 0 }} 行</p>
+                        <div class="overflow-x-auto rounded-xl border border-slate-200">
+                          <table class="w-full text-xs">
+                            <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(targetPreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
+                            <tbody><tr v-for="(row, i) in targetPreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(targetPreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
+                          </table>
+                        </div>
+                      </template>
+                    </div>
                   </div>
                 </div>
 
@@ -672,7 +835,10 @@ onMounted(loadBootstrap)
                   <div class="grid grid-cols-1 gap-6 xl:grid-cols-4">
                     <div>
                       <label class="block text-xs font-bold uppercase tracking-wider text-slate-400">主键列</label>
-                      <input v-model="taskDraft.key_columns" class="mt-3 border-none bg-slate-50 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="ID, ORDER_NO">
+                      <div class="mt-3 flex gap-2">
+                        <input v-model="taskDraft.key_columns" class="flex-1 border-none bg-slate-50 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="ID, ORDER_NO">
+                        <button class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="recommendKey">自动推荐</button>
+                      </div>
                       <label class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-400">忽略字段</label>
                       <input v-model="taskDraft.ignore_columns" class="mt-3 border-none bg-slate-50 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="etl_time">
                     </div>
@@ -701,7 +867,7 @@ onMounted(loadBootstrap)
                   <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <h3 class="text-lg font-bold text-slate-800">对比结果预览</h3>
-                      <p class="mt-1 text-sm text-slate-500">执行完成后展示汇总、样例明细和下载入口；源/目标预览也会显示在这里。</p>
+                      <p class="mt-1 text-sm text-slate-500">执行完成后展示汇总、样例明细和下载入口。</p>
                     </div>
                     <div v-if="compareResult" class="flex gap-2">
                       <a class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50" :href="`/results/${compareResult.excel_filename}`">下载 Excel</a>
@@ -725,7 +891,7 @@ onMounted(loadBootstrap)
                     </div>
                   </div>
                   <pre v-else-if="previewOutput || asyncStatus" class="max-h-[420px] resize-y overflow-auto rounded-2xl bg-slate-950 p-5 text-xs text-slate-100">{{ asyncStatus ? JSON.stringify(asyncStatus, null, 2) : previewOutput }}</pre>
-                  <div v-else class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">暂无结果。保存任务后可点击“预览源/预览目标”或“开始执行对比”。</div>
+                  <div v-else class=”rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400”>暂无结果。保存任务后点击”开始执行对比”。</div>
                 </div>
                 <button v-if="asyncJob" class="w-fit rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700" @click="cancelAsync">取消后台任务</button>
               </div>
@@ -739,7 +905,7 @@ onMounted(loadBootstrap)
               <div><h2 class="text-2xl font-bold text-slate-800">SQL 血缘分析</h2><p class="mt-1 text-sm text-slate-500">Schema 联动、变量识别、字段级明细和 G6 拓扑图</p></div>
               <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="analyzeLineage">分析血缘</button>
             </div>
-            <textarea v-model="lineage.sql" class="sql-font min-h-[280px] rounded-2xl border-4 border-slate-900 bg-slate-900 p-5 text-sm text-blue-200 shadow-inner outline-none transition focus:border-blue-500/30 focus:ring-0" placeholder="粘贴 SQL，或选择文件"></textarea>
+            <SqlEditor v-model="lineage.sql" placeholder="粘贴 SQL，或选择文件" />
             <div class="mt-4 grid grid-cols-3 gap-4">
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="lineage.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL/TXT 文件</span><input type="file" accept=".sql,.txt" class="border-none bg-slate-50" @change="lineage.sqlFile = $event.target.files[0]"></label>
@@ -878,7 +1044,7 @@ onMounted(loadBootstrap)
             <div class="h-[620px] overflow-auto rounded-b-2xl border border-slate-200 bg-white">
               <div v-if="!filteredHistory.length" class="grid h-full place-items-center text-sm text-slate-400">{{ historyActiveTab === 'compare' ? '暂无数据对比历史' : '暂无血缘分析历史' }}</div>
               <template v-if="historyActiveTab === 'compare'">
-                <div v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="grid w-full grid-cols-[44px_1.2fr_1.3fr_repeat(4,90px)_160px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm">
+                <div v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="grid w-full grid-cols-[44px_1.2fr_1.3fr_repeat(4,90px)_160px_40px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm">
                   <input class="w-auto" type="checkbox" :value="item.run_id" :checked="selectedHistory.has(item.run_id)" @change="$event.target.checked ? selectedHistory.add(item.run_id) : selectedHistory.delete(item.run_id)">
                   <code>{{ item.run_id }}</code>
                   <span>{{ historyItemTaskLabel(item) }}</span>
@@ -887,10 +1053,11 @@ onMounted(loadBootstrap)
                   <span>{{ item.source_rows }}</span>
                   <span>{{ item.target_rows }}</span>
                   <span class="flex gap-2"><a class="font-semibold text-blue-600" v-if="item.excel_filename" :href="`/results/${item.excel_filename}`">Excel</a><a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a></span>
+                  <button class="text-slate-300 transition hover:text-red-500" title="删除" @click="deleteHistory(item.run_id)">✕</button>
                 </div>
               </template>
               <template v-if="historyActiveTab === 'lineage'">
-                <div v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="grid w-full grid-cols-[1.2fr_1.3fr_90px_90px_repeat(4,90px)_160px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm">
+                <div v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="grid w-full grid-cols-[1.2fr_1.3fr_90px_90px_repeat(4,90px)_160px_40px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm">
                   <code>{{ item.run_id }}</code>
                   <span class="text-xs text-slate-500">{{ item.started_at }}</span>
                   <span>{{ summaryValue(item, 'files') }}</span>
@@ -901,6 +1068,7 @@ onMounted(loadBootstrap)
                   <span>{{ summaryValue(item, 'script_edges') }}</span>
                   <span>{{ summaryValue(item, 'warnings') }}</span>
                   <span class="flex gap-2"><a class="font-semibold text-blue-600" v-if="item.excel_filename" :href="`/results/${item.excel_filename}`">Excel</a><a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a></span>
+                  <button class="text-slate-300 transition hover:text-red-500" title="删除" @click="deleteHistory(item.run_id)">✕</button>
                 </div>
               </template>
             </div>
@@ -909,32 +1077,5 @@ onMounted(loadBootstrap)
       </div>
     </main>
 
-    <div v-if="drawerOpen" class="fixed inset-0 z-20 bg-slate-950/40" @click="drawerOpen = false"></div>
-    <aside v-if="drawerOpen" class="fixed right-0 top-0 z-30 grid h-screen w-[780px] grid-rows-[auto_minmax(0,1fr)] bg-white shadow-2xl">
-      <header class="flex items-center justify-between border-b border-slate-200 p-6"><div><h2 class="text-2xl font-bold text-slate-800">数据源配置</h2><p class="mt-1 text-sm text-slate-500">管理对比任务所需的数据库连接信息</p></div><button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="drawerOpen = false">收起</button></header>
-      <div class="overflow-auto bg-slate-50/60 p-6">
-        <div class="mb-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 class="mb-4 font-bold text-slate-800">新增数据源</h3>
-          <div class="grid grid-cols-4 gap-3">
-            <input v-model="datasourceDraft.name" class="border-none bg-slate-50" placeholder="名称">
-            <select v-model="datasourceDraft.db_type" class="border-none bg-slate-50"><option v-for="type in state.dbTypes" :key="type">{{ type }}</option></select>
-            <input v-model="datasourceDraft.host" class="border-none bg-slate-50" placeholder="Host">
-            <input v-model="datasourceDraft.port" class="border-none bg-slate-50" type="number" placeholder="Port">
-            <input v-model="datasourceDraft.database" class="border-none bg-slate-50" placeholder="数据库 / 服务名">
-            <input v-model="datasourceDraft.username" class="border-none bg-slate-50" placeholder="用户名">
-            <input v-model="datasourceDraft.password" class="border-none bg-slate-50" type="password" placeholder="密码">
-            <button class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="createDatasource">添加</button>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <article v-for="item in state.datasources" :key="item.id" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md">
-            <div class="mb-4 flex items-start justify-between"><div class="grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-sm font-black text-slate-600">DS</div><span class="rounded bg-green-100 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-green-700">已配置</span></div>
-            <h3 class="mb-1 font-bold text-slate-800">{{ item.name }}</h3>
-            <p class="sql-font mb-4 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
-            <div class="flex gap-2 border-t border-slate-100 pt-4"><button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="testDatasource(item.id)">测试连接</button></div>
-          </article>
-        </div>
-      </div>
-    </aside>
   </div>
 </template>

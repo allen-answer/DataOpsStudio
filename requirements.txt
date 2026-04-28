@@ -10,7 +10,7 @@ pytest>=8.0
 
 # Optional database drivers. Install only the drivers needed by your environment.
 # dmPython
-# pymysql
-# cryptography  # Required by PyMySQL for MySQL 8 caching_sha2_password authentication.
+pymysql
+cryptography  # Required by PyMySQL for MySQL 8 caching_sha2_password authentication.
 # oracledb
 # ibm_db
