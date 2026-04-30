@@ -208,6 +208,21 @@ const toErrorMessage = (error) => error?.message || String(error || '未知错�
 const historyItemTaskLabel = (item) => item.task_name || (item.task_id ? `任务 ${item.task_id.slice(0, 8)}` : '非对比任务')
 const summaryValue = (item, key) => item.summary?.[key] ?? '-'
 
+const copyField = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const el = document.createElement('textarea')
+    el.value = text
+    el.style.cssText = 'position:fixed;top:-9999px;left:-9999px'
+    document.body.appendChild(el)
+    el.select()
+    document.execCommand('copy')
+    document.body.removeChild(el)
+  }
+  setNotice(`已复制：${text}`)
+}
+
 const loadHistory = async () => {
   state.history = await apiGet('/api/history')
   selectedHistory.value = new Set()
@@ -778,9 +793,9 @@ onUnmounted(stopAsyncPoll)
                     <div v-if="sourceFields.length" class="mt-3 flex flex-wrap gap-1.5">
                       <span
                         v-for="col in sourceFields" :key="col"
-                        class="cursor-pointer rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                        class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
                         :title="'点击复制：' + col"
-                        @click="navigator.clipboard?.writeText(col)"
+                        @click="copyField(col)"
                       >{{ col }}</span>
                     </div>
                     <div v-if="sourcePreviewData" class="mt-3">
@@ -806,9 +821,9 @@ onUnmounted(stopAsyncPoll)
                     <div v-if="targetFields.length" class="mt-3 flex flex-wrap gap-1.5">
                       <span
                         v-for="col in targetFields" :key="col"
-                        class="cursor-pointer rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                        class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
                         :title="'点击复制：' + col"
-                        @click="navigator.clipboard?.writeText(col)"
+                        @click="copyField(col)"
                       >{{ col }}</span>
                     </div>
                     <div v-if="targetPreviewData" class="mt-3">
