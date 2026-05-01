@@ -50,11 +50,26 @@ const state = reactive({
 
 const taskDraft = reactive({
   name: '',
+  source_kind: 'sql',
+  target_kind: 'sql',
   source_id: '',
   target_id: '',
   sql_mode: 'single',
   source_sql: '',
   target_sql: '',
+  // Excel-side fields. excel_filename and excel_sheets are UI-only — the
+  // backend persists path/sheet/header_row, the rest is for showing
+  // upload state and the sheet dropdown.
+  source_excel_path: '',
+  source_excel_filename: '',
+  source_excel_sheets: [],
+  source_sheet: '',
+  source_header_row: 1,
+  target_excel_path: '',
+  target_excel_filename: '',
+  target_excel_sheets: [],
+  target_sheet: '',
+  target_header_row: 1,
   key_columns: '',
   ignore_columns: '',
   column_mappings: '',
@@ -249,11 +264,19 @@ const deleteHistory = async (runId) => {
 
 const taskPayload = () => ({
   name: taskDraft.name,
+  source_kind: taskDraft.source_kind,
+  target_kind: taskDraft.target_kind,
   source_id: taskDraft.source_id,
   target_id: taskDraft.target_id,
   sql_mode: taskDraft.sql_mode,
   source_sql: taskDraft.source_sql,
   target_sql: taskDraft.target_sql,
+  source_excel_path: taskDraft.source_excel_path,
+  source_sheet: taskDraft.source_sheet,
+  source_header_row: Number(taskDraft.source_header_row) || 1,
+  target_excel_path: taskDraft.target_excel_path,
+  target_sheet: taskDraft.target_sheet,
+  target_header_row: Number(taskDraft.target_header_row) || 1,
   key_columns: parseCsv(taskDraft.key_columns),
   rules: {
     ignore_columns: parseCsv(taskDraft.ignore_columns),
@@ -274,11 +297,23 @@ const taskPayload = () => ({
 const fillDraft = (task) => {
   Object.assign(taskDraft, {
     name: task?.name || '',
+    source_kind: task?.source_kind || 'sql',
+    target_kind: task?.target_kind || 'sql',
     source_id: task?.source_id || state.datasources[0]?.id || '',
     target_id: task?.target_id || state.datasources[0]?.id || '',
     sql_mode: task?.sql_mode || 'single',
     source_sql: task?.source_sql || '',
     target_sql: task?.target_sql || '',
+    source_excel_path: task?.source_excel_path || '',
+    source_excel_filename: task?.source_excel_path ? task.source_excel_path.split('/').pop() : '',
+    source_excel_sheets: [],
+    source_sheet: task?.source_sheet || '',
+    source_header_row: task?.source_header_row || 1,
+    target_excel_path: task?.target_excel_path || '',
+    target_excel_filename: task?.target_excel_path ? task.target_excel_path.split('/').pop() : '',
+    target_excel_sheets: [],
+    target_sheet: task?.target_sheet || '',
+    target_header_row: task?.target_header_row || 1,
     key_columns: (task?.key_columns || []).join(', '),
     ignore_columns: (task?.rules?.ignore_columns || []).join(', '),
     column_mappings: Object.entries(task?.rules?.column_mappings || {}).map(([s, t]) => `${s} -> ${t}`).join('\n'),
@@ -358,6 +393,26 @@ const copyTask = async () => {
   } catch (error) {
     previewOutput.value = toErrorMessage(error)
     setActionStatus('error', '复制失败', toErrorMessage(error))
+  }
+}
+
+const uploadExcel = async (side, file) => {
+  if (!file) return
+  setActionStatus('running', `上传 ${side === 'source' ? '源' : '目标'} Excel`, file.name)
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await apiForm('/api/uploads/excel', form)
+    const prefix = side === 'source' ? 'source' : 'target'
+    taskDraft[`${prefix}_excel_path`] = response.path
+    taskDraft[`${prefix}_excel_filename`] = response.filename
+    taskDraft[`${prefix}_excel_sheets`] = response.sheets
+    if (!taskDraft[`${prefix}_sheet`] && response.sheets.length) {
+      taskDraft[`${prefix}_sheet`] = response.sheets[0]
+    }
+    setActionStatus('success', 'Excel 已上传', `${response.filename} · ${response.sheets.length} 个 sheet`)
+  } catch (error) {
+    setActionStatus('error', 'Excel 上传失败', toErrorMessage(error))
   }
 }
 
@@ -637,7 +692,7 @@ provide('app', {
   historyItemTaskLabel, summaryValue, copyField,
   // handlers — task workbench
   taskPayload, fillDraft, selectTask, saveTask, deleteTask, copyTask,
-  runTask, runAsync, cancelAsync, previewTask, extractFields,
+  runTask, runAsync, cancelAsync, previewTask, extractFields, uploadExcel,
   recommendKey, formatSql,
   // handlers — datasource
   startEditDatasource, cancelEditDatasource, updateDatasource,

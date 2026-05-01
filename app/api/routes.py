@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
 from app.dbclients.factory import fetch_rows, test_connection
-from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SqlMode
+from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SourceKind, SqlMode
 from app.services import excel_uploads, lineage_service
 from app.services.history import delete_result, list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS, export_history_sheets
@@ -104,13 +104,13 @@ def list_tasks():
 
 @router.post("/api/tasks")
 def create_task(payload: CompareTaskCreate):
-    _ensure_datasources(payload.source_id, payload.target_id)
+    _ensure_datasources_for_kind(payload)
     return task_store.create(payload)
 
 
 @router.put("/api/tasks/{task_id}")
 def update_task(task_id: str, payload: CompareTaskCreate):
-    _ensure_datasources(payload.source_id, payload.target_id)
+    _ensure_datasources_for_kind(payload)
     try:
         return task_store.update(task_id, payload)
     except KeyError as exc:
@@ -330,8 +330,10 @@ def download_result(filename: str):
     return FileResponse(path, filename=Path(filename).name)
 
 
-def _ensure_datasources(source_id: str, target_id: str) -> None:
-    if datasource_store.get(source_id) is None:
+def _ensure_datasources_for_kind(payload: CompareTaskCreate) -> None:
+    """Datasource existence only matters for SQL-kind sides; Excel sides
+    persist file paths and don't need a registered datasource."""
+    if payload.source_kind == SourceKind.SQL and datasource_store.get(payload.source_id) is None:
         raise HTTPException(status_code=400, detail="source_id does not exist")
-    if datasource_store.get(target_id) is None:
+    if payload.target_kind == SourceKind.SQL and datasource_store.get(payload.target_id) is None:
         raise HTTPException(status_code=400, detail="target_id does not exist")

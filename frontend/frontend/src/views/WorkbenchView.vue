@@ -31,6 +31,7 @@ const {
   recommendKey,
   formatSql,
   copyField,
+  uploadExcel,
 } = inject('app')
 </script>
 
@@ -104,59 +105,117 @@ const {
           <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div class="mb-4 flex items-center justify-between">
-                <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-blue-500"></span><span class="text-sm font-bold uppercase tracking-wider text-slate-600">Source SQL</span></div>
-                <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('source')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('source')">预览</button></div>
-              </div>
-              <SqlEditor v-model="taskDraft.source_sql" />
-              <div v-if="sourceFields.length" class="mt-3 flex flex-wrap gap-1.5">
-                <span
-                  v-for="col in sourceFields" :key="col"
-                  class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
-                  :title="'点击复制：' + col"
-                  @click="copyField(col)"
-                >{{ col }}</span>
-              </div>
-              <div v-if="sourcePreviewData" class="mt-3">
-                <p v-if="sourcePreviewData.loading" class="text-xs text-slate-400">预览中...</p>
-                <p v-else-if="sourcePreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ sourcePreviewData.error }}</p>
-                <template v-else>
-                  <p class="mb-2 text-xs text-slate-400">前 {{ sourcePreviewData.rows?.length ?? 0 }} 行</p>
-                  <div class="overflow-x-auto rounded-xl border border-slate-200">
-                    <table class="w-full text-xs">
-                      <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(sourcePreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
-                      <tbody><tr v-for="(row, i) in sourcePreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(sourcePreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
-                    </table>
+                <div class="flex items-center gap-2">
+                  <span class="h-2 w-2 rounded-full bg-blue-500"></span>
+                  <span class="text-sm font-bold uppercase tracking-wider text-slate-600">Source</span>
+                  <div class="ml-2 inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-bold">
+                    <button class="rounded-md px-2 py-1 transition" :class="taskDraft.source_kind === 'sql' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.source_kind = 'sql'">SQL</button>
+                    <button class="rounded-md px-2 py-1 transition" :class="taskDraft.source_kind === 'excel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.source_kind = 'excel'">Excel</button>
                   </div>
-                </template>
+                </div>
+                <div v-if="taskDraft.source_kind === 'sql'" class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('source')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('source')">预览</button></div>
               </div>
+              <template v-if="taskDraft.source_kind === 'sql'">
+                <SqlEditor v-model="taskDraft.source_sql" />
+                <div v-if="sourceFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="col in sourceFields" :key="col"
+                    class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                    :title="'点击复制：' + col"
+                    @click="copyField(col)"
+                  >{{ col }}</span>
+                </div>
+                <div v-if="sourcePreviewData" class="mt-3">
+                  <p v-if="sourcePreviewData.loading" class="text-xs text-slate-400">预览中...</p>
+                  <p v-else-if="sourcePreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ sourcePreviewData.error }}</p>
+                  <template v-else>
+                    <p class="mb-2 text-xs text-slate-400">前 {{ sourcePreviewData.rows?.length ?? 0 }} 行</p>
+                    <div class="overflow-x-auto rounded-xl border border-slate-200">
+                      <table class="w-full text-xs">
+                        <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(sourcePreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
+                        <tbody><tr v-for="(row, i) in sourcePreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(sourcePreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template v-else>
+                <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+                  <input type="file" accept=".xlsx,.xlsm" class="block w-full text-xs" @change="uploadExcel('source', $event.target.files[0])">
+                  <p v-if="taskDraft.source_excel_filename" class="mt-2 text-xs text-slate-500">已上传：<strong>{{ taskDraft.source_excel_filename }}</strong></p>
+                  <p v-else class="mt-2 text-xs text-slate-400">支持 .xlsx / .xlsm；上传后自动列出 sheet。</p>
+                </div>
+                <div class="mt-3 grid grid-cols-2 gap-3">
+                  <label>
+                    <span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Sheet</span>
+                    <select v-model="taskDraft.source_sheet" class="border-none bg-slate-50">
+                      <option value="">默认（第一个）</option>
+                      <option v-for="sheet in taskDraft.source_excel_sheets" :key="sheet" :value="sheet">{{ sheet }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表头行</span>
+                    <input v-model="taskDraft.source_header_row" type="number" min="1" class="border-none bg-slate-50">
+                  </label>
+                </div>
+              </template>
             </div>
             <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div class="mb-4 flex items-center justify-between">
-                <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-orange-500"></span><span class="text-sm font-bold uppercase tracking-wider text-slate-600">Target SQL</span></div>
-                <div class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('target')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('target')">预览</button></div>
-              </div>
-              <SqlEditor v-model="taskDraft.target_sql" placeholder="双 SQL 模式填写" />
-              <div v-if="targetFields.length" class="mt-3 flex flex-wrap gap-1.5">
-                <span
-                  v-for="col in targetFields" :key="col"
-                  class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
-                  :title="'点击复制：' + col"
-                  @click="copyField(col)"
-                >{{ col }}</span>
-              </div>
-              <div v-if="targetPreviewData" class="mt-3">
-                <p v-if="targetPreviewData.loading" class="text-xs text-slate-400">预览中...</p>
-                <p v-else-if="targetPreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ targetPreviewData.error }}</p>
-                <template v-else>
-                  <p class="mb-2 text-xs text-slate-400">前 {{ targetPreviewData.rows?.length ?? 0 }} 行</p>
-                  <div class="overflow-x-auto rounded-xl border border-slate-200">
-                    <table class="w-full text-xs">
-                      <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(targetPreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
-                      <tbody><tr v-for="(row, i) in targetPreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(targetPreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
-                    </table>
+                <div class="flex items-center gap-2">
+                  <span class="h-2 w-2 rounded-full bg-orange-500"></span>
+                  <span class="text-sm font-bold uppercase tracking-wider text-slate-600">Target</span>
+                  <div class="ml-2 inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-bold">
+                    <button class="rounded-md px-2 py-1 transition" :class="taskDraft.target_kind === 'sql' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.target_kind = 'sql'">SQL</button>
+                    <button class="rounded-md px-2 py-1 transition" :class="taskDraft.target_kind === 'excel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.target_kind = 'excel'">Excel</button>
                   </div>
-                </template>
+                </div>
+                <div v-if="taskDraft.target_kind === 'sql'" class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('target')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('target')">预览</button></div>
               </div>
+              <template v-if="taskDraft.target_kind === 'sql'">
+                <SqlEditor v-model="taskDraft.target_sql" placeholder="双 SQL 模式填写" />
+                <div v-if="targetFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="col in targetFields" :key="col"
+                    class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                    :title="'点击复制：' + col"
+                    @click="copyField(col)"
+                  >{{ col }}</span>
+                </div>
+                <div v-if="targetPreviewData" class="mt-3">
+                  <p v-if="targetPreviewData.loading" class="text-xs text-slate-400">预览中...</p>
+                  <p v-else-if="targetPreviewData.error" class="rounded-lg bg-red-50 p-2 text-xs text-red-600">{{ targetPreviewData.error }}</p>
+                  <template v-else>
+                    <p class="mb-2 text-xs text-slate-400">前 {{ targetPreviewData.rows?.length ?? 0 }} 行</p>
+                    <div class="overflow-x-auto rounded-xl border border-slate-200">
+                      <table class="w-full text-xs">
+                        <thead><tr class="border-b border-slate-200 bg-slate-50"><th v-for="col in Object.keys(targetPreviewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th></tr></thead>
+                        <tbody><tr v-for="(row, i) in targetPreviewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50"><td v-for="col in Object.keys(targetPreviewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td></tr></tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template v-else>
+                <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+                  <input type="file" accept=".xlsx,.xlsm" class="block w-full text-xs" @change="uploadExcel('target', $event.target.files[0])">
+                  <p v-if="taskDraft.target_excel_filename" class="mt-2 text-xs text-slate-500">已上传：<strong>{{ taskDraft.target_excel_filename }}</strong></p>
+                  <p v-else class="mt-2 text-xs text-slate-400">支持 .xlsx / .xlsm；上传后自动列出 sheet。</p>
+                </div>
+                <div class="mt-3 grid grid-cols-2 gap-3">
+                  <label>
+                    <span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Sheet</span>
+                    <select v-model="taskDraft.target_sheet" class="border-none bg-slate-50">
+                      <option value="">默认（第一个）</option>
+                      <option v-for="sheet in taskDraft.target_excel_sheets" :key="sheet" :value="sheet">{{ sheet }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表头行</span>
+                    <input v-model="taskDraft.target_header_row" type="number" min="1" class="border-none bg-slate-50">
+                  </label>
+                </div>
+              </template>
             </div>
           </div>
 
