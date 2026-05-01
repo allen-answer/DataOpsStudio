@@ -23,6 +23,7 @@ from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store
 from app.services.runner import run_task
 from app.services.schema_metadata import merge_schema_metadata, parse_schema_metadata
+from app.services.schema_introspection import fetch_schema_metadata
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
@@ -255,8 +256,16 @@ def lineage_api(payload: dict[str, str] = Body(...)):
         raise HTTPException(status_code=400, detail="sql is required")
     try:
         logger.info("lineage api analyze start sql_chars=%s dialect=%s", len(sql), dialect or "auto")
-        schema = parse_schema_metadata(payload.get("schema", "")) if payload.get("schema") else None
-        return analyze_sql_lineage(sql, dialect, schema)
+        schema, schema_warnings = _lineage_schema(
+            sql,
+            parse_schema_metadata(payload.get("schema", "")) if payload.get("schema") else None,
+            payload.get("schema_datasource_id") or "",
+            payload.get("schema_name") or "",
+            payload.get("schema_table_filter") or "",
+            _truthy(payload.get("schema_only_sql_tables")),
+            payload.get("schema_dialect") or "",
+        )
+        return _attach_lineage_warnings(analyze_sql_lineage(sql, dialect, schema), schema_warnings)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -265,13 +274,27 @@ def lineage_api(payload: dict[str, str] = Body(...)):
 def lineage_form_api(
     sql: str = Form(""),
     dialect: str = Form(""),
+    schema_datasource_id: str = Form(""),
+    schema_name: str = Form(""),
+    schema_table_filter: str = Form(""),
+    schema_only_sql_tables: str = Form(""),
+    schema_dialect: str = Form(""),
     sql_file: UploadFile | None = File(None),
     schema_file: list[UploadFile] = File(default=[]),
 ):
     sql_text = _lineage_sql_text(sql, sql_file)
     try:
         logger.info("lineage form api analyze start sql_chars=%s dialect=%s", len(sql_text), dialect or "auto")
-        return analyze_sql_lineage(sql_text, dialect or None, _schema_metadata_files(schema_file))
+        schema, schema_warnings = _lineage_schema(
+            sql_text,
+            _schema_metadata_files(schema_file),
+            schema_datasource_id,
+            schema_name,
+            schema_table_filter,
+            _truthy(schema_only_sql_tables),
+            schema_dialect,
+        )
+        return _attach_lineage_warnings(analyze_sql_lineage(sql_text, dialect or None, schema), schema_warnings)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -280,12 +303,34 @@ def lineage_form_api(
 @router.post("/api/lineage/batch/analyze")
 def lineage_batch_api(
     dialect: str = Form(""),
+    schema_datasource_id: str = Form(""),
+    schema_name: str = Form(""),
+    schema_table_filter: str = Form(""),
+    schema_only_sql_tables: str = Form(""),
+    schema_dialect: str = Form(""),
     sql_files: list[UploadFile] = File(default=[]),
     schema_file: list[UploadFile] = File(default=[]),
 ):
     try:
         scripts = _lineage_script_inputs(sql_files)
-        result = analyze_lineage_batch(scripts, dialect or None, _schema_metadata_files(schema_file))
+        combined_sql = "\n;\n".join(script.sql for script in scripts)
+        schema, schema_warnings = _lineage_schema(
+            combined_sql,
+            _schema_metadata_files(schema_file),
+            schema_datasource_id,
+            schema_name,
+            schema_table_filter,
+            _truthy(schema_only_sql_tables),
+            schema_dialect,
+        )
+        result = analyze_lineage_batch(
+            scripts,
+            dialect or None,
+            schema,
+        )
+        result["warnings"] = schema_warnings + result.get("warnings", [])
+        if "summary" in result:
+            result["summary"]["warnings"] = len(result["warnings"])
         exports = _write_lineage_batch_exports(result)
         return {"result": result, "exports": exports}
     except Exception as exc:
@@ -381,6 +426,83 @@ def _schema_metadata_files(schema_files: list[UploadFile]) -> dict[str, list[str
             raise HTTPException(status_code=400, detail=f"Invalid schema metadata {filename}: {exc}") from exc
     merged = merge_schema_metadata(*items)
     return merged or None
+
+
+def _lineage_schema(
+    sql: str,
+    file_schema: dict[str, list[str]] | None,
+    datasource_id: str,
+    schema_name: str,
+    table_filter: str,
+    only_sql_tables: bool,
+    schema_dialect: str,
+) -> tuple[dict[str, list[str]] | None, list[dict[str, str]]]:
+    datasource_schema, warnings = _schema_metadata_from_datasource(
+        datasource_id,
+        schema_name,
+        table_filter,
+        _schema_table_candidates(sql) if only_sql_tables else [],
+        schema_dialect,
+    )
+    return _merge_lineage_schema(file_schema, datasource_schema), warnings
+
+
+def _schema_metadata_from_datasource(
+    datasource_id: str,
+    schema_name: str = "",
+    table_filter: str = "",
+    include_tables: list[str] | None = None,
+    schema_dialect: str = "",
+) -> tuple[dict[str, list[str]] | None, list[dict[str, str]]]:
+    if not datasource_id.strip():
+        return None, []
+    datasource = datasource_store.get(datasource_id.strip())
+    if datasource is None:
+        return None, [{"type": "Schema 拉取失败", "message": "指定的 Schema 数据源不存在"}]
+    try:
+        schema = fetch_schema_metadata(
+            datasource,
+            schema_name=schema_name,
+            table_filter=table_filter,
+            include_tables=include_tables or [],
+            schema_dialect=schema_dialect,
+        )
+    except Exception as exc:
+        return None, [{"type": "Schema 拉取失败", "message": str(exc)}]
+    if not schema:
+        return None, [{"type": "Schema 为空", "message": "数据源未返回字段元数据，请检查 schema/database、表名过滤或查询权限"}]
+    return schema, [{"type": "Schema 自动拉取", "message": f"已从数据源拉取 {len(schema)} 个表标识的字段元数据"}]
+
+
+def _merge_lineage_schema(*items: dict[str, list[str]] | None) -> dict[str, list[str]] | None:
+    merged = merge_schema_metadata(*items)
+    return merged or None
+
+
+def _attach_lineage_warnings(result: dict[str, object], warnings: list[dict[str, str]]) -> dict[str, object]:
+    if warnings:
+        result["warnings"] = warnings + list(result.get("warnings", []))
+    return result
+
+
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _schema_table_candidates(sql: str) -> list[str]:
+    pattern = re.compile(
+        r"\b(?:from|join|into|update|merge\s+into|using|table)\s+([\"`\[\]\w.$#]+)",
+        flags=re.IGNORECASE,
+    )
+    result: list[str] = []
+    seen: set[str] = set()
+    for match in pattern.finditer(sql):
+        table = match.group(1).strip().strip('"`[]')
+        key = table.lower()
+        if table and key not in seen and not table.startswith("@"):
+            seen.add(key)
+            result.append(table)
+    return result
 
 
 _ZIP_MAX_FILES = 500

@@ -5,6 +5,7 @@ import pytest
 from app.lineage._common import is_alias_reference, normalize_table_name, raw_sql_aliases, unique_strings
 from app.lineage.analyzer import analyze_sql_lineage
 from app.lineage.batch_analyzer import ScriptInput, analyze_lineage_batch
+from app.services.schema_introspection import _normalize_names, _rows_to_schema, _schema_query
 
 
 # ─── _common utilities ────────────────────────────────────────────────────────
@@ -69,6 +70,42 @@ def test_is_alias_reference_dot_not_alias():
     assert not is_alias_reference("schema.table", {"schema.table"})
 
 
+def test_schema_rows_to_schema_includes_qualified_and_unqualified_names():
+    schema = _rows_to_schema(
+        [
+            {"TABLE_SCHEMA": "dw", "TABLE_NAME": "orders", "COLUMN_NAME": "id"},
+            {"TABLE_SCHEMA": "dw", "TABLE_NAME": "orders", "COLUMN_NAME": "amount"},
+        ]
+    )
+    assert schema["orders"] == ["id", "amount"]
+    assert schema["dw.orders"] == ["id", "amount"]
+
+
+def test_mysql_schema_query_uses_configured_database():
+    source = type("Source", (), {"db_type": "MySQL", "database": "dw", "username": "u", "extra": {}})()
+    sql = _schema_query(source)
+    assert "information_schema.columns" in sql
+    assert "table_schema = 'dw'" in sql
+
+
+def test_schema_query_supports_table_scope_filter():
+    source = type("Source", (), {"db_type": "MySQL", "database": "dw", "username": "u", "extra": {}})()
+    sql = _schema_query(source, table_filter="ods_%", include_tables=["orders", "dw.users"])
+    assert "table_name like 'ods_%'" in sql
+    assert "table_name in ('orders', 'users')" in sql
+
+
+def test_schema_query_supports_oceanbase_oracle_mode():
+    source = type("Source", (), {"db_type": "MySQL", "database": "dw", "username": "obuser", "extra": {}})()
+    sql = _schema_query(source, schema_dialect="ob_oracle", schema_name="app")
+    assert "from all_tab_columns" in sql
+    assert "owner = 'APP'" in sql
+
+
+def test_schema_normalize_names_deduplicates_and_strips_schema():
+    assert _normalize_names(["dw.orders", '"orders"', "users"]) == ["orders", "users"]
+
+
 # ─── analyze_sql_lineage: basic ───────────────────────────────────────────────
 
 def test_simple_select_tables():
@@ -90,7 +127,7 @@ def test_insert_select_graph_edge():
     sql = "INSERT INTO target_table SELECT id, name FROM source_table"
     result = analyze_sql_lineage(sql)
     edges = result["graph_edges"]
-    assert {"source_table": "source_table", "target_table": "target_table"} in edges
+    assert any(e["source_table"] == "source_table" and e["target_table"] == "target_table" for e in edges)
 
 
 def test_insert_select_mappings_columns():
@@ -138,6 +175,64 @@ def test_star_expansion_with_schema():
     assert "id" in output_cols
     assert "name" in output_cols
     assert "age" in output_cols
+
+
+def test_unqualified_column_resolves_unique_schema_table():
+    sql = "INSERT INTO rpt SELECT amount FROM orders o JOIN users u ON o.user_id = u.id"
+    result = analyze_sql_lineage(sql, schema={"orders": ["id", "amount", "user_id"], "users": ["id", "name"]})
+    mapping = result["insert_mappings"][0]
+    assert mapping["source_tables"] == ["orders"]
+    assert mapping["source_columns"] == ["orders.amount"]
+    assert mapping["confidence"] == "medium"
+
+
+def test_unqualified_column_warns_when_schema_ambiguous():
+    sql = "INSERT INTO rpt SELECT id FROM orders o JOIN users u ON o.user_id = u.id"
+    result = analyze_sql_lineage(sql, schema={"orders": ["id", "amount", "user_id"], "users": ["id", "name"]})
+    mapping = result["insert_mappings"][0]
+    assert set(mapping["source_tables"]) == {"orders", "users"}
+    assert mapping["confidence"] == "low"
+    assert any(w["type"] == "字段歧义" for w in result["warnings"])
+
+
+def test_graph_edges_include_context():
+    sql = "INSERT INTO rpt (amount) SELECT amount FROM orders"
+    result = analyze_sql_lineage(sql, schema={"orders": ["amount"]})
+    edge = result["graph_edges"][0]
+    assert edge["statement_index"] == 1
+    assert edge["edge_type"] == "INSERT"
+    assert edge["target_columns"] == ["amount"]
+    assert edge["confidence"] == "high"
+
+
+def test_create_table_as_select_lineage():
+    sql = "CREATE TABLE rpt AS SELECT id, name FROM source_table"
+    result = analyze_sql_lineage(sql)
+    assert any(e["source_table"] == "source_table" and e["target_table"] == "rpt" for e in result["graph_edges"])
+    assert all(m["dml_type"] == "CREATE_TABLE_AS" for m in result["insert_mappings"])
+    assert [m["target_column"] for m in result["insert_mappings"]] == ["id", "name"]
+
+
+def test_create_or_replace_table_as_select_lineage():
+    sql = "CREATE OR REPLACE TABLE rpt AS SELECT id FROM source_table"
+    result = analyze_sql_lineage(sql)
+    assert result["insert_mappings"][0]["dml_type"] == "CREATE_OR_REPLACE_TABLE_AS"
+    assert result["graph_edges"][0]["edge_type"] == "CREATE_OR_REPLACE_TABLE_AS"
+
+
+def test_insert_overwrite_keeps_dml_type():
+    sql = "INSERT OVERWRITE TABLE rpt SELECT id FROM source_table"
+    result = analyze_sql_lineage(sql)
+    assert result["insert_mappings"][0]["dml_type"] == "INSERT_OVERWRITE"
+    assert result["graph_edges"][0]["edge_type"] == "INSERT_OVERWRITE"
+
+
+def test_replace_into_select_lineage():
+    sql = "REPLACE INTO rpt SELECT id FROM source_table"
+    result = analyze_sql_lineage(sql)
+    assert result["insert_mappings"][0]["dml_type"] == "REPLACE"
+    assert result["statements"][0]["sql"] == sql
+    assert any(e["source_table"] == "source_table" and e["target_table"] == "rpt" for e in result["graph_edges"])
 
 
 # ─── CTE and subquery ────────────────────────────────────────────────────────
@@ -290,6 +385,43 @@ def test_batch_script_edges():
         e["producer_file"] == "producer.sql" and e["consumer_file"] == "consumer.sql"
         for e in script_edges
     )
+
+
+def test_batch_dag_topological_order():
+    scripts = [
+        ScriptInput("producer.sql", "INSERT INTO mid SELECT * FROM raw"),
+        ScriptInput("consumer.sql", "INSERT INTO final SELECT * FROM mid"),
+    ]
+    result = analyze_lineage_batch(scripts)
+    assert result["dag"]["topological_order"] == ["producer.sql", "consumer.sql"]
+    assert result["dag"]["has_cycle"] is False
+    assert result["dag"]["downstream"]["producer.sql"] == ["consumer.sql"]
+    assert result["dag"]["upstream"]["consumer.sql"] == ["producer.sql"]
+
+
+def test_batch_dag_detects_cycle():
+    scripts = [
+        ScriptInput("a.sql", "INSERT INTO t1 SELECT * FROM t2"),
+        ScriptInput("b.sql", "INSERT INTO t2 SELECT * FROM t1"),
+    ]
+    result = analyze_lineage_batch(scripts)
+    assert result["dag"]["has_cycle"] is True
+    assert any(cycle[0] == cycle[-1] for cycle in result["dag"]["cycles"])
+    assert any(w["type"] == "脚本依赖环" for w in result["warnings"])
+
+
+def test_batch_dag_write_conflict_severity_high_when_read_downstream():
+    scripts = [
+        ScriptInput("w1.sql", "INSERT INTO shared SELECT * FROM a"),
+        ScriptInput("w2.sql", "INSERT INTO shared SELECT * FROM b"),
+        ScriptInput("reader.sql", "INSERT INTO final SELECT * FROM shared"),
+    ]
+    result = analyze_lineage_batch(scripts)
+    conflict = result["dag"]["write_conflicts"][0]
+    assert conflict["table"] == "shared"
+    assert set(conflict["writers"]) == {"w1.sql", "w2.sql"}
+    assert conflict["severity"] == "high"
+    assert result["summary"]["write_conflicts"] == 1
 
 
 def test_batch_impact_analysis_direct():

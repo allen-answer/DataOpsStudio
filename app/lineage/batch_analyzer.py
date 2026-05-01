@@ -83,6 +83,10 @@ def analyze_lineage_batch(
                         "edge_type": "字段来源",
                         "file_name": script.file_name,
                         "statement_index": mapping.get("statement_index", ""),
+                        "source_columns": mapping.get("source_columns", []),
+                        "target_columns": [mapping.get("target_column", "")] if mapping.get("target_column") else [],
+                        "confidence": mapping.get("confidence", "high"),
+                        "reason": mapping.get("expression") or mapping.get("transform", ""),
                     }
                 )
         field_source_keys = {
@@ -102,13 +106,19 @@ def analyze_lineage_batch(
                         "edge_type": "条件依赖",
                         "file_name": script.file_name,
                         "statement_index": "",
+                        "source_columns": [],
+                        "target_columns": [],
+                        "confidence": "medium",
+                        "reason": "来源表参与查询条件或上下文，但未出现在字段映射中",
                     }
                 )
 
     table_edges = _unique_table_edges(table_edges)
     table_groups = _table_groups(table_edges)
     script_edges = _script_edges(files)
-    warnings.extend(_global_warnings(files))
+    dag = _script_dag(files, script_edges)
+    warnings.extend(_global_warnings(files, dag["write_conflicts"]))
+    warnings.extend(_dag_warnings(dag))
 
     return {
         "file_count": len(scripts),
@@ -118,6 +128,7 @@ def analyze_lineage_batch(
         "script_edges": script_edges,
         "field_mappings": field_mappings,
         "impact_analysis": _impact_analysis(table_edges),
+        "dag": dag,
         "warnings": warnings,
         "summary": {
             "files": len(scripts),
@@ -127,6 +138,8 @@ def analyze_lineage_batch(
             "write_tables": len(_unique_strings(table for item in files for table in item["write_tables"])),
             "table_edges": len(table_edges),
             "script_edges": len(script_edges),
+            "dag_cycles": len(dag["cycles"]),
+            "write_conflicts": len(dag["write_conflicts"]),
             "warnings": len(warnings),
         },
     }
@@ -175,7 +188,7 @@ def _script_edges(files: list[dict[str, Any]]) -> list[dict[str, str]]:
             for consumer in files:
                 if producer["file_name"] == consumer["file_name"]:
                     continue
-                if table in consumer["read_tables"]:
+                if _normalize_table_name(table) in {_normalize_table_name(item) for item in consumer["read_tables"]}:
                     edges.append(
                         {
                             "producer_file": producer["file_name"],
@@ -186,7 +199,156 @@ def _script_edges(files: list[dict[str, Any]]) -> list[dict[str, str]]:
     return _unique_dicts(edges)
 
 
-def _global_warnings(files: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _script_dag(files: list[dict[str, Any]], script_edges: list[dict[str, str]]) -> dict[str, Any]:
+    scripts = [item["file_name"] for item in files]
+    adjacency: dict[str, list[str]] = {name: [] for name in scripts}
+    reverse: dict[str, list[str]] = {name: [] for name in scripts}
+    edge_tables: dict[tuple[str, str], list[str]] = {}
+    for edge in script_edges:
+        producer = edge["producer_file"]
+        consumer = edge["consumer_file"]
+        table = edge["table"]
+        if producer not in adjacency or consumer not in adjacency:
+            continue
+        if consumer not in adjacency[producer]:
+            adjacency[producer].append(consumer)
+        if producer not in reverse[consumer]:
+            reverse[consumer].append(producer)
+        edge_tables.setdefault((producer, consumer), [])
+        if table not in edge_tables[(producer, consumer)]:
+            edge_tables[(producer, consumer)].append(table)
+
+    topological_order = _topological_order(scripts, adjacency)
+    cycles = _script_cycles(scripts, adjacency)
+    return {
+        "nodes": scripts,
+        "topological_order": topological_order,
+        "has_cycle": bool(cycles),
+        "cycles": cycles,
+        "upstream": {name: _reachable(reverse, name) for name in scripts},
+        "downstream": {name: _reachable(adjacency, name) for name in scripts},
+        "edge_tables": [
+            {"producer_file": producer, "consumer_file": consumer, "tables": tables}
+            for (producer, consumer), tables in edge_tables.items()
+        ],
+        "write_conflicts": _write_conflicts(files),
+    }
+
+
+def _topological_order(nodes: list[str], adjacency: dict[str, list[str]]) -> list[str]:
+    indegree = {node: 0 for node in nodes}
+    for targets in adjacency.values():
+        for target in targets:
+            indegree[target] = indegree.get(target, 0) + 1
+    queue = [node for node in nodes if indegree.get(node, 0) == 0]
+    result: list[str] = []
+    i = 0
+    while i < len(queue):
+        node = queue[i]
+        i += 1
+        result.append(node)
+        for target in adjacency.get(node, []):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+    return result
+
+
+def _script_cycles(nodes: list[str], adjacency: dict[str, list[str]]) -> list[list[str]]:
+    cycles: list[list[str]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visiting:
+            cycle = visiting[visiting.index(node) :] + [node]
+            key = _cycle_key(cycle)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                cycles.append(cycle)
+            return
+        if node in visited:
+            return
+        visiting.append(node)
+        for target in adjacency.get(node, []):
+            visit(target)
+        visiting.pop()
+        visited.add(node)
+
+    for node in nodes:
+        visit(node)
+    return cycles
+
+
+def _cycle_key(cycle: list[str]) -> tuple[str, ...]:
+    body = cycle[:-1] if len(cycle) > 1 and cycle[0] == cycle[-1] else cycle
+    if not body:
+        return tuple(cycle)
+    rotations = [tuple(body[index:] + body[:index]) for index in range(len(body))]
+    return min(rotations)
+
+
+def _reachable(adjacency: dict[str, list[str]], start: str) -> list[str]:
+    queue = list(adjacency.get(start, []))
+    seen = set(queue)
+    result: list[str] = []
+    i = 0
+    while i < len(queue):
+        node = queue[i]
+        i += 1
+        result.append(node)
+        for target in adjacency.get(node, []):
+            if target not in seen and target != start:
+                seen.add(target)
+                queue.append(target)
+    return result
+
+
+def _write_conflicts(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    writers: dict[str, dict[str, Any]] = {}
+    readers: set[str] = set()
+    for item in files:
+        for table in item["read_tables"]:
+            readers.add(_normalize_table_name(table))
+        for table in item["write_tables"]:
+            key = _normalize_table_name(table)
+            group = writers.setdefault(key, {"table": table, "writers": []})
+            if item["file_name"] not in group["writers"]:
+                group["writers"].append(item["file_name"])
+
+    conflicts: list[dict[str, Any]] = []
+    for key, group in writers.items():
+        if len(group["writers"]) <= 1:
+            continue
+        severity = "high" if key in readers else "medium"
+        conflicts.append(
+            {
+                "table": group["table"],
+                "writers": group["writers"],
+                "severity": severity,
+                "message": "多个脚本写入同一张被下游读取的表" if severity == "high" else "多个脚本写入同一张最终表",
+            }
+        )
+    return conflicts
+
+
+def _dag_warnings(dag: dict[str, Any]) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    for cycle in dag.get("cycles", []):
+        warnings.append({"file_name": "全局", "type": "脚本依赖环", "message": " -> ".join(cycle)})
+    for conflict in dag.get("write_conflicts", []):
+        warnings.append(
+            {
+                "file_name": "全局",
+                "type": f"多写冲突-{conflict['severity']}",
+                "message": f"{conflict['table']}: {', '.join(conflict['writers'])}",
+            }
+        )
+    return warnings
+
+
+def _global_warnings(files: list[dict[str, Any]], write_conflicts: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     writers: dict[str, list[str]] = {}
     readers: dict[str, list[str]] = {}
@@ -227,12 +389,13 @@ def _lineage_warnings(result: dict[str, Any]) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if not result.get("insert_mappings") and result.get("statement_count"):
         warnings.append({"type": "无落表映射", "message": "未识别到 INSERT INTO ... SELECT ... 落表字段映射"})
+    warnings.extend(result.get("warnings", []))
     return warnings
 
 
 def _unique_table_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    by_key: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for edge in edges:
         source_table = edge.get("source_table", "")
         target_table = edge.get("target_table", "")
@@ -245,11 +408,29 @@ def _unique_table_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
             str(edge.get("file_name", "")),
             str(edge.get("statement_index", "")),
         )
-        if key in seen:
+        existing = by_key.get(key)
+        if existing is None:
+            item = dict(edge)
+            item["source_columns"] = list(item.get("source_columns", []))
+            item["target_columns"] = list(item.get("target_columns", []))
+            by_key[key] = item
+            result.append(item)
             continue
-        seen.add(key)
-        result.append(edge)
+        existing["source_columns"] = _unique_strings(existing.get("source_columns", []) + edge.get("source_columns", []))
+        existing["target_columns"] = _unique_strings(existing.get("target_columns", []) + edge.get("target_columns", []))
+        existing["confidence"] = _weaker_confidence(
+            str(existing.get("confidence", "high")),
+            str(edge.get("confidence", "high")),
+        )
+        reason = str(edge.get("reason", ""))
+        if reason:
+            existing["reason"] = "; ".join(_unique_strings([part for part in [str(existing.get("reason", "")), reason] if part]))
     return result
+
+
+def _weaker_confidence(current: str, candidate: str) -> str:
+    order = {"high": 0, "medium": 1, "low": 2}
+    return candidate if order.get(candidate, 0) > order.get(current, 0) else current
 
 
 def _table_groups(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
