@@ -21,4 +21,6 @@ def resolve_dialect(dialect: str | None) -> str | None:
     if not dialect:
         return None
     key = dialect.strip().lower()
+    if not key:
+        return None
     return _DIALECT_ALIASES.get(key, key)
