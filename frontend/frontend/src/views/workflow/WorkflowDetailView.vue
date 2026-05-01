@@ -1,6 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
-import { healthMeta, nodeStatusMeta, getMeta, layoutDAG, workflowHealth, synthesizeEvents } from '../../mock/workflow_meta'
+import { healthMeta, nodeStatusMeta, getMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta, resolveAllParameters } from '../../mock/workflow_meta'
 
 const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.vue'))
 
@@ -21,6 +21,9 @@ const selectedNodeId = ref('')
 // 元数据补全（从 mock 拿）。索引用工作流在数组中的位置。
 const workflowIndex = computed(() => state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value))
 const meta = computed(() => getMeta(currentWorkflow.value, workflowIndex.value === -1 ? 0 : workflowIndex.value))
+
+// 参数解析：把每个参数定义解析成下次运行将使用的具体值（预览用）。
+const resolvedParams = computed(() => resolveAllParameters(meta.value.parameters || []))
 
 const compareTaskOptions = computed(() => state.tasks.map((task) => ({ id: task.id, name: task.name })))
 
@@ -220,6 +223,38 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
 
       <!-- 元数据侧栏 -->
       <aside class="flex flex-col gap-3">
+        <!-- 运行参数：参数驱动作业流的核心信息 -->
+        <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
+            <span class="text-[10.5px] text-slate-500">{{ (meta.parameters || []).length }} 个</span>
+          </div>
+          <ul class="divide-y divide-slate-100">
+            <li v-for="param in (meta.parameters || [])" :key="param.name" class="px-3 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <span class="rounded px-1 py-0.5 text-[9.5px] font-bold uppercase ring-1 ring-inset" :class="parameterTypeMeta[param.type].accent">{{ parameterTypeMeta[param.type].glyph }} {{ parameterTypeMeta[param.type].label }}</span>
+                <span class="font-mono text-[12px] font-semibold text-slate-800">{{ param.name }}</span>
+                <span v-if="param.required" class="ml-auto text-[10px] font-semibold text-rose-600">必填</span>
+                <span v-else class="ml-auto text-[10px] text-slate-400">可选</span>
+              </div>
+              <p class="mt-0.5 text-[11px] text-slate-500">{{ param.description }}</p>
+              <div class="mt-1 flex items-baseline gap-1.5">
+                <span class="text-[10px] uppercase tracking-wider text-slate-400">解析后</span>
+                <span v-if="resolvedParams[param.name].kind === 'list'" class="font-mono text-[11px]">
+                  <span v-for="(v, i) in resolvedParams[param.name].value" :key="i" class="mr-1 rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">{{ v }}</span>
+                </span>
+                <span v-else-if="resolvedParams[param.name].kind === 'pending'" class="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700 ring-1 ring-emerald-200">{{ resolvedParams[param.name].value }}</span>
+                <span v-else-if="resolvedParams[param.name].kind === 'derived'" class="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[11px] text-blue-700 ring-1 ring-blue-200">{{ resolvedParams[param.name].value }}</span>
+                <span v-else class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">{{ resolvedParams[param.name].value }}</span>
+              </div>
+            </li>
+            <li v-if="!(meta.parameters || []).length" class="px-3 py-3 text-center text-[11px] text-slate-400">暂无参数定义</li>
+          </ul>
+          <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
+            可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${'$'}{name}</code> 引用
+          </div>
+        </div>
+
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
           <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">概要</p>
           <p class="text-[12.5px] leading-relaxed text-slate-700">{{ meta.description }}</p>

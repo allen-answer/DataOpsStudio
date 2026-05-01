@@ -48,11 +48,29 @@ export const nodeStatusMeta = {
   skipped:    { label: '跳过',    dot: 'bg-slate-400',                  pill: 'bg-slate-100 text-slate-600 ring-slate-200',        bar: 'bg-slate-400' },
 }
 
+// 参数类型语义 — 决定运行前如何解析、UI 上如何呈现。
+export const parameterTypeMeta = {
+  fixed:         { label: '固定值',  glyph: '◇', accent: 'text-slate-700  bg-slate-100  ring-slate-200'  },
+  date:          { label: '日期',    glyph: '⌛', accent: 'text-blue-700   bg-blue-50    ring-blue-200'   },
+  relative_date: { label: '相对日期', glyph: '↩', accent: 'text-blue-700   bg-blue-50    ring-blue-200'   },
+  sql_result:    { label: 'SQL',    glyph: '⌖', accent: 'text-emerald-700 bg-emerald-50 ring-emerald-200' },
+  multi_value:   { label: '多值',    glyph: '≡', accent: 'text-purple-700 bg-purple-50  ring-purple-200' },
+  json:          { label: 'JSON',   glyph: '{}', accent: 'text-amber-700  bg-amber-50   ring-amber-200'  },
+}
+
 const TEMPLATES = [
   {
     project: 'dw', owner: '张三', description: '订单事实表日清洗作业流。每日 02:00 触发，依赖 ods.orders、ods.refunds，输出到 dwd.fact_orders。',
     tags: ['tier-1', 'prod', 'critical'],
     schedule: { cron: '0 2 * * *', text: '每日 02:00', type: 'cron', status: 'online' },
+    parameters: [
+      { name: 'biz_date',       type: 'relative_date', source: 'yesterday',          required: true,  description: '业务日期，默认昨天' },
+      { name: 'batch_id',       type: 'fixed',         default: '1001',              required: true,  description: '批次号' },
+      { name: 'system_code',    type: 'fixed',         default: 'CRM',               required: true,  description: '系统代码' },
+      { name: 'partition_dates',type: 'multi_value',   default: ['2026-04-30','2026-05-01'], required: false, description: '需要对比的分区列表' },
+      { name: 'tier1_users',    type: 'sql_result',    sql: 'SELECT id FROM dim_users WHERE tier = 1 AND active = 1', datasource: 'mysql8',
+                                 required: false, description: 'tier=1 活跃用户 ID（SQL 解析时执行）', preview_count: 142 },
+    ],
     alert_targets: ['张三', '@数据值班群'], queue: 'spark-large',
     input_assets:  [
       { key: 'ods/orders',  kind: 'table', health: 'healthy', last_materialized: '2026-05-02 01:55' },
@@ -73,6 +91,12 @@ const TEMPLATES = [
     project: 'risk', owner: '王伟', description: '反欺诈规则评分作业流。每 30 分钟触发，对在线交易实时计算风险分。',
     tags: ['tier-1', 'realtime'],
     schedule: { cron: '*/30 * * * *', text: '每 30 分钟', type: 'cron', status: 'online' },
+    parameters: [
+      { name: 'window_minutes', type: 'fixed',         default: '30',                required: true, description: '滚动窗口（分钟）' },
+      { name: 'rule_set_id',    type: 'fixed',         default: 'rules_v42',         required: true, description: '生效规则集' },
+      { name: 'now',            type: 'relative_date', source: 'now',                required: true, description: '当前时间戳（自动）' },
+      { name: 'risk_thresholds',type: 'json',          default: '{"low":0.2,"high":0.7}', required: true, description: '风险阈值配置' },
+    ],
     alert_targets: ['王伟', '@风控值班'], queue: 'realtime',
     input_assets: [
       { key: 'ods/transactions', kind: 'stream', health: 'healthy', last_materialized: '实时' },
@@ -90,6 +114,11 @@ const TEMPLATES = [
     project: 'growth', owner: '孙琪', description: '广告归因日报。每日 05:15 触发，关联渠道日志和订单数据生成归因明细。',
     tags: ['daily', 'prod'],
     schedule: { cron: '15 5 * * *', text: '每日 05:15', type: 'cron', status: 'online' },
+    parameters: [
+      { name: 'report_date', type: 'relative_date', source: 'yesterday', required: true, description: '报告日期' },
+      { name: 'channels',    type: 'multi_value',   default: ['baidu','toutiao','wechat'], required: true, description: '渠道集合' },
+      { name: 'lookback_days', type: 'fixed',       default: '7',         required: true, description: '归因回看窗口（天）' },
+    ],
     alert_targets: ['孙琪'], queue: 'spark-default',
     input_assets: [
       { key: 'ods/ad_clicks',   kind: 'table', health: 'healthy', last_materialized: '2026-05-02 04:30' },
@@ -106,6 +135,11 @@ const TEMPLATES = [
     project: 'finance', owner: '周敏', description: '现金流日报，对账系统的下游输入。每日 06:00 触发。',
     tags: ['daily', 'finance'],
     schedule: { cron: '0 6 * * *', text: '每日 06:00', type: 'cron', status: 'online' },
+    parameters: [
+      { name: 'biz_date', type: 'relative_date', source: 'yesterday', required: true, description: '业务日期' },
+      { name: 'currencies', type: 'multi_value', default: ['USD','EUR','CNY'], required: true, description: '币种白名单' },
+      { name: 'tolerance_amount', type: 'fixed', default: '0.01', required: true, description: '余额容差（元）' },
+    ],
     alert_targets: ['周敏', '@财务对账群'], queue: 'default',
     input_assets: [
       { key: 'dwd/fact_orders',     kind: 'table', health: 'healthy', last_materialized: '2026-05-02 02:01' },
@@ -194,6 +228,38 @@ export function layoutDAG(nodes, opts = {}) {
     NODE_W,
     NODE_H,
   }
+}
+
+// 把参数定义解析成「下次运行将用到的具体值」。预览用，不参与真正执行。
+export function resolveParameter(param, runtimeOverride = undefined, base = new Date()) {
+  if (runtimeOverride !== undefined) {
+    return { value: runtimeOverride, kind: 'override' }
+  }
+  if (param.type === 'fixed') return { value: param.default, kind: 'literal' }
+  if (param.type === 'date')  return { value: param.default || base.toISOString().slice(0, 10), kind: 'literal' }
+  if (param.type === 'multi_value') return { value: param.default, kind: 'list' }
+  if (param.type === 'json')  return { value: param.default, kind: 'json' }
+  if (param.type === 'relative_date') {
+    const d = new Date(base)
+    if (param.source === 'today') return { value: d.toISOString().slice(0, 10), kind: 'derived' }
+    if (param.source === 'yesterday') { d.setDate(d.getDate() - 1); return { value: d.toISOString().slice(0, 10), kind: 'derived' } }
+    if (param.source === 'last_month') { d.setMonth(d.getMonth() - 1); return { value: d.toISOString().slice(0, 7), kind: 'derived' } }
+    if (param.source === 'now') return { value: d.toISOString().slice(0, 19).replace('T', ' '), kind: 'derived' }
+    return { value: param.default || '', kind: 'derived' }
+  }
+  if (param.type === 'sql_result') {
+    return { value: `执行后获得 ${param.preview_count ?? '—'} 行`, kind: 'pending', sample: param.preview_count }
+  }
+  return { value: param.default || '', kind: 'literal' }
+}
+
+// 把工作流的参数定义集合解析成 { name → resolved } 字典。
+export function resolveAllParameters(parameters, overrides = {}, base = new Date()) {
+  const out = {}
+  for (const p of parameters || []) {
+    out[p.name] = resolveParameter(p, overrides[p.name], base)
+  }
+  return out
 }
 
 // 综合 workflow + 最近一次 WorkflowRun 推导出 health 状态。

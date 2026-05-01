@@ -1,12 +1,34 @@
 <script setup>
 import { computed, inject, ref } from 'vue'
-import { nodeStatusMeta, synthesizeEvents } from '../../mock/workflow_meta'
+import { nodeStatusMeta, synthesizeEvents, getMeta, parameterTypeMeta } from '../../mock/workflow_meta'
 
 const emit = defineEmits(['back', 'open-detail'])
-const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync } = inject('app')
+const { state, workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync } = inject('app')
 
 const run = computed(() => workflowResult.value)
 const selectedNodeId = ref('')
+
+// 把运行的 variables 字典 + workflow 元数据中的参数定义合并起来。
+// 这样运行参数 chip 既能显示原始 value，又能带上类型信息。
+const wfIndex = computed(() => state.workflows.findIndex((wf) => wf.id === run.value?.workflow_id))
+const wfMeta = computed(() => getMeta(currentWorkflow.value, wfIndex.value === -1 ? 0 : wfIndex.value))
+const paramSpecs = computed(() => {
+  const map = {}
+  for (const p of wfMeta.value.parameters || []) map[p.name] = p
+  return map
+})
+const runParameterChips = computed(() => {
+  const chips = []
+  const vars = run.value?.variables || {}
+  // 优先按参数定义顺序展示，最后追加变量里有但定义里没有的
+  for (const p of wfMeta.value.parameters || []) {
+    chips.push({ name: p.name, value: vars[p.name] ?? '—', type: p.type })
+  }
+  for (const k of Object.keys(vars)) {
+    if (!paramSpecs.value[k]) chips.push({ name: k, value: vars[k], type: 'fixed' })
+  }
+  return chips
+})
 
 // 自动选第一个失败节点（如果有的话），否则第一个节点
 const initialNodeId = computed(() => {
@@ -97,8 +119,15 @@ const selectedNodeEvents = computed(() => events.value.filter((ev) => ev.step ==
             <span class="text-slate-300">·</span>
             <span class="text-[11.5px] text-slate-500">触发：手动</span>
           </div>
-          <div v-if="Object.keys(run.variables || {}).length" class="mt-1.5 flex flex-wrap gap-1">
-            <span v-for="(v, k) in run.variables" :key="k" class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px]"><span class="text-slate-500">{{ k }}=</span><span class="text-slate-700">{{ v }}</span></span>
+          <div v-if="runParameterChips.length" class="mt-2 flex flex-wrap gap-1">
+            <span v-for="chip in runParameterChips" :key="chip.name"
+                  class="inline-flex items-center gap-1 rounded ring-1 ring-inset px-1.5 py-0.5 font-mono text-[10.5px]"
+                  :class="parameterTypeMeta[chip.type]?.accent || parameterTypeMeta.fixed.accent">
+              <span class="text-[9px] font-bold opacity-80">{{ parameterTypeMeta[chip.type]?.glyph || '◇' }}</span>
+              <span class="font-semibold">{{ chip.name }}</span>
+              <span class="opacity-50">=</span>
+              <span>{{ chip.value }}</span>
+            </span>
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
