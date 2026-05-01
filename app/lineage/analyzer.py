@@ -7,29 +7,7 @@ from app.lineage._common import is_alias_reference as _is_alias_reference
 from app.lineage._common import normalize_table_name as _normalize_table_name
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
-
-
-# Maps user-facing dialect names (incl. DM / OceanBase modes) to sqlglot dialects.
-# DM 默认走 oracle 语法兼容；OB 区分 mysql / oracle 模式。
-_DIALECT_ALIASES = {
-    "dm": "oracle",
-    "dameng": "oracle",
-    "ob": "mysql",
-    "ob_mysql": "mysql",
-    "obmysql": "mysql",
-    "oceanbase": "mysql",
-    "oceanbase_mysql": "mysql",
-    "ob_oracle": "oracle",
-    "oboracle": "oracle",
-    "oceanbase_oracle": "oracle",
-}
-
-
-def _resolve_dialect(dialect: str | None) -> str | None:
-    if not dialect:
-        return None
-    key = dialect.strip().lower()
-    return _DIALECT_ALIASES.get(key, key)
+from app.lineage.dialects import resolve_dialect as _resolve_dialect
 
 
 def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, list[str]] | None = None) -> dict[str, Any]:
