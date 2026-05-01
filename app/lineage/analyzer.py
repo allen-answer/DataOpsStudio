@@ -9,25 +9,60 @@ from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
 
 
+# Maps user-facing dialect names (incl. DM / OceanBase modes) to sqlglot dialects.
+# DM 默认走 oracle 语法兼容；OB 区分 mysql / oracle 模式。
+_DIALECT_ALIASES = {
+    "dm": "oracle",
+    "dameng": "oracle",
+    "ob": "mysql",
+    "ob_mysql": "mysql",
+    "obmysql": "mysql",
+    "oceanbase": "mysql",
+    "oceanbase_mysql": "mysql",
+    "ob_oracle": "oracle",
+    "oboracle": "oracle",
+    "oceanbase_oracle": "oracle",
+}
+
+
+def _resolve_dialect(dialect: str | None) -> str | None:
+    if not dialect:
+        return None
+    key = dialect.strip().lower()
+    return _DIALECT_ALIASES.get(key, key)
+
+
 def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, list[str]] | None = None) -> dict[str, Any]:
     try:
         import sqlglot
     except ModuleNotFoundError as exc:
         raise RuntimeError("sqlglot is not installed. Please install sqlglot to use SQL lineage analysis.") from exc
 
+    dialect = _resolve_dialect(dialect)
     script_variables = _script_variables(sql)
     dynamic_sql_segments = _extract_dynamic_sql_segments(sql)
     dynamic_sqls = [s["sql"] for s in dynamic_sql_segments]
+    procedure_segments = _extract_procedure_segments(sql)
+    procedure_sqls = [s["sql"] for s in procedure_segments]
+    try:
+        primary_statements = _parse_lineage_statements(sqlglot, sql, dialect)
+    except Exception:
+        # If the script's outer shell cannot be parsed (e.g. PL/SQL control flow),
+        # we still want to analyze procedure-body / dynamic segments that parse cleanly.
+        if not (procedure_sqls or dynamic_sqls):
+            raise
+        primary_statements = []
     statements = _unique_parsed_statements(
-        _parse_lineage_statements(sqlglot, sql, dialect)
+        primary_statements
         + _parse_segments(sqlglot, dynamic_sqls, dialect, ignore_errors=True)
+        + _parse_segments(sqlglot, procedure_sqls, dialect, ignore_errors=True)
     )
-    analysis_statements = [
+    analysis_statements = _unique_analysis_statements([
         statement
         for parsed_statement in statements
         if parsed_statement is not None
         for statement in _analysis_statements(parsed_statement)
-    ]
+    ])
     normalized_schema = _normalize_schema(schema or {})
     parse_errors: list[dict[str, str]] = []
     analyses: list[dict[str, Any]] = []
@@ -38,7 +73,7 @@ def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, 
             parse_errors.append({"sql": _sql(statement), "error": str(exc)})
     graph_edges = _graph_edges(analyses)
     graph_groups = _graph_groups(graph_edges, analyses)
-    warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors)
+    warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
     return {
         "statement_count": len(analyses),
         "tables": _unique_items(item for analysis in analyses for item in analysis["tables"]),
@@ -52,6 +87,7 @@ def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, 
         "aliases": _unique_strings(alias for analysis in analyses for alias in analysis.get("aliases", [])),
         "dynamic_sql_count": len(dynamic_sql_segments),
         "dynamic_sql_segments": dynamic_sql_segments,
+        "procedure_segments": procedure_segments,
         "graph_edges": graph_edges,
         "graph_groups": graph_groups,
         "parse_errors": parse_errors,
@@ -162,32 +198,314 @@ def _extract_analyzable_segments(sql: str) -> list[str]:
     return segments
 
 
+_RE_PROC_HEADER = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?P<kind>PROCEDURE|FUNCTION|PACKAGE\s+BODY|TRIGGER)\s+(?P<name>[\w$#.\"`\[\]]+)",
+    flags=re.IGNORECASE,
+)
+_RE_BEGIN = re.compile(r"\bBEGIN\b", flags=re.IGNORECASE)
+_RE_BLOCK_TOKEN = re.compile(r"\bBEGIN\b|\bEND\b", flags=re.IGNORECASE)
+_RE_BODY_DML = re.compile(
+    r"\b(WITH|SELECT|INSERT|REPLACE\s+INTO|UPDATE|DELETE|MERGE|CREATE\s+(?:OR\s+REPLACE\s+)?(?:GLOBAL\s+TEMPORARY\s+|TEMPORARY\s+|TEMP\s+)?TABLE|TRUNCATE)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_procedure_segments(sql: str) -> list[dict[str, str]]:
+    """Extract DML statements nested inside CREATE PROCEDURE/FUNCTION/PACKAGE BODY/TRIGGER blocks.
+
+    Skips control-flow shells (IF/LOOP/EXCEPTION) and nested BEGIN/END blocks via token-balanced scan.
+    """
+    seen: set[str] = set()
+    result: list[dict[str, str]] = []
+    for header in _RE_PROC_HEADER.finditer(sql):
+        name = header.group("name").strip()
+        kind = " ".join(header.group("kind").split()).upper()
+        body_start = _RE_BEGIN.search(sql, pos=header.end())
+        if not body_start:
+            continue
+        depth = 1
+        cursor = body_start.end()
+        body_end = len(sql)
+        for tok_match in _RE_BLOCK_TOKEN.finditer(sql, pos=cursor):
+            tok = tok_match.group(0).upper()
+            if tok == "BEGIN":
+                depth += 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    body_end = tok_match.start()
+                    break
+        body = sql[body_start.end():body_end]
+        for index, segment in enumerate(_iter_procedure_body_segments(body), start=1):
+            cleaned = _clean_dynamic_segment(segment)
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            result.append(
+                {
+                    "procedure_name": name,
+                    "procedure_kind": kind,
+                    "segment_index": str(index),
+                    "sql": cleaned,
+                    "confidence": "high",
+                }
+            )
+    return result
+
+
+def _iter_procedure_body_segments(body: str) -> list[str]:
+    """Split a procedure body into top-level statements, skipping control-flow shells."""
+    segments: list[str] = []
+    depth = 0
+    buffer: list[str] = []
+    pos = 0
+    length = len(body)
+    while pos < length:
+        char = body[pos]
+        # Skip string literals to avoid splitting on ; inside them.
+        if char in "'\"":
+            quote = char
+            buffer.append(char)
+            pos += 1
+            while pos < length:
+                buffer.append(body[pos])
+                if body[pos] == quote and (pos + 1 >= length or body[pos + 1] != quote):
+                    pos += 1
+                    break
+                if body[pos] == quote:
+                    buffer.append(body[pos + 1])
+                    pos += 2
+                    continue
+                pos += 1
+            continue
+        # Track nested BEGIN/END so a ; inside a nested block doesn't end the outer segment.
+        if char.isalpha():
+            tail = body[pos:pos + 6].upper()
+            if tail.startswith("BEGIN") and (pos + 5 >= length or not body[pos + 5].isalnum()):
+                depth += 1
+                buffer.append(body[pos:pos + 5])
+                pos += 5
+                continue
+            if tail.startswith("END") and (pos + 3 >= length or not body[pos + 3].isalnum()):
+                if depth > 0:
+                    depth -= 1
+                buffer.append(body[pos:pos + 3])
+                pos += 3
+                continue
+        if char == ";" and depth == 0:
+            segments.append("".join(buffer).strip())
+            buffer = []
+            pos += 1
+            continue
+        buffer.append(char)
+        pos += 1
+    tail = "".join(buffer).strip()
+    if tail:
+        segments.append(tail)
+    cleaned: list[str] = []
+    for seg in segments:
+        # The segment may start with control-flow shells (IF ... THEN, ELSIF ... THEN, FOR ... LOOP).
+        # Find the first DML keyword and analyze from there.
+        match = _RE_BODY_DML.search(seg)
+        if match:
+            cleaned.append(seg[match.start():].strip())
+    return cleaned
+
+
 def _extract_dynamic_sql_segments(sql: str) -> list[dict[str, str]]:
     seen: set[str] = set()
     result: list[dict[str, str]] = []
+
+    def add(segment: str, source: str, confidence: str) -> None:
+        cleaned = _clean_dynamic_segment(segment)
+        if cleaned in seen or not _looks_like_lineage_sql(cleaned):
+            return
+        seen.add(cleaned)
+        result.append({"sql": cleaned, "source": source, "confidence": confidence})
 
     keyword_pattern = re.compile(
         r"(?:execute\s+immediate|exec(?:ute)?\s+(?:sys\.)?sp_executesql)\s+(?:N)?'((?:''|[^'])*)'",
         flags=re.IGNORECASE | re.DOTALL,
     )
     for match in keyword_pattern.finditer(sql):
-        segment = _unescape_sql_string(match.group(1))
-        if _looks_like_lineage_sql(segment):
-            cleaned = _clean_dynamic_segment(segment)
-            if cleaned not in seen:
-                seen.add(cleaned)
-                result.append({"sql": cleaned, "source": "execute_keyword", "confidence": "high"})
+        add(_unescape_sql_string(match.group(1)), "execute_keyword", "high")
+
+    # MySQL: SET @sql := '...'; PREPARE stmt FROM @sql; EXECUTE stmt;
+    set_vars = _capture_session_var_assignments(sql)
+    prepare_pattern = re.compile(
+        r"\bPREPARE\s+\w+\s+FROM\s+(?:@(\w+)|(?:N)?'((?:''|[^'])*)')",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in prepare_pattern.finditer(sql):
+        var_name, literal = match.group(1), match.group(2)
+        if literal:
+            add(_unescape_sql_string(literal), "prepare_literal", "high")
+        elif var_name and var_name.lower() in set_vars:
+            for assignment in set_vars[var_name.lower()]:
+                add(assignment["sql"], "prepare_var", assignment["confidence"])
+
+    # Oracle/PL-SQL: v_sql := 'INSERT INTO ' || p_t || ' SELECT ...'; EXECUTE IMMEDIATE v_sql;
+    plsql_vars = _capture_plsql_var_assignments(sql)
+    immediate_var_pattern = re.compile(
+        r"\bEXECUTE\s+IMMEDIATE\s+([\w$#]+)\s*[;\n]",
+        flags=re.IGNORECASE,
+    )
+    for match in immediate_var_pattern.finditer(sql):
+        var_name = match.group(1).lower()
+        if var_name in plsql_vars:
+            for assignment in plsql_vars[var_name]:
+                add(assignment["sql"], "var_concat", assignment["confidence"])
 
     string_pattern = re.compile(r"(?:N)?'((?:''|[^']){20,})'", flags=re.IGNORECASE | re.DOTALL)
     for match in string_pattern.finditer(sql):
-        segment = _unescape_sql_string(match.group(1))
-        if _looks_like_lineage_sql(segment):
-            cleaned = _clean_dynamic_segment(segment)
-            if cleaned not in seen:
-                seen.add(cleaned)
-                result.append({"sql": cleaned, "source": "string_literal", "confidence": "medium"})
+        add(_unescape_sql_string(match.group(1)), "string_literal", "medium")
 
     return result
+
+
+_RE_SET_ASSIGNMENT = re.compile(r"^\s*SET\s+@(\w+)\s*:?=\s*(.+)$", flags=re.IGNORECASE | re.DOTALL)
+_RE_PLSQL_ASSIGNMENT = re.compile(r"^\s*([\w$#]+)\s*:=\s*(.+)$", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _capture_session_var_assignments(sql: str) -> dict[str, list[dict[str, str]]]:
+    return _capture_var_assignments(sql, _RE_SET_ASSIGNMENT)
+
+
+def _capture_plsql_var_assignments(sql: str) -> dict[str, list[dict[str, str]]]:
+    return _capture_var_assignments(sql, _RE_PLSQL_ASSIGNMENT)
+
+
+def _capture_var_assignments(
+    sql: str, assignment_re: re.Pattern[str]
+) -> dict[str, list[dict[str, str]]]:
+    # Strip block-shell tokens so var assignments inside procedure bodies become top-level statements.
+    flat = re.sub(r"\b(BEGIN|END|DECLARE|THEN|ELSE|ELSIF|LOOP)\b", " ", sql, flags=re.IGNORECASE)
+    result: dict[str, list[dict[str, str]]] = {}
+    for segment in _split_top_level_statements(flat):
+        match = assignment_re.match(segment)
+        if not match:
+            continue
+        name = match.group(1).lower()
+        rhs = match.group(2).strip()
+        if "||" in rhs or rhs.upper().startswith("CONCAT"):
+            rebuilt = _rebuild_concat(rhs)
+            if rebuilt and _looks_like_lineage_sql(rebuilt):
+                result.setdefault(name, []).append({"sql": rebuilt, "confidence": "low"})
+            continue
+        if rhs.startswith("'") or rhs[:2].upper() == "N'":
+            literal = _strip_quoted(rhs)
+            if _looks_like_lineage_sql(literal):
+                result.setdefault(name, []).append({"sql": literal, "confidence": "high"})
+    return result
+
+
+def _split_top_level_statements(sql: str) -> list[str]:
+    """Split a SQL script into top-level statements, respecting quoted strings."""
+    statements: list[str] = []
+    buf: list[str] = []
+    pos = 0
+    length = len(sql)
+    while pos < length:
+        char = sql[pos]
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            pos += 1
+            while pos < length:
+                buf.append(sql[pos])
+                if sql[pos] == quote and (pos + 1 >= length or sql[pos + 1] != quote):
+                    pos += 1
+                    break
+                if sql[pos] == quote:
+                    buf.append(sql[pos + 1])
+                    pos += 2
+                    continue
+                pos += 1
+            continue
+        if char == ";":
+            statements.append("".join(buf).strip())
+            buf = []
+            pos += 1
+            continue
+        buf.append(char)
+        pos += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return [s for s in statements if s]
+
+
+def _strip_quoted(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned[:1].upper() == "N":
+        cleaned = cleaned[1:]
+    if cleaned.startswith("'") and cleaned.endswith("'"):
+        cleaned = cleaned[1:-1]
+    return _unescape_sql_string(cleaned)
+
+
+def _rebuild_concat(expression: str) -> str:
+    """Reassemble literal-only segments of a concat; replace variable parts with :placeholders.
+
+    Handles two forms: 'lit' || var || 'lit' (PL/SQL) and CONCAT('lit', var, 'lit') (MySQL).
+    Variable segments become :var so sqlglot can still parse the resulting SQL.
+    """
+    expression = expression.strip()
+    parts: list[str]
+    concat_match = re.match(r"CONCAT\s*\((.*)\)\s*$", expression, flags=re.IGNORECASE | re.DOTALL)
+    if concat_match:
+        parts = _split_top_level(concat_match.group(1), ",")
+    else:
+        parts = _split_top_level(expression, "||")
+    rebuilt: list[str] = []
+    for raw in parts:
+        item = raw.strip()
+        if not item:
+            continue
+        if item.startswith("'") or item[:2].upper() == "N'":
+            rebuilt.append(_strip_quoted(item))
+        else:
+            placeholder = re.sub(r"\W+", "_", item).strip("_") or "var"
+            rebuilt.append(f":{placeholder}")
+    return "".join(rebuilt)
+
+
+def _split_top_level(expression: str, delimiter: str) -> list[str]:
+    """Split on delimiter respecting parentheses and quoted strings."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    pos = 0
+    delim_len = len(delimiter)
+    while pos < len(expression):
+        char = expression[pos]
+        if char == "'":
+            buf.append(char)
+            pos += 1
+            while pos < len(expression):
+                buf.append(expression[pos])
+                if expression[pos] == "'" and (pos + 1 >= len(expression) or expression[pos + 1] != "'"):
+                    pos += 1
+                    break
+                if expression[pos] == "'":
+                    buf.append(expression[pos + 1])
+                    pos += 2
+                    continue
+                pos += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if depth == 0 and expression[pos:pos + delim_len] == delimiter:
+            parts.append("".join(buf))
+            buf = []
+            pos += delim_len
+            continue
+        buf.append(char)
+        pos += 1
+    parts.append("".join(buf))
+    return parts
 
 
 def _unescape_sql_string(value: str) -> str:
@@ -217,6 +535,26 @@ def _unique_parsed_statements(statements: list[Any]) -> list[Any]:
         if key in seen:
             continue
         seen.add(key)
+        result.append(statement)
+    return result
+
+
+def _unique_analysis_statements(statements: list[Any]) -> list[Any]:
+    """Dedupe DML statements by structurally-normalized SQL.
+
+    A PROCEDURE block parsed at the top level and the same DML re-parsed from
+    procedure_segments produce two distinct AST objects with identical semantics.
+    Compare their canonical sqlglot output (lowercased, whitespace-collapsed).
+    """
+    result: list[Any] = []
+    seen: set[str] = set()
+    for statement in statements:
+        if statement is None:
+            continue
+        canonical = " ".join(_sql(statement).lower().split())
+        if canonical in seen:
+            continue
+        seen.add(canonical)
         result.append(statement)
     return result
 
@@ -449,6 +787,7 @@ def _create_table_mappings(
 ) -> list[dict[str, Any]]:
     exp = _exp()
     target_table = _create_target_table(statement)
+    is_temp = _is_temp_create(statement)
     source_query = statement.args.get("expression")
     source_select = source_query if isinstance(source_query, exp.Select) else source_query.find(exp.Select) if source_query is not None else None
     if not isinstance(source_select, exp.Select):
@@ -474,6 +813,7 @@ def _create_table_mappings(
                         "variables": _variables_in_expression(expression, script_variables),
                         "transform": "星号展开",
                         "dml_type": _create_dml_type(statement),
+                        "is_temp": is_temp,
                         "confidence": "high",
                         "warnings": [],
                     }
@@ -494,6 +834,7 @@ def _create_table_mappings(
                 "variables": _variables_in_expression(expression, script_variables),
                 "transform": _transform_type(expression),
                 "dml_type": _create_dml_type(statement),
+                "is_temp": is_temp,
                 "confidence": source_info["confidence"],
                 "warnings": source_info["warnings"],
             }
@@ -504,19 +845,14 @@ def _create_table_mappings(
 def _update_table_mappings(statement: Any) -> list[dict[str, Any]]:
     exp = _exp()
     target_table = _table_name(statement.this) if isinstance(statement.this, exp.Table) else _sql(statement.this)
+    target_key = _normalize_table_name(target_table)
 
     source_tables: list[str] = []
-    from_expr = statement.args.get("from_")
-    if from_expr is not None:
-        for table in from_expr.find_all(exp.Table):
-            name = _table_name(table)
-            if name and _normalize_table_name(name) != _normalize_table_name(target_table):
-                source_tables.append(name)
-    where_expr = statement.args.get("where")
-    if where_expr is not None:
-        for subq in where_expr.find_all(exp.Subquery):
-            for table in subq.find_all(exp.Table):
-                source_tables.append(_table_name(table))
+    for table in statement.find_all(exp.Table):
+        name = _table_name(table)
+        if not name or _normalize_table_name(name) == target_key:
+            continue
+        source_tables.append(name)
 
     source_tables = _unique_strings(source_tables)
     return [
@@ -602,7 +938,25 @@ def _insert_dml_type(statement: Any) -> str:
 
 
 def _create_dml_type(statement: Any) -> str:
+    if _is_temp_create(statement):
+        return "CREATE_TEMP_TABLE_AS"
     return "CREATE_OR_REPLACE_TABLE_AS" if statement.args.get("replace") else "CREATE_TABLE_AS"
+
+
+def _is_temp_create(statement: Any) -> bool:
+    exp = _exp()
+    if not isinstance(statement, exp.Create):
+        return False
+    if statement.args.get("temporary"):
+        return True
+    properties = statement.args.get("properties")
+    if properties is None:
+        return False
+    for prop in properties.expressions:
+        prop_name = type(prop).__name__.lower()
+        if "temporary" in prop_name or "temp" in prop_name:
+            return True
+    return False
 
 
 def _insert_target_columns(target: Any) -> list[str]:
@@ -1109,6 +1463,7 @@ def _analysis_warnings(
     analyses: list[dict[str, Any]],
     dynamic_sql_segments: list[dict[str, str]],
     parse_errors: list[dict[str, str]],
+    procedure_segments: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if dynamic_sql_segments:
@@ -1116,6 +1471,14 @@ def _analysis_warnings(
             {
                 "type": "动态 SQL",
                 "message": f"识别到 {len(dynamic_sql_segments)} 段动态 SQL，静态分析结果可能不完整",
+            }
+        )
+    if procedure_segments:
+        proc_names = _unique_strings(seg.get("procedure_name", "") for seg in procedure_segments)
+        warnings.append(
+            {
+                "type": "存储过程",
+                "message": f"识别到 {len(proc_names)} 个过程/函数中的 {len(procedure_segments)} 段 DML：{', '.join(proc_names)}",
             }
         )
     for error in parse_errors:

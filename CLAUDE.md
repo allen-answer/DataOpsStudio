@@ -91,6 +91,24 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 两者均可接受可选的 Schema 元数据文件，用于解析 `SELECT *` 和未限定列名。
 
+**方言路由** — `_resolve_dialect()` 把用户传入的方言名映射到 sqlglot 实际方言。当前支持：
+- `mysql`、`oracle` — 直传
+- `dm` / `dameng` → `oracle`（DM 与 Oracle 语法高度兼容）
+- `ob_mysql` / `oceanbase_mysql` / `oceanbase` → `mysql`（OceanBase MySQL 模式）
+- `ob_oracle` / `oceanbase_oracle` → `oracle`（OceanBase Oracle 模式）
+- 未知方言原样下传给 sqlglot
+
+**存储过程深度解析** — `_extract_procedure_segments()` 识别 `CREATE [OR REPLACE] PROCEDURE / FUNCTION / PACKAGE BODY / TRIGGER` 块，token 平衡 BEGIN/END，从过程体抽取 INSERT/UPDATE/MERGE/DELETE/CTAS/INSERT OVERWRITE/TRUNCATE。控制流壳子（IF/THEN、LOOP）会被跳过，DML 段保留 `procedure_name` 标签。当外层 sqlglot 整体解析失败（PL/SQL 控制流），分析器仍会基于过程体段产出血缘。
+
+**动态 SQL** — 三种识别路径，置信度递减：
+1. `EXECUTE IMMEDIATE 'literal'` / `sp_executesql 'literal'` — `confidence=high`
+2. MySQL `SET @sql := '...'; PREPARE stmt FROM @sql; EXECUTE stmt;` — 跟踪同名变量，`prepare_var` 高置信
+3. PL/SQL `v_sql := 'INSERT ' || p_table || ' SELECT...'; EXECUTE IMMEDIATE v_sql;` — 字面量段保留、变量段替换为 `:var` 占位符后送解析，`var_concat` 低置信
+4. 静态长度 ≥20 的字符串字面量兜底 — `string_literal` 中置信
+分支判断、循环、参数化拼接无法静态还原，按 `low_confidence` 标记 + warning 返回。
+
+**临时表** — CTAS 含 `TEMPORARY` / `TEMP` / `GLOBAL TEMPORARY` 时 mapping 加 `is_temp=true`，`dml_type=CREATE_TEMP_TABLE_AS`。批量分析在"外部源表"和"最终产物"全局警告里把临时表过滤掉，避免把跨段中间产物误报成外部输入。
+
 ## 关键设计决策
 
 - **流式对比模式**（`limits.stream_compare = true`）：不将全部行加载到内存，而是通过有序迭代器流式归并两侧数据。要求两边的 SQL 已按主键排序。

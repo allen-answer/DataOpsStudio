@@ -466,3 +466,189 @@ def test_batch_impact_analysis_present():
     result = analyze_lineage_batch(scripts)
     assert "impact_analysis" in result
     assert isinstance(result["impact_analysis"], dict)
+
+
+# ─── 方言路由 ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "alias,expected_dialect_works",
+    [
+        ("mysql", True),
+        ("oracle", True),
+        ("dm", True),
+        ("dameng", True),
+        ("ob_mysql", True),
+        ("ob_oracle", True),
+        ("oceanbase", True),
+        ("oceanbase_mysql", True),
+        ("oceanbase_oracle", True),
+    ],
+)
+def test_dialect_aliases_resolve(alias, expected_dialect_works):
+    """Each alias should be accepted without raising."""
+    sql = "INSERT INTO dw.t SELECT id FROM stg.s"
+    result = analyze_sql_lineage(sql, dialect=alias)
+    assert result["statement_count"] >= 1
+
+
+def test_dialect_unknown_passthrough_does_not_raise():
+    # Unknown dialect should fall back to default parsing.
+    sql = "INSERT INTO dw.t SELECT id FROM stg.s"
+    result = analyze_sql_lineage(sql, dialect="postgres")
+    assert result["statement_count"] >= 1
+
+
+# ─── 存储过程深度解析 ──────────────────────────────────────────────────────────
+
+def test_oracle_procedure_extracts_inner_inserts():
+    sql = """
+    CREATE OR REPLACE PROCEDURE etl_orders AS
+    BEGIN
+      INSERT INTO dw.orders_t SELECT id, amount FROM stg.orders WHERE dt = SYSDATE;
+      MERGE INTO dw.users t USING stg.users s ON (t.id = s.id)
+        WHEN MATCHED THEN UPDATE SET t.name = s.name;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {m["target_table"] for m in result["insert_mappings"]}
+    assert "dw.orders_t" in targets
+    assert "dw.users" in targets
+    assert any(seg["procedure_name"] == "etl_orders" for seg in result["procedure_segments"])
+
+
+def test_mysql_procedure_extracts_inner_inserts():
+    sql = """
+    CREATE PROCEDURE p_etl()
+    BEGIN
+      INSERT INTO dw.orders_t SELECT id, amount FROM stg.orders;
+      DELETE FROM stg.staging WHERE processed = 1;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    targets = {m["target_table"] for m in result["insert_mappings"]}
+    assert "dw.orders_t" in targets
+    assert any("p_etl" in seg["procedure_name"] for seg in result["procedure_segments"])
+
+
+def test_procedure_with_control_flow_skipped():
+    sql = """
+    CREATE OR REPLACE PROCEDURE p_cond AS
+    BEGIN
+      IF :p_mode = 'FULL' THEN
+        INSERT INTO dw.t SELECT * FROM stg.s;
+      END IF;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert any(m["target_table"] == "dw.t" for m in result["insert_mappings"])
+
+
+def test_procedure_warning_emitted():
+    sql = """
+    CREATE PROCEDURE p() BEGIN INSERT INTO t SELECT * FROM s; END;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    assert any(w["type"] == "存储过程" for w in result["warnings"])
+
+
+# ─── 临时表中间节点 ────────────────────────────────────────────────────────────
+
+def test_temp_table_marked_is_temp():
+    sql = "CREATE TEMPORARY TABLE tmp_orders AS SELECT id FROM stg.orders"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    assert any(m.get("is_temp") for m in result["insert_mappings"])
+
+
+def test_oracle_global_temporary_table_marked_is_temp():
+    sql = "CREATE GLOBAL TEMPORARY TABLE tmp_users AS SELECT id FROM stg.users"
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert any(m.get("is_temp") for m in result["insert_mappings"])
+
+
+def test_temp_table_excluded_from_external_source_warnings():
+    scripts = [
+        ScriptInput("s1.sql", "CREATE TEMPORARY TABLE tmp AS SELECT id FROM stg.s"),
+        ScriptInput("s2.sql", "INSERT INTO dw.final SELECT id FROM tmp"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    external_warnings = [w for w in result["warnings"] if w.get("type") == "外部源表"]
+    external_messages = {w["message"] for w in external_warnings}
+    assert "tmp" not in external_messages
+
+
+# ─── 动态 SQL ─────────────────────────────────────────────────────────────────
+
+def test_mysql_prepare_execute_extracts_dml():
+    sql = """
+    SET @sql := 'INSERT INTO dw.orders_t SELECT id FROM stg.orders WHERE dt = CURDATE()';
+    PREPARE stmt FROM @sql;
+    EXECUTE stmt;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.orders" in sources
+    assert any(d["source"] == "prepare_var" for d in result["dynamic_sql_segments"])
+
+
+def test_oracle_execute_immediate_var_concat():
+    sql = """
+    DECLARE
+      v_sql VARCHAR2(2000);
+    BEGIN
+      v_sql := 'INSERT INTO dw.orders_t SELECT id FROM stg.orders WHERE dt = ' || :p_dt;
+      EXECUTE IMMEDIATE v_sql;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.orders" in sources
+    assert any(d["source"] == "var_concat" for d in result["dynamic_sql_segments"])
+
+
+def test_oracle_execute_immediate_literal():
+    sql = """
+    BEGIN
+      EXECUTE IMMEDIATE 'INSERT INTO dw.orders_t SELECT id FROM stg.orders';
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.orders" in sources
+
+
+# ─── 各方言 DML 形态覆盖 ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dialect", ["mysql", "oracle", "dm", "ob_mysql", "ob_oracle"])
+def test_ctas_all_dialects(dialect):
+    sql = "CREATE TABLE dw.snapshot AS SELECT id, dt FROM stg.events"
+    result = analyze_sql_lineage(sql, dialect=dialect)
+    targets = {m["target_table"] for m in result["insert_mappings"]}
+    assert "dw.snapshot" in targets
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "oracle", "dm", "ob_mysql", "ob_oracle"])
+def test_insert_select_all_dialects(dialect):
+    sql = "INSERT INTO dw.t SELECT id FROM stg.s"
+    result = analyze_sql_lineage(sql, dialect=dialect)
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.s" in sources
+
+
+@pytest.mark.parametrize("dialect", ["oracle", "dm", "ob_oracle"])
+def test_merge_all_dialects(dialect):
+    sql = """
+    MERGE INTO dw.t tgt
+    USING stg.s src ON (tgt.id = src.id)
+    WHEN MATCHED THEN UPDATE SET tgt.v = src.v
+    """
+    result = analyze_sql_lineage(sql, dialect=dialect)
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.s" in sources
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "oracle", "dm", "ob_mysql"])
+def test_update_with_subquery_all_dialects(dialect):
+    sql = "UPDATE dw.t SET v = (SELECT v FROM stg.s WHERE id = dw.t.id) WHERE EXISTS (SELECT 1 FROM stg.s)"
+    result = analyze_sql_lineage(sql, dialect=dialect)
+    sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
+    assert "stg.s" in sources

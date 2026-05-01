@@ -53,6 +53,11 @@ def analyze_lineage_batch(
             item["table"] for item in result.get("tables", []) if not _is_alias_reference(item["table"], aliases)
         )
         write_tables = _unique_strings(item.get("target_table", "") for item in result.get("insert_mappings", []))
+        temp_tables = _unique_strings(
+            item.get("target_table", "")
+            for item in result.get("insert_mappings", [])
+            if item.get("is_temp")
+        )
         variables = _unique_strings(item["name"] for item in result.get("variables", []))
         mappings = result.get("insert_mappings", [])
         file_warnings.extend(_lineage_warnings(result))
@@ -63,6 +68,7 @@ def analyze_lineage_batch(
                 "statement_count": result.get("statement_count", 0),
                 "read_tables": read_tables,
                 "write_tables": write_tables,
+                "temp_tables": temp_tables,
                 "variables": variables,
                 "status": "成功",
                 "error": "",
@@ -352,13 +358,18 @@ def _global_warnings(files: list[dict[str, Any]], write_conflicts: list[dict[str
     warnings: list[dict[str, str]] = []
     writers: dict[str, list[str]] = {}
     readers: dict[str, list[str]] = {}
+    temp_keys: set[str] = set()
     for item in files:
         for table in item["write_tables"]:
             writers.setdefault(table, []).append(item["file_name"])
         for table in item["read_tables"]:
             readers.setdefault(table, []).append(item["file_name"])
+        for table in item.get("temp_tables", []):
+            temp_keys.add(_normalize_table_name(table))
 
     for table, file_names in writers.items():
+        if _normalize_table_name(table) in temp_keys:
+            continue
         if len(file_names) > 1:
             warnings.append(
                 {
@@ -371,7 +382,7 @@ def _global_warnings(files: list[dict[str, Any]], write_conflicts: list[dict[str
             warnings.append({"file_name": "全局", "type": "最终产物", "message": table})
 
     for table in readers:
-        if table not in writers:
+        if table not in writers and _normalize_table_name(table) not in temp_keys:
             warnings.append({"file_name": "全局", "type": "外部源表", "message": table})
     return warnings
 
