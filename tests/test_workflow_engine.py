@@ -353,6 +353,123 @@ def test_invalid_dag_workflow_run_marks_all_skipped():
     assert all(node.status == NodeRunStatus.SKIPPED for node in run.nodes)
 
 
+# --- when: conditional execution ---
+
+def test_when_true_runs_node():
+    calls = []
+
+    def runner(config, variables):
+        calls.append(config.get("tag"))
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"tag": "x"}, when="true"),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+    assert calls == ["x"]
+    assert run.nodes[0].status == NodeRunStatus.SUCCESS
+
+
+def test_when_false_skips_node_without_blocking_unrelated():
+    calls = []
+
+    def runner(config, variables):
+        calls.append(config.get("tag"))
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"tag": "skip"}, when="false"),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "run"}),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+    assert calls == ["run"]
+    assert run.nodes[0].status == NodeRunStatus.SKIPPED
+    assert run.nodes[1].status == NodeRunStatus.SUCCESS
+    assert run.status == WorkflowRunStatus.SUCCESS  # skipped is not failed
+
+
+def test_when_branches_on_upstream_output():
+    """The compare node returns summary.diff. The downstream `notify` only
+    runs when diff > 0 — the canonical use case for conditional execution."""
+    seen = []
+
+    def runner(config, variables):
+        if config.get("kind") == "compare_no_diff":
+            return {"summary": {"diff": 0}}
+        if config.get("kind") == "compare_with_diff":
+            return {"summary": {"diff": 7}}
+        seen.append(config.get("tag"))
+        return {}
+
+    # No diff → notify skipped
+    wf_no = _wf([
+        WorkflowNode(id="c", type=WorkflowNodeType.COMPARE, config={"kind": "compare_no_diff"}),
+        WorkflowNode(id="notify", type=WorkflowNodeType.COMPARE, config={"tag": "notify"},
+                     depends_on=["c"], when="${nodes.c.summary.diff} > 0"),
+    ])
+    run_workflow(wf_no, runners={WorkflowNodeType.COMPARE: runner})
+    assert seen == []
+
+    # With diff → notify runs
+    seen.clear()
+    wf_yes = _wf([
+        WorkflowNode(id="c", type=WorkflowNodeType.COMPARE, config={"kind": "compare_with_diff"}),
+        WorkflowNode(id="notify", type=WorkflowNodeType.COMPARE, config={"tag": "notify"},
+                     depends_on=["c"], when="${nodes.c.summary.diff} > 0"),
+    ])
+    run_workflow(wf_yes, runners={WorkflowNodeType.COMPARE: runner})
+    assert seen == ["notify"]
+
+
+def test_when_supports_string_equality_and_logical_ops():
+    calls = []
+
+    def runner(config, variables):
+        calls.append(config.get("tag"))
+        return {}
+
+    workflow = _wf(
+        [
+            WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, config={"tag": "a"},
+                         when="${env} == 'prod' && ${dryrun} == 'false'"),
+            WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, config={"tag": "b"},
+                         when="${env} == 'staging' || ${env} == 'prod'"),
+        ],
+        default_variables={"env": "prod", "dryrun": "false"},
+    )
+    run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+    assert "a" in calls and "b" in calls
+
+
+def test_when_invalid_expression_fails_node():
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={}, when="this is not valid &&& nonsense"),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: lambda c, v: {}})
+    assert run.nodes[0].status == NodeRunStatus.FAILED
+    assert "when" in run.nodes[0].error.lower()
+
+
+def test_when_rejects_function_calls_for_safety():
+    """`when` must NOT support arbitrary Python — no function calls, no
+    attribute access, no imports. Verifies the AST allowlist."""
+    from app.services.workflow_engine import evaluate_when
+
+    with pytest.raises(ValueError, match="disallowed"):
+        evaluate_when("__import__('os').system('echo')", {}, {})
+    with pytest.raises(ValueError, match="disallowed"):
+        evaluate_when("(1).bit_length()", {}, {})
+    with pytest.raises(ValueError, match="disallowed"):
+        evaluate_when("[1,2,3][0]", {}, {})
+
+
+def test_when_empty_runs_node():
+    """Empty `when` (the default) means always run."""
+    from app.services.workflow_engine import evaluate_when
+    assert evaluate_when("", {}, {}) is True
+    assert evaluate_when("   ", {}, {}) is True
+
+
 def test_interpolation_walks_nested_dict_and_list():
     received: dict = {}
 

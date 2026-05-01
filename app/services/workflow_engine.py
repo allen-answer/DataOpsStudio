@@ -17,6 +17,7 @@ land in a later slice once the DAG shape and tests have settled.
 """
 from __future__ import annotations
 
+import ast
 import bisect
 import logging
 import re
@@ -149,6 +150,28 @@ def run_workflow(
             blocked_ids.add(node.id)
             continue
 
+        # Evaluate `when:` (if any) BEFORE config interpolation. A False
+        # `when` skips the node — but does NOT block dependents (this is
+        # the "conditionally optional" pattern from GHA). We track skip
+        # via a separate set so dependents see status=SKIPPED but don't
+        # auto-block their downstream the way a failed parent would.
+        if node.when:
+            try:
+                should_run = evaluate_when(node.when, resolved_vars, completed_outputs)
+            except (KeyError, ValueError) as exc:
+                node_run.status = NodeRunStatus.FAILED
+                node_run.error = f"`when` evaluation failed: {exc}"
+                blocked_ids.add(node.id)
+                continue
+            if not should_run:
+                node_run.status = NodeRunStatus.SKIPPED
+                node_run.error = ""  # not an error — intentional skip
+                # NOTE: not added to blocked_ids — downstream nodes may still
+                # run (with empty output for this skipped node, which they
+                # can detect via missing keys). If you want skip-cascade,
+                # add a `depends_on` from the downstream node to this one.
+                continue
+
         try:
             resolved_config = _interpolate(node.config, resolved_vars, completed_outputs)
         except KeyError as exc:
@@ -240,7 +263,16 @@ def _resolve_placeholder(
     variables: Mapping[str, str],
     outputs: Mapping[str, Mapping[str, Any]],
 ) -> str:
-    """Resolve a single ${...} placeholder body to a string.
+    """String form of `_resolve_placeholder_value`. Used for config interpolation."""
+    return str(_resolve_placeholder_value(name, variables, outputs))
+
+
+def _resolve_placeholder_value(
+    name: str,
+    variables: Mapping[str, str],
+    outputs: Mapping[str, Mapping[str, Any]],
+) -> Any:
+    """Resolve a placeholder to its typed Python value (preserves int/bool/list/etc).
 
     `nodes.<id>.<dot.path>` walks completed node outputs (Airflow XCom /
     GitHub Actions `outputs.<step>.<key>` style). Anything else is a plain
@@ -263,7 +295,87 @@ def _resolve_placeholder(
                     raise KeyError(f"index {key!r} not valid for list at {name}") from exc
             else:
                 raise KeyError(f"key {key!r} not found in {name}")
-        return str(cursor)
+        return cursor
     if name not in variables:
         raise KeyError(name)
-    return str(variables[name])
+    return variables[name]
+
+
+# --- when: <expression> evaluator ---------------------------------------
+#
+# Tiny safe expression language for conditional execution. Steps:
+#   1. Replace ${...} placeholders with their typed values rendered as Python
+#      literals (numbers stay numeric, strings get quoted, booleans → True/False).
+#   2. Pre-process JS-style keywords: null→None, true→True, false→False, &&→and, ||→or, !→not.
+#   3. Parse with ast.parse(mode='eval').
+#   4. Walk the AST and reject any node type not in the allowlist.
+#   5. compile + eval with empty globals/locals.
+#
+# The allowlist enforces NO function calls, NO attribute access, NO subscripting,
+# NO comprehensions, NO assignments. Only literals, comparisons, and boolean ops.
+
+_WHEN_ALLOWED_AST_NODES: set[type[ast.AST]] = {
+    ast.Expression, ast.BoolOp, ast.UnaryOp, ast.Compare,
+    ast.Constant, ast.Load,
+    ast.And, ast.Or, ast.Not,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.USub, ast.UAdd,
+}
+
+
+def _interpolate_for_expression(
+    text: str,
+    variables: Mapping[str, str],
+    outputs: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Render ${...} placeholders inline as Python literals so the resulting
+    string parses cleanly under restricted ast.parse."""
+    def replace(match: re.Match[str]) -> str:
+        value = _resolve_placeholder_value(match.group(1).strip(), variables, outputs)
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "True" if value else "False"
+        if isinstance(value, (int, float)):
+            return repr(value)
+        # Strings, lists, dicts — repr quoting is safe under our AST allowlist
+        # which rejects subscript / attribute access anyway.
+        return repr(value if isinstance(value, str) else str(value))
+
+    return _VARIABLE_PATTERN.sub(replace, text)
+
+
+def evaluate_when(
+    expression: str,
+    variables: Mapping[str, str],
+    outputs: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    """Evaluate a `when:` expression. Empty / whitespace = True (always run)."""
+    if not expression or not expression.strip():
+        return True
+
+    rendered = _interpolate_for_expression(expression, variables, outputs)
+    # GitHub Actions / JS-style sugar mapped to Python equivalents.
+    rendered = (
+        rendered
+        .replace("&&", " and ")
+        .replace("||", " or ")
+    )
+    # ! → not, but only when not part of != ; be conservative — only at token boundaries.
+    rendered = re.sub(r"(?<![=!<>])!(?!=)", " not ", rendered)
+    rendered = re.sub(r"\bnull\b", "None", rendered)
+    rendered = re.sub(r"\btrue\b", "True", rendered)
+    rendered = re.sub(r"\bfalse\b", "False", rendered)
+
+    try:
+        tree = ast.parse(rendered, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"`when` expression is not valid: {expression!r} → {exc.msg}") from exc
+
+    for node in ast.walk(tree):
+        if type(node) not in _WHEN_ALLOWED_AST_NODES:
+            raise ValueError(
+                f"`when` expression rejected: disallowed construct {type(node).__name__} in {expression!r}"
+            )
+
+    return bool(eval(compile(tree, "<when>", "eval"), {"__builtins__": {}}, {}))

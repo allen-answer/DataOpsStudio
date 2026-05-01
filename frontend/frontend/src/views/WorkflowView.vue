@@ -183,6 +183,11 @@ const taskNameById = (id) => state.tasks.find((task) => task.id === id)?.name ||
                   </div>
                   <p class="mt-1 text-[10px] text-slate-400">勾选必须先完成的节点；输出可用 <code class="rounded bg-slate-100 px-1 py-0.5 text-[10px]">${'$'}{nodes.{{ node.id }}.summary.diff}</code> 这种引用</p>
                 </div>
+                <label class="mt-3 block">
+                  <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">条件 (when, 可选)</span>
+                  <input v-model="node.when" class="w-full border-none bg-white px-3 py-2 font-mono text-[12px] text-slate-700" :placeholder="`留空 = 总是运行；例: \${nodes.x.summary.diff} > 0`">
+                  <span class="mt-1 block text-[10px] text-slate-400">支持 == != &gt; &lt; &amp;&amp; || ! 和 ${'$'}{var} / ${'$'}{nodes.x.y} 引用；表达式为 false 时该节点 SKIPPED</span>
+                </label>
               </div>
             </div>
           </div>

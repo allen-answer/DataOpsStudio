@@ -663,6 +663,7 @@ const fillWorkflowDraft = (wf) => {
     body: node.config?.body || '',
     expect_status: node.config?.expect_status ?? '',
     depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
+    when: node.when || '',
   }))
 }
 
@@ -690,6 +691,7 @@ const workflowPayload = () => ({
     name: node.name,
     config: buildNodeConfig(node),
     depends_on: Array.isArray(node.depends_on) ? node.depends_on : [],
+    when: node.when || '',
   })),
 })
 
@@ -734,7 +736,7 @@ const loadWorkflowRunDetail = async (runId) => {
 const addWorkflowNode = () => {
   const nextIndex = workflowDraft.nodes.length + 1
   workflowDraft.nodes.push({
-    id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [],
+    id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
     task_id: '', sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
   })
