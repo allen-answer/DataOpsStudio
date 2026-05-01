@@ -1,15 +1,14 @@
 <script setup>
 import { defineAsyncComponent, inject } from 'vue'
+import SchemaPanel from '../components/SchemaPanel.vue'
 
 const LineageGraph = defineAsyncComponent(() => import('../components/LineageGraph.vue'))
 
 const {
-  state,
   batch,
   batchActiveTab,
   batchTabs,
   batchSelectedFileNames,
-  batchSchemaFileNames,
   analyzeBatch,
 } = inject('app')
 </script>
@@ -18,23 +17,14 @@ const {
   <section class="space-y-6">
     <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div class="mb-6 flex items-end justify-between"><div><h2 class="text-2xl font-bold text-slate-800">多脚本 ETL 流程分析</h2><p class="mt-1 text-sm text-slate-500">支持 .sql/.txt/.zip、Schema 元数据和导出</p></div><button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="analyzeBatch">分析脚本包</button></div>
-      <div class="grid grid-cols-4 gap-4">
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="batch.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">脚本文件</span><input type="file" accept=".sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.files = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">可一次选择多个 .sql/.txt 文件，或上传一个 .zip 脚本包。</small></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 数据源</span><select v-model="batch.schemaDatasourceId" class="border-none bg-slate-50"><option value="">不自动拉取</option><option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option></select><small class="mt-2 block text-xs text-slate-500">失败时会降级为文件元数据。</small></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">文件会和数据源字段合并。</small></label>
-      </div>
-      <div class="mt-4 grid grid-cols-4 gap-4">
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema / Database</span><input v-model="batch.schemaName" class="border-none bg-slate-50" placeholder="留空使用数据源默认值"></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表名过滤</span><input v-model="batch.schemaTableFilter" class="border-none bg-slate-50" placeholder="如 dwd_%"></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 方言</span><select v-model="batch.schemaDialect" class="border-none bg-slate-50"><option value="">跟随数据源</option><option value="mysql">MySQL</option><option value="oracle">Oracle</option><option value="dm">DM</option><option value="ob_mysql">OB MySQL</option><option value="ob_oracle">OB Oracle</option></select></label>
-        <label class="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600"><input v-model="batch.schemaOnlySqlTables" type="checkbox" class="h-4 w-4">只拉脚本中出现的表</label>
-      </div>
+      <SchemaPanel :target="batch" sql-tables-label="只拉脚本中出现的表">
+        <template #prefix>
+          <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="batch.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
+          <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">脚本文件</span><input type="file" accept=".sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.files = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">可一次选择多个 .sql/.txt 文件，或上传一个 .zip 脚本包。</small></label>
+        </template>
+      </SchemaPanel>
       <div v-if="batchSelectedFileNames.length" class="mt-4 flex flex-wrap gap-2">
         <span v-for="name in batchSelectedFileNames" :key="name" class="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">{{ name }}</span>
-      </div>
-      <div v-if="batchSchemaFileNames.length" class="mt-3 flex flex-wrap gap-2">
-        <span v-for="name in batchSchemaFileNames" :key="name" class="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">Schema: {{ name }}</span>
       </div>
     </div>
     <div v-if="batch.error" class="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-700">{{ batch.error }}</div>

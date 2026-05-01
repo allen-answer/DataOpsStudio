@@ -1,15 +1,11 @@
 <script setup>
 import { defineAsyncComponent, inject } from 'vue'
+import SchemaPanel from '../components/SchemaPanel.vue'
 
 const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
 const LineageGraph = defineAsyncComponent(() => import('../components/LineageGraph.vue'))
 
-const {
-  state,
-  lineage,
-  lineageSchemaFileNames,
-  analyzeLineage,
-} = inject('app')
+const { lineage, analyzeLineage } = inject('app')
 </script>
 
 <template>
@@ -20,20 +16,13 @@ const {
         <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="analyzeLineage">分析血缘</button>
       </div>
       <SqlEditor v-model="lineage.sql" placeholder="粘贴 SQL，或选择文件" />
-      <div class="mt-4 grid grid-cols-4 gap-4">
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="lineage.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL/TXT 文件</span><input type="file" accept=".sql,.txt" class="border-none bg-slate-50" @change="lineage.sqlFile = $event.target.files[0]"></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 数据源</span><select v-model="lineage.schemaDatasourceId" class="border-none bg-slate-50"><option value="">不自动拉取</option><option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option></select><small class="mt-2 block text-xs text-slate-500">失败时会降级为文件元数据。</small></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="lineage.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">文件会和数据源字段合并。</small></label>
-      </div>
-      <div class="mt-4 grid grid-cols-4 gap-4">
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema / Database</span><input v-model="lineage.schemaName" class="border-none bg-slate-50" placeholder="留空使用数据源默认值"></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表名过滤</span><input v-model="lineage.schemaTableFilter" class="border-none bg-slate-50" placeholder="如 ods_%"></label>
-        <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 方言</span><select v-model="lineage.schemaDialect" class="border-none bg-slate-50"><option value="">跟随数据源</option><option value="mysql">MySQL</option><option value="oracle">Oracle</option><option value="dm">DM</option><option value="ob_mysql">OB MySQL</option><option value="ob_oracle">OB Oracle</option></select></label>
-        <label class="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600"><input v-model="lineage.schemaOnlySqlTables" type="checkbox" class="h-4 w-4">只拉 SQL 中出现的表</label>
-      </div>
-      <div v-if="lineageSchemaFileNames.length" class="mt-4 flex flex-wrap gap-2">
-        <span v-for="name in lineageSchemaFileNames" :key="name" class="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">{{ name }}</span>
+      <div class="mt-4">
+        <SchemaPanel :target="lineage" sql-tables-label="只拉 SQL 中出现的表">
+          <template #prefix>
+            <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="lineage.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
+            <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL/TXT 文件</span><input type="file" accept=".sql,.txt" class="border-none bg-slate-50" @change="lineage.sqlFile = $event.target.files[0]"></label>
+          </template>
+        </SchemaPanel>
       </div>
     </div>
     <div v-if="lineage.error" class="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-700">{{ lineage.error }}</div>

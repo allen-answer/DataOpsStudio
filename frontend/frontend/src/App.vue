@@ -140,8 +140,6 @@ const lineageHistoryCount = computed(() => state.history.filter((item) => item.t
 const driverItems = computed(() => Object.entries(state.drivers || {}))
 const activeViewLabel = computed(() => views.find((view) => view.id === activeView.value)?.label || '数据源管理')
 const batchSelectedFileNames = computed(() => batch.files.map((file) => file.name))
-const lineageSchemaFileNames = computed(() => lineage.schemaFiles.map((file) => file.name))
-const batchSchemaFileNames = computed(() => batch.schemaFiles.map((file) => file.name))
 const batchTabs = [
   { id: 'overview', label: '流程总览' },
   { id: 'graph', label: '数据流图' },
@@ -633,7 +631,7 @@ provide('app', {
   // computed
   driverItems, historyTaskOptions, filteredHistory,
   compareHistoryCount, lineageHistoryCount, compareBuckets,
-  batchSelectedFileNames, lineageSchemaFileNames, batchSchemaFileNames,
+  batchSelectedFileNames,
   // handlers — bootstrap / utils
   loadBootstrap, setNotice, setActionStatus, toErrorMessage,
   historyItemTaskLabel, summaryValue, copyField,
