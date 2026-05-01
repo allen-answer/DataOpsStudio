@@ -7,10 +7,12 @@ import DatasourceView from './views/DatasourceView.vue'
 import HistoryView from './views/HistoryView.vue'
 import LineageView from './views/LineageView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
+import WorkflowView from './views/WorkflowView.vue'
 
 const views = [
   { id: 'datasource', label: '数据源管理' },
   { id: 'workbench', label: '数据对比任务工作台' },
+  { id: 'workflow', label: '作业流' },
   { id: 'lineage', label: '单脚本血缘' },
   { id: 'batch', label: '多脚本分析' },
   { id: 'history', label: '执行历史' },
@@ -30,6 +32,11 @@ const targetFields = ref([])
 const compareResult = ref(null)
 const asyncJob = ref(null)
 const asyncStatus = ref(null)
+const selectedWorkflowId = ref('new')
+const workflowResult = ref(null)
+const workflowAsyncJob = ref(null)
+const workflowAsyncStatus = ref(null)
+const workflowAsyncPollTimer = ref(null)
 const batchActiveTab = ref('overview')
 const selectedHistoryTaskId = ref('')
 const historyActiveTab = ref('compare')
@@ -42,6 +49,7 @@ const actionStatus = reactive({
 const state = reactive({
   datasources: [],
   tasks: [],
+  workflows: [],
   drivers: {},
   dbTypes: [],
   history: [],
@@ -93,6 +101,13 @@ const datasourceDraft = reactive({
   password: '',
 })
 
+const workflowDraft = reactive({
+  name: '',
+  default_variables: '',
+  runtime_variables: '',
+  nodes: [],
+})
+
 const editingDatasourceId = ref('')
 const editDraft = reactive({ name: '', db_type: '', host: '', port: 3306, database: '', username: '', password: '' })
 
@@ -126,6 +141,8 @@ const batch = reactive({
 
 const currentTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value))
 const isSavedTask = computed(() => selectedTaskId.value !== 'new')
+const currentWorkflow = computed(() => state.workflows.find((wf) => wf.id === selectedWorkflowId.value))
+const isSavedWorkflow = computed(() => selectedWorkflowId.value !== 'new')
 const selectedHistory = ref(new Set())
 const selectedSheets = ref(new Set(['汇总对照']))
 const historyTaskOptions = computed(() => {
@@ -224,6 +241,7 @@ const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
     const data = await apiGet('/api/bootstrap')
     state.datasources = data.datasources || []
     state.tasks = data.tasks || []
+    state.workflows = data.workflows || []
     state.drivers = data.drivers || {}
     state.dbTypes = data.db_types || []
     state.history = data.history || []
@@ -607,6 +625,156 @@ const formatSql = async (side) => {
   }
 }
 
+// --- Workflow handlers ---
+const parseVariables = (text) => {
+  const out = {}
+  String(text || '').split('\n').forEach((line) => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) return
+    const eq = trimmed.indexOf('=')
+    if (eq < 0) return
+    const key = trimmed.slice(0, eq).trim()
+    if (key) out[key] = trimmed.slice(eq + 1).trim()
+  })
+  return out
+}
+const stringifyVariables = (obj) =>
+  Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join('\n')
+
+const fillWorkflowDraft = (wf) => {
+  workflowDraft.name = wf?.name || ''
+  workflowDraft.default_variables = stringifyVariables(wf?.default_variables)
+  workflowDraft.runtime_variables = ''
+  workflowDraft.nodes = (wf?.nodes || []).map((node) => ({
+    id: node.id || '',
+    type: node.type || 'compare',
+    name: node.name || '',
+    task_id: node.config?.task_id || '',
+  }))
+}
+
+const workflowPayload = () => ({
+  name: workflowDraft.name,
+  default_variables: parseVariables(workflowDraft.default_variables),
+  nodes: workflowDraft.nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    config: node.type === 'compare' ? { task_id: node.task_id } : {},
+  })),
+})
+
+const stopWorkflowAsyncPoll = () => {
+  if (workflowAsyncPollTimer.value) {
+    clearInterval(workflowAsyncPollTimer.value)
+    workflowAsyncPollTimer.value = null
+  }
+}
+
+const selectWorkflow = (id) => {
+  stopWorkflowAsyncPoll()
+  selectedWorkflowId.value = id
+  workflowResult.value = null
+  workflowAsyncJob.value = null
+  workflowAsyncStatus.value = null
+  fillWorkflowDraft(id === 'new' ? null : state.workflows.find((wf) => wf.id === id))
+}
+
+const addWorkflowNode = () => {
+  const nextIndex = workflowDraft.nodes.length + 1
+  workflowDraft.nodes.push({ id: `n${nextIndex}`, type: 'compare', name: '', task_id: '' })
+}
+
+const removeWorkflowNode = (index) => {
+  workflowDraft.nodes.splice(index, 1)
+}
+
+const moveWorkflowNode = (index, delta) => {
+  const target = index + delta
+  if (target < 0 || target >= workflowDraft.nodes.length) return
+  const tmp = workflowDraft.nodes[index]
+  workflowDraft.nodes[index] = workflowDraft.nodes[target]
+  workflowDraft.nodes[target] = tmp
+}
+
+const saveWorkflow = async () => {
+  setNotice('保存中...')
+  try {
+    if (selectedWorkflowId.value === 'new') {
+      const created = await apiJson('/api/workflows', 'POST', workflowPayload())
+      state.workflows.unshift(created)
+      selectWorkflow(created.id)
+    } else {
+      const updated = await apiJson(`/api/workflows/${selectedWorkflowId.value}`, 'PUT', workflowPayload())
+      const idx = state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value)
+      if (idx !== -1) state.workflows[idx] = updated
+    }
+    setNotice('作业流已保存')
+  } catch (error) {
+    setNotice(`保存失败：${toErrorMessage(error)}`)
+  }
+}
+
+const deleteWorkflow = async () => {
+  if (selectedWorkflowId.value === 'new') return
+  try {
+    await apiJson(`/api/workflows/${selectedWorkflowId.value}`, 'DELETE')
+    state.workflows = state.workflows.filter((wf) => wf.id !== selectedWorkflowId.value)
+    selectWorkflow(state.workflows[0]?.id || 'new')
+    setNotice('作业流已删除')
+  } catch (error) {
+    setNotice(`删除失败：${toErrorMessage(error)}`)
+  }
+}
+
+const runWorkflow = async () => {
+  if (selectedWorkflowId.value === 'new') return
+  workflowResult.value = null
+  workflowAsyncJob.value = null
+  workflowAsyncStatus.value = null
+  setNotice('执行中...')
+  try {
+    const variables = parseVariables(workflowDraft.runtime_variables)
+    workflowResult.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run`, 'POST', { variables })
+    setNotice(`执行${workflowResult.value.status === 'success' ? '完成' : '失败'}`)
+  } catch (error) {
+    setNotice(`执行失败：${toErrorMessage(error)}`)
+  }
+}
+
+const runWorkflowAsync = async () => {
+  if (selectedWorkflowId.value === 'new') return
+  workflowResult.value = null
+  workflowAsyncStatus.value = null
+  try {
+    const variables = parseVariables(workflowDraft.runtime_variables)
+    workflowAsyncJob.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run-async`, 'POST', { variables })
+    workflowAsyncStatus.value = workflowAsyncJob.value
+    workflowAsyncPollTimer.value = setInterval(async () => {
+      try {
+        workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
+        if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
+          stopWorkflowAsyncPoll()
+        }
+      } catch (error) {
+        stopWorkflowAsyncPoll()
+        setNotice(`后台状态查询失败：${toErrorMessage(error)}`)
+      }
+    }, 1200)
+  } catch (error) {
+    setNotice(`后台执行提交失败：${toErrorMessage(error)}`)
+  }
+}
+
+const cancelWorkflowAsync = async () => {
+  if (!workflowAsyncJob.value) return
+  try {
+    workflowAsyncStatus.value = await apiJson(`/api/runs/${workflowAsyncJob.value.job_id}/cancel`, 'POST')
+  } catch (error) {
+    setNotice(`取消失败：${toErrorMessage(error)}`)
+  }
+}
+
 const startEditDatasource = (item) => {
   editingDatasourceId.value = item.id
   Object.assign(editDraft, { name: item.name, db_type: item.db_type, host: item.host, port: item.port, database: item.database, username: item.username, password: '' })
@@ -720,9 +888,9 @@ const exportHistory = async () => {
   window.open(url, '_blank')
 }
 
-watch(activeView, stopAsyncPoll)
+watch(activeView, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
 onMounted(loadBootstrap)
-onUnmounted(stopAsyncPoll)
+onUnmounted(() => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
 
 // Shared context for view components. Reactive objects (state, lineage, batch, ...)
 // preserve reactivity through inject; refs auto-unwrap in templates.
@@ -756,6 +924,12 @@ provide('app', {
   analyzeLineage, analyzeBatch,
   // handlers — history
   loadHistory, deleteHistory, exportHistory,
+  // workflow state + handlers
+  workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
+  workflowResult, workflowAsyncJob, workflowAsyncStatus,
+  selectWorkflow, saveWorkflow, deleteWorkflow,
+  runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
+  addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
 })
 </script>
 
@@ -815,6 +989,8 @@ provide('app', {
         <DatasourceView v-if="activeView === 'datasource'" />
 
         <WorkbenchView v-if="activeView === 'workbench'" />
+
+        <WorkflowView v-if="activeView === 'workflow'" />
 
         <LineageView v-if="activeView === 'lineage'" />
 
