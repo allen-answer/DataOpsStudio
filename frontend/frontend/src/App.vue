@@ -41,6 +41,7 @@ const workflowResult = ref(null)
 const workflowAsyncJob = ref(null)
 const workflowAsyncStatus = ref(null)
 const workflowAsyncPollTimer = ref(null)
+const workflowRunHistory = ref([])    // list of run summaries for the selected workflow
 const batchActiveTab = ref('overview')
 const selectedHistoryTaskId = ref('')
 const historyActiveTab = ref('compare')
@@ -705,7 +706,29 @@ const selectWorkflow = (id) => {
   workflowResult.value = null
   workflowAsyncJob.value = null
   workflowAsyncStatus.value = null
+  workflowRunHistory.value = []
   fillWorkflowDraft(id === 'new' ? null : state.workflows.find((wf) => wf.id === id))
+  if (id !== 'new') loadWorkflowRunHistory(id)
+}
+
+const loadWorkflowRunHistory = async (workflowId) => {
+  try {
+    workflowRunHistory.value = await apiGet(`/api/workflows/${workflowId}/runs?limit=20`)
+  } catch (error) {
+    workflowRunHistory.value = []
+  }
+}
+
+const loadWorkflowRunDetail = async (runId) => {
+  try {
+    const detail = await apiGet(`/api/workflow-runs/${runId}`)
+    workflowResult.value = detail
+    workflowAsyncStatus.value = null
+    workflowAsyncJob.value = null
+    setNotice(`已加载历史运行 ${runId.slice(0, 8)}`)
+  } catch (error) {
+    setNotice(`加载失败：${toErrorMessage(error)}`)
+  }
 }
 
 const addWorkflowNode = () => {
@@ -769,6 +792,7 @@ const runWorkflow = async () => {
     const variables = parseVariables(workflowDraft.runtime_variables)
     workflowResult.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run`, 'POST', { variables })
     setNotice(`执行${workflowResult.value.status === 'success' ? '完成' : '失败'}`)
+    loadWorkflowRunHistory(selectedWorkflowId.value)
   } catch (error) {
     setNotice(`执行失败：${toErrorMessage(error)}`)
   }
@@ -787,6 +811,7 @@ const runWorkflowAsync = async () => {
         workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
         if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
           stopWorkflowAsyncPoll()
+          loadWorkflowRunHistory(selectedWorkflowId.value)
         }
       } catch (error) {
         stopWorkflowAsyncPoll()
@@ -958,10 +983,11 @@ provide('app', {
   loadHistory, deleteHistory, exportHistory,
   // workflow state + handlers
   workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
-  workflowResult, workflowAsyncJob, workflowAsyncStatus,
+  workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
   selectWorkflow, saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
+  loadWorkflowRunHistory, loadWorkflowRunDetail,
 })
 </script>
 

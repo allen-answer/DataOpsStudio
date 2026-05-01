@@ -11,6 +11,7 @@ DATASOURCES_FILE = CONFIG_DIR / "datasources.json"
 TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 WORKFLOWS_FILE = CONFIG_DIR / "workflows.json"
+WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
 
 
 def ensure_dirs() -> None:

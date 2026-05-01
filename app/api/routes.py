@@ -19,6 +19,9 @@ from app.services.repositories import datasource_store, task_store, workflow_sto
 from app.services.runner import run_task
 from app.services.sql_tools import sql_assist
 from app.services.workflow_engine import run_workflow, topological_order
+from app.services.workflow_history import (
+    delete_workflow_run, get_workflow_run, list_workflow_runs, persist_workflow_run,
+)
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
 
@@ -220,6 +223,7 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
         run = run_workflow(workflow, variables)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    persist_workflow_run(run)
     return run.model_dump(mode="json")
 
 
@@ -229,6 +233,35 @@ def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None =
         raise HTTPException(status_code=404, detail="Workflow not found")
     variables = _coerce_string_dict((payload or {}).get("variables"))
     return submit_workflow_run(workflow_id, variables)
+
+
+@router.get("/api/workflows/{workflow_id}/runs")
+def list_workflow_runs_api(workflow_id: str, limit: int = 50):
+    if workflow_store.get(workflow_id) is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return list_workflow_runs(workflow_id, limit=limit)
+
+
+@router.get("/api/workflow-runs")
+def list_all_workflow_runs_api(limit: int = 200):
+    return list_workflow_runs("", limit=limit)
+
+
+@router.get("/api/workflow-runs/{run_id}")
+def get_workflow_run_api(run_id: str):
+    run = get_workflow_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return run
+
+
+@router.delete("/api/workflow-runs/{run_id}")
+def delete_workflow_run_api(run_id: str):
+    try:
+        delete_workflow_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Workflow run not found") from exc
+    return {"ok": True}
 
 
 @router.get("/api/history")

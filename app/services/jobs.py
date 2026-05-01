@@ -11,6 +11,7 @@ from uuid import uuid4
 from app.services.runner import run_task
 from app.services.repositories import workflow_store
 from app.services.workflow_engine import run_workflow
+from app.services.workflow_history import persist_workflow_run
 from app.utils.paths import JOBS_FILE
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ def _run_workflow_job(job_id: str, workflow_id: str, variables: dict[str, str]) 
         if workflow is None:
             raise ValueError(f"Workflow not found: {workflow_id}")
         run = run_workflow(workflow, variables, cancel_check=lambda: _is_cancel_requested(job_id))
+        persist_workflow_run(run)   # best-effort — persists to results/workflow_runs/<run_id>.json
         result = run.model_dump(mode="json")
         if run.error == "cancelled":
             _patch_job(job_id, status="cancelled", message="已取消", error="任务已取消", result=result)

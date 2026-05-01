@@ -18,6 +18,8 @@ const {
   addWorkflowNode,
   removeWorkflowNode,
   moveWorkflowNode,
+  workflowRunHistory,
+  loadWorkflowRunDetail,
 } = inject('app')
 
 const compareTaskOptions = computed(() => state.tasks.map((task) => ({ id: task.id, name: task.name })))
@@ -241,6 +243,51 @@ const taskNameById = (id) => state.tasks.find((task) => task.id === id)?.name ||
               <p v-if="lastRun.error" class="rounded-xl bg-red-50 p-3 text-sm text-red-700">{{ lastRun.error }}</p>
             </div>
             <div v-else class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">暂无运行结果。保存后点击「同步执行」或「后台执行」。</div>
+          </div>
+
+          <!-- run history (slice 3) -->
+          <div v-if="isSavedWorkflow" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div class="mb-4 flex items-center justify-between gap-3">
+              <h3 class="text-lg font-bold text-slate-800">历史运行</h3>
+              <span class="text-xs text-slate-400">{{ workflowRunHistory.length }} 条 · 落盘到 results/workflow_runs/</span>
+            </div>
+            <div v-if="!workflowRunHistory.length" class="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">还没有历史运行</div>
+            <div v-else class="overflow-hidden rounded-xl border border-slate-200">
+              <table class="w-full text-xs">
+                <thead class="border-b border-slate-200 bg-slate-50">
+                  <tr class="text-left">
+                    <th class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">状态</th>
+                    <th class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Run ID</th>
+                    <th class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">开始时间</th>
+                    <th class="px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">耗时</th>
+                    <th class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">节点</th>
+                    <th class="px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="run in workflowRunHistory" :key="run.run_id" class="cursor-pointer border-b border-slate-100 transition last:border-0 hover:bg-slate-50/70" @click="loadWorkflowRunDetail(run.run_id)">
+                    <td class="px-3 py-2.5">
+                      <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset"
+                            :class="run.status === 'success' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-rose-200'">
+                        <span class="h-1.5 w-1.5 rounded-full" :class="run.status === 'success' ? 'bg-emerald-500' : 'bg-rose-500'"></span>
+                        {{ run.status }}
+                      </span>
+                    </td>
+                    <td class="px-3 py-2.5 font-mono text-slate-600">{{ run.run_id.slice(0, 12) }}</td>
+                    <td class="px-3 py-2.5 font-mono text-slate-600">{{ run.started_at }}</td>
+                    <td class="px-3 py-2.5 text-right font-mono text-slate-600">{{ run.elapsed_seconds }}s</td>
+                    <td class="px-3 py-2.5 text-[11px]">
+                      <span class="text-emerald-600 font-mono">✓{{ run.node_status_counts.success || 0 }}</span>
+                      <span v-if="run.node_status_counts.failed" class="ml-2 text-rose-600 font-mono">✕{{ run.node_status_counts.failed }}</span>
+                      <span v-if="run.node_status_counts.skipped" class="ml-2 text-slate-500 font-mono">⊘{{ run.node_status_counts.skipped }}</span>
+                    </td>
+                    <td class="px-3 py-2.5 text-right">
+                      <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click.stop="loadWorkflowRunDetail(run.run_id)">载入</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
