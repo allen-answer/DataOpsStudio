@@ -8,13 +8,10 @@ import HistoryView from './views/HistoryView.vue'
 import LineageView from './views/LineageView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import WorkflowView from './views/WorkflowView.vue'
-import DagsterView from './views/DagsterView.vue'
-
 const views = [
   { id: 'datasource', label: '数据源管理' },
   { id: 'workbench', label: '数据对比任务工作台' },
   { id: 'workflow', label: '作业流' },
-  { id: 'dagster', label: '资产图谱' },
   { id: 'lineage', label: '单脚本血缘' },
   { id: 'batch', label: '多脚本分析' },
   { id: 'history', label: '执行历史' },
@@ -40,6 +37,7 @@ const workflowAsyncJob = ref(null)
 const workflowAsyncStatus = ref(null)
 const workflowAsyncPollTimer = ref(null)
 const workflowRunHistory = ref([])    // list of run summaries for the selected workflow
+const allWorkflowRuns = ref([])       // all runs across workflows, used by the list overview
 const batchActiveTab = ref('overview')
 const selectedHistoryTaskId = ref('')
 const historyActiveTab = ref('compare')
@@ -719,6 +717,14 @@ const loadWorkflowRunHistory = async (workflowId) => {
   }
 }
 
+const loadAllWorkflowRuns = async () => {
+  try {
+    allWorkflowRuns.value = await apiGet('/api/workflow-runs?limit=200')
+  } catch (error) {
+    allWorkflowRuns.value = []
+  }
+}
+
 const loadWorkflowRunDetail = async (runId) => {
   try {
     const detail = await apiGet(`/api/workflow-runs/${runId}`)
@@ -983,11 +989,11 @@ provide('app', {
   loadHistory, deleteHistory, exportHistory,
   // workflow state + handlers
   workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
-  workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
+  workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory, allWorkflowRuns,
   selectWorkflow, saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
-  loadWorkflowRunHistory, loadWorkflowRunDetail,
+  loadWorkflowRunHistory, loadWorkflowRunDetail, loadAllWorkflowRuns,
 })
 </script>
 
@@ -1049,8 +1055,6 @@ provide('app', {
         <WorkbenchView v-if="activeView === 'workbench'" />
 
         <WorkflowView v-if="activeView === 'workflow'" />
-
-        <DagsterView v-if="activeView === 'dagster'" />
 
         <LineageView v-if="activeView === 'lineage'" />
 
