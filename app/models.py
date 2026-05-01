@@ -33,9 +33,12 @@ class CompareRules(BaseModel):
 
 
 class RunLimits(BaseModel):
-    max_rows: int = Field(default=100000, gt=0)
-    export_max_rows: int = Field(default=50000, gt=0)
-    fetch_chunk_size: int = Field(default=5000, gt=0)
+    # Hard ceilings prevent runaway memory use. 10M rows × ~1KB ≈ 10 GB —
+    # already above what we want a single compare task to load. Users who
+    # need more should switch to stream_compare mode.
+    max_rows: int = Field(default=100000, gt=0, le=10_000_000)
+    export_max_rows: int = Field(default=50000, gt=0, le=5_000_000)
+    fetch_chunk_size: int = Field(default=5000, gt=0, le=200_000)
     stream_compare: bool = False
 
 

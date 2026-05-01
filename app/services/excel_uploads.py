@@ -11,6 +11,10 @@ from app.utils.paths import RESULTS_DIR
 
 UPLOADS_DIR = RESULTS_DIR / "uploads"
 
+# 上传上限：50 MB。openpyxl read_only 也会被超大文件拖慢甚至 OOM；
+# 值偏保守，触发后给出明确错误，让用户先在源端做拆分或改 SQL 模式。
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
 
 def save_uploaded_excel(file: UploadFile) -> dict[str, Any]:
     if not file.filename:
@@ -22,8 +26,26 @@ def save_uploaded_excel(file: UploadFile) -> dict[str, Any]:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     saved_path = UPLOADS_DIR / f"{uuid.uuid4().hex}{suffix}"
     try:
-        saved_path.write_bytes(file.file.read())
+        # 流式读，超出上限直接拒绝（不要把整个文件读到内存再判断）
+        bytes_written = 0
+        with saved_path.open("wb") as out:
+            while True:
+                chunk = file.file.read(1024 * 1024)   # 1 MB 块
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_BYTES:
+                    out.close()
+                    saved_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Excel 文件过大（>{MAX_UPLOAD_BYTES // 1024 // 1024} MB）。请先拆分，或改用 SQL 模式直连源数据。",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
     except Exception as exc:
+        saved_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Failed to save Excel: {exc}") from exc
 
     try:
