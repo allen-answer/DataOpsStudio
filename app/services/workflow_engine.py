@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from app.models import (
     NodeRunStatus,
@@ -36,10 +36,13 @@ def run_workflow(
     workflow: Workflow,
     variables: Mapping[str, str] | None = None,
     runners: Mapping[Any, NodeRunner] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> WorkflowRun:
     """Execute `workflow` end-to-end. Caller-supplied `variables` override
     `workflow.default_variables`. `runners` is a test seam — pass a custom
-    registry to substitute fakes; default is `NODE_RUNNERS`."""
+    registry to substitute fakes; default is `NODE_RUNNERS`. `cancel_check`
+    is polled between nodes; returning True aborts the run, marking the
+    pending nodes SKIPPED and the run FAILED with error='cancelled'."""
     runners = NODE_RUNNERS if runners is None else runners
     resolved_vars = {**_default_variables(), **workflow.default_variables, **(variables or {})}
     started = datetime.now()
@@ -57,9 +60,15 @@ def run_workflow(
     logger.info("workflow start id=%s name=%s nodes=%d", workflow.id, workflow.name, len(workflow.nodes))
 
     aborted = False
+    cancelled = False
     for index, node in enumerate(workflow.nodes):
         node_run = run.nodes[index]
         if aborted:
+            node_run.status = NodeRunStatus.SKIPPED
+            continue
+        if cancel_check is not None and cancel_check():
+            cancelled = True
+            aborted = True
             node_run.status = NodeRunStatus.SKIPPED
             continue
         runner = runners.get(node.type)
@@ -95,7 +104,10 @@ def run_workflow(
 
     run.finished_at = datetime.now().isoformat(timespec="seconds")
     run.elapsed_seconds = round(time.perf_counter() - start_perf, 3)
-    if aborted:
+    if cancelled:
+        run.status = WorkflowRunStatus.FAILED
+        run.error = "cancelled"
+    elif aborted:
         run.status = WorkflowRunStatus.FAILED
         first_failed = next((n for n in run.nodes if n.status == NodeRunStatus.FAILED), None)
         run.error = first_failed.error if first_failed else "workflow aborted"

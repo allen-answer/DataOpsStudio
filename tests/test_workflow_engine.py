@@ -151,6 +151,55 @@ def test_empty_workflow_succeeds_trivially():
     assert run.nodes == []
 
 
+def test_cancel_check_aborts_before_next_node():
+    calls: list[str] = []
+
+    def runner(config, variables):
+        calls.append(config["tag"])
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"tag": "first"}),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "second"}),
+        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, config={"tag": "third"}),
+    ])
+
+    # Flip cancellation on after the first node; second/third must be skipped.
+    cancelled = {"value": False}
+    def cancel_check():
+        if calls == ["first"]:
+            cancelled["value"] = True
+        return cancelled["value"]
+
+    run = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: runner},
+        cancel_check=cancel_check,
+    )
+
+    assert calls == ["first"]
+    assert run.status == WorkflowRunStatus.FAILED
+    assert run.error == "cancelled"
+    assert run.nodes[0].status == NodeRunStatus.SUCCESS
+    assert run.nodes[1].status == NodeRunStatus.SKIPPED
+    assert run.nodes[2].status == NodeRunStatus.SKIPPED
+
+
+def test_cancel_check_before_first_node_skips_all():
+    def runner(config, variables):
+        raise AssertionError("should not run")
+
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={}),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={}),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner}, cancel_check=lambda: True)
+
+    assert run.status == WorkflowRunStatus.FAILED
+    assert run.error == "cancelled"
+    assert all(node.status == NodeRunStatus.SKIPPED for node in run.nodes)
+
+
 def test_interpolation_walks_nested_dict_and_list():
     received: dict = {}
 

@@ -9,6 +9,8 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.runner import run_task
+from app.services.repositories import workflow_store
+from app.services.workflow_engine import run_workflow
 from app.utils.paths import JOBS_FILE
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ def submit_task_run(task_id: str) -> dict[str, Any]:
         job_id,
         {
             "job_id": job_id,
+            "kind": "compare",
             "task_id": task_id,
             "status": "queued",
             "message": "等待执行",
@@ -40,6 +43,30 @@ def submit_task_run(task_id: str) -> dict[str, Any]:
         },
     )
     future = _executor.submit(_run_job, job_id, task_id)
+    with _lock:
+        _futures[job_id] = future
+    return get_job(job_id)
+
+
+def submit_workflow_run(workflow_id: str, variables: dict[str, str] | None = None) -> dict[str, Any]:
+    job_id = uuid4().hex
+    _set_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "kind": "workflow",
+            "workflow_id": workflow_id,
+            "variables": dict(variables or {}),
+            "status": "queued",
+            "message": "等待执行",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "result": None,
+            "error": "",
+            "cancel_requested": False,
+        },
+    )
+    future = _executor.submit(_run_workflow_job, job_id, workflow_id, dict(variables or {}))
     with _lock:
         _futures[job_id] = future
     return get_job(job_id)
@@ -86,6 +113,30 @@ def _run_job(job_id: str, task_id: str) -> None:
         _patch_job(job_id, status="success", message="执行完成", result=result.model_dump(mode="json"))
     except JobCancelled as exc:
         _patch_job(job_id, status="cancelled", message="已取消", error=str(exc))
+    except Exception as exc:
+        _patch_job(job_id, status="failed", message="执行失败", error=str(exc))
+    finally:
+        with _lock:
+            _futures.pop(job_id, None)
+
+
+def _run_workflow_job(job_id: str, workflow_id: str, variables: dict[str, str]) -> None:
+    try:
+        if _is_cancel_requested(job_id):
+            _patch_job(job_id, status="cancelled", message="已取消", error="任务已取消")
+            return
+        _patch_job(job_id, status="running", message="开始执行")
+        workflow = workflow_store.get(workflow_id)
+        if workflow is None:
+            raise ValueError(f"Workflow not found: {workflow_id}")
+        run = run_workflow(workflow, variables, cancel_check=lambda: _is_cancel_requested(job_id))
+        result = run.model_dump(mode="json")
+        if run.error == "cancelled":
+            _patch_job(job_id, status="cancelled", message="已取消", error="任务已取消", result=result)
+        elif run.status.value == "success":
+            _patch_job(job_id, status="success", message="执行完成", result=result)
+        else:
+            _patch_job(job_id, status="failed", message="执行失败", error=run.error or "workflow failed", result=result)
     except Exception as exc:
         _patch_job(job_id, status="failed", message="执行失败", error=str(exc))
     finally:

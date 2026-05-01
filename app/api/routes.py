@@ -8,16 +8,17 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
 from app.dbclients.factory import fetch_columns, fetch_rows, test_connection
-from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SourceKind, SqlMode
+from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SourceKind, SqlMode, WorkflowCreate
 from app.readers.excel_reader import list_columns as read_excel_columns
 from app.services import excel_uploads, lineage_service
 from app.services.history import delete_result, list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS, export_history_sheets
-from app.services.jobs import cancel_job, get_job, submit_task_run
+from app.services.jobs import cancel_job, get_job, submit_task_run, submit_workflow_run
 from app.services.config_io import export_config, import_config
-from app.services.repositories import datasource_store, task_store
+from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.runner import run_task
 from app.services.sql_tools import sql_assist
+from app.services.workflow_engine import run_workflow
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
 
@@ -52,6 +53,7 @@ def bootstrap():
     return {
         "datasources": datasource_store.list(),
         "tasks": task_store.list(),
+        "workflows": workflow_store.list(),
         "drivers": detect_drivers(),
         "db_types": [item.value for item in DatabaseType],
         "sql_modes": [item.value for item in SqlMode],
@@ -177,6 +179,56 @@ def cancel_run_api(job_id: str):
         return cancel_job(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
+
+
+@router.get("/api/workflows")
+def list_workflows():
+    return workflow_store.list()
+
+
+@router.post("/api/workflows")
+def create_workflow(payload: WorkflowCreate):
+    _ensure_workflow_node_targets(payload)
+    return workflow_store.create(payload)
+
+
+@router.put("/api/workflows/{workflow_id}")
+def update_workflow(workflow_id: str, payload: WorkflowCreate):
+    _ensure_workflow_node_targets(payload)
+    try:
+        return workflow_store.update(workflow_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Workflow not found") from exc
+
+
+@router.delete("/api/workflows/{workflow_id}")
+def delete_workflow(workflow_id: str):
+    try:
+        workflow_store.delete(workflow_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Workflow not found") from exc
+    return {"ok": True}
+
+
+@router.post("/api/workflows/{workflow_id}/run")
+def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
+    workflow = workflow_store.get(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    variables = _coerce_string_dict((payload or {}).get("variables"))
+    try:
+        run = run_workflow(workflow, variables)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return run.model_dump(mode="json")
+
+
+@router.post("/api/workflows/{workflow_id}/run-async")
+def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
+    if workflow_store.get(workflow_id) is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    variables = _coerce_string_dict((payload or {}).get("variables"))
+    return submit_workflow_run(workflow_id, variables)
 
 
 @router.get("/api/history")
@@ -371,3 +423,21 @@ def _ensure_datasources_for_kind(payload: CompareTaskCreate) -> None:
         raise HTTPException(status_code=400, detail="source_id does not exist")
     if payload.target_kind == SourceKind.SQL and datasource_store.get(payload.target_id) is None:
         raise HTTPException(status_code=400, detail="target_id does not exist")
+
+
+def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
+    """Validate that referenced compare tasks exist. Catching this at create
+    time gives a clear 400 instead of a confusing failure mid-run."""
+    for node in payload.nodes:
+        if node.type.value == "compare":
+            task_id = str(node.config.get("task_id") or "").strip()
+            if not task_id:
+                raise HTTPException(status_code=400, detail=f"node {node.id}: compare requires config.task_id")
+            if task_store.get(task_id) is None:
+                raise HTTPException(status_code=400, detail=f"node {node.id}: task {task_id} does not exist")
+
+
+def _coerce_string_dict(value: object | None) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
