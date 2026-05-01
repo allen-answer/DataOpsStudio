@@ -38,6 +38,7 @@ def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, 
             parse_errors.append({"sql": _sql(statement), "error": str(exc)})
     graph_edges = _graph_edges(analyses)
     graph_groups = _graph_groups(graph_edges, analyses)
+    warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors)
     return {
         "statement_count": len(analyses),
         "tables": _unique_items(item for analysis in analyses for item in analysis["tables"]),
@@ -54,6 +55,7 @@ def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, 
         "graph_edges": graph_edges,
         "graph_groups": graph_groups,
         "parse_errors": parse_errors,
+        "warnings": warnings,
         "statements": analyses,
     }
 
@@ -67,6 +69,9 @@ def _exp():
 def _sql(expression: Any | None) -> str:
     if expression is None:
         return ""
+    original_sql = getattr(expression, "_lineage_original_sql", "")
+    if original_sql:
+        return original_sql
     try:
         from sqlglot import ErrorLevel
 
@@ -77,7 +82,9 @@ def _sql(expression: Any | None) -> str:
 
 def _parse_lineage_statements(sqlglot: Any, sql: str, dialect: str | None) -> list[Any]:
     try:
-        return sqlglot.parse(sql, read=dialect or None)
+        return sqlglot.parse(sql, read=dialect or None) + _parse_segments(
+            sqlglot, _extract_replace_segments(sql), dialect, ignore_errors=True
+        )
     except Exception:
         statements: list[Any] = []
         errors: list[Exception] = []
@@ -98,15 +105,48 @@ def _parse_lineage_statements(sqlglot: Any, sql: str, dialect: str | None) -> li
         return sqlglot.parse(sql, read=dialect or None)
 
 
+def _extract_replace_segments(sql: str) -> list[str]:
+    return [
+        segment.strip()
+        for segment in re.split(r";", sql)
+        if re.match(r"^\s*replace\s+into\b", segment, flags=re.IGNORECASE)
+        and re.search(r"\bselect\b", segment, flags=re.IGNORECASE | re.DOTALL)
+    ]
+
+
 def _parse_segments(sqlglot: Any, segments: list[str], dialect: str | None, ignore_errors: bool = False) -> list[Any]:
     statements: list[Any] = []
     for segment in segments:
+        compatible = _parse_compatible_segment(sqlglot, segment, dialect)
+        if compatible:
+            statements.extend(compatible)
+            continue
         try:
             statements.extend(sqlglot.parse(segment, read=dialect or None))
         except Exception:
             if not ignore_errors:
                 raise
     return statements
+
+
+def _parse_compatible_segment(sqlglot: Any, segment: str, dialect: str | None) -> list[Any]:
+    normalized = segment.strip()
+    replacements = [
+        (r"^replace\s+into\b", "INSERT INTO", "REPLACE"),
+    ]
+    for pattern, replacement, dml_type in replacements:
+        if not re.match(pattern, normalized, flags=re.IGNORECASE):
+            continue
+        compatible_sql = re.sub(pattern, replacement, normalized, count=1, flags=re.IGNORECASE)
+        try:
+            parsed = sqlglot.parse(compatible_sql, read=dialect or None)
+        except Exception:
+            return []
+        for statement in parsed:
+            setattr(statement, "_lineage_dml_type", dml_type)
+            setattr(statement, "_lineage_original_sql", normalized)
+        return parsed
+    return []
 
 
 def _extract_analyzable_segments(sql: str) -> list[str]:
@@ -117,7 +157,7 @@ def _extract_analyzable_segments(sql: str) -> list[str]:
             continue
         segment = re.sub(r"^(begin|then|else)\b", "", segment, flags=re.IGNORECASE).strip()
         segment = re.sub(r"\bend\s*$", "", segment, flags=re.IGNORECASE).strip()
-        if re.match(r"^(with|select|insert|create\s+(or\s+replace\s+)?procedure|create\s+(or\s+replace\s+)?function)\b", segment, re.IGNORECASE):
+        if re.match(r"^(with|select|insert|replace\s+into|create\s+(or\s+replace\s+)?procedure|create\s+(or\s+replace\s+)?function|create\s+(or\s+replace\s+)?(temporary\s+|temp\s+)?table)\b", segment, re.IGNORECASE):
             segments.append(segment)
     return segments
 
@@ -164,7 +204,8 @@ def _looks_like_lineage_sql(segment: str) -> bool:
         return False
     return bool(
         re.match(r"^(with|select|insert)\b", cleaned, flags=re.IGNORECASE)
-        or re.search(r"\binsert\s+into\b.+\bselect\b", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        or re.search(r"\b(insert|replace)\s+into\b.+\bselect\b", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        or re.search(r"\bcreate\s+(or\s+replace\s+)?(temporary\s+|temp\s+)?table\b.+\bas\s+select\b", cleaned, flags=re.IGNORECASE | re.DOTALL)
     )
 
 
@@ -186,6 +227,8 @@ def _analysis_statements(statement: Any) -> list[Any]:
         nested = [item for item in statement.find_all(exp.Insert)]
         if nested:
             return nested
+        if isinstance(statement.args.get("expression"), (exp.Select, exp.Union)):
+            return [statement]
     if isinstance(statement, (exp.Insert, exp.Select, exp.Union, exp.Update, exp.Merge)):
         return [statement]
     return []
@@ -301,11 +344,13 @@ def _select_columns(
                     "source_tables": [item["source_table"]],
                     "variables": _variables_in_expression(expression, script_variables),
                     "transform": "星号展开",
+                    "confidence": "high",
+                    "warnings": [],
                 }
                 for item in expanded_star
             )
             continue
-        source_info = _source_info(expression, alias_map, subquery_map, subquery_tables, default_tables)
+        source_info = _source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
         result.append(
             {
                 "select_index": select_index,
@@ -315,6 +360,8 @@ def _select_columns(
                 "source_tables": source_info["source_tables"],
                 "variables": _variables_in_expression(expression, script_variables),
                 "transform": _transform_type(expression),
+                "confidence": source_info["confidence"],
+                "warnings": source_info["warnings"],
             }
         )
     return result
@@ -333,6 +380,8 @@ def _insert_mappings(
         return _update_table_mappings(statement)
     if isinstance(statement, exp.Merge):
         return _merge_table_mappings(statement)
+    if isinstance(statement, exp.Create):
+        return _create_table_mappings(statement, alias_map, subquery_map, subquery_tables, script_variables, schema)
     if not isinstance(statement, exp.Insert):
         return []
 
@@ -362,12 +411,14 @@ def _insert_mappings(
                         "source_tables": [item["source_table"]],
                         "variables": _variables_in_expression(expression, script_variables),
                         "transform": "星号展开",
-                        "dml_type": "INSERT",
+                        "dml_type": _insert_dml_type(statement),
+                        "confidence": "high",
+                        "warnings": [],
                     }
                 )
             continue
         target_column = target_columns[position - 1] if position <= len(target_columns) else ""
-        source_info = _source_info(expression, alias_map, subquery_map, subquery_tables, default_tables)
+        source_info = _source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
         mappings.append(
             {
                 "position": position,
@@ -380,7 +431,71 @@ def _insert_mappings(
                 "source_tables": source_info["source_tables"],
                 "variables": _variables_in_expression(expression, script_variables),
                 "transform": _transform_type(expression),
-                "dml_type": "INSERT",
+                "dml_type": _insert_dml_type(statement),
+                "confidence": source_info["confidence"],
+                "warnings": source_info["warnings"],
+            }
+        )
+    return mappings
+
+
+def _create_table_mappings(
+    statement: Any,
+    alias_map: dict[str, str],
+    subquery_map: dict[tuple[str, str], dict[str, list[str]]],
+    subquery_tables: dict[str, list[str]],
+    script_variables: list[dict[str, str]],
+    schema: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    exp = _exp()
+    target_table = _create_target_table(statement)
+    source_query = statement.args.get("expression")
+    source_select = source_query if isinstance(source_query, exp.Select) else source_query.find(exp.Select) if source_query is not None else None
+    if not isinstance(source_select, exp.Select):
+        return []
+
+    mappings: list[dict[str, Any]] = []
+    default_tables = _select_direct_source_tables(source_select)
+    for position, expression in enumerate(source_select.expressions, start=1):
+        expanded_star = _expanded_star_columns(expression, default_tables, schema, alias_map, subquery_tables)
+        if expanded_star:
+            for item in expanded_star:
+                target_column = item["output_column"]
+                mappings.append(
+                    {
+                        "position": len(mappings) + 1,
+                        "target_table": target_table,
+                        "target_column": target_column,
+                        "target": f"{target_table}.{target_column}" if target_table and target_column else target_column,
+                        "select_output_column": item["output_column"],
+                        "expression": _sql(expression),
+                        "source_columns": [item["source_column"]],
+                        "source_tables": [item["source_table"]],
+                        "variables": _variables_in_expression(expression, script_variables),
+                        "transform": "星号展开",
+                        "dml_type": _create_dml_type(statement),
+                        "confidence": "high",
+                        "warnings": [],
+                    }
+                )
+            continue
+        target_column = expression.alias_or_name or _sql(expression)
+        source_info = _source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
+        mappings.append(
+            {
+                "position": position,
+                "target_table": target_table,
+                "target_column": target_column,
+                "target": f"{target_table}.{target_column}" if target_table and target_column else target_column,
+                "select_output_column": target_column,
+                "expression": _sql(expression),
+                "source_columns": source_info["source_columns"],
+                "source_tables": source_info["source_tables"],
+                "variables": _variables_in_expression(expression, script_variables),
+                "transform": _transform_type(expression),
+                "dml_type": _create_dml_type(statement),
+                "confidence": source_info["confidence"],
+                "warnings": source_info["warnings"],
             }
         )
     return mappings
@@ -417,6 +532,8 @@ def _update_table_mappings(statement: Any) -> list[dict[str, Any]]:
             "variables": [],
             "transform": "UPDATE",
             "dml_type": "UPDATE",
+            "confidence": "medium",
+            "warnings": [],
         }
         for i, src in enumerate(source_tables)
     ]
@@ -449,6 +566,8 @@ def _merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
             "variables": [],
             "transform": "MERGE",
             "dml_type": "MERGE",
+            "confidence": "medium",
+            "warnings": [],
         }
         for i, src in enumerate(source_tables)
     ]
@@ -461,6 +580,29 @@ def _insert_target_table(target: Any) -> str:
     if isinstance(target, exp.Table):
         return _table_name(target)
     return _sql(target) if target is not None else ""
+
+
+def _create_target_table(statement: Any) -> str:
+    exp = _exp()
+    target = statement.this
+    if isinstance(target, exp.Schema):
+        target = target.this
+    if isinstance(target, exp.Table):
+        return _table_name(target)
+    return _sql(target) if target is not None else ""
+
+
+def _insert_dml_type(statement: Any) -> str:
+    explicit = getattr(statement, "_lineage_dml_type", "")
+    if explicit:
+        return explicit
+    if statement.args.get("overwrite"):
+        return "INSERT_OVERWRITE"
+    return "INSERT"
+
+
+def _create_dml_type(statement: Any) -> str:
+    return "CREATE_OR_REPLACE_TABLE_AS" if statement.args.get("replace") else "CREATE_TABLE_AS"
 
 
 def _insert_target_columns(target: Any) -> list[str]:
@@ -509,7 +651,7 @@ def _add_derived_select_columns(
         default_tables = _select_direct_source_tables(select)
         for expression in select.expressions:
             output_column = expression.alias_or_name or _sql(expression)
-            source_info = _source_info(expression, alias_map, nested_map, nested_tables, default_tables)
+            source_info = _source_info(expression, alias_map, nested_map, nested_tables, default_tables, {})
             key = (derived_alias, output_column)
             existing = result.get(key, {"source_columns": [], "source_tables": []})
             result[key] = {
@@ -555,11 +697,15 @@ def _source_info(
     subquery_map: dict[tuple[str, str], dict[str, list[str]]],
     subquery_tables: dict[str, list[str]],
     default_tables: list[str] | None = None,
-) -> dict[str, list[str]]:
+    schema: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     exp = _exp()
     source_columns: list[str] = []
     source_tables: list[str] = []
+    warnings: list[dict[str, str]] = []
+    confidence = "high"
     default_tables = default_tables or []
+    schema = schema or {}
 
     for column in expression.find_all(exp.Column):
         if column.table:
@@ -588,11 +734,51 @@ def _source_info(
                 source_tables.extend(subquery_tables[default_table])
             else:
                 source_tables.append(default_table)
+        elif len(default_tables) > 1:
+            matched_tables = _tables_with_column(schema, default_tables, column.name)
+            if len(matched_tables) == 1:
+                matched_table = matched_tables[0]
+                source_columns[-1] = f"{matched_table}.{column.name}"
+                source_tables.append(matched_table)
+                confidence = _weaker_confidence(confidence, "medium")
+            elif len(matched_tables) > 1:
+                source_tables.extend(matched_tables)
+                confidence = _weaker_confidence(confidence, "low")
+                warnings.append(
+                    {
+                        "type": "字段歧义",
+                        "message": f"未限定字段 {column.name} 同时存在于多张来源表: {', '.join(matched_tables)}",
+                    }
+                )
+            else:
+                confidence = _weaker_confidence(confidence, "low")
+                warnings.append(
+                    {
+                        "type": "字段来源未知",
+                        "message": f"未限定字段 {column.name} 无法在当前 Schema 元数据中归属来源表",
+                    }
+                )
 
     return {
         "source_columns": _unique_strings(source_columns),
         "source_tables": _unique_strings(source_tables),
+        "confidence": confidence,
+        "warnings": _unique_warning_dicts(warnings),
     }
+
+
+def _tables_with_column(schema: dict[str, list[str]], tables: list[str], column: str) -> list[str]:
+    result: list[str] = []
+    column_key = _normalize_table_name(column)
+    for table in tables:
+        if any(_normalize_table_name(item) == column_key for item in _schema_columns(schema, table)):
+            result.append(table)
+    return _unique_strings(result)
+
+
+def _weaker_confidence(current: str, candidate: str) -> str:
+    order = {"high": 0, "medium": 1, "low": 2}
+    return candidate if order.get(candidate, 0) > order.get(current, 0) else current
 
 
 def _select_direct_source_tables(select: Any) -> list[str]:
@@ -699,6 +885,10 @@ def _is_physical_source_table(
 def _target_table_names(statement: Any) -> set[str]:
     exp = _exp()
     targets: set[str] = set()
+    for create in statement.find_all(exp.Create):
+        target_name = _create_target_table(create)
+        if target_name:
+            targets.add(target_name)
     for insert in statement.find_all(exp.Insert):
         target_name = _insert_target_table(insert.this)
         if target_name:
@@ -820,25 +1010,50 @@ def _normalize_schema(schema: dict[str, list[str]]) -> dict[str, list[str]]:
     return {_normalize_table_name(table): list(columns) for table, columns in schema.items()}
 
 
-def _graph_edges(analyses: list[dict[str, Any]]) -> list[dict[str, str]]:
-    edges: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for analysis in analyses:
+def _graph_edges(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    edges: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for statement_index, analysis in enumerate(analyses, start=1):
         aliases = set(analysis.get("aliases", []))
         for mapping in analysis.get("insert_mappings", []):
             for source_table in mapping.get("source_tables", []):
                 target_table = mapping.get("target_table", "")
                 if _is_alias_reference(source_table, aliases):
                     continue
-                key = (_normalize_table_name(source_table), _normalize_table_name(target_table))
-                if not source_table or not target_table or key in seen:
+                key = (
+                    _normalize_table_name(source_table),
+                    _normalize_table_name(target_table),
+                    str(statement_index),
+                    str(mapping.get("dml_type", "")),
+                )
+                if not source_table or not target_table:
                     continue
-                seen.add(key)
-                edges.append({"source_table": source_table, "target_table": target_table})
+                edge = by_key.get(key)
+                if edge is None:
+                    edge = {
+                        "source_table": source_table,
+                        "target_table": target_table,
+                        "statement_index": statement_index,
+                        "edge_type": mapping.get("dml_type", "INSERT"),
+                        "source_columns": [],
+                        "target_columns": [],
+                        "confidence": "high",
+                        "reason": "",
+                    }
+                    by_key[key] = edge
+                    edges.append(edge)
+                edge["source_columns"] = _unique_strings(edge["source_columns"] + mapping.get("source_columns", []))
+                target_column = mapping.get("target_column", "")
+                if target_column:
+                    edge["target_columns"] = _unique_strings(edge["target_columns"] + [target_column])
+                edge["confidence"] = _weaker_confidence(edge["confidence"], mapping.get("confidence", "high"))
+                reason = mapping.get("expression") or mapping.get("transform", "")
+                if reason:
+                    edge["reason"] = "; ".join(_unique_strings([part for part in [edge["reason"], reason] if part]))
     return edges
 
 
-def _graph_groups(edges: list[dict[str, str]], analyses: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def _graph_groups(edges: list[dict[str, Any]], analyses: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
     by_target: dict[str, dict[str, Any]] = {}
     for edge in edges:
@@ -888,6 +1103,46 @@ def _graph_groups(edges: list[dict[str, str]], analyses: list[dict[str, Any]] | 
         group.pop("_source_keys", None)
         group.pop("_dependency_keys", None)
     return groups
+
+
+def _analysis_warnings(
+    analyses: list[dict[str, Any]],
+    dynamic_sql_segments: list[dict[str, str]],
+    parse_errors: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    if dynamic_sql_segments:
+        warnings.append(
+            {
+                "type": "动态 SQL",
+                "message": f"识别到 {len(dynamic_sql_segments)} 段动态 SQL，静态分析结果可能不完整",
+            }
+        )
+    for error in parse_errors:
+        warnings.append({"type": "解析失败", "message": error.get("error", "")})
+    for statement_index, analysis in enumerate(analyses, start=1):
+        for item in analysis.get("columns", []) + analysis.get("insert_mappings", []):
+            for warning in item.get("warnings", []):
+                warnings.append(
+                    {
+                        "type": warning.get("type", "血缘提示"),
+                        "message": warning.get("message", ""),
+                        "statement_index": str(statement_index),
+                    }
+                )
+    return _unique_warning_dicts(warnings)
+
+
+def _unique_warning_dicts(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for item in items:
+        key = tuple(sorted((str(k), str(v)) for k, v in item.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _table_name(table: Any) -> str:

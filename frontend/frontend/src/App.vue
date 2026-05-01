@@ -81,6 +81,11 @@ const editDraft = reactive({ name: '', db_type: '', host: '', port: 3306, databa
 const lineage = reactive({
   sql: '',
   dialect: '',
+  schemaDatasourceId: '',
+  schemaName: '',
+  schemaTableFilter: '',
+  schemaOnlySqlTables: true,
+  schemaDialect: '',
   schemaFiles: [],
   sqlFile: null,
   result: null,
@@ -89,6 +94,11 @@ const lineage = reactive({
 
 const batch = reactive({
   dialect: '',
+  schemaDatasourceId: '',
+  schemaName: '',
+  schemaTableFilter: '',
+  schemaOnlySqlTables: true,
+  schemaDialect: '',
   schemaFiles: [],
   files: [],
   result: null,
@@ -135,6 +145,7 @@ const batchTabs = [
   { id: 'files', label: '脚本清单' },
   { id: 'edges', label: '表级流转' },
   { id: 'deps', label: '跨脚本依赖' },
+  { id: 'dag', label: 'DAG 分析' },
   { id: 'warnings', label: '风险提示' },
 ]
 const compareBuckets = [
@@ -539,6 +550,11 @@ const analyzeLineage = async () => {
       const form = new FormData()
       form.append('sql', lineage.sql)
       form.append('dialect', lineage.dialect)
+      form.append('schema_datasource_id', lineage.schemaDatasourceId)
+      form.append('schema_name', lineage.schemaName)
+      form.append('schema_table_filter', lineage.schemaTableFilter)
+      form.append('schema_only_sql_tables', lineage.schemaOnlySqlTables ? 'true' : '')
+      form.append('schema_dialect', lineage.schemaDialect)
       if (lineage.sqlFile) form.append('sql_file', lineage.sqlFile)
       lineage.schemaFiles.forEach((file) => form.append('schema_file', file))
       lineage.result = await apiForm('/api/lineage/analyze-form', form)
@@ -546,6 +562,11 @@ const analyzeLineage = async () => {
       lineage.result = await apiJson('/api/lineage/analyze', 'POST', {
         sql: lineage.sql,
         dialect: lineage.dialect,
+        schema_datasource_id: lineage.schemaDatasourceId,
+        schema_name: lineage.schemaName,
+        schema_table_filter: lineage.schemaTableFilter,
+        schema_only_sql_tables: lineage.schemaOnlySqlTables ? 'true' : '',
+        schema_dialect: lineage.schemaDialect,
         schema: '',
       })
     }
@@ -559,6 +580,11 @@ const analyzeBatch = async () => {
   batch.result = null
   const form = new FormData()
   form.append('dialect', batch.dialect)
+  form.append('schema_datasource_id', batch.schemaDatasourceId)
+  form.append('schema_name', batch.schemaName)
+  form.append('schema_table_filter', batch.schemaTableFilter)
+  form.append('schema_only_sql_tables', batch.schemaOnlySqlTables ? 'true' : '')
+  form.append('schema_dialect', batch.schemaDialect)
   batch.files.forEach((file) => form.append('sql_files', file))
   batch.schemaFiles.forEach((file) => form.append('schema_file', file))
   try {
@@ -918,10 +944,17 @@ onUnmounted(stopAsyncPoll)
               <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="analyzeLineage">分析血缘</button>
             </div>
             <SqlEditor v-model="lineage.sql" placeholder="粘贴 SQL，或选择文件" />
-            <div class="mt-4 grid grid-cols-3 gap-4">
+            <div class="mt-4 grid grid-cols-4 gap-4">
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="lineage.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL/TXT 文件</span><input type="file" accept=".sql,.txt" class="border-none bg-slate-50" @change="lineage.sqlFile = $event.target.files[0]"></label>
-              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="lineage.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">可选择多个 .json/.sql/.txt，或上传 zip。</small></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 数据源</span><select v-model="lineage.schemaDatasourceId" class="border-none bg-slate-50"><option value="">不自动拉取</option><option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option></select><small class="mt-2 block text-xs text-slate-500">失败时会降级为文件元数据。</small></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="lineage.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">文件会和数据源字段合并。</small></label>
+            </div>
+            <div class="mt-4 grid grid-cols-4 gap-4">
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema / Database</span><input v-model="lineage.schemaName" class="border-none bg-slate-50" placeholder="留空使用数据源默认值"></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表名过滤</span><input v-model="lineage.schemaTableFilter" class="border-none bg-slate-50" placeholder="如 ods_%"></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 方言</span><select v-model="lineage.schemaDialect" class="border-none bg-slate-50"><option value="">跟随数据源</option><option value="mysql">MySQL</option><option value="oracle">Oracle</option><option value="dm">DM</option><option value="ob_mysql">OB MySQL</option><option value="ob_oracle">OB Oracle</option></select></label>
+              <label class="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600"><input v-model="lineage.schemaOnlySqlTables" type="checkbox" class="h-4 w-4">只拉 SQL 中出现的表</label>
             </div>
             <div v-if="lineageSchemaFileNames.length" class="mt-4 flex flex-wrap gap-2">
               <span v-for="name in lineageSchemaFileNames" :key="name" class="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">{{ name }}</span>
@@ -929,19 +962,58 @@ onUnmounted(stopAsyncPoll)
           </div>
           <div v-if="lineage.error" class="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-700">{{ lineage.error }}</div>
           <div v-if="lineage.result" class="grid gap-6">
+            <div
+              v-if="lineage.result.warnings?.length || lineage.result.dynamic_sql_segments?.length || lineage.result.parse_errors?.length"
+              class="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 shadow-sm"
+            >
+              <h2 class="mb-4 text-xl font-bold text-amber-950">解析提示</h2>
+              <div class="grid gap-4 xl:grid-cols-3">
+                <div v-if="lineage.result.warnings?.length">
+                  <h3 class="mb-2 font-bold">风险提示</h3>
+                  <ul class="space-y-2">
+                    <li v-for="item in lineage.result.warnings" :key="item.type + item.message + item.statement_index" class="rounded-xl bg-white/70 p-3">
+                      <strong>{{ item.type }}</strong>
+                      <span v-if="item.statement_index" class="ml-2 text-xs text-amber-700">语句 {{ item.statement_index }}</span>
+                      <p class="mt-1 text-amber-800">{{ item.message }}</p>
+                    </li>
+                  </ul>
+                </div>
+                <div v-if="lineage.result.dynamic_sql_segments?.length">
+                  <h3 class="mb-2 font-bold">动态 SQL</h3>
+                  <div v-for="item in lineage.result.dynamic_sql_segments" :key="item.sql" class="mb-2 rounded-xl bg-white/70 p-3">
+                    <div class="mb-1 text-xs font-bold text-amber-700">{{ item.source }} · {{ item.confidence }}</div>
+                    <code class="break-all text-xs">{{ item.sql }}</code>
+                  </div>
+                </div>
+                <div v-if="lineage.result.parse_errors?.length">
+                  <h3 class="mb-2 font-bold">解析失败片段</h3>
+                  <div v-for="item in lineage.result.parse_errors" :key="item.sql + item.error" class="mb-2 rounded-xl bg-white/70 p-3">
+                    <p class="text-amber-800">{{ item.error }}</p>
+                    <code class="mt-2 block break-all text-xs">{{ item.sql }}</code>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 class="mb-4 text-xl font-bold text-slate-800">表级拓扑图</h2><LineageGraph :groups="lineage.result.graph_groups" /></div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 class="mb-4 text-xl font-bold text-slate-800">字段血缘</h2><div class="overflow-auto"><table><thead><tr><th>输出字段</th><th>来源字段</th><th>来源表</th><th>变量</th><th>表达式</th></tr></thead><tbody><tr v-for="item in lineage.result.columns" :key="item.output_column + item.expression"><td>{{ item.output_column }}</td><td>{{ item.source_columns.join(', ') }}</td><td>{{ item.source_tables.join(', ') }}</td><td>{{ item.variables.join(', ') }}</td><td><code>{{ item.expression }}</code></td></tr></tbody></table></div></div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 class="mb-4 text-xl font-bold text-slate-800">落表字段映射</h2><div class="overflow-auto"><table><thead><tr><th>目标表</th><th>目标字段</th><th>来源字段</th><th>来源表</th><th>处理逻辑</th></tr></thead><tbody><tr v-for="item in lineage.result.insert_mappings" :key="item.target_table + item.target_column + item.position"><td>{{ item.target_table }}</td><td>{{ item.target_column }}</td><td>{{ item.source_columns.join(', ') }}</td><td>{{ item.source_tables.join(', ') }}</td><td>{{ item.transform }}</td></tr></tbody></table></div></div>
+            <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 class="mb-4 text-xl font-bold text-slate-800">字段血缘</h2><div class="overflow-auto"><table><thead><tr><th>输出字段</th><th>来源字段</th><th>来源表</th><th>可信度</th><th>变量</th><th>表达式</th></tr></thead><tbody><tr v-for="item in lineage.result.columns" :key="item.output_column + item.expression"><td>{{ item.output_column }}</td><td>{{ item.source_columns.join(', ') }}</td><td>{{ item.source_tables.join(', ') }}</td><td>{{ item.confidence || 'high' }}</td><td>{{ item.variables.join(', ') }}</td><td><code>{{ item.expression }}</code><p v-if="item.warnings?.length" class="mt-1 text-xs text-amber-600">{{ item.warnings.map(w => w.type).join(', ') }}</p></td></tr></tbody></table></div></div>
+            <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 class="mb-4 text-xl font-bold text-slate-800">落表字段映射</h2><div class="overflow-auto"><table><thead><tr><th>目标表</th><th>目标字段</th><th>来源字段</th><th>来源表</th><th>可信度</th><th>处理逻辑</th></tr></thead><tbody><tr v-for="item in lineage.result.insert_mappings" :key="item.target_table + item.target_column + item.position"><td>{{ item.target_table }}</td><td>{{ item.target_column }}</td><td>{{ item.source_columns.join(', ') }}</td><td>{{ item.source_tables.join(', ') }}</td><td>{{ item.confidence || 'high' }}</td><td>{{ item.transform }}<p v-if="item.warnings?.length" class="mt-1 text-xs text-amber-600">{{ item.warnings.map(w => w.type).join(', ') }}</p></td></tr></tbody></table></div></div>
           </div>
         </section>
 
         <section v-if="activeView === 'batch'" class="space-y-6">
           <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div class="mb-6 flex items-end justify-between"><div><h2 class="text-2xl font-bold text-slate-800">多脚本 ETL 流程分析</h2><p class="mt-1 text-sm text-slate-500">支持 .sql/.txt/.zip、Schema 元数据和导出</p></div><button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="analyzeBatch">分析脚本包</button></div>
-            <div class="grid grid-cols-3 gap-4">
+            <div class="grid grid-cols-4 gap-4">
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">SQL 方言</span><select v-model="batch.dialect" class="border-none bg-slate-50"><option value="">自动</option><option>mysql</option><option>oracle</option><option>tsql</option><option>postgres</option></select></label>
               <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">脚本文件</span><input type="file" accept=".sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.files = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">可一次选择多个 .sql/.txt 文件，或上传一个 .zip 脚本包。</small></label>
-              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">可一次选择多个 .json/.sql/.txt，或上传元数据 zip。</small></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 数据源</span><select v-model="batch.schemaDatasourceId" class="border-none bg-slate-50"><option value="">不自动拉取</option><option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option></select><small class="mt-2 block text-xs text-slate-500">失败时会降级为文件元数据。</small></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 元数据</span><input type="file" accept=".json,.sql,.txt,.zip" multiple class="border-none bg-slate-50" @change="batch.schemaFiles = Array.from($event.target.files)"><small class="mt-2 block text-xs text-slate-500">文件会和数据源字段合并。</small></label>
+            </div>
+            <div class="mt-4 grid grid-cols-4 gap-4">
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema / Database</span><input v-model="batch.schemaName" class="border-none bg-slate-50" placeholder="留空使用数据源默认值"></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">表名过滤</span><input v-model="batch.schemaTableFilter" class="border-none bg-slate-50" placeholder="如 dwd_%"></label>
+              <label><span class="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">Schema 方言</span><select v-model="batch.schemaDialect" class="border-none bg-slate-50"><option value="">跟随数据源</option><option value="mysql">MySQL</option><option value="oracle">Oracle</option><option value="dm">DM</option><option value="ob_mysql">OB MySQL</option><option value="ob_oracle">OB Oracle</option></select></label>
+              <label class="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600"><input v-model="batch.schemaOnlySqlTables" type="checkbox" class="h-4 w-4">只拉脚本中出现的表</label>
             </div>
             <div v-if="batchSelectedFileNames.length" class="mt-4 flex flex-wrap gap-2">
               <span v-for="name in batchSelectedFileNames" :key="name" class="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">{{ name }}</span>
@@ -999,6 +1071,31 @@ onUnmounted(stopAsyncPoll)
             <div v-if="batchActiveTab === 'deps'" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
               <h2 class="mb-4 text-xl font-bold text-slate-800">跨脚本依赖</h2>
               <div class="overflow-auto"><table><thead><tr><th>产出脚本</th><th>消费脚本</th><th>中间表</th></tr></thead><tbody><tr v-for="item in batch.result.script_edges" :key="item.producer_file + item.consumer_file + item.table"><td><code>{{ item.producer_file }}</code></td><td><code>{{ item.consumer_file }}</code></td><td>{{ item.table }}</td></tr><tr v-if="!batch.result.script_edges.length"><td colspan="3" class="text-slate-400">未识别到跨脚本依赖</td></tr></tbody></table></div>
+            </div>
+
+            <div v-if="batchActiveTab === 'dag'" class="grid gap-6 xl:grid-cols-2">
+              <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 class="mb-4 text-xl font-bold text-slate-800">拓扑顺序</h2>
+                <div v-if="batch.result.dag?.topological_order?.length" class="flex flex-wrap gap-2">
+                  <span v-for="(name, index) in batch.result.dag.topological_order" :key="name" class="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">{{ index + 1 }}. {{ name }}</span>
+                </div>
+                <p v-else class="text-sm text-amber-700">存在依赖环或没有可排序的跨脚本依赖。</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 class="mb-4 text-xl font-bold text-slate-800">依赖环</h2>
+                <div v-if="batch.result.dag?.cycles?.length" class="space-y-2">
+                  <p v-for="cycle in batch.result.dag.cycles" :key="cycle.join('>')" class="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{{ cycle.join(' → ') }}</p>
+                </div>
+                <p v-else class="text-sm text-slate-500">未发现脚本依赖环。</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+                <h2 class="mb-4 text-xl font-bold text-slate-800">上下游脚本</h2>
+                <div class="overflow-auto"><table><thead><tr><th>脚本</th><th>上游</th><th>下游</th></tr></thead><tbody><tr v-for="name in batch.result.dag?.nodes || []" :key="name"><td><code>{{ name }}</code></td><td>{{ (batch.result.dag.upstream[name] || []).join(', ') }}</td><td>{{ (batch.result.dag.downstream[name] || []).join(', ') }}</td></tr></tbody></table></div>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+                <h2 class="mb-4 text-xl font-bold text-slate-800">多写冲突</h2>
+                <div class="overflow-auto"><table><thead><tr><th>目标表</th><th>等级</th><th>写入脚本</th><th>说明</th></tr></thead><tbody><tr v-for="item in batch.result.dag?.write_conflicts || []" :key="item.table"><td>{{ item.table }}</td><td>{{ item.severity }}</td><td>{{ item.writers.join(', ') }}</td><td>{{ item.message }}</td></tr><tr v-if="!batch.result.dag?.write_conflicts?.length"><td colspan="4" class="text-slate-400">未发现多脚本写同一目标表冲突</td></tr></tbody></table></div>
+              </div>
             </div>
 
             <div v-if="batchActiveTab === 'warnings'" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
