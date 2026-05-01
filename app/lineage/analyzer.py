@@ -8,6 +8,11 @@ from app.lineage._common import normalize_table_name as _normalize_table_name
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
 from app.lineage.dialects import resolve_dialect as _resolve_dialect
+from app.lineage.variables import (
+    assigned_value as _assigned_value,
+    script_variables as _script_variables,
+    variable_names as _variable_names,
+)
 
 
 def analyze_sql_lineage(sql: str, dialect: str | None = None, schema: dict[str, list[str]] | None = None) -> dict[str, Any]:
@@ -1290,19 +1295,6 @@ def _transform_type(expression: Any) -> str:
     return "表达式"
 
 
-def _script_variables(sql: str) -> list[dict[str, str]]:
-    variables: list[dict[str, str]] = []
-    for variable in _variable_names(sql):
-        variables.append(
-            {
-                "name": variable,
-                "placeholder": variable,
-                "assigned_value": _assigned_value(sql, variable),
-            }
-        )
-    return variables
-
-
 def _variables_in_expression(expression: Any, script_variables: list[dict[str, str]]) -> list[str]:
     exp = _exp()
     sql = _sql(expression)
@@ -1311,31 +1303,6 @@ def _variables_in_expression(expression: Any, script_variables: list[dict[str, s
     if known:
         names.extend(column.name for column in expression.find_all(exp.Column) if column.name in known)
     return _unique_strings(names)
-
-
-def _variable_names(sql: str) -> list[str]:
-    names: list[str] = []
-    patterns = [
-        r"\$\{\s*([A-Za-z_][\w$#]*)\s*\}",
-        r"(?<!:):([A-Za-z_][\w$#]*)",
-        r"@([A-Za-z_][\w$#]*)",
-    ]
-    for pattern in patterns:
-        names.extend(match.group(1) for match in re.finditer(pattern, sql))
-    return _unique_strings(names)
-
-
-def _assigned_value(sql: str, variable: str) -> str:
-    escaped = re.escape(variable)
-    patterns = [
-        rf"\b{escaped}\b\s*:=\s*(.*?)(?:;|\n|$)",
-        rf"\b{escaped}\b\s*=\s*(.*?)(?:;|\n|$)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, sql, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return " ".join(match.group(1).strip().split())
-    return ""
 
 
 def _normalize_schema(schema: dict[str, list[str]]) -> dict[str, list[str]]:
