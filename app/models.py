@@ -160,3 +160,71 @@ class CompareResult(BaseModel):
     source_rows: int = 0
     target_rows: int = 0
     samples: dict[Literal["only_source", "only_target", "diff", "same"], list[dict[str, Any]]]
+
+
+# --- Workflow (Phase 3 first slice) ---
+# A workflow is an ordered list of nodes. Each node has a type that maps to
+# a runner function (see app.services.workflow_nodes). String values inside
+# node.config can reference workflow variables via ${var} placeholders.
+
+class WorkflowNodeType(str, Enum):
+    COMPARE = "compare"  # runs an existing CompareTask by id
+
+
+class WorkflowNode(BaseModel):
+    id: str = Field(..., min_length=1)  # unique within the workflow
+    type: WorkflowNodeType
+    name: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class Workflow(BaseModel):
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    default_variables: dict[str, str] = Field(default_factory=dict)
+
+
+class WorkflowCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    default_variables: dict[str, str] = Field(default_factory=dict)
+
+
+class NodeRunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class WorkflowNodeRun(BaseModel):
+    node_id: str
+    type: WorkflowNodeType
+    name: str = ""
+    status: NodeRunStatus = NodeRunStatus.PENDING
+    started_at: str = ""
+    finished_at: str = ""
+    elapsed_seconds: float = 0
+    output: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
+class WorkflowRunStatus(str, Enum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class WorkflowRun(BaseModel):
+    run_id: str
+    workflow_id: str
+    workflow_name: str = ""
+    status: WorkflowRunStatus = WorkflowRunStatus.RUNNING
+    variables: dict[str, str] = Field(default_factory=dict)
+    nodes: list[WorkflowNodeRun] = Field(default_factory=list)
+    started_at: str = ""
+    finished_at: str = ""
+    elapsed_seconds: float = 0
+    error: str = ""

@@ -10,6 +10,7 @@ LOGS_DIR = BASE_DIR / "logs"
 DATASOURCES_FILE = CONFIG_DIR / "datasources.json"
 TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
+WORKFLOWS_FILE = CONFIG_DIR / "workflows.json"
 
 
 def ensure_dirs() -> None:
@@ -20,3 +21,5 @@ def ensure_dirs() -> None:
         DATASOURCES_FILE.write_text("[]", encoding="utf-8")
     if not TASKS_FILE.exists():
         TASKS_FILE.write_text("[]", encoding="utf-8")
+    if not WORKFLOWS_FILE.exists():
+        WORKFLOWS_FILE.write_text("[]", encoding="utf-8")
