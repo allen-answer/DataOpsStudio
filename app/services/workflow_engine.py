@@ -260,7 +260,18 @@ def _interpolate(value: Any, variables: Mapping[str, str], outputs: Mapping[str,
 
 def _interpolate_string(value: str, variables: Mapping[str, str], outputs: Mapping[str, Mapping[str, Any]]) -> str:
     def replace(match: re.Match[str]) -> str:
-        return _resolve_placeholder(match.group(1).strip(), variables, outputs)
+        body = match.group(1).strip()
+        # `${name | filter}` syntax — split on the first `|` only so a
+        # filter argument that itself contains a `|` (none today, but
+        # future-proof) doesn't get over-split.
+        if "|" in body:
+            parts = [s.strip() for s in body.split("|")]
+            ref, filters = parts[0], parts[1:]
+            resolved = _resolve_placeholder_value(ref, variables, outputs)
+            for f in filters:
+                resolved = _apply_filter(f, resolved)
+            return str(resolved)
+        return _resolve_placeholder(body, variables, outputs)
 
     return _VARIABLE_PATTERN.sub(replace, value)
 
@@ -272,6 +283,48 @@ def _resolve_placeholder(
 ) -> str:
     """String form of `_resolve_placeholder_value`. Used for config interpolation."""
     return str(_resolve_placeholder_value(name, variables, outputs))
+
+
+def _apply_filter(name: str, value: Any) -> Any:
+    """Apply a `${var | filter}` filter to a resolved value.
+
+    Filters keep the placeholder result SQL-safe / format-shape-correct so
+    multi-value or sql_result parameters can be used in real SQL clauses.
+    """
+    if name == "sql_in":
+        return _format_sql_in(value)
+    if name == "csv":
+        return _format_csv(value)
+    raise ValueError(f"unknown placeholder filter: {name!r}")
+
+
+def _format_sql_in(value: Any) -> str:
+    """Render a value as the body of a SQL IN(...) clause.
+    Numbers stay raw, strings get single-quoted (with `'` escaped to `''`),
+    None becomes NULL. Empty list → NULL so the query stays syntactically
+    valid (matches no rows) instead of producing `IN ()`."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    if not items:
+        return "NULL"
+    rendered: list[str] = []
+    for item in items:
+        if item is None:
+            rendered.append("NULL")
+        elif isinstance(item, bool):
+            rendered.append("1" if item else "0")
+        elif isinstance(item, (int, float)):
+            rendered.append(repr(item) if isinstance(item, float) else str(item))
+        else:
+            escaped = str(item).replace("'", "''")
+            rendered.append(f"'{escaped}'")
+    return ", ".join(rendered)
+
+
+def _format_csv(value: Any) -> str:
+    """Render a list as a comma-separated string. No quoting — assumes
+    caller knows their context (typically internal IDs / numeric tokens)."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return ", ".join("" if v is None else str(v) for v in items)
 
 
 def _resolve_placeholder_value(

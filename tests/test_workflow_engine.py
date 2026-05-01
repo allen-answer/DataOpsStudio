@@ -380,6 +380,79 @@ def test_params_node_output_merges_into_workflow_variables():
     assert seen[0]["tag"] == "B42"
 
 
+# --- placeholder filters ---
+
+def test_sql_in_filter_quotes_strings_and_leaves_numbers_raw():
+    from app.services.workflow_engine import _apply_filter
+
+    assert _apply_filter("sql_in", [1, 2, 3]) == "1, 2, 3"
+    assert _apply_filter("sql_in", ["a", "b"]) == "'a', 'b'"
+    assert _apply_filter("sql_in", [1, "a", None]) == "1, 'a', NULL"
+
+
+def test_sql_in_filter_escapes_single_quotes():
+    """SQL injection guard: a `'` inside a string item must be doubled."""
+    from app.services.workflow_engine import _apply_filter
+    assert _apply_filter("sql_in", ["O'Brien"]) == "'O''Brien'"
+
+
+def test_sql_in_filter_empty_list_renders_NULL():
+    """Empty IN clause is invalid SQL; NULL keeps the query syntactically
+    valid while matching no rows."""
+    from app.services.workflow_engine import _apply_filter
+    assert _apply_filter("sql_in", []) == "NULL"
+
+
+def test_sql_in_filter_wraps_scalar_value():
+    from app.services.workflow_engine import _apply_filter
+    assert _apply_filter("sql_in", 42) == "42"
+    assert _apply_filter("sql_in", "hi") == "'hi'"
+
+
+def test_sql_in_filter_in_template_via_engine():
+    """End-to-end: a multi_value parameter substituted into an IN clause."""
+    seen = []
+
+    def runner(config, variables):
+        seen.append(config["sql"])
+        return {}
+
+    workflow = _wf(
+        [WorkflowNode(
+            id="n1", type=WorkflowNodeType.COMPARE,
+            config={"sql": "SELECT * FROM users WHERE id IN (${vip_ids | sql_in})"},
+        )],
+        default_variables={},
+    )
+    # `params` node would normally feed `vip_ids` in; here we simulate that
+    # by passing it as a runtime variable. Note: the engine only merges
+    # scalars into resolved_vars, but variable lookups can still return
+    # the original list IF it's stored as-is — verify by going via
+    # ${nodes.x.y} instead.
+    nodes_outputs = {}
+
+    # Simpler: use a custom upstream node that emits a list output.
+    workflow2 = _wf([
+        WorkflowNode(id="src", type=WorkflowNodeType.COMPARE, config={"_emit": "list"}),
+        WorkflowNode(id="cmp", type=WorkflowNodeType.COMPARE, depends_on=["src"],
+                     config={"sql": "SELECT * FROM users WHERE id IN (${nodes.src.ids | sql_in})"}),
+    ])
+    captured = {}
+    def runner2(config, variables):
+        if config.get("_emit") == "list":
+            return {"ids": [1, 5, 9]}
+        captured["sql"] = config["sql"]
+        return {}
+    run_workflow(workflow2, runners={WorkflowNodeType.COMPARE: runner2})
+    assert captured["sql"] == "SELECT * FROM users WHERE id IN (1, 5, 9)"
+
+
+def test_unknown_filter_raises_clear_error():
+    from app.services.workflow_engine import _apply_filter
+    with pytest.raises(ValueError, match="unknown.*filter"):
+        _apply_filter("nope", [1, 2])
+
+
 # --- when: conditional execution ---
 
 def test_when_true_runs_node():
