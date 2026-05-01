@@ -8,11 +8,13 @@ import HistoryView from './views/HistoryView.vue'
 import LineageView from './views/LineageView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import WorkflowView from './views/WorkflowView.vue'
+import OperationsView from './views/OperationsView.vue'
 
 const views = [
   { id: 'datasource', label: '数据源管理' },
   { id: 'workbench', label: '数据对比任务工作台' },
   { id: 'workflow', label: '作业流' },
+  { id: 'operations', label: '流程作业 (原型)' },
   { id: 'lineage', label: '单脚本血缘' },
   { id: 'batch', label: '多脚本分析' },
   { id: 'history', label: '执行历史' },
@@ -993,6 +995,8 @@ provide('app', {
         <WorkbenchView v-if="activeView === 'workbench'" />
 
         <WorkflowView v-if="activeView === 'workflow'" />
+
+        <OperationsView v-if="activeView === 'operations'" />
 
         <LineageView v-if="activeView === 'lineage'" />
 
