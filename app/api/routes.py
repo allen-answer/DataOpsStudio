@@ -426,16 +426,25 @@ def _ensure_datasources_for_kind(payload: CompareTaskCreate) -> None:
 
 
 def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
-    """Validate referenced compare tasks exist + the DAG is well-formed.
-    Catching this at create time gives a clear 400 instead of a confusing
-    failure mid-run."""
+    """Validate per-type config + the DAG is well-formed. Catching this at
+    create time gives a clear 400 instead of a confusing failure mid-run."""
     for node in payload.nodes:
-        if node.type.value == "compare":
+        kind = node.type.value
+        if kind == "compare":
             task_id = str(node.config.get("task_id") or "").strip()
             if not task_id:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: compare requires config.task_id")
             if task_store.get(task_id) is None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: task {task_id} does not exist")
+        elif kind == "lineage":
+            if not str(node.config.get("sql") or "").strip():
+                raise HTTPException(status_code=400, detail=f"node {node.id}: lineage requires config.sql")
+        elif kind == "http":
+            url = str(node.config.get("url") or "").strip()
+            if not url:
+                raise HTTPException(status_code=400, detail=f"node {node.id}: http requires config.url")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise HTTPException(status_code=400, detail=f"node {node.id}: http url must start with http:// or https://")
     try:
         topological_order(payload.nodes)
     except ValueError as exc:

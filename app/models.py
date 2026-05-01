@@ -169,6 +169,8 @@ class CompareResult(BaseModel):
 
 class WorkflowNodeType(str, Enum):
     COMPARE = "compare"  # runs an existing CompareTask by id
+    LINEAGE = "lineage"  # analyzes a SQL string via lineage_service
+    HTTP    = "http"     # GET/POST a URL, useful for webhooks / notifications
 
 
 class WorkflowNode(BaseModel):

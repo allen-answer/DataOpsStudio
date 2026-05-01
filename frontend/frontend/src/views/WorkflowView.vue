@@ -121,6 +121,8 @@ const taskNameById = (id) => state.tasks.find((task) => task.id === id)?.name ||
                     <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">类型</span>
                     <select v-model="node.type" class="w-full border-none bg-white px-3 py-2 text-sm">
                       <option value="compare">数据对比 (compare)</option>
+                      <option value="lineage">血缘分析 (lineage)</option>
+                      <option value="http">HTTP 请求 (http)</option>
                     </select>
                   </label>
                   <label>
@@ -135,6 +137,40 @@ const taskNameById = (id) => state.tasks.find((task) => task.id === id)?.name ||
                     </select>
                   </label>
                 </div>
+
+                <!-- lineage-specific config -->
+                <div v-if="node.type === 'lineage'" class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_140px]">
+                  <label>
+                    <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">SQL（支持 ${'$'}{var}）</span>
+                    <textarea v-model="node.sql" class="block min-h-[80px] w-full border-none bg-white px-3 py-2 font-mono text-[12.5px]" placeholder="SELECT * FROM ..."></textarea>
+                  </label>
+                  <label>
+                    <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">方言（可选）</span>
+                    <input v-model="node.dialect" class="w-full border-none bg-white px-3 py-2 text-sm" placeholder="mysql / oracle">
+                  </label>
+                </div>
+
+                <!-- http-specific config -->
+                <div v-if="node.type === 'http'" class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[100px_minmax(0,1fr)_120px]">
+                  <label>
+                    <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">方法</span>
+                    <select v-model="node.method" class="w-full border-none bg-white px-3 py-2 text-sm">
+                      <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">URL</span>
+                    <input v-model="node.url" class="w-full border-none bg-white px-3 py-2 font-mono text-[12.5px]" placeholder="https://hooks.slack.com/...">
+                  </label>
+                  <label>
+                    <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">期望状态</span>
+                    <input v-model="node.expect_status" type="number" class="w-full border-none bg-white px-3 py-2 text-sm" placeholder="2xx 不校验">
+                  </label>
+                </div>
+                <label v-if="node.type === 'http' && (node.method === 'POST' || node.method === 'PUT' || node.method === 'PATCH')" class="mt-3 block">
+                  <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">请求体（支持 ${'$'}{nodes.x.y} 引用）</span>
+                  <textarea v-model="node.body" class="block min-h-[60px] w-full border-none bg-white px-3 py-2 font-mono text-[12.5px]" placeholder='{"text": "diff=${nodes.compare1.summary.diff}"}'></textarea>
+                </label>
                 <div v-if="otherNodeIds(node.id).length" class="mt-3">
                   <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">依赖（depends_on）</span>
                   <div class="flex flex-wrap gap-2">

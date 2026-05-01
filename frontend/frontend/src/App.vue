@@ -653,9 +653,31 @@ const fillWorkflowDraft = (wf) => {
     id: node.id || '',
     type: node.type || 'compare',
     name: node.name || '',
+    // type-specific draft fields, kept flat so the form binds cleanly.
     task_id: node.config?.task_id || '',
+    sql: node.config?.sql || '',
+    dialect: node.config?.dialect || '',
+    method: node.config?.method || 'GET',
+    url: node.config?.url || '',
+    body: node.config?.body || '',
+    expect_status: node.config?.expect_status ?? '',
     depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
   }))
+}
+
+const buildNodeConfig = (node) => {
+  if (node.type === 'compare') return { task_id: node.task_id }
+  if (node.type === 'lineage') return {
+    sql: node.sql,
+    ...(node.dialect ? { dialect: node.dialect } : {}),
+  }
+  if (node.type === 'http') return {
+    url: node.url,
+    method: node.method || 'GET',
+    ...(node.body ? { body: node.body } : {}),
+    ...(node.expect_status !== '' && node.expect_status !== null && node.expect_status !== undefined ? { expect_status: Number(node.expect_status) } : {}),
+  }
+  return {}
 }
 
 const workflowPayload = () => ({
@@ -665,7 +687,7 @@ const workflowPayload = () => ({
     id: node.id,
     type: node.type,
     name: node.name,
-    config: node.type === 'compare' ? { task_id: node.task_id } : {},
+    config: buildNodeConfig(node),
     depends_on: Array.isArray(node.depends_on) ? node.depends_on : [],
   })),
 })
@@ -688,7 +710,11 @@ const selectWorkflow = (id) => {
 
 const addWorkflowNode = () => {
   const nextIndex = workflowDraft.nodes.length + 1
-  workflowDraft.nodes.push({ id: `n${nextIndex}`, type: 'compare', name: '', task_id: '', depends_on: [] })
+  workflowDraft.nodes.push({
+    id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [],
+    task_id: '', sql: '', dialect: '',
+    method: 'GET', url: '', body: '', expect_status: '',
+  })
 }
 
 const removeWorkflowNode = (index) => {
