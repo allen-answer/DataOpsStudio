@@ -1,5 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useClipboard } from '@vueuse/core'
 import { apiForm, apiGet, apiJson } from './api'
 const LineageGraph = defineAsyncComponent(() => import('./components/LineageGraph.vue'))
 const SqlEditor = defineAsyncComponent(() => import('./components/SqlEditor.vue'))
@@ -208,19 +209,15 @@ const toErrorMessage = (error) => error?.message || String(error || '未知错�
 const historyItemTaskLabel = (item) => item.task_name || (item.task_id ? `任务 ${item.task_id.slice(0, 8)}` : '非对比任务')
 const summaryValue = (item, key) => item.summary?.[key] ?? '-'
 
+const { copy: _clipboardCopy } = useClipboard({ legacy: true })
 const copyField = async (text) => {
+  if (!text) return
   try {
-    await navigator.clipboard.writeText(text)
+    await _clipboardCopy(text)
+    setNotice(`已复制：${text}`)
   } catch {
-    const el = document.createElement('textarea')
-    el.value = text
-    el.style.cssText = 'position:fixed;top:-9999px;left:-9999px'
-    document.body.appendChild(el)
-    el.select()
-    document.execCommand('copy')
-    document.body.removeChild(el)
+    setNotice('复制失败，请手动选中复制')
   }
-  setNotice(`已复制：${text}`)
 }
 
 const loadHistory = async () => {
