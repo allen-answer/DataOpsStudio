@@ -18,6 +18,11 @@ const {
 const activeTab = ref('history')   // history / events / lineage / config / quality
 const selectedNodeId = ref('')
 
+// 新建态：自动落到「节点配置」tab，引导用户开始编辑
+watch(selectedWorkflowId, (id) => {
+  if (id === 'new') activeTab.value = 'config'
+}, { immediate: true })
+
 // 元数据补全（从 mock 拿）。索引用工作流在数组中的位置。
 const workflowIndex = computed(() => state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value))
 const meta = computed(() => getMeta(currentWorkflow.value, workflowIndex.value === -1 ? 0 : workflowIndex.value))
@@ -103,8 +108,8 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
 </script>
 
 <template>
-  <div v-if="!currentWorkflow" class="rounded-xl border border-dashed border-slate-200 bg-white p-12 text-center text-sm text-slate-400">
-    请先从「作业流总览」中选择一个作业流
+  <div v-if="!currentWorkflow && selectedWorkflowId !== 'new'" class="rounded-xl border border-dashed border-slate-200 bg-white p-12 text-center text-sm text-slate-400">
+    请先从「作业流总览」中选择一个作业流，或点击右上角「新建作业流」
   </div>
 
   <div v-else class="flex flex-col gap-3">
@@ -118,27 +123,38 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             <span class="font-mono">{{ meta.project }}</span>
           </div>
           <div class="mt-1.5 flex flex-wrap items-center gap-2.5">
-            <h1 class="text-xl font-bold text-slate-800">{{ currentWorkflow.name }}</h1>
-            <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset" :class="healthMeta[health].pill">
-              <span class="h-1.5 w-1.5 rounded-full" :class="healthMeta[health].dot"></span>
-              {{ healthMeta[health].label }}
+            <input v-if="selectedWorkflowId === 'new'"
+                   v-model="workflowDraft.name"
+                   placeholder="新建作业流名称..."
+                   class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xl font-bold text-slate-800 focus:border-blue-400 focus:outline-none">
+            <h1 v-else class="text-xl font-bold text-slate-800">{{ currentWorkflow.name }}</h1>
+            <span v-if="selectedWorkflowId === 'new'" class="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200">
+              <span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
+              草稿（未保存）
             </span>
-            <span v-if="latestRun" class="font-mono text-[11.5px] text-slate-500">
-              最近运行：{{ latestRun.started_at?.slice(5) }} · {{ latestRun.elapsed_seconds }}s
-            </span>
-            <span class="font-mono text-[11.5px] text-slate-500">{{ meta.schedule.text }}</span>
-            <span class="text-slate-300">·</span>
-            <span class="text-[11.5px] text-slate-500">负责人 <span class="font-medium text-slate-700">{{ meta.owner }}</span></span>
+            <template v-else>
+              <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset" :class="healthMeta[health].pill">
+                <span class="h-1.5 w-1.5 rounded-full" :class="healthMeta[health].dot"></span>
+                {{ healthMeta[health].label }}
+              </span>
+              <span v-if="latestRun" class="font-mono text-[11.5px] text-slate-500">
+                最近运行：{{ latestRun.started_at?.slice(5) }} · {{ latestRun.elapsed_seconds }}s
+              </span>
+              <span class="font-mono text-[11.5px] text-slate-500">{{ meta.schedule.text }}</span>
+              <span class="text-slate-300">·</span>
+              <span class="text-[11.5px] text-slate-500">负责人 <span class="font-medium text-slate-700">{{ meta.owner }}</span></span>
+            </template>
           </div>
-          <div class="mt-1.5 flex flex-wrap gap-1">
+          <div v-if="selectedWorkflowId !== 'new'" class="mt-1.5 flex flex-wrap gap-1">
             <span v-for="tag in meta.tags" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ tag }}</span>
           </div>
+          <p v-else class="mt-1.5 text-[11.5px] text-slate-500">填写名称、在「节点配置」中添加节点，然后保存。保存后即可执行。</p>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white transition hover:bg-emerald-700" :disabled="!isSavedWorkflow" @click="runWorkflow">
+          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" :title="!isSavedWorkflow ? '请先保存作业流' : '立即运行'" @click="runWorkflow">
             <span>▶</span> 立即运行
           </button>
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50" :disabled="!isSavedWorkflow" @click="runWorkflowAsync">
+          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" :title="!isSavedWorkflow ? '请先保存作业流' : '提交后台执行'" @click="runWorkflowAsync">
             后台执行
           </button>
           <button v-if="workflowAsyncJob && workflowAsyncStatus && !['success','failed','cancelled'].includes(workflowAsyncStatus.status)"
@@ -149,7 +165,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
           <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50" @click="saveWorkflow">
             保存
           </button>
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-rose-700 transition hover:border-rose-200 hover:bg-rose-50" @click="deleteWorkflow">
+          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-rose-700 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" @click="deleteWorkflow">
             删除
           </button>
         </div>

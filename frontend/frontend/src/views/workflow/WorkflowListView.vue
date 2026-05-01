@@ -144,6 +144,9 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
         <button class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50" @click="loadAllWorkflowRuns">
           ↻ 刷新
         </button>
+        <button class="inline-flex h-7 items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-blue-700" @click="emit('open-detail', 'new')">
+          ＋ 新建作业流
+        </button>
       </div>
     </div>
 
