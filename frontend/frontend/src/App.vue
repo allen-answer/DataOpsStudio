@@ -171,6 +171,52 @@ const compareBuckets = [
   { id: 'same', label: '一致' },
 ]
 
+// Field picker — union of source/target fields with which-side badges, mapped
+// to taskDraft.ignore_columns. Matching is case-insensitive + trim, mirroring
+// _normalize_column_name() in app/compare/engine.py.
+const normalizeColumn = (col) => String(col || '').trim().toLowerCase()
+const ignoredColumnSet = computed(() =>
+  new Set(parseCsv(taskDraft.ignore_columns).map(normalizeColumn))
+)
+const fieldPickerRows = computed(() => {
+  const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
+  const targetSet = new Set(targetFields.value.map(normalizeColumn))
+  const order = []
+  const seen = new Set()
+  const push = (name) => {
+    const key = normalizeColumn(name)
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    order.push({
+      name,
+      key,
+      onSource: sourceSet.has(key),
+      onTarget: targetSet.has(key),
+    })
+  }
+  sourceFields.value.forEach(push)
+  targetFields.value.forEach(push)
+  return order.map((row) => ({ ...row, included: !ignoredColumnSet.value.has(row.key) }))
+})
+const fieldPickerHasFields = computed(() => fieldPickerRows.value.length > 0)
+const toggleFieldIncluded = (name) => {
+  const key = normalizeColumn(name)
+  const currentIgnore = parseCsv(taskDraft.ignore_columns)
+  const without = currentIgnore.filter((col) => normalizeColumn(col) !== key)
+  if (without.length < currentIgnore.length) {
+    taskDraft.ignore_columns = without.join(', ')
+  } else {
+    taskDraft.ignore_columns = [...currentIgnore, name].join(', ')
+  }
+}
+const fieldPickerSelectAll = () => { taskDraft.ignore_columns = '' }
+const fieldPickerExcludeOneSided = () => {
+  const oneSided = fieldPickerRows.value
+    .filter((row) => !(row.onSource && row.onTarget))
+    .map((row) => row.name)
+  taskDraft.ignore_columns = oneSided.join(', ')
+}
+
 const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
   const previousTaskId = selectedTaskId.value
   loading.value = true
@@ -496,27 +542,34 @@ const previewTask = async (side) => {
 }
 
 const extractFields = async (side) => {
-  const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
+  const kind = taskDraft[`${side}_kind`] || 'sql'
   setActionStatus('running', '正在提取字段')
   try {
-    const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
-    let columns = (data.output_columns || []).filter(c => !c.includes('*'))
-
-    if (columns.length === 0) {
-      if (!isSavedTask.value) {
-        setActionStatus('ready', '字段提取', 'SELECT * 需要查询数据库获取字段，请先保存任务')
-        return
-      }
-      setActionStatus('running', 'SELECT * 检测到，正在查询数据库获取字段...')
-      const datasourceId = side === 'source' ? taskDraft.source_id : taskDraft.target_id
-      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST', {
-        side, sql, datasource_id: datasourceId, limit: 1,
+    let columns = []
+    if (kind === 'excel') {
+      const result = await apiJson('/api/preview/columns', 'POST', {
+        kind: 'excel',
+        excel_path: taskDraft[`${side}_excel_path`],
+        sheet: taskDraft[`${side}_sheet`],
+        header_row: Number(taskDraft[`${side}_header_row`]) || 1,
       })
-      if (side === 'source') sourcePreviewData.value = result
-      else targetPreviewData.value = result
-      columns = Object.keys(result.rows?.[0] ?? {})
+      columns = result.columns || []
+    } else {
+      const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
+      const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
+      columns = (data.output_columns || []).filter(c => !c.includes('*'))
+      if (columns.length === 0) {
+        // SELECT * — sqlglot can't resolve, hit the DB via /api/preview/columns.
+        // Works whether or not the task is saved (no task_id needed).
+        setActionStatus('running', 'SELECT * 检测到，正在查询数据库获取字段...')
+        const result = await apiJson('/api/preview/columns', 'POST', {
+          kind: 'sql',
+          datasource_id: side === 'source' ? taskDraft.source_id : taskDraft.target_id,
+          sql,
+        })
+        columns = result.columns || []
+      }
     }
-
     if (side === 'source') sourceFields.value = columns
     else targetFields.value = columns
     setActionStatus('success', '字段提取完成', `识别字段 ${columns.length} 个`)
@@ -687,6 +740,8 @@ provide('app', {
   driverItems, historyTaskOptions, filteredHistory,
   compareHistoryCount, lineageHistoryCount, compareBuckets,
   batchSelectedFileNames,
+  fieldPickerRows, fieldPickerHasFields,
+  toggleFieldIncluded, fieldPickerSelectAll, fieldPickerExcludeOneSided,
   // handlers — bootstrap / utils
   loadBootstrap, setNotice, setActionStatus, toErrorMessage,
   historyItemTaskLabel, summaryValue, copyField,

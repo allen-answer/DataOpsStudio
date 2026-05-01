@@ -7,8 +7,9 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
-from app.dbclients.factory import fetch_rows, test_connection
+from app.dbclients.factory import fetch_columns, fetch_rows, test_connection
 from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SourceKind, SqlMode
+from app.readers.excel_reader import list_columns as read_excel_columns
 from app.services import excel_uploads, lineage_service
 from app.services.history import delete_result, list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS, export_history_sheets
@@ -230,6 +231,39 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"side": side, "limit": preview_limit, "truncated": len(rows) == preview_limit, "rows": rows}
+
+
+@router.post("/api/preview/columns")
+def preview_columns_api(payload: dict[str, object] = Body(...)):
+    """Return column names for a SQL query or Excel sheet without persisting
+    a task. Used by the field-selection UI so users can pick include/exclude
+    before saving the task."""
+    kind = str(payload.get("kind") or "sql").lower()
+    if kind == "sql":
+        datasource_id = str(payload.get("datasource_id") or "").strip()
+        sql = str(payload.get("sql") or "")
+        datasource = datasource_store.get(datasource_id)
+        if datasource is None:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+        try:
+            validate_readonly_sql(sql)
+            columns = fetch_columns(datasource, sql)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"columns": columns}
+    if kind == "excel":
+        excel_path = str(payload.get("excel_path") or "")
+        sheet = str(payload.get("sheet") or "")
+        header_row = int(payload.get("header_row") or 1)
+        try:
+            absolute_path = excel_uploads.resolve_excel_path(excel_path)
+            columns = read_excel_columns(absolute_path, sheet=sheet, header_row=header_row)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"columns": columns}
+    raise HTTPException(status_code=400, detail=f"Unknown kind: {kind}")
 
 
 @router.post("/api/sql/assist")

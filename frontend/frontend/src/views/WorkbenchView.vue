@@ -32,6 +32,11 @@ const {
   formatSql,
   copyField,
   uploadExcel,
+  fieldPickerRows,
+  fieldPickerHasFields,
+  toggleFieldIncluded,
+  fieldPickerSelectAll,
+  fieldPickerExcludeOneSided,
 } = inject('app')
 </script>
 
@@ -113,7 +118,11 @@ const {
                     <button class="rounded-md px-2 py-1 transition" :class="taskDraft.source_kind === 'excel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.source_kind = 'excel'">Excel</button>
                   </div>
                 </div>
-                <div v-if="taskDraft.source_kind === 'sql'" class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('source')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('source')">预览</button></div>
+                <div class="flex gap-2">
+                  <button v-if="taskDraft.source_kind === 'sql'" class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('source')">格式化</button>
+                  <button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('source')">提取字段</button>
+                  <button v-if="taskDraft.source_kind === 'sql'" class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('source')">预览</button>
+                </div>
               </div>
               <template v-if="taskDraft.source_kind === 'sql'">
                 <SqlEditor v-model="taskDraft.source_sql" />
@@ -158,6 +167,14 @@ const {
                     <input v-model="taskDraft.source_header_row" type="number" min="1" class="border-none bg-slate-50">
                   </label>
                 </div>
+                <div v-if="sourceFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="col in sourceFields" :key="col"
+                    class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                    :title="'点击复制：' + col"
+                    @click="copyField(col)"
+                  >{{ col }}</span>
+                </div>
               </template>
             </div>
             <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -170,7 +187,11 @@ const {
                     <button class="rounded-md px-2 py-1 transition" :class="taskDraft.target_kind === 'excel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'" @click="taskDraft.target_kind = 'excel'">Excel</button>
                   </div>
                 </div>
-                <div v-if="taskDraft.target_kind === 'sql'" class="flex gap-2"><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button><button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('target')">提取字段</button><button class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('target')">预览</button></div>
+                <div class="flex gap-2">
+                  <button v-if="taskDraft.target_kind === 'sql'" class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="formatSql('target')">格式化</button>
+                  <button class="rounded-lg bg-slate-700/90 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-blue-600" @click="extractFields('target')">提取字段</button>
+                  <button v-if="taskDraft.target_kind === 'sql'" class="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40" :disabled="!isSavedTask" @click="previewTask('target')">预览</button>
+                </div>
               </div>
               <template v-if="taskDraft.target_kind === 'sql'">
                 <SqlEditor v-model="taskDraft.target_sql" placeholder="双 SQL 模式填写" />
@@ -215,6 +236,14 @@ const {
                     <input v-model="taskDraft.target_header_row" type="number" min="1" class="border-none bg-slate-50">
                   </label>
                 </div>
+                <div v-if="targetFields.length" class="mt-3 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="col in targetFields" :key="col"
+                    class="cursor-pointer select-all rounded-full bg-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200 transition hover:bg-blue-600"
+                    :title="'点击复制：' + col"
+                    @click="copyField(col)"
+                  >{{ col }}</span>
+                </div>
               </template>
             </div>
           </div>
@@ -232,7 +261,32 @@ const {
                   <button class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="recommendKey">自动推荐</button>
                 </div>
                 <label class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-400">忽略字段</label>
-                <input v-model="taskDraft.ignore_columns" class="mt-3 border-none bg-slate-50 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="etl_time">
+                <input v-model="taskDraft.ignore_columns" class="mt-3 border-none bg-slate-50 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="etl_time, created_at">
+                <div v-if="fieldPickerHasFields" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div class="mb-2 flex items-center justify-between gap-2">
+                    <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">字段筛选</span>
+                    <div class="flex gap-1.5">
+                      <button class="rounded-md bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 shadow-sm transition hover:bg-blue-50" @click="fieldPickerSelectAll">全选</button>
+                      <button class="rounded-md bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 shadow-sm transition hover:bg-blue-50" @click="fieldPickerExcludeOneSided">仅交集</button>
+                    </div>
+                  </div>
+                  <div class="max-h-48 space-y-1 overflow-auto">
+                    <label
+                      v-for="row in fieldPickerRows" :key="row.key"
+                      class="flex cursor-pointer items-center justify-between gap-2 rounded-md bg-white px-2.5 py-1.5 text-xs transition hover:bg-blue-50"
+                    >
+                      <span class="flex min-w-0 items-center gap-2">
+                        <input type="checkbox" :checked="row.included" class="h-3.5 w-3.5 rounded text-blue-600" @change="toggleFieldIncluded(row.name)">
+                        <span class="truncate font-mono text-slate-700">{{ row.name }}</span>
+                      </span>
+                      <span
+                        class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold"
+                        :class="row.onSource && row.onTarget ? 'bg-emerald-100 text-emerald-700' : (row.onSource ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700')"
+                      >{{ row.onSource && row.onTarget ? '双' : (row.onSource ? '仅源' : '仅目标') }}</span>
+                    </label>
+                  </div>
+                  <p class="mt-2 text-[10px] text-slate-400">勾选 = 参与对比；取消 = 加入「忽略字段」。需先点击两侧的「提取字段」加载列名。</p>
+                </div>
               </div>
               <div class="grid grid-cols-2 gap-4 rounded-2xl bg-slate-50 p-4 xl:col-span-2">
                 <label class="flex cursor-pointer items-center rounded-xl border border-transparent bg-white p-3 shadow-sm transition hover:border-blue-200"><input v-model="taskDraft.trim_strings" class="mr-3 h-4 w-4 rounded text-blue-600" type="checkbox"><span class="text-sm font-medium text-slate-600">字符串去空格</span></label>

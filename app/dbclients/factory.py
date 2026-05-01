@@ -118,6 +118,33 @@ def _fetch_with_dbapi(
             pass
 
 
+def fetch_columns(source: DataSource, sql: str) -> list[str]:
+    """Return column names for `sql` without materializing rows. Uses
+    `cursor.description` so empty result sets still yield the schema."""
+    module_name = first_available_module(source.db_type)
+    if not module_name:
+        raise RuntimeError(f"{source.db_type.value} driver is not installed")
+    connection = _connect(source, module_name)
+    cursor = None
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(sql)
+        except Exception as exc:
+            raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
+        return [desc[0] for desc in cursor.description or []]
+    finally:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def iter_rows(
     source: DataSource,
     sql: str,
