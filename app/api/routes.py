@@ -23,6 +23,7 @@ from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store
 from app.services.runner import run_task
 from app.services.schema_metadata import merge_schema_metadata, parse_schema_metadata
+from app.services.schema_introspection import fetch_schema_metadata
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
@@ -251,11 +252,15 @@ def sql_assist_api(payload: dict[str, str] = Body(...)):
 def lineage_api(payload: dict[str, str] = Body(...)):
     sql = payload.get("sql", "")
     dialect = payload.get("dialect") or None
+    schema_datasource_id = payload.get("schema_datasource_id") or ""
     if not sql.strip():
         raise HTTPException(status_code=400, detail="sql is required")
     try:
         logger.info("lineage api analyze start sql_chars=%s dialect=%s", len(sql), dialect or "auto")
-        schema = parse_schema_metadata(payload.get("schema", "")) if payload.get("schema") else None
+        schema = _merge_lineage_schema(
+            parse_schema_metadata(payload.get("schema", "")) if payload.get("schema") else None,
+            _schema_metadata_from_datasource(schema_datasource_id),
+        )
         return analyze_sql_lineage(sql, dialect, schema)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -265,13 +270,18 @@ def lineage_api(payload: dict[str, str] = Body(...)):
 def lineage_form_api(
     sql: str = Form(""),
     dialect: str = Form(""),
+    schema_datasource_id: str = Form(""),
     sql_file: UploadFile | None = File(None),
     schema_file: list[UploadFile] = File(default=[]),
 ):
     sql_text = _lineage_sql_text(sql, sql_file)
     try:
         logger.info("lineage form api analyze start sql_chars=%s dialect=%s", len(sql_text), dialect or "auto")
-        return analyze_sql_lineage(sql_text, dialect or None, _schema_metadata_files(schema_file))
+        return analyze_sql_lineage(
+            sql_text,
+            dialect or None,
+            _merge_lineage_schema(_schema_metadata_files(schema_file), _schema_metadata_from_datasource(schema_datasource_id)),
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -280,12 +290,17 @@ def lineage_form_api(
 @router.post("/api/lineage/batch/analyze")
 def lineage_batch_api(
     dialect: str = Form(""),
+    schema_datasource_id: str = Form(""),
     sql_files: list[UploadFile] = File(default=[]),
     schema_file: list[UploadFile] = File(default=[]),
 ):
     try:
         scripts = _lineage_script_inputs(sql_files)
-        result = analyze_lineage_batch(scripts, dialect or None, _schema_metadata_files(schema_file))
+        result = analyze_lineage_batch(
+            scripts,
+            dialect or None,
+            _merge_lineage_schema(_schema_metadata_files(schema_file), _schema_metadata_from_datasource(schema_datasource_id)),
+        )
         exports = _write_lineage_batch_exports(result)
         return {"result": result, "exports": exports}
     except Exception as exc:
@@ -379,6 +394,24 @@ def _schema_metadata_files(schema_files: list[UploadFile]) -> dict[str, list[str
             items.append(parse_schema_metadata(_decode_sql_content(content, filename)))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid schema metadata {filename}: {exc}") from exc
+    merged = merge_schema_metadata(*items)
+    return merged or None
+
+
+def _schema_metadata_from_datasource(datasource_id: str) -> dict[str, list[str]] | None:
+    if not datasource_id.strip():
+        return None
+    datasource = datasource_store.get(datasource_id.strip())
+    if datasource is None:
+        raise HTTPException(status_code=404, detail="Schema datasource not found")
+    try:
+        schema = fetch_schema_metadata(datasource)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Fetch schema metadata failed: {exc}") from exc
+    return schema or None
+
+
+def _merge_lineage_schema(*items: dict[str, list[str]] | None) -> dict[str, list[str]] | None:
     merged = merge_schema_metadata(*items)
     return merged or None
 
