@@ -159,3 +159,36 @@ def test_excel_vs_excel_compare(tmp_path):
     assert {row["key"][0] for row in buckets["only_target"]} == {4}
     assert {row["key"][0] for row in buckets["diff"]} == {2}
     assert {row["key"][0] for row in buckets["same"]} == {1}
+
+
+# Field-picker scenario: real sample files with deliberately mismatched
+# columns. Source has 序号/status/备注 the target lacks; target has role the
+# source lacks. Without ignore_columns this pollutes diff with noise; with
+# the one-sided columns ignored, the result lands clean.
+from app.models import CompareRules
+from app.utils.paths import BASE_DIR
+
+_SAMPLES = BASE_DIR / "samples" / "excel"
+
+
+def test_mismatched_columns_without_ignore_floods_diff():
+    src_rows = ExcelReader(file_path=_SAMPLES / "users_with_extras.xlsx", sheet="users").fetch_all()
+    tgt_rows = ExcelReader(file_path=_SAMPLES / "users_minimal.xlsx", sheet="users").fetch_all()
+    buckets = compare_rows(src_rows, tgt_rows, ["id"])
+    # All 5 overlap rows (id 1,2,3,5,6) end up in diff because of the
+    # 序号/status/备注/role mismatches even though only id=2,3 truly differ.
+    assert {row["key"][0] for row in buckets["diff"]} == {1, 2, 3, 5, 6}
+    assert buckets["same"] == []
+    assert {row["key"][0] for row in buckets["only_source"]} == {4}
+    assert {row["key"][0] for row in buckets["only_target"]} == {7}
+
+
+def test_mismatched_columns_with_intersection_ignore():
+    src_rows = ExcelReader(file_path=_SAMPLES / "users_with_extras.xlsx", sheet="users").fetch_all()
+    tgt_rows = ExcelReader(file_path=_SAMPLES / "users_minimal.xlsx", sheet="users").fetch_all()
+    rules = CompareRules(ignore_columns=["序号", "status", "备注", "role"])
+    buckets = compare_rows(src_rows, tgt_rows, ["id"], rules)
+    assert {row["key"][0] for row in buckets["only_source"]} == {4}
+    assert {row["key"][0] for row in buckets["only_target"]} == {7}
+    assert {row["key"][0] for row in buckets["diff"]} == {2, 3}
+    assert {row["key"][0] for row in buckets["same"]} == {1, 5, 6}
