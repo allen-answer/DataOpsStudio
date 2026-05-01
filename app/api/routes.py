@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.dbclients.drivers import detect_drivers
 from app.dbclients.factory import fetch_rows, test_connection
 from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SqlMode
-from app.services import lineage_service
+from app.services import excel_uploads, lineage_service
 from app.services.history import delete_result, list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS, export_history_sheets
 from app.services.jobs import cancel_job, get_job, submit_task_run
@@ -238,6 +238,11 @@ def sql_assist_api(payload: dict[str, str] = Body(...)):
         return sql_assist(payload.get("sql", ""), payload.get("dialect") or None, payload.get("target_dialect") or None)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/uploads/excel")
+def upload_excel_api(file: UploadFile = File(...)):
+    return excel_uploads.save_uploaded_excel(file)
 
 
 @router.post("/api/lineage/analyze")
