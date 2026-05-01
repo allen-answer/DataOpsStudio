@@ -39,8 +39,14 @@ npm run build
 # 启动全部服务（MySQL 8 + app），代码有变动时自动重建
 wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose up -d --build"
 
-# 仅重启 app（前端构建完或修改 Python 代码后）
+# 仅重启 app（仅前端构建后；Python 代码改动必须重建镜像，restart 不够）
 wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose restart app"
+
+# 修改 Python 代码后必须重建镜像才能生效（app 源码打入镜像，未 bind-mount）
+wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose up -d --build"
+
+# 临时验证（不重建镜像）：把改动 cp 进容器内跑测试
+wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker cp app/. dataops-studio:/app/app/ && docker cp tests/. dataops-studio:/app/tests/ && docker exec dataops-studio pytest"
 
 # 查看日志
 wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
@@ -48,7 +54,9 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 应用访问地址：**http://localhost:8010**。MySQL 8 暴露在 **localhost:3307**（容器名 `mysql8`，内部端口 3306）。
 
-前端构建后只需重启容器即可生效（静态文件通过 volume 挂载，未打入镜像）。
+`docker-compose.yml` 只 bind-mount `config/results/logs/static`，**app 源码（`main.py`、`app/`、`tests/`）打入镜像**。所以：
+- **前端**：构建产物落到 `./static/spa/`，restart app 即可生效（静态文件走 volume）。
+- **后端**：改 Python 代码必须 `docker compose up -d --build`，仅 restart 会继续跑老代码，且容器里也不会有新增的测试文件。
 
 ## 架构说明
 
