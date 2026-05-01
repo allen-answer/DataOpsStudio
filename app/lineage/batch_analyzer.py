@@ -4,6 +4,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.lineage._common import is_alias_reference as _is_alias_reference
+from app.lineage._common import normalize_table_name as _normalize_table_name
+from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
+from app.lineage._common import unique_strings as _unique_strings
 from app.lineage.analyzer import analyze_sql_lineage
 
 
@@ -113,6 +117,7 @@ def analyze_lineage_batch(
         "table_groups": table_groups,
         "script_edges": script_edges,
         "field_mappings": field_mappings,
+        "impact_analysis": _impact_analysis(table_edges),
         "warnings": warnings,
         "summary": {
             "files": len(scripts),
@@ -125,6 +130,42 @@ def analyze_lineage_batch(
             "warnings": len(warnings),
         },
     }
+
+
+def _impact_analysis(table_edges: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Maps each table to all downstream tables it transitively affects."""
+    adjacency: dict[str, list[str]] = {}
+    name_map: dict[str, str] = {}
+
+    for edge in table_edges:
+        src = edge.get("source_table", "")
+        tgt = edge.get("target_table", "")
+        if not src or not tgt:
+            continue
+        src_key = _normalize_table_name(src)
+        tgt_key = _normalize_table_name(tgt)
+        name_map.setdefault(src_key, src)
+        name_map.setdefault(tgt_key, tgt)
+        if tgt_key not in adjacency.setdefault(src_key, []):
+            adjacency[src_key].append(tgt_key)
+
+    result: dict[str, list[str]] = {}
+    for start_key in adjacency:
+        queue: list[str] = list(adjacency[start_key])
+        seen: set[str] = {start_key} | set(queue)
+        i = 0
+        while i < len(queue):
+            current = queue[i]
+            i += 1
+            for next_key in adjacency.get(current, []):
+                if next_key not in seen:
+                    seen.add(next_key)
+                    queue.append(next_key)
+        visited = queue  # queue IS the ordered BFS result
+        if visited:
+            result[name_map.get(start_key, start_key)] = [name_map.get(k, k) for k in visited]
+
+    return result
 
 
 def _script_edges(files: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -267,57 +308,3 @@ def _unique_dicts(items: Any) -> list[dict[str, Any]]:
         seen.add(key)
         result.append(item)
     return result
-
-
-def _unique_strings(items: Any) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-def _normalize_table_name(table: str) -> str:
-    return table.strip().strip('"`[]').lower()
-
-
-def _is_alias_reference(table_name: str, aliases: set[str]) -> bool:
-    return "." not in table_name and _normalize_table_name(table_name) in aliases
-
-
-def _raw_sql_aliases(sql: str) -> set[str]:
-    aliases: set[str] = set()
-    keywords = {
-        "and",
-        "connect",
-        "cross",
-        "full",
-        "group",
-        "having",
-        "inner",
-        "join",
-        "left",
-        "limit",
-        "minus",
-        "on",
-        "order",
-        "right",
-        "union",
-        "where",
-    }
-    identifier = r"[A-Za-z_][\w$#]*"
-    qualified = rf"{identifier}(?:\s*\.\s*{identifier})*"
-    for match in re.finditer(rf"\)\s+(?:AS\s+)?({identifier})\b", sql, flags=re.IGNORECASE):
-        alias = match.group(1)
-        if alias.lower() not in keywords:
-            aliases.add(_normalize_table_name(alias))
-    for match in re.finditer(rf"\b(?:FROM|JOIN)\s+{qualified}\s+(?:AS\s+)?({identifier})\b", sql, flags=re.IGNORECASE):
-        alias = match.group(1)
-        if alias.lower() not in keywords:
-            aliases.add(_normalize_table_name(alias))
-    for match in re.finditer(rf"\bWITH\s+({identifier})\s+AS\s*\(", sql, flags=re.IGNORECASE):
-        aliases.add(_normalize_table_name(match.group(1)))
-    return aliases
