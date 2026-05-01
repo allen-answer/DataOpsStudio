@@ -73,17 +73,18 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 **持久化** — 应用状态不依赖数据库，全部使用纯 JSON 文件：
 - `config/datasources.json` — 数据源配置
 - `config/tasks.json` — 对比任务配置
+- `config/workflows.json` — 作业流配置（Phase 3）
 - `config/jobs.json` — 异步任务状态（重启后保留；运行中的任务重启后变为 `failed`）
 - `results/` — 每次运行的 JSON + Excel 结果
 
-这三个 JSON 文件**不入库**（每个 clone 自己一份运行时状态）。仓库里只保留 `config/datasources.example.json` 和 `config/tasks.example.json`。新克隆的环境首次启动前先复制：
+这四个 JSON 文件**不入库**（每个 clone 自己一份运行时状态）。仓库里保留 `config/datasources.example.json` 和 `config/tasks.example.json`。新克隆的环境首次启动前可选复制：
 
 ```bash
 cp config/datasources.example.json config/datasources.json
 cp config/tasks.example.json config/tasks.json
 ```
 
-如果不复制，`JsonStore` 在首次写入时会自动创建空数组文件，应用照常启动，只是没有预置数据源/任务。
+如果不复制，`JsonStore` 在首次写入时会自动创建空数组文件，应用照常启动，只是没有预置数据源/任务。`workflows.json` 没有 example 文件——空仓库下就是空作业流列表。
 
 `JsonStore`（`services/json_store.py`）是基于 mtime 缓存失效的线程安全泛型封装。`datasource_store` 和 `task_store` 均为 `services/repositories.py` 中的模块级单例。
 
@@ -91,11 +92,19 @@ cp config/tasks.example.json config/tasks.json
 
 **SQL 安全** — 用户提交的所有 SQL 在执行前都经过 `utils/sql_guard.py` 校验。只允许 `SELECT`/`WITH`，遇到 DML/DDL 关键字直接拒绝。
 
+**作业流（Phase 3）** — 把多个步骤串起来运行：
+- `services/workflow_engine.py` 提供 `run_workflow(workflow, variables, runners, cancel_check)`，按 `workflow.nodes` 顺序执行
+- `${var}` 变量插值递归遍历每个节点 `config` 的 dict/list/str；内置变量：`today / now / year / month / day`
+- 节点执行器注册在 `services/workflow_nodes.py` 的 `NODE_RUNNERS` 里，目前只有 `compare`（包装 `runner.run_task`）。新节点类型需要 (1) 在 `models.WorkflowNodeType` 加值 (2) 写一个 `(config, variables) -> dict` 函数 (3) 注册到字典
+- 单节点失败后续节点 `SKIPPED`，整个 run 标记 `FAILED`
+- `cancel_check` 在节点之间被轮询；`services/jobs.py` 的 `submit_workflow_run` 把它接到现有的 `_is_cancel_requested` 标志，所以 `/api/runs/{job_id}/cancel` 对作业流和对比任务一视同仁
+- 第一版**不是 DAG**——线性顺序执行，没有 `depends_on` 字段
+
 **DB 驱动** — `dbclients/drivers.py` 声明各 `DatabaseType` 对应的 Python 模块。`dbclients/factory.py` 在连接时动态导入第一个可用驱动。当前 `requirements.txt` 已启用的驱动：`pymysql` + `cryptography`（MySQL 8 `caching_sha2_password` 认证）。Oracle、DM、DB2 驱动为可选项。
 
 ### 前端
 
-Vue 3 单页应用，主体为 `frontend/frontend/src/App.vue`（单一大组件，所有状态和逻辑均在此）。构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。
+Vue 3 单页应用。`App.vue` 持有所有共享状态和后端调用，子视图（`views/*.vue`）通过 `provide('app', {...})` / `inject('app')` 拿到 reactive 引用——故意没引 Pinia，状态分层是 Phase 4 决策，看用量再决定。当前视图：`DatasourceView` / `WorkbenchView`（对比任务）/ `WorkflowView`（作业流）/ `LineageView` / `BatchView` / `HistoryView`。构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。
 
 主要依赖：`@antv/g6`（血缘图）、`@codemirror/*`（SQL 编辑器）、`@vueuse/core`（工具函数，如 `useClipboard`）、Tailwind CSS v3（样式）。
 
@@ -135,90 +144,29 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 ## 路线图
 
-整体路径：**先稳住血缘 → 扩展数据输入类型 → 串成作业流 → 工程治理**。
+整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理**。
 
-### 阶段 1：收口现有血缘能力
+### 已完成
 
-目标：把已有血缘能力变稳定、可维护。
+- **Phase 1（血缘）**：`analyzer.py` / `batch_analyzer.py` 拆分、方言路由、存储过程深度解析、动态 SQL 识别、`App.vue` 子组件拆分、API 服务化（`lineage_service.py` / `schema_service.py`）、方言测试 fixture
+- **Phase 2（多来源对比）**：`SqlReader` / `ExcelReader` 抽象层、Excel vs Excel、Excel vs SQL、字段映射 + 类型标准化（日期/数字/Decimal/空值/trim/大小写）、字段筛选 UI（按列勾选 include/exclude）、对比结果导出增强
+- **Phase 3 已交付的部分**：作业流模型 + 变量插值（`${var}`）+ 顺序执行引擎 + `compare` 节点 + HTTP API（CRUD/sync/async）+ 取消支持 + 前端编排页面
+- **Phase 4 已交付的部分**：配置安全清理（`config/*.json` 不入库）+ CI（GitHub Actions: pytest + frontend build）
 
-| 任务 | 内容 | 优先级 |
-| --- | --- | --- |
-| 收口 Git 状态 | 提交 `analyzer.py`、`batch_analyzer.py` 变更，确认分支干净 | P0 |
-| Docker 内跑测试 | 跑后端 pytest、前端 build，确认无回归 | P0 |
-| 拆分 `analyzer.py` | 拆出方言路由、存储过程解析、字段解析、图构建、风险提示模块 | P0 |
-| 拆分 `App.vue` | 拆出单脚本分析、批量分析、schema 面板、风险面板、映射面板等子组件 | P0 |
-| API 服务化 | 把 `routes.py` 的血缘编排抽到 `lineage_service.py` / `schema_service.py` | P1 |
-| 补方言测试 | Oracle / DM / OceanBase / MySQL fixture 测试 | P1 |
+### Phase 3 还没做
 
-### 阶段 2：完善数据比对能力
+- **新节点类型**：`lineage` / `excel_export` / `batch_lineage` 等（注册表已就位）
+- **真 DAG**：`depends_on` 字段 + 拓扑排序 + 并行执行
+- **执行历史持久化**：`WorkflowRun` 当前不落盘，复用 `jobs.json` 但记录残缺
+- **条件节点**：`when: ${diff_count} > 0` 之类的跳过判断
 
-目标：从"SQL vs SQL"升级成"多来源数据比对"。
+### Phase 4 还没做
 
-| 任务 | 内容 | 优先级 |
-| --- | --- | --- |
-| 抽象数据读取层 | 新增 `SqlReader`、`ExcelReader`，预留 `CsvReader` 扩展位 | P0 |
-| 统一对比输入模型 | 左右两边统一为 `rows + columns + schema metadata` | P0 |
-| Excel vs Excel | 支持 sheet、表头行、主键字段、字段选择 | P0 |
-| Excel vs SQL | 上传 Excel 与数据库 SQL 结果对比 | P0 |
-| 字段映射 | Excel 字段名与 SQL 字段名不一致时的映射 | P1 |
-| 类型标准化 | 日期、数字、空值、字符串 trim、大小写规则 | P1 |
-| 对比结果导出增强 | Excel 导出包含差异摘要、仅左、仅右、字段差异明细 | P1 |
-
-### 阶段 3：轻量作业流
-
-目标：把数据比对、血缘分析、Excel 导出串成可执行流程。**第一版只做步骤式编排，不做拖拽画布。**
-
-| 任务 | 内容 | 优先级 |
-| --- | --- | --- |
-| 作业流模型 | 定义 `workflow / node / edge / variable / artifact` | P0 |
-| 变量系统 | 支持 `${biz_date}`、`${schema}`、`${table}`、`${file}` 等变量 | P0 |
-| DAG 执行器 | 节点依赖、拓扑执行、失败中断、状态记录 | P0 |
-| 节点执行器 | 接入数据对比、血缘分析、Excel 导出、批量导出 | P0 |
-| 执行历史 | 保存每次运行的输入变量、节点状态、日志、输出产物 | P1 |
-| 条件节点 | 例如差异数 > 0 才导出 | P2 |
-| 作业流前端 | 第一版步骤式编排页面 | P1 |
-
-第一版支持的最小流程：
-
-```
-输入变量 → 数据对比 → 血缘分析 → Excel 导出 / 批量导出
-```
-
-### 阶段 4：产品化与工程治理
-
-目标：让项目从"能用"变成"可长期维护、可交付"。
-
-| 任务 | 内容 | 优先级 |
-| --- | --- | --- |
-| 配置安全清理 | 真实数据源配置不入库，仓库内保留 example 配置 | P0（**不要拖到最后**） |
-| API 响应模型 | 为 lineage、compare、workflow 定义稳定 schema | P1 |
-| 前端状态管理 | 视情况引入 Pinia 或 composable 分层 | P1 |
-| 任务系统增强 | job TTL、取消、失败重试、结果落盘 | P1 |
-| 大文件保护 | Excel 行数、SQL 结果行数、导出大小限制 | P1 |
-| CI 检查 | 后端测试、前端 build、基础 lint | P1 |
-| 用户文档 | 数据比对、血缘分析、作业流、schema 接入说明 | P2 |
-
-### 推荐排期（8 周）
-
-| 周期 | 重点 |
-| --- | --- |
-| 第 1 周 | 收口血缘代码、拆分 `analyzer.py`、补方言测试 |
-| 第 2 周 | 拆分 `App.vue`、API 服务化、前后端回归 |
-| 第 3 周 | 抽象数据读取层，完成 Excel vs Excel |
-| 第 4 周 | 完成 Excel vs SQL、增强导出 |
-| 第 5 周 | 作业流模型、变量系统、DAG 执行器骨架 |
-| 第 6 周 | 接入对比/血缘/导出节点，完成第一版作业流页面 |
-| 第 7 周 | 执行历史、产物管理、异常处理 |
-| 第 8 周 | 配置安全清理、CI、文档、整体回归 |
-
-### 当前最优先的 6 件事
-
-1. 提交并验证当前血缘改动
-2. 拆分 `analyzer.py`
-3. 拆分 `App.vue`
-4. 抽象统一数据读取层
-5. 实现 Excel vs Excel / Excel vs SQL
-6. 实现轻量作业流执行器
+- API 响应模型（lineage / compare / workflow Pydantic schemas）
+- 前端状态管理（视情况引入 Pinia）
+- 任务系统增强（job TTL、失败重试）
+- 大文件保护（Excel 行数 / SQL 结果 / 导出大小上限）
+- 用户文档
 
 ## 血缘图设计（LineageGraph.vue）
 

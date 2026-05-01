@@ -176,6 +176,9 @@ class WorkflowNode(BaseModel):
     type: WorkflowNodeType
     name: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
+    # Ids of upstream nodes that must succeed before this one runs. Empty
+    # = no dependencies (root of the DAG). GitHub Actions `needs:` style.
+    depends_on: list[str] = Field(default_factory=list)
 
 
 class Workflow(BaseModel):

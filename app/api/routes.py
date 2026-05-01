@@ -18,7 +18,7 @@ from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.runner import run_task
 from app.services.sql_tools import sql_assist
-from app.services.workflow_engine import run_workflow
+from app.services.workflow_engine import run_workflow, topological_order
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
 
@@ -426,8 +426,9 @@ def _ensure_datasources_for_kind(payload: CompareTaskCreate) -> None:
 
 
 def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
-    """Validate that referenced compare tasks exist. Catching this at create
-    time gives a clear 400 instead of a confusing failure mid-run."""
+    """Validate referenced compare tasks exist + the DAG is well-formed.
+    Catching this at create time gives a clear 400 instead of a confusing
+    failure mid-run."""
     for node in payload.nodes:
         if node.type.value == "compare":
             task_id = str(node.config.get("task_id") or "").strip()
@@ -435,6 +436,10 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: compare requires config.task_id")
             if task_store.get(task_id) is None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: task {task_id} does not exist")
+    try:
+        topological_order(payload.nodes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _coerce_string_dict(value: object | None) -> dict[str, str]:

@@ -22,6 +22,8 @@ const {
 
 const compareTaskOptions = computed(() => state.tasks.map((task) => ({ id: task.id, name: task.name })))
 
+const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
+
 const lastRun = computed(() => {
   // Show the async run state if it's still active or just finished;
   // otherwise fall back to the synchronous run result. Both share the
@@ -132,6 +134,16 @@ const taskNameById = (id) => state.tasks.find((task) => task.id === id)?.name ||
                       <option v-for="task in compareTaskOptions" :key="task.id" :value="task.id">{{ task.name }}</option>
                     </select>
                   </label>
+                </div>
+                <div v-if="otherNodeIds(node.id).length" class="mt-3">
+                  <span class="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">依赖（depends_on）</span>
+                  <div class="flex flex-wrap gap-2">
+                    <label v-for="otherId in otherNodeIds(node.id)" :key="otherId" class="flex cursor-pointer items-center gap-1.5 rounded-md bg-white px-2.5 py-1 text-xs shadow-sm transition hover:bg-blue-50">
+                      <input type="checkbox" :value="otherId" v-model="node.depends_on" class="h-3.5 w-3.5 rounded text-blue-600">
+                      <span class="font-mono text-slate-700">{{ otherId }}</span>
+                    </label>
+                  </div>
+                  <p class="mt-1 text-[10px] text-slate-400">勾选必须先完成的节点；输出可用 <code class="rounded bg-slate-100 px-1 py-0.5 text-[10px]">${'$'}{nodes.{{ node.id }}.summary.diff}</code> 这种引用</p>
                 </div>
               </div>
             </div>

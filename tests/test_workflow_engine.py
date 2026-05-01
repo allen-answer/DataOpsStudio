@@ -94,10 +94,10 @@ def test_built_in_today_variable_available():
     assert received["config"]["d"][4] == "-"
 
 
-def test_unresolved_variable_fails_node_and_aborts():
+def test_unresolved_variable_fails_node_and_skips_dependents():
     workflow = _wf([
         WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"x": "${nope}"}),
-        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"y": "ok"}),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"y": "ok"}, depends_on=["n1"]),
     ])
 
     def runner(config, variables):
@@ -111,7 +111,7 @@ def test_unresolved_variable_fails_node_and_aborts():
     assert run.nodes[1].status == NodeRunStatus.SKIPPED
 
 
-def test_node_failure_aborts_chain_and_skips_rest():
+def test_node_failure_skips_dependent_chain():
     calls: list[str] = []
 
     def runner(config, variables):
@@ -122,8 +122,8 @@ def test_node_failure_aborts_chain_and_skips_rest():
 
     workflow = _wf([
         WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"tag": "first"}),
-        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "boom"}),
-        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, config={"tag": "third"}),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "boom"}, depends_on=["n1"]),
+        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, config={"tag": "third"}, depends_on=["n2"]),
     ])
     run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
 
@@ -160,8 +160,8 @@ def test_cancel_check_aborts_before_next_node():
 
     workflow = _wf([
         WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"tag": "first"}),
-        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "second"}),
-        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, config={"tag": "third"}),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"tag": "second"}, depends_on=["n1"]),
+        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, config={"tag": "third"}, depends_on=["n2"]),
     ])
 
     # Flip cancellation on after the first node; second/third must be skipped.
@@ -197,6 +197,159 @@ def test_cancel_check_before_first_node_skips_all():
 
     assert run.status == WorkflowRunStatus.FAILED
     assert run.error == "cancelled"
+    assert all(node.status == NodeRunStatus.SKIPPED for node in run.nodes)
+
+
+# --- DAG semantics ---
+
+def test_topological_order_respects_depends_on():
+    from app.services.workflow_engine import topological_order
+
+    nodes = [
+        WorkflowNode(id="n3", type=WorkflowNodeType.COMPARE, depends_on=["n1", "n2"]),
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE),
+        WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, depends_on=["n1"]),
+    ]
+    order = topological_order(nodes)
+    # n1 (idx 1) must come before n2 (idx 2); n3 (idx 0) must be last.
+    assert order.index(1) < order.index(2)
+    assert order.index(2) < order.index(0)
+
+
+def test_topological_order_breaks_ties_by_array_index():
+    """When multiple nodes are ready, smaller array index runs first.
+    Preserves the linear-array intuition for users not yet using deps."""
+    from app.services.workflow_engine import topological_order
+
+    nodes = [
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE),
+        WorkflowNode(id="c", type=WorkflowNodeType.COMPARE),
+    ]
+    assert topological_order(nodes) == [0, 1, 2]
+
+
+def test_independent_branches_run_after_unrelated_failure():
+    """A failure in one branch must not skip an unrelated parallel branch."""
+    calls: list[str] = []
+
+    def runner(config, variables):
+        tag = config["tag"]
+        calls.append(tag)
+        if tag == "boom":
+            raise RuntimeError("x")
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="bad", type=WorkflowNodeType.COMPARE, config={"tag": "boom"}),
+        WorkflowNode(id="bad_child", type=WorkflowNodeType.COMPARE, config={"tag": "bad_child"}, depends_on=["bad"]),
+        WorkflowNode(id="ok", type=WorkflowNodeType.COMPARE, config={"tag": "ok"}),
+        WorkflowNode(id="ok_child", type=WorkflowNodeType.COMPARE, config={"tag": "ok_child"}, depends_on=["ok"]),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+
+    assert run.status == WorkflowRunStatus.FAILED  # because `bad` failed
+    statuses = {n.node_id: n.status for n in run.nodes}
+    assert statuses["bad"] == NodeRunStatus.FAILED
+    assert statuses["bad_child"] == NodeRunStatus.SKIPPED
+    assert statuses["ok"] == NodeRunStatus.SUCCESS
+    assert statuses["ok_child"] == NodeRunStatus.SUCCESS
+    assert "boom" in calls and "ok" in calls and "ok_child" in calls
+
+
+def test_diamond_dag_runs_all_paths():
+    calls: list[str] = []
+
+    def runner(config, variables):
+        calls.append(config["tag"])
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="root", type=WorkflowNodeType.COMPARE, config={"tag": "root"}),
+        WorkflowNode(id="left", type=WorkflowNodeType.COMPARE, config={"tag": "left"}, depends_on=["root"]),
+        WorkflowNode(id="right", type=WorkflowNodeType.COMPARE, config={"tag": "right"}, depends_on=["root"]),
+        WorkflowNode(id="join", type=WorkflowNodeType.COMPARE, config={"tag": "join"}, depends_on=["left", "right"]),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+
+    assert run.status == WorkflowRunStatus.SUCCESS
+    assert calls[0] == "root"
+    assert calls[-1] == "join"
+    assert set(calls[1:3]) == {"left", "right"}
+
+
+def test_node_output_referenced_in_downstream_config():
+    seen: dict = {}
+
+    def n1_runner(config, variables):
+        return {"summary": {"diff": 7, "label": "alpha"}}
+
+    def n2_runner(config, variables):
+        seen["config"] = config
+        return {}
+
+    runners = {WorkflowNodeType.COMPARE: n1_runner}
+
+    # Two-node setup where n2 reads n1's output. Use a small dispatch by id.
+    def runner(config, variables):
+        return n1_runner(config, variables) if config.get("__which") == "n1" else n2_runner(config, variables)
+
+    workflow = _wf([
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, config={"__which": "n1"}),
+        WorkflowNode(
+            id="n2",
+            type=WorkflowNodeType.COMPARE,
+            config={"__which": "n2", "diff_count": "${nodes.n1.summary.diff}", "label": "got-${nodes.n1.summary.label}"},
+            depends_on=["n1"],
+        ),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+
+    assert run.status == WorkflowRunStatus.SUCCESS
+    assert seen["config"]["diff_count"] == "7"
+    assert seen["config"]["label"] == "got-alpha"
+
+
+def test_unknown_dependency_rejected():
+    from app.services.workflow_engine import topological_order
+
+    nodes = [
+        WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, depends_on=["ghost"]),
+    ]
+    with pytest.raises(ValueError, match="ghost"):
+        topological_order(nodes)
+
+
+def test_self_dependency_rejected():
+    from app.services.workflow_engine import topological_order
+
+    nodes = [WorkflowNode(id="n1", type=WorkflowNodeType.COMPARE, depends_on=["n1"])]
+    with pytest.raises(ValueError, match="itself"):
+        topological_order(nodes)
+
+
+def test_cycle_rejected():
+    from app.services.workflow_engine import topological_order
+
+    nodes = [
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, depends_on=["b"]),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, depends_on=["a"]),
+    ]
+    with pytest.raises(ValueError, match="cycle"):
+        topological_order(nodes)
+
+
+def test_invalid_dag_workflow_run_marks_all_skipped():
+    """run_workflow must catch DAG validation errors and produce a FAILED
+    run rather than crashing — async jobs depend on this for clean errors."""
+    workflow = _wf([
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, depends_on=["b"]),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, depends_on=["a"]),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: lambda c, v: {}})
+
+    assert run.status == WorkflowRunStatus.FAILED
+    assert "cycle" in run.error.lower() or "invalid" in run.error.lower()
     assert all(node.status == NodeRunStatus.SKIPPED for node in run.nodes)
 
 

@@ -650,6 +650,7 @@ const fillWorkflowDraft = (wf) => {
     type: node.type || 'compare',
     name: node.name || '',
     task_id: node.config?.task_id || '',
+    depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
   }))
 }
 
@@ -661,6 +662,7 @@ const workflowPayload = () => ({
     type: node.type,
     name: node.name,
     config: node.type === 'compare' ? { task_id: node.task_id } : {},
+    depends_on: Array.isArray(node.depends_on) ? node.depends_on : [],
   })),
 })
 
@@ -682,7 +684,7 @@ const selectWorkflow = (id) => {
 
 const addWorkflowNode = () => {
   const nextIndex = workflowDraft.nodes.length + 1
-  workflowDraft.nodes.push({ id: `n${nextIndex}`, type: 'compare', name: '', task_id: '' })
+  workflowDraft.nodes.push({ id: `n${nextIndex}`, type: 'compare', name: '', task_id: '', depends_on: [] })
 }
 
 const removeWorkflowNode = (index) => {
