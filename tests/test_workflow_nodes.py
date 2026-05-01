@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.workflow_nodes import run_http_node, run_lineage_node
+from app.services.workflow_nodes import run_http_node, run_lineage_node, run_excel_export_node
 
 
 # --- lineage runner ---
@@ -87,6 +87,37 @@ def test_http_node_expect_status_match_succeeds():
     with patch("urllib.request.urlopen", return_value=_FakeResponse(status=204, body=b"")):
         out = run_http_node({"url": "https://x.io", "expect_status": 204}, {})
     assert out["status"] == 204
+
+
+# --- excel_export runner ---
+
+def test_excel_export_requires_at_least_one_enabled_sheet():
+    with pytest.raises(ValueError, match="enabled sheet"):
+        run_excel_export_node({"filename": "x.xlsx", "sheets": []}, {})
+
+    with pytest.raises(ValueError, match="enabled sheet"):
+        run_excel_export_node({"filename": "x.xlsx", "sheets": [{"id": "s1", "enabled": False}]}, {})
+
+
+def test_excel_export_emits_sheet_descriptors():
+    out = run_excel_export_node({
+        "filename": "DataCompare_2026-05-01.xlsx",
+        "sheets": [
+            {"id": "summary", "enabled": True,  "sheet_name": "Summary", "source": "summary",       "max_rows": 100000},
+            {"id": "diff",    "enabled": True,  "sheet_name": "Diff",    "source": "diff",          "max_rows": 50000},
+            {"id": "skip",    "enabled": False, "sheet_name": "X",       "source": "only_source",   "max_rows": 1000},
+        ],
+    }, {})
+
+    assert out["filename"] == "DataCompare_2026-05-01.xlsx"
+    assert out["sheet_count"] == 2   # disabled sheet excluded
+    assert [s["name"] for s in out["sheets"]] == ["Summary", "Diff"]
+    assert out["_stub"] is True
+
+
+def test_excel_export_rejects_non_list_sheets():
+    with pytest.raises(ValueError, match="must be a list"):
+        run_excel_export_node({"filename": "x.xlsx", "sheets": "not a list"}, {})
 
 
 def test_http_node_surfaces_4xx_body_without_raising():

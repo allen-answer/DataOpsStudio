@@ -658,6 +658,11 @@ const fillWorkflowDraft = (wf) => {
     url: node.config?.url || '',
     body: node.config?.body || '',
     expect_status: node.config?.expect_status ?? '',
+    // excel_export: filename + sheets list. Each sheet keeps its own draft state.
+    filename: node.config?.filename || '',
+    sheets: Array.isArray(node.config?.sheets)
+      ? node.config.sheets.map((s) => ({ ...s }))
+      : [],
     depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
     when: node.when || '',
   }))
@@ -674,6 +679,20 @@ const buildNodeConfig = (node) => {
     method: node.method || 'GET',
     ...(node.body ? { body: node.body } : {}),
     ...(node.expect_status !== '' && node.expect_status !== null && node.expect_status !== undefined ? { expect_status: Number(node.expect_status) } : {}),
+  }
+  if (node.type === 'excel_export') return {
+    filename: node.filename || 'export.xlsx',
+    sheets: (node.sheets || []).map((s) => ({
+      id: s.id,
+      enabled: s.enabled !== false,
+      sheet_name: s.sheet_name || s.id,
+      source: s.source || 'summary',
+      custom_sql: s.custom_sql || '',
+      max_rows: Number(s.max_rows) || 100000,
+      freeze_header: s.freeze_header !== false,
+      auto_width: s.auto_width !== false,
+      highlight_diff: s.highlight_diff !== false,
+    })),
   }
   return {}
 }
@@ -743,6 +762,11 @@ const addWorkflowNode = () => {
     id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
     task_id: '', sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
+    filename: 'DataCompare_${biz_date}.xlsx',
+    sheets: [
+      { id: 'summary', enabled: true,  sheet_name: '汇总',     source: 'summary',     max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
+      { id: 'diff',    enabled: true,  sheet_name: '差异明细', source: 'diff',        max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
+    ],
   })
 }
 
@@ -756,6 +780,49 @@ const moveWorkflowNode = (index, delta) => {
   const tmp = workflowDraft.nodes[index]
   workflowDraft.nodes[index] = workflowDraft.nodes[target]
   workflowDraft.nodes[target] = tmp
+}
+
+// Excel-export sheet helpers (only meaningful when node.type === 'excel_export')
+const SHEET_TEMPLATES = {
+  summary:        { sheet_name: '汇总',         source: 'summary' },
+  diff:           { sheet_name: '差异明细',     source: 'diff' },
+  only_source:    { sheet_name: '源端缺失',     source: 'only_source' },
+  only_target:    { sheet_name: '目标端缺失',   source: 'only_target' },
+  new_rows:       { sheet_name: '新增数据',     source: 'new_rows' },
+  field_diff:     { sheet_name: '字段级差异',   source: 'field_diff' },
+  params:         { sheet_name: '运行参数',     source: 'params' },
+  lineage:        { sheet_name: '血缘分析',     source: 'lineage' },
+  custom:         { sheet_name: '自定义查询',   source: 'custom' },
+}
+
+const addExportSheet = (node, templateId) => {
+  const tmpl = SHEET_TEMPLATES[templateId] || SHEET_TEMPLATES.summary
+  const id = `${templateId}_${(node.sheets || []).length + 1}`
+  ;(node.sheets || (node.sheets = [])).push({
+    id,
+    enabled: true,
+    sheet_name: tmpl.sheet_name,
+    source: tmpl.source,
+    custom_sql: '',
+    max_rows: 100000,
+    freeze_header: true,
+    auto_width: true,
+    highlight_diff: true,
+  })
+}
+
+const removeExportSheet = (node, sheetIdx) => {
+  if (Array.isArray(node.sheets)) node.sheets.splice(sheetIdx, 1)
+}
+
+const moveExportSheet = (node, sheetIdx, delta) => {
+  const sheets = node.sheets
+  if (!Array.isArray(sheets)) return
+  const target = sheetIdx + delta
+  if (target < 0 || target >= sheets.length) return
+  const tmp = sheets[sheetIdx]
+  sheets[sheetIdx] = sheets[target]
+  sheets[target] = tmp
 }
 
 const saveWorkflow = async () => {
@@ -993,6 +1060,7 @@ provide('app', {
   selectWorkflow, saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
+  addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   loadWorkflowRunHistory, loadWorkflowRunDetail, loadAllWorkflowRuns,
 })
 </script>

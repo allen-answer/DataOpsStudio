@@ -478,6 +478,12 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: http requires config.url")
             if not (url.startswith("http://") or url.startswith("https://")):
                 raise HTTPException(status_code=400, detail=f"node {node.id}: http url must start with http:// or https://")
+        elif kind == "excel_export":
+            sheets = node.config.get("sheets") or []
+            if not isinstance(sheets, list) or not [s for s in sheets if s.get("enabled", True)]:
+                raise HTTPException(status_code=400, detail=f"node {node.id}: excel_export 至少需要一个启用的 Sheet")
+            if not str(node.config.get("filename") or "").strip():
+                raise HTTPException(status_code=400, detail=f"node {node.id}: excel_export 需要文件名模板")
     try:
         topological_order(payload.nodes)
     except ValueError as exc:

@@ -124,8 +124,44 @@ def run_http_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str
     }
 
 
+def run_excel_export_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+    """Build a multi-sheet Excel report from upstream compare/lineage outputs.
+
+    First-version behavior: validate the config and emit a stub result
+    describing what *would* have been written. Real Excel writing reads
+    upstream node outputs (referenced via ${nodes.x.y} in user config)
+    and lays them into separate sheets. Wiring that into the existing
+    exporter machinery lands in a follow-up slice.
+    """
+    filename = str(config.get("filename") or "").strip() or "export.xlsx"
+    sheets = config.get("sheets") or []
+    if not isinstance(sheets, list):
+        raise ValueError("excel_export node config.sheets must be a list")
+    enabled = [s for s in sheets if s.get("enabled", True)]
+    if not enabled:
+        raise ValueError("excel_export node requires at least one enabled sheet")
+    # Variables / upstream node refs are already substituted by the engine
+    # before this runner sees `config`, so filename + sheet_name come in
+    # already-resolved.
+    return {
+        "filename": filename,
+        "sheet_count": len(enabled),
+        "sheets": [
+            {
+                "name": s.get("sheet_name") or s.get("id") or f"Sheet{i+1}",
+                "source": s.get("source"),
+                "max_rows": s.get("max_rows"),
+                "rows_written": 0,   # stub — real run would populate from upstream output
+            }
+            for i, s in enumerate(enabled)
+        ],
+        "_stub": True,
+    }
+
+
 NODE_RUNNERS: dict[WorkflowNodeType, NodeRunner] = {
-    WorkflowNodeType.COMPARE: run_compare_node,
-    WorkflowNodeType.LINEAGE: run_lineage_node,
-    WorkflowNodeType.HTTP:    run_http_node,
+    WorkflowNodeType.COMPARE:      run_compare_node,
+    WorkflowNodeType.LINEAGE:      run_lineage_node,
+    WorkflowNodeType.HTTP:         run_http_node,
+    WorkflowNodeType.EXCEL_EXPORT: run_excel_export_node,
 }

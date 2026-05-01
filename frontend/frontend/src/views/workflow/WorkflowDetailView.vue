@@ -12,8 +12,18 @@ const {
   saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
+  addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   loadWorkflowRunDetail,
 } = inject('app')
+
+// 用于 Excel 节点 Sheet 配置
+const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'new_rows', 'field_diff', 'params', 'lineage', 'custom']
+const sheetSourceLabel = {
+  summary: '汇总', diff: '差异明细', only_source: '源端缺失', only_target: '目标端缺失',
+  new_rows: '新增', field_diff: '字段级差异', params: '运行参数', lineage: '血缘分析', custom: '自定义 SQL',
+}
+const expandedSheets = ref({})   // node-idx_sheet-idx → bool
+const toggleSheet = (key) => { expandedSheets.value[key] = !expandedSheets.value[key] }
 
 const activeTab = ref('history')   // history / events / lineage / config / quality
 const selectedNodeId = ref('')
@@ -226,6 +236,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                       :class="{
                         'bg-blue-50 text-blue-700': n.type === 'compare',
                         'bg-emerald-50 text-emerald-700': n.type === 'lineage',
+                        'bg-amber-50 text-amber-700': n.type === 'excel_export',
                         'bg-purple-50 text-purple-700': n.type === 'http',
                       }">{{ n.type }}</span>
                 <span class="font-mono text-slate-500">{{ n.id }}</span>
@@ -441,7 +452,12 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                   <span class="grid h-6 w-6 place-items-center rounded bg-blue-600 text-[10px] font-bold text-white">{{ index + 1 }}</span>
                   <input v-model="node.id" class="w-24 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-mono">
                   <span class="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
-                        :class="{ 'bg-blue-50 text-blue-700': node.type === 'compare', 'bg-emerald-50 text-emerald-700': node.type === 'lineage', 'bg-purple-50 text-purple-700': node.type === 'http' }">{{ node.type }}</span>
+                        :class="{
+                          'bg-blue-50 text-blue-700': node.type === 'compare',
+                          'bg-emerald-50 text-emerald-700': node.type === 'lineage',
+                          'bg-amber-50 text-amber-700': node.type === 'excel_export',
+                          'bg-purple-50 text-purple-700': node.type === 'http',
+                        }">{{ node.type }}</span>
                 </div>
                 <div class="flex items-center gap-1">
                   <button class="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-30" :disabled="index === 0" @click="moveWorkflowNode(index, -1)">↑</button>
@@ -455,6 +471,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                   <select v-model="node.type" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
                     <option value="compare">数据对比 compare</option>
                     <option value="lineage">血缘分析 lineage</option>
+                    <option value="excel_export">Excel 导出 excel_export</option>
                     <option value="http">HTTP 请求 http</option>
                   </select>
                 </label>
@@ -495,6 +512,77 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                   <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">期望状态</span>
                   <input v-model="node.expect_status" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
                 </label>
+              </div>
+
+              <!-- Excel 导出节点：文件名模板 + Sheet 列表 -->
+              <div v-if="node.type === 'excel_export'" class="mt-3 space-y-3">
+                <label class="block">
+                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">文件名模板（支持 ${'$'}{var}）</span>
+                  <input v-model="node.filename" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs" placeholder="DataCompare_${'$'}{biz_date}_${'$'}{batch_id}.xlsx">
+                </label>
+
+                <div class="rounded-lg border border-slate-200 bg-white">
+                  <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+                    <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Sheet 列表（{{ (node.sheets || []).length }}）</span>
+                    <div class="flex items-center gap-1">
+                      <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
+                              @change="addExportSheet(node, $event.target.value); $event.target.value = ''">
+                        <option value="" disabled selected>+ 添加 Sheet</option>
+                        <option v-for="t in sheetTemplateIds" :key="t" :value="t">{{ sheetSourceLabel[t] }}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div v-if="!(node.sheets || []).length" class="px-3 py-6 text-center text-[11px] text-slate-400">还没有 Sheet，从上方下拉添加</div>
+
+                  <ul v-else class="divide-y divide-slate-100">
+                    <li v-for="(sheet, sIdx) in node.sheets" :key="sheet.id" class="px-3 py-2">
+                      <!-- 折叠态：单行紧凑展示 -->
+                      <div class="flex items-center gap-2">
+                        <input type="checkbox" v-model="sheet.enabled" class="h-3.5 w-3.5 rounded text-blue-600" :title="sheet.enabled ? '已启用' : '已禁用'">
+                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 transition hover:bg-slate-50"
+                                @click="toggleSheet(`${index}_${sIdx}`)">
+                          {{ expandedSheets[`${index}_${sIdx}`] ? '▾' : '▸' }}
+                        </button>
+                        <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase text-slate-600">{{ sheetSourceLabel[sheet.source] || sheet.source }}</span>
+                        <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
+                        <span class="font-mono text-[10.5px] text-slate-500">≤ {{ sheet.max_rows }} 行</span>
+                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === 0" @click="moveExportSheet(node, sIdx, -1)">↑</button>
+                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === node.sheets.length - 1" @click="moveExportSheet(node, sIdx, 1)">↓</button>
+                        <button class="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100" @click="removeExportSheet(node, sIdx)">×</button>
+                      </div>
+
+                      <!-- 展开态：详细配置 -->
+                      <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5">
+                        <div class="grid grid-cols-1 gap-2 lg:grid-cols-3">
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据来源</span>
+                            <select v-model="sheet.source" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
+                              <option v-for="t in sheetTemplateIds" :key="t" :value="t">{{ sheetSourceLabel[t] }}</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
+                            <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Sheet ID（内部）</span>
+                            <input v-model="sheet.id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
+                          </label>
+                        </div>
+                        <label v-if="sheet.source === 'custom'" class="mt-2 block">
+                          <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">自定义 SQL（${'$'}{var} 可用）</span>
+                          <textarea v-model="sheet.custom_sql" class="block min-h-[60px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[12px]" placeholder="SELECT ..."></textarea>
+                        </label>
+                        <div class="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
+                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.freeze_header" class="h-3 w-3 rounded text-blue-600">冻结表头</label>
+                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.auto_width" class="h-3 w-3 rounded text-blue-600">自动列宽</label>
+                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.highlight_diff" class="h-3 w-3 rounded text-blue-600">高亮差异字段</label>
+                        </div>
+                      </div>
+                    </li>
+                  </ul>
+                </div>
               </div>
               <div v-if="otherNodeIds(node.id).length" class="mt-2">
                 <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">依赖（depends_on）</span>

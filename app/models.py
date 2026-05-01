@@ -171,9 +171,10 @@ class CompareResult(BaseModel):
 # node.config can reference workflow variables via ${var} placeholders.
 
 class WorkflowNodeType(str, Enum):
-    COMPARE = "compare"  # runs an existing CompareTask by id
-    LINEAGE = "lineage"  # analyzes a SQL string via lineage_service
-    HTTP    = "http"     # GET/POST a URL, useful for webhooks / notifications
+    COMPARE       = "compare"        # runs an existing CompareTask by id
+    LINEAGE       = "lineage"        # analyzes a SQL string via lineage_service
+    HTTP          = "http"           # GET/POST a URL, useful for webhooks / notifications
+    EXCEL_EXPORT  = "excel_export"   # multi-sheet Excel report from upstream node outputs
 
 
 class WorkflowNode(BaseModel):
