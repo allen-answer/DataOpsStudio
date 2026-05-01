@@ -10,13 +10,15 @@ import WorkbenchView from './views/WorkbenchView.vue'
 import WorkflowView from './views/WorkflowView.vue'
 import OperationsView from './views/OperationsView.vue'
 import DagsterView from './views/DagsterView.vue'
+import AssetAtlasView from './views/AssetAtlasView.vue'
 
 const views = [
   { id: 'datasource', label: '数据源管理' },
   { id: 'workbench', label: '数据对比任务工作台' },
   { id: 'workflow', label: '作业流' },
   { id: 'operations', label: '流程作业 (原型)' },
-  { id: 'dagster', label: 'Asset Graph (原型)' },
+  { id: 'dagster', label: 'Asset Graph (原型·暗色)' },
+  { id: 'atlas', label: 'Asset Atlas' },
   { id: 'lineage', label: '单脚本血缘' },
   { id: 'batch', label: '多脚本分析' },
   { id: 'history', label: '执行历史' },
@@ -1055,6 +1057,8 @@ provide('app', {
         <OperationsView v-if="activeView === 'operations'" />
 
         <DagsterView v-if="activeView === 'dagster'" />
+
+        <AssetAtlasView v-if="activeView === 'atlas'" />
 
         <LineageView v-if="activeView === 'lineage'" />
 
