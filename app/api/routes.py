@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import io
 import logging
-import time
-import uuid
-import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
@@ -12,18 +8,14 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
 from app.dbclients.factory import fetch_rows, test_connection
-from app.lineage.analyzer import analyze_sql_lineage
-from app.lineage.batch_analyzer import ScriptInput, analyze_lineage_batch
 from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SqlMode
+from app.services import lineage_service
 from app.services.history import delete_result, list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS, export_history_sheets
 from app.services.jobs import cancel_job, get_job, submit_task_run
-from app.services.lineage_exporter import write_lineage_batch_excel, write_lineage_json
 from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store
 from app.services.runner import run_task
-from app.services.schema_metadata import merge_schema_metadata, parse_schema_metadata
-from app.services.schema_introspection import fetch_schema_metadata
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import BASE_DIR, RESULTS_DIR
@@ -250,22 +242,10 @@ def sql_assist_api(payload: dict[str, str] = Body(...)):
 
 @router.post("/api/lineage/analyze")
 def lineage_api(payload: dict[str, str] = Body(...)):
-    sql = payload.get("sql", "")
-    dialect = payload.get("dialect") or None
-    if not sql.strip():
-        raise HTTPException(status_code=400, detail="sql is required")
     try:
-        logger.info("lineage api analyze start sql_chars=%s dialect=%s", len(sql), dialect or "auto")
-        schema, schema_warnings = _lineage_schema(
-            sql,
-            parse_schema_metadata(payload.get("schema", "")) if payload.get("schema") else None,
-            payload.get("schema_datasource_id") or "",
-            payload.get("schema_name") or "",
-            payload.get("schema_table_filter") or "",
-            _truthy(payload.get("schema_only_sql_tables")),
-            payload.get("schema_dialect") or "",
-        )
-        return _attach_lineage_warnings(analyze_sql_lineage(sql, dialect, schema), schema_warnings)
+        return lineage_service.analyze_json(payload)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -282,22 +262,16 @@ def lineage_form_api(
     sql_file: UploadFile | None = File(None),
     schema_file: list[UploadFile] = File(default=[]),
 ):
-    sql_text = _lineage_sql_text(sql, sql_file)
     try:
-        logger.info("lineage form api analyze start sql_chars=%s dialect=%s", len(sql_text), dialect or "auto")
-        schema, schema_warnings = _lineage_schema(
-            sql_text,
-            _schema_metadata_files(schema_file),
-            schema_datasource_id,
-            schema_name,
-            schema_table_filter,
-            _truthy(schema_only_sql_tables),
-            schema_dialect,
+        return lineage_service.analyze_form(
+            sql, dialect, schema_datasource_id, schema_name,
+            schema_table_filter, schema_only_sql_tables, schema_dialect,
+            sql_file, schema_file,
         )
-        return _attach_lineage_warnings(analyze_sql_lineage(sql_text, dialect or None, schema), schema_warnings)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
 
 
 @router.post("/api/lineage/batch/analyze")
@@ -312,27 +286,13 @@ def lineage_batch_api(
     schema_file: list[UploadFile] = File(default=[]),
 ):
     try:
-        scripts = _lineage_script_inputs(sql_files)
-        combined_sql = "\n;\n".join(script.sql for script in scripts)
-        schema, schema_warnings = _lineage_schema(
-            combined_sql,
-            _schema_metadata_files(schema_file),
-            schema_datasource_id,
-            schema_name,
-            schema_table_filter,
-            _truthy(schema_only_sql_tables),
-            schema_dialect,
+        return lineage_service.analyze_batch(
+            dialect, schema_datasource_id, schema_name,
+            schema_table_filter, schema_only_sql_tables, schema_dialect,
+            sql_files, schema_file,
         )
-        result = analyze_lineage_batch(
-            scripts,
-            dialect or None,
-            schema,
-        )
-        result["warnings"] = schema_warnings + result.get("warnings", [])
-        if "summary" in result:
-            result["summary"]["warnings"] = len(result["warnings"])
-        exports = _write_lineage_batch_exports(result)
-        return {"result": result, "exports": exports}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -365,237 +325,8 @@ def download_result(filename: str):
     return FileResponse(path, filename=Path(filename).name)
 
 
-def _write_lineage_batch_exports(result: dict[str, object]) -> dict[str, str]:
-    run_id = f"lineage_batch_{time.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    json_path = RESULTS_DIR / f"{run_id}.json"
-    excel_path = RESULTS_DIR / f"{run_id}.xlsx"
-    write_lineage_json(json_path, result)
-    write_lineage_batch_excel(excel_path, result)
-    return {"json_filename": json_path.name, "excel_filename": excel_path.name}
-
-
 def _ensure_datasources(source_id: str, target_id: str) -> None:
     if datasource_store.get(source_id) is None:
         raise HTTPException(status_code=400, detail="source_id does not exist")
     if datasource_store.get(target_id) is None:
         raise HTTPException(status_code=400, detail="target_id does not exist")
-
-
-def _lineage_sql_text(sql: str, sql_file: UploadFile | None) -> str:
-    if sql_file and sql_file.filename:
-        suffix = Path(sql_file.filename).suffix.lower()
-        if suffix not in {".sql", ".txt"}:
-            raise HTTPException(status_code=400, detail="Only .sql and .txt files are supported")
-        content = sql_file.file.read()
-        for encoding in ("utf-8-sig", "utf-8", "gbk"):
-            try:
-                text = content.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            raise HTTPException(status_code=400, detail="SQL file encoding must be UTF-8 or GBK")
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="SQL file is empty")
-        return text
-
-    if not sql.strip():
-        raise HTTPException(status_code=400, detail="sql is required")
-    return sql
-
-
-def _schema_metadata_files(schema_files: list[UploadFile]) -> dict[str, list[str]] | None:
-    items: list[dict[str, list[str]]] = []
-    for upload in schema_files:
-        if not upload or not upload.filename:
-            continue
-        filename = Path(upload.filename).name
-        suffix = Path(filename).suffix.lower()
-        content = upload.file.read()
-        if suffix == ".zip":
-            items.extend(_schema_metadata_from_zip(content))
-            continue
-        if suffix not in {".json", ".sql", ".txt"}:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Only .json, .sql, .txt and .zip schema metadata files are supported: {filename}",
-            )
-        try:
-            items.append(parse_schema_metadata(_decode_sql_content(content, filename)))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid schema metadata {filename}: {exc}") from exc
-    merged = merge_schema_metadata(*items)
-    return merged or None
-
-
-def _lineage_schema(
-    sql: str,
-    file_schema: dict[str, list[str]] | None,
-    datasource_id: str,
-    schema_name: str,
-    table_filter: str,
-    only_sql_tables: bool,
-    schema_dialect: str,
-) -> tuple[dict[str, list[str]] | None, list[dict[str, str]]]:
-    datasource_schema, warnings = _schema_metadata_from_datasource(
-        datasource_id,
-        schema_name,
-        table_filter,
-        _schema_table_candidates(sql) if only_sql_tables else [],
-        schema_dialect,
-    )
-    return _merge_lineage_schema(file_schema, datasource_schema), warnings
-
-
-def _schema_metadata_from_datasource(
-    datasource_id: str,
-    schema_name: str = "",
-    table_filter: str = "",
-    include_tables: list[str] | None = None,
-    schema_dialect: str = "",
-) -> tuple[dict[str, list[str]] | None, list[dict[str, str]]]:
-    if not datasource_id.strip():
-        return None, []
-    datasource = datasource_store.get(datasource_id.strip())
-    if datasource is None:
-        return None, [{"type": "Schema 拉取失败", "message": "指定的 Schema 数据源不存在"}]
-    try:
-        schema = fetch_schema_metadata(
-            datasource,
-            schema_name=schema_name,
-            table_filter=table_filter,
-            include_tables=include_tables or [],
-            schema_dialect=schema_dialect,
-        )
-    except Exception as exc:
-        return None, [{"type": "Schema 拉取失败", "message": str(exc)}]
-    if not schema:
-        return None, [{"type": "Schema 为空", "message": "数据源未返回字段元数据，请检查 schema/database、表名过滤或查询权限"}]
-    return schema, [{"type": "Schema 自动拉取", "message": f"已从数据源拉取 {len(schema)} 个表标识的字段元数据"}]
-
-
-def _merge_lineage_schema(*items: dict[str, list[str]] | None) -> dict[str, list[str]] | None:
-    merged = merge_schema_metadata(*items)
-    return merged or None
-
-
-def _attach_lineage_warnings(result: dict[str, object], warnings: list[dict[str, str]]) -> dict[str, object]:
-    if warnings:
-        result["warnings"] = warnings + list(result.get("warnings", []))
-    return result
-
-
-def _truthy(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _schema_table_candidates(sql: str) -> list[str]:
-    pattern = re.compile(
-        r"\b(?:from|join|into|update|merge\s+into|using|table)\s+([\"`\[\]\w.$#]+)",
-        flags=re.IGNORECASE,
-    )
-    result: list[str] = []
-    seen: set[str] = set()
-    for match in pattern.finditer(sql):
-        table = match.group(1).strip().strip('"`[]')
-        key = table.lower()
-        if table and key not in seen and not table.startswith("@"):
-            seen.add(key)
-            result.append(table)
-    return result
-
-
-_ZIP_MAX_FILES = 500
-_ZIP_MAX_DECOMPRESSED_BYTES = 50 * 1024 * 1024  # 50 MB
-
-
-def _check_zip_safety(archive: zipfile.ZipFile) -> None:
-    entries = [e for e in archive.infolist() if not e.is_dir()]
-    if len(entries) > _ZIP_MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"Zip file contains too many files (max {_ZIP_MAX_FILES})")
-    total = sum(e.file_size for e in entries)
-    if total > _ZIP_MAX_DECOMPRESSED_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Zip file decompressed size exceeds limit ({_ZIP_MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB)",
-        )
-
-
-def _schema_metadata_from_zip(content: bytes) -> list[dict[str, list[str]]]:
-    items: list[dict[str, list[str]]] = []
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="Invalid schema metadata zip file") from exc
-    _check_zip_safety(archive)
-    for item in archive.infolist():
-        if item.is_dir():
-            continue
-        suffix = Path(item.filename).suffix.lower()
-        if suffix not in {".json", ".sql", ".txt"}:
-            continue
-        name = item.filename.replace("\\", "/")
-        try:
-            items.append(parse_schema_metadata(_decode_sql_content(archive.read(item), name)))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid schema metadata {name}: {exc}") from exc
-    if not items:
-        raise HTTPException(
-            status_code=400,
-            detail="Schema metadata zip file does not contain .json, .sql or .txt files",
-        )
-    return items
-
-
-def _lineage_script_inputs(sql_files: list[UploadFile]) -> list[ScriptInput]:
-    scripts: list[ScriptInput] = []
-    for upload in sql_files:
-        if not upload.filename:
-            continue
-        filename = Path(upload.filename).name
-        suffix = Path(filename).suffix.lower()
-        content = upload.file.read()
-        if suffix == ".zip":
-            scripts.extend(_scripts_from_zip(content))
-            continue
-        if suffix not in {".sql", ".txt"}:
-            raise HTTPException(status_code=400, detail=f"Only .sql, .txt and .zip files are supported: {filename}")
-        scripts.append(ScriptInput(file_name=filename, sql=_decode_sql_content(content, filename)))
-
-    if not scripts:
-        raise HTTPException(status_code=400, detail="Please upload at least one .sql, .txt or .zip file")
-    return scripts
-
-
-def _scripts_from_zip(content: bytes) -> list[ScriptInput]:
-    scripts: list[ScriptInput] = []
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="Invalid zip file") from exc
-    _check_zip_safety(archive)
-    for item in archive.infolist():
-        if item.is_dir():
-            continue
-        suffix = Path(item.filename).suffix.lower()
-        if suffix not in {".sql", ".txt"}:
-            continue
-        name = item.filename.replace("\\", "/")
-        scripts.append(ScriptInput(file_name=name, sql=_decode_sql_content(archive.read(item), name)))
-    if not scripts:
-        raise HTTPException(status_code=400, detail="Zip file does not contain .sql or .txt files")
-    return scripts
-
-
-def _decode_sql_content(content: bytes, filename: str) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            text = content.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise HTTPException(status_code=400, detail=f"{filename} encoding must be UTF-8 or GBK")
-    if not text.strip():
-        raise HTTPException(status_code=400, detail=f"{filename} is empty")
-    return text
