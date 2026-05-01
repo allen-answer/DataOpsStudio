@@ -50,3 +50,8 @@ def raw_sql_aliases(sql: str) -> set[str]:
     for match in _RE_WITH_CTE.finditer(sql):
         aliases.add(normalize_table_name(match.group(1)))
     return aliases
+
+
+def weaker_confidence(current: str, candidate: str) -> str:
+    order = {"high": 0, "medium": 1, "low": 2}
+    return candidate if order.get(candidate, 0) > order.get(current, 0) else current

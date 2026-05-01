@@ -7,7 +7,10 @@ from app.lineage._common import is_alias_reference as _is_alias_reference
 from app.lineage._common import normalize_table_name as _normalize_table_name
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
+from app.lineage._common import weaker_confidence as _weaker_confidence
 from app.lineage.dialects import resolve_dialect as _resolve_dialect
+from app.lineage.graph import graph_edges as _graph_edges
+from app.lineage.graph import graph_groups as _graph_groups
 from app.lineage.variables import (
     assigned_value as _assigned_value,
     script_variables as _script_variables,
@@ -1117,11 +1120,6 @@ def _tables_with_column(schema: dict[str, list[str]], tables: list[str], column:
     return _unique_strings(result)
 
 
-def _weaker_confidence(current: str, candidate: str) -> str:
-    order = {"high": 0, "medium": 1, "low": 2}
-    return candidate if order.get(candidate, 0) > order.get(current, 0) else current
-
-
 def _select_direct_source_tables(select: Any) -> list[str]:
     exp = _exp()
     tables: list[str] = []
@@ -1311,101 +1309,6 @@ def _variables_in_expression(expression: Any, script_variables: list[dict[str, s
 
 def _normalize_schema(schema: dict[str, list[str]]) -> dict[str, list[str]]:
     return {_normalize_table_name(table): list(columns) for table, columns in schema.items()}
-
-
-def _graph_edges(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    edges: list[dict[str, Any]] = []
-    by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    for statement_index, analysis in enumerate(analyses, start=1):
-        aliases = set(analysis.get("aliases", []))
-        for mapping in analysis.get("insert_mappings", []):
-            for source_table in mapping.get("source_tables", []):
-                target_table = mapping.get("target_table", "")
-                if _is_alias_reference(source_table, aliases):
-                    continue
-                key = (
-                    _normalize_table_name(source_table),
-                    _normalize_table_name(target_table),
-                    str(statement_index),
-                    str(mapping.get("dml_type", "")),
-                )
-                if not source_table or not target_table:
-                    continue
-                edge = by_key.get(key)
-                if edge is None:
-                    edge = {
-                        "source_table": source_table,
-                        "target_table": target_table,
-                        "statement_index": statement_index,
-                        "edge_type": mapping.get("dml_type", "INSERT"),
-                        "source_columns": [],
-                        "target_columns": [],
-                        "confidence": "high",
-                        "reason": "",
-                    }
-                    by_key[key] = edge
-                    edges.append(edge)
-                edge["source_columns"] = _unique_strings(edge["source_columns"] + mapping.get("source_columns", []))
-                target_column = mapping.get("target_column", "")
-                if target_column:
-                    edge["target_columns"] = _unique_strings(edge["target_columns"] + [target_column])
-                edge["confidence"] = _weaker_confidence(edge["confidence"], mapping.get("confidence", "high"))
-                reason = mapping.get("expression") or mapping.get("transform", "")
-                if reason:
-                    edge["reason"] = "; ".join(_unique_strings([part for part in [edge["reason"], reason] if part]))
-    return edges
-
-
-def _graph_groups(edges: list[dict[str, Any]], analyses: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    groups: list[dict[str, Any]] = []
-    by_target: dict[str, dict[str, Any]] = {}
-    for edge in edges:
-        target_table = edge["target_table"]
-        target_key = _normalize_table_name(target_table)
-        group = by_target.get(target_key)
-        if group is None:
-            group = {"target_table": target_table, "source_tables": [], "dependency_tables": [], "_source_keys": set(), "_dependency_keys": set()}
-            by_target[target_key] = group
-            groups.append(group)
-        source_key = _normalize_table_name(edge["source_table"])
-        if source_key in group["_source_keys"]:
-            continue
-        group["_source_keys"].add(source_key)
-        group["source_tables"].append(edge["source_table"])
-
-    for analysis in analyses or []:
-        aliases = set(analysis.get("aliases", []))
-        target_tables = _unique_strings(mapping.get("target_table", "") for mapping in analysis.get("insert_mappings", []))
-        field_source_keys = {
-            _normalize_table_name(source_table)
-            for mapping in analysis.get("insert_mappings", [])
-            for source_table in mapping.get("source_tables", [])
-            if not _is_alias_reference(source_table, aliases)
-        }
-        dependency_tables = [
-            table["table"]
-            for table in analysis.get("tables", [])
-            if _normalize_table_name(table["table"]) not in field_source_keys
-            and not _is_alias_reference(table["table"], aliases)
-        ]
-        for target_table in target_tables:
-            target_key = _normalize_table_name(target_table)
-            group = by_target.get(target_key)
-            if group is None:
-                group = {"target_table": target_table, "source_tables": [], "dependency_tables": [], "_source_keys": set(), "_dependency_keys": set()}
-                by_target[target_key] = group
-                groups.append(group)
-            for dependency_table in dependency_tables:
-                dependency_key = _normalize_table_name(dependency_table)
-                if dependency_key in group["_source_keys"] or dependency_key in group["_dependency_keys"]:
-                    continue
-                group["_dependency_keys"].add(dependency_key)
-                group["dependency_tables"].append(dependency_table)
-
-    for group in groups:
-        group.pop("_source_keys", None)
-        group.pop("_dependency_keys", None)
-    return groups
 
 
 def _table_name(table: Any) -> str:

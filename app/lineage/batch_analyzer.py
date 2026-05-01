@@ -8,6 +8,7 @@ from app.lineage._common import is_alias_reference as _is_alias_reference
 from app.lineage._common import normalize_table_name as _normalize_table_name
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
+from app.lineage._common import weaker_confidence as _weaker_confidence
 from app.lineage.analyzer import analyze_sql_lineage
 
 
@@ -437,11 +438,6 @@ def _unique_table_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if reason:
             existing["reason"] = "; ".join(_unique_strings([part for part in [str(existing.get("reason", "")), reason] if part]))
     return result
-
-
-def _weaker_confidence(current: str, candidate: str) -> str:
-    order = {"high": 0, "medium": 1, "low": 2}
-    return candidate if order.get(candidate, 0) > order.get(current, 0) else current
 
 
 def _table_groups(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
