@@ -171,6 +171,7 @@ class CompareResult(BaseModel):
 # node.config can reference workflow variables via ${var} placeholders.
 
 class WorkflowNodeType(str, Enum):
+    PARAMS        = "params"         # resolves typed parameters; emits resolved dict as output
     COMPARE       = "compare"        # runs an existing CompareTask by id
     LINEAGE       = "lineage"        # analyzes a SQL string via lineage_service
     HTTP          = "http"           # GET/POST a URL, useful for webhooks / notifications

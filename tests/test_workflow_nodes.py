@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.workflow_nodes import run_http_node, run_lineage_node, run_excel_export_node
+from app.services.workflow_nodes import run_http_node, run_lineage_node, run_excel_export_node, run_params_node
 
 
 # --- lineage runner ---
@@ -87,6 +87,41 @@ def test_http_node_expect_status_match_succeeds():
     with patch("urllib.request.urlopen", return_value=_FakeResponse(status=204, body=b"")):
         out = run_http_node({"url": "https://x.io", "expect_status": 204}, {})
     assert out["status"] == 204
+
+
+# --- params runner ---
+
+def test_params_node_resolves_fixed_and_relative_dates():
+    out = run_params_node({
+        "parameters": [
+            {"name": "system_code", "type": "fixed",         "default": "CRM"},
+            {"name": "biz_date",    "type": "relative_date", "source": "yesterday"},
+            {"name": "channels",    "type": "multi_value",   "default": ["A", "B"]},
+        ],
+    }, {})
+    from datetime import date, timedelta
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    assert out["system_code"] == "CRM"
+    assert out["biz_date"] == yesterday
+    assert out["channels"] == ["A", "B"]
+
+
+def test_params_node_caller_overrides_default():
+    out = run_params_node({
+        "parameters": [{"name": "biz_date", "type": "relative_date", "source": "yesterday"}],
+    }, {"biz_date": "2026-12-31"})
+    assert out["biz_date"] == "2026-12-31"
+
+
+def test_params_node_skips_anonymous_entries():
+    out = run_params_node({
+        "parameters": [
+            {"name": "x", "type": "fixed", "default": "1"},
+            {"type": "fixed", "default": "ignored"},        # missing name
+            {"name": "  ", "type": "fixed", "default": "ws"},  # blank name
+        ],
+    }, {})
+    assert out == {"x": "1"}
 
 
 # --- excel_export runner ---

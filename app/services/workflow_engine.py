@@ -189,6 +189,13 @@ def run_workflow(
             node_run.output = output if isinstance(output, dict) else {"value": output}
             node_run.status = NodeRunStatus.SUCCESS
             completed_outputs[node.id] = node_run.output
+            # `params` nodes feed their resolved values back into the
+            # workflow-level variable scope, so downstream nodes can use
+            # ${biz_date} directly instead of ${nodes.params.biz_date}.
+            if str(getattr(node.type, "value", node.type)) == "params":
+                for key, value in node_run.output.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        resolved_vars[key] = str(value)
         except Exception as exc:
             node_run.status = NodeRunStatus.FAILED
             node_run.error = f"{type(exc).__name__}: {exc}"

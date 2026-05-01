@@ -353,6 +353,33 @@ def test_invalid_dag_workflow_run_marks_all_skipped():
     assert all(node.status == NodeRunStatus.SKIPPED for node in run.nodes)
 
 
+def test_params_node_output_merges_into_workflow_variables():
+    """A `params` node's output should propagate as workflow-level variables
+    so downstream nodes can use ${biz_date} directly, not just ${nodes.x.y}."""
+    seen = []
+
+    def runner(config, variables):
+        if config.get("__which") == "params":
+            return {"biz_date": "2026-05-01", "batch_id": "B42"}
+        seen.append(config)
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="params", type=WorkflowNodeType.PARAMS, config={"__which": "params"}),
+        WorkflowNode(id="downstream", type=WorkflowNodeType.COMPARE,
+                     config={"date_str": "${biz_date}", "tag": "${batch_id}"},
+                     depends_on=["params"]),
+    ])
+    run_workflow(workflow, runners={
+        WorkflowNodeType.PARAMS: runner,
+        WorkflowNodeType.COMPARE: runner,
+    })
+
+    # Downstream saw the params output substituted into ${biz_date} / ${batch_id}.
+    assert seen and seen[0]["date_str"] == "2026-05-01"
+    assert seen[0]["tag"] == "B42"
+
+
 # --- when: conditional execution ---
 
 def test_when_true_runs_node():

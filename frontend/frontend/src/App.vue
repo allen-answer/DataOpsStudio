@@ -652,6 +652,8 @@ const fillWorkflowDraft = (wf) => {
     name: node.name || '',
     // type-specific draft fields, kept flat so the form binds cleanly.
     task_id: node.config?.task_id || '',
+    source_sql_override: node.config?.source_sql_override || '',
+    target_sql_override: node.config?.target_sql_override || '',
     sql: node.config?.sql || '',
     dialect: node.config?.dialect || '',
     method: node.config?.method || 'GET',
@@ -663,13 +665,33 @@ const fillWorkflowDraft = (wf) => {
     sheets: Array.isArray(node.config?.sheets)
       ? node.config.sheets.map((s) => ({ ...s }))
       : [],
+    // params node: typed parameter list
+    parameters: Array.isArray(node.config?.parameters)
+      ? node.config.parameters.map((p) => ({ ...p }))
+      : [],
     depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
     when: node.when || '',
   }))
 }
 
 const buildNodeConfig = (node) => {
-  if (node.type === 'compare') return { task_id: node.task_id }
+  if (node.type === 'params') return {
+    parameters: (node.parameters || []).map((p) => ({
+      name: p.name,
+      type: p.type || 'fixed',
+      ...(p.default !== undefined && p.default !== '' ? { default: p.default } : {}),
+      ...(p.source ? { source: p.source } : {}),
+      ...(p.required ? { required: true } : {}),
+      ...(p.description ? { description: p.description } : {}),
+      ...(p.sql ? { sql: p.sql } : {}),
+      ...(p.datasource ? { datasource: p.datasource } : {}),
+    })),
+  }
+  if (node.type === 'compare') return {
+    task_id: node.task_id,
+    ...(node.source_sql_override ? { source_sql_override: node.source_sql_override } : {}),
+    ...(node.target_sql_override ? { target_sql_override: node.target_sql_override } : {}),
+  }
   if (node.type === 'lineage') return {
     sql: node.sql,
     ...(node.dialect ? { dialect: node.dialect } : {}),
@@ -760,13 +782,15 @@ const addWorkflowNode = () => {
   const nextIndex = workflowDraft.nodes.length + 1
   workflowDraft.nodes.push({
     id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
-    task_id: '', sql: '', dialect: '',
+    task_id: '', source_sql_override: '', target_sql_override: '',
+    sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
     filename: 'DataCompare_${biz_date}.xlsx',
     sheets: [
       { id: 'summary', enabled: true,  sheet_name: '汇总',     source: 'summary',     max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
       { id: 'diff',    enabled: true,  sheet_name: '差异明细', source: 'diff',        max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
     ],
+    parameters: [],
   })
 }
 
@@ -823,6 +847,23 @@ const moveExportSheet = (node, sheetIdx, delta) => {
   const tmp = sheets[sheetIdx]
   sheets[sheetIdx] = sheets[target]
   sheets[target] = tmp
+}
+
+// Params node: parameter list helpers
+const addParameter = (node, type = 'fixed') => {
+  ;(node.parameters || (node.parameters = [])).push({
+    name: '',
+    type,
+    default: type === 'multi_value' ? [] : '',
+    source: type === 'relative_date' ? 'yesterday' : '',
+    required: true,
+    description: '',
+    sql: '',
+    datasource: '',
+  })
+}
+const removeParameter = (node, idx) => {
+  if (Array.isArray(node.parameters)) node.parameters.splice(idx, 1)
 }
 
 const saveWorkflow = async () => {
@@ -1061,6 +1102,7 @@ provide('app', {
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
+  addParameter, removeParameter,
   loadWorkflowRunHistory, loadWorkflowRunDetail, loadAllWorkflowRuns,
 })
 </script>

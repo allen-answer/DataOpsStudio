@@ -463,7 +463,14 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
     create time gives a clear 400 instead of a confusing failure mid-run."""
     for node in payload.nodes:
         kind = node.type.value
-        if kind == "compare":
+        if kind == "params":
+            params = node.config.get("parameters") or []
+            if not isinstance(params, list):
+                raise HTTPException(status_code=400, detail=f"node {node.id}: params 节点的 parameters 必须是数组")
+            for p in params:
+                if not isinstance(p, dict) or not str(p.get("name") or "").strip():
+                    raise HTTPException(status_code=400, detail=f"node {node.id}: 每个参数必须有 name")
+        elif kind == "compare":
             task_id = str(node.config.get("task_id") or "").strip()
             if not task_id:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: compare requires config.task_id")
