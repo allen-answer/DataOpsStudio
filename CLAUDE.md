@@ -92,13 +92,13 @@ cp config/tasks.example.json config/tasks.json
 
 **SQL 安全** — 用户提交的所有 SQL 在执行前都经过 `utils/sql_guard.py` 校验。只允许 `SELECT`/`WITH`，遇到 DML/DDL 关键字直接拒绝。
 
-**作业流（Phase 3）** — 把多个步骤串起来运行：
-- `services/workflow_engine.py` 提供 `run_workflow(workflow, variables, runners, cancel_check)`，按 `workflow.nodes` 顺序执行
-- `${var}` 变量插值递归遍历每个节点 `config` 的 dict/list/str；内置变量：`today / now / year / month / day`
-- 节点执行器注册在 `services/workflow_nodes.py` 的 `NODE_RUNNERS` 里，目前只有 `compare`（包装 `runner.run_task`）。新节点类型需要 (1) 在 `models.WorkflowNodeType` 加值 (2) 写一个 `(config, variables) -> dict` 函数 (3) 注册到字典
-- 单节点失败后续节点 `SKIPPED`，整个 run 标记 `FAILED`
+**作业流（Phase 3）** — 参数驱动的多步骤数据对比作业：
+- `services/workflow_engine.py` 提供 `run_workflow(workflow, variables, runners, cancel_check)`，按 `depends_on` 拓扑序执行
+- 节点类型：`params` / `compare` / `lineage` / `http` / `excel_export`，注册在 `services/workflow_nodes.py` 的 `NODE_RUNNERS`。新节点类型 (1) 在 `models.WorkflowNodeType` 加值 (2) 写 `(config, variables) -> dict` runner (3) 注册到字典
+- **变量与参数引用语法详见 `docs/PARAMETERS.md`**。要点：`${name}` 引用变量、`${nodes.X.Y}` 引用上游节点输出、`${var | sql_in}` 等过滤器把 list 渲染成 SQL IN 子句体；`params` 节点的标量输出自动合并回 workflow 变量域
+- 单节点失败 → 下游 `SKIPPED`、旁路继续；`when:` 表达式可让节点条件性跳过
 - `cancel_check` 在节点之间被轮询；`services/jobs.py` 的 `submit_workflow_run` 把它接到现有的 `_is_cancel_requested` 标志，所以 `/api/runs/{job_id}/cancel` 对作业流和对比任务一视同仁
-- 第一版**不是 DAG**——线性顺序执行，没有 `depends_on` 字段
+- WorkflowRun 落盘到 `results/workflow_runs/<run_id>.json`，由 `services/workflow_history.py` 管理
 
 **DB 驱动** — `dbclients/drivers.py` 声明各 `DatabaseType` 对应的 Python 模块。`dbclients/factory.py` 在连接时动态导入第一个可用驱动。当前 `requirements.txt` 已启用的驱动：`pymysql` + `cryptography`（MySQL 8 `caching_sha2_password` 认证）。Oracle、DM、DB2 驱动为可选项。
 

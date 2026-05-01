@@ -38,6 +38,8 @@ const relativeDateSources = [
 // 当前选中的 compare 任务（用于 drill-in 显示其原始 SQL）
 const compareTaskById = (id) => state.tasks.find((t) => t.id === id)
 
+const showParamCheatsheet = ref(false)
+
 // 用于 Excel 节点 Sheet 配置
 const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'new_rows', 'field_diff', 'params', 'lineage', 'custom']
 const sheetSourceLabel = {
@@ -539,11 +541,77 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               <div v-if="node.type === 'params'" class="mt-3 rounded-lg border border-slate-200 bg-white">
                 <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
                   <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">参数列表（{{ (node.parameters || []).length }}）</span>
-                  <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
-                          @change="addParameter(node, $event.target.value); $event.target.value = ''">
-                    <option value="" disabled selected>+ 新增参数</option>
-                    <option v-for="t in paramTypeOptions" :key="t.id" :value="t.id">{{ t.label }}</option>
-                  </select>
+                  <div class="flex items-center gap-1.5">
+                    <button class="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                            @click="showParamCheatsheet = !showParamCheatsheet">
+                      ? 引用语法速查
+                    </button>
+                    <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
+                            @change="addParameter(node, $event.target.value); $event.target.value = ''">
+                      <option value="" disabled selected>+ 新增参数</option>
+                      <option v-for="t in paramTypeOptions" :key="t.id" :value="t.id">{{ t.label }}</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- 速查表：一眼看懂如何在 SQL / 文件名 / 任意字符串字段里引用参数 -->
+                <div v-if="showParamCheatsheet" class="border-b border-slate-200 bg-slate-50/60 px-3 py-3 text-[12px] leading-relaxed">
+                  <p class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">参数引用语法速查 · 完整文档见 <code class="rounded bg-white px-1 py-0.5 font-mono text-[10.5px] text-slate-700">docs/PARAMETERS.md</code></p>
+                  <table class="w-full border-collapse text-[11.5px]">
+                    <thead>
+                      <tr class="border-b border-slate-200">
+                        <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[44%]">写法</th>
+                        <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[34%]">解析后</th>
+                        <th class="py-1.5 text-left font-semibold text-slate-500">用于</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{user_id}</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">42</td>
+                        <td class="py-1.5 text-slate-600">单值参数</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">'${'$'}{biz_date}'</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">'2026-05-01'</td>
+                        <td class="py-1.5 text-slate-600">字符串/日期，注意手动加引号</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{ids | sql_in}</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">1, 5, 9</td>
+                        <td class="py-1.5 text-slate-600">多值 → IN 子句体（数字保持原样）</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{names | sql_in}</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">'a', 'b'</td>
+                        <td class="py-1.5 text-slate-600">多值字符串，自动单引号 + 转义</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{nodes.x.summary.diff}</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">7</td>
+                        <td class="py-1.5 text-slate-600">上游节点输出（要 depends_on）</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{nodes.params.ids.0}</td>
+                        <td class="py-1.5 pr-3 font-mono text-slate-600">1</td>
+                        <td class="py-1.5 text-slate-600">取 list 第 N 项</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                    <div class="rounded border border-slate-200 bg-white p-2">
+                      <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · 单值条件</p>
+                      <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
+WHERE dt = '${'$'}{biz_date}'
+  AND user_id = ${'$'}{user_id}</pre>
+                    </div>
+                    <div class="rounded border border-slate-200 bg-white p-2">
+                      <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · IN 子句</p>
+                      <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
+WHERE user_id IN (${'$'}{vip_users | sql_in})</pre>
+                    </div>
+                  </div>
+                  <p class="mt-2 text-[10.5px] text-slate-500">解析顺序：运行时变量 → 工作流默认 → params 节点输出 → 内置（today/now/...）。同名以前者覆盖后者。引用未定义变量节点会 FAILED，详见文档。</p>
                 </div>
 
                 <div v-if="!(node.parameters || []).length" class="px-3 py-6 text-center text-[11px] text-slate-400">
