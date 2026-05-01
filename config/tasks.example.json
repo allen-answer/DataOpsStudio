@@ -1,9 +1,9 @@
 [
   {
-    "id": "5b113c944bcd444daba55cbdf8cce022",
+    "id": "example-task-users-archive",
     "name": "[MySQL] 用户表对比（当前 vs 归档）",
-    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
-    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "source_id": "example-mysql-local",
+    "target_id": "example-mysql-local",
     "sql_mode": "single",
     "source_sql": "SELECT id, name, email, dept_id, salary, status FROM users ORDER BY id",
     "target_sql": "SELECT id, name, email, dept_id, salary, status FROM users_archive ORDER BY id",
@@ -24,10 +24,10 @@
     }
   },
   {
-    "id": "6c224d055bcd555eabb65dcdf9dde033",
+    "id": "example-task-orders-v2",
     "name": "[MySQL] 订单表对比（当前 vs V2）",
-    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
-    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "source_id": "example-mysql-local",
+    "target_id": "example-mysql-local",
     "sql_mode": "single",
     "source_sql": "SELECT id, user_id, product, amount, status FROM orders ORDER BY id",
     "target_sql": "SELECT id, user_id, product, amount, status FROM orders_v2 ORDER BY id",
@@ -48,10 +48,10 @@
     }
   },
   {
-    "id": "7d335e166cde666fbcb76ed0aeef1445",
+    "id": "example-task-users-join",
     "name": "[MySQL] 用户+部门+订单关联汇总",
-    "source_id": "88000e7f78bd4f5788b351ea7e5233e7",
-    "target_id": "88000e7f78bd4f5788b351ea7e5233e7",
+    "source_id": "example-mysql-local",
+    "target_id": "example-mysql-local",
     "sql_mode": "single",
     "source_sql": "SELECT u.id, u.name, d.name AS dept_name, u.salary, COALESCE(SUM(o.amount), 0) AS total_amount FROM users u JOIN departments d ON u.dept_id = d.id LEFT JOIN orders o ON o.user_id = u.id GROUP BY u.id, u.name, d.name, u.salary ORDER BY u.id",
     "target_sql": "SELECT u.id, u.name, d.name AS dept_name, u.salary, COALESCE(SUM(o.amount), 0) AS total_amount FROM users u JOIN departments d ON u.dept_id = d.id LEFT JOIN orders o ON o.user_id = u.id GROUP BY u.id, u.name, d.name, u.salary ORDER BY u.id",

@@ -1,7 +1,7 @@
 [
   {
-    "id": "88000e7f78bd4f5788b351ea7e5233e7",
-    "name": "new",
+    "id": "example-mysql-local",
+    "name": "Local MySQL (docker-compose demo)",
     "db_type": "MySQL",
     "host": "mysql8",
     "port": 3306,

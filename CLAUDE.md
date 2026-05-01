@@ -76,6 +76,15 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 - `config/jobs.json` — 异步任务状态（重启后保留；运行中的任务重启后变为 `failed`）
 - `results/` — 每次运行的 JSON + Excel 结果
 
+这三个 JSON 文件**不入库**（每个 clone 自己一份运行时状态）。仓库里只保留 `config/datasources.example.json` 和 `config/tasks.example.json`。新克隆的环境首次启动前先复制：
+
+```bash
+cp config/datasources.example.json config/datasources.json
+cp config/tasks.example.json config/tasks.json
+```
+
+如果不复制，`JsonStore` 在首次写入时会自动创建空数组文件，应用照常启动，只是没有预置数据源/任务。
+
 `JsonStore`（`services/json_store.py`）是基于 mtime 缓存失效的线程安全泛型封装。`datasource_store` 和 `task_store` 均为 `services/repositories.py` 中的模块级单例。
 
 **异步任务执行** — `services/jobs.py` 使用 `ThreadPoolExecutor(max_workers=2)`。任务支持取消，通过 `cancel_requested` 标志在 `runner.run_task` 各阶段检查。

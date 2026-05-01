@@ -35,6 +35,11 @@ frontend/**/dist-ssr/
 
 # Local config, archives, and scratch files
 config/*.local.json
+# Runtime config — each clone has its own datasources/tasks/jobs.
+# Bootstrap with: cp config/datasources.example.json config/datasources.json
+config/datasources.json
+config/tasks.json
+config/jobs.json
 frontend.zip
 wsl_setup_openclaw.sh
 *.tmp
