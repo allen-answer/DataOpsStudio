@@ -224,7 +224,7 @@ def _values_equal(source_value: Any, target_value: Any, rules: CompareRules) -> 
 
 def _normalize_value(value: Any, rules: CompareRules) -> Any:
     if isinstance(value, (datetime, date)):
-        value = value.isoformat()
+        value = _temporal_to_iso(value)
     if isinstance(value, str):
         if rules.trim_strings:
             value = value.strip()
@@ -243,8 +243,18 @@ def _normalize_key_value(value: Any, rules: CompareRules | None) -> Any:
         if rules is not None and rules.case_insensitive:
             return value.lower()
     if isinstance(value, (datetime, date)):
-        return value.isoformat()
+        return _temporal_to_iso(value)
     return value
+
+
+def _temporal_to_iso(value: datetime | date) -> str:
+    # openpyxl reads dates back as datetime(y,m,d,0,0,0); MySQL DATE columns
+    # come back as date(y,m,d). Treat midnight-datetime as a plain date so the
+    # two sides compare equal in Excel↔SQL workflows.
+    if isinstance(value, datetime):
+        if value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0:
+            return value.date().isoformat()
+    return value.isoformat()
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:

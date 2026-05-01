@@ -184,3 +184,48 @@ def test_stream_compare_duplicate_key_raises():
 def test_stream_compare_empty_both():
     result = compare_sorted_row_iterators(iter([]), iter([]), ["id"])
     assert all(len(v) == 0 for v in result.values())
+
+
+# --- Excel↔SQL type-equivalence (Phase 2 round 2) ---
+
+def test_midnight_datetime_equals_date():
+    """openpyxl returns date cells as datetime(y,m,d,0,0); MySQL DATE returns
+    plain date(y,m,d). They must compare equal so Excel-vs-SQL doesn't false-diff."""
+    from datetime import date, datetime
+    src = [{"id": 1, "d": datetime(2024, 1, 15, 0, 0, 0)}]   # Excel side
+    tgt = [{"id": 1, "d": date(2024, 1, 15)}]                # SQL side
+    result = compare_rows(src, tgt, ["id"])
+    assert len(result["same"]) == 1
+    assert len(result["diff"]) == 0
+
+
+def test_non_midnight_datetime_not_equal_to_date():
+    """A datetime with non-zero time must NOT collapse to date — that would
+    hide real time-of-day differences."""
+    from datetime import date, datetime
+    src = [{"id": 1, "d": datetime(2024, 1, 15, 13, 45, 0)}]
+    tgt = [{"id": 1, "d": date(2024, 1, 15)}]
+    result = compare_rows(src, tgt, ["id"])
+    assert len(result["diff"]) == 1
+    assert len(result["same"]) == 0
+
+
+def test_datetime_keys_align_with_date_keys():
+    """Same equivalence in key columns: a row keyed by datetime(y,m,d,0,0)
+    must match the row keyed by date(y,m,d) on the other side."""
+    from datetime import date, datetime
+    src = [{"d": datetime(2024, 1, 15, 0, 0), "v": "x"}]
+    tgt = [{"d": date(2024, 1, 15), "v": "x"}]
+    result = compare_rows(src, tgt, ["d"])
+    assert len(result["same"]) == 1
+    assert result["only_source"] == [] and result["only_target"] == []
+
+
+def test_int_decimal_equivalence():
+    """openpyxl returns whole-number cells as int; MySQL DECIMAL returns
+    Decimal. These already compare equal in Python — guard the behavior
+    with a test so future normalization changes don't break it."""
+    src = [{"id": 1, "salary": 15000}]              # Excel side: int
+    tgt = [{"id": 1, "salary": Decimal("15000.00")}]  # SQL side: Decimal
+    result = compare_rows(src, tgt, ["id"])
+    assert len(result["same"]) == 1
