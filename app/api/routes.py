@@ -69,6 +69,17 @@ def spa_page():
     path = BASE_DIR / "static" / "spa" / "index.html"
     if not path.exists():
         raise HTTPException(status_code=404, detail="SPA has not been built yet")
+    # 禁 cache：index.html 自身没有 hash，浏览器一旦缓存住就一直引用旧 hash
+    # 的 bundle，导致前端改动看起来"没生效"。assets/*.js 自带 hash 文件名，
+    # 它们由前置 CDN / FileResponse 默认 immutable cache 没问题——只锁定
+    # index.html 不缓存即可。
+    return FileResponse(
+        path,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
     return FileResponse(path)
 
 
