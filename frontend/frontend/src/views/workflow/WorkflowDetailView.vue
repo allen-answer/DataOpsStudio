@@ -267,6 +267,29 @@ const nodeBoxClass = (nodeId) => {
   return 'border-slate-200'
 }
 
+// DAG canvas hover tooltip：显示完整 error / 时间 / 节点 id 等。
+// 用 mouseenter/leave 切 hoveredNodeId；popover 绝对定位在节点旁，
+// pointer-events-none 让鼠标穿透到节点本身（避免 hover 闪烁）。
+const NODE_BOX_W = 220
+const NODE_BOX_H = 84
+const hoveredNodeId = ref('')
+const hoveredNode = computed(() => layout.value.positioned.find((n) => n.id === hoveredNodeId.value) || null)
+const hoveredStatus = computed(() => nodeStatusByid.value[hoveredNodeId.value] || null)
+const hoveredHasInfo = computed(() => Boolean(hoveredStatus.value || hoveredNode.value))
+
+// 计算 popover 位置：默认放节点右侧；右边放不下则放左侧；都放不下就上方。
+const TOOLTIP_W = 300
+const TOOLTIP_H = 160
+const tooltipStyle = computed(() => {
+  if (!hoveredNode.value) return { display: 'none' }
+  const n = hoveredNode.value
+  const placedRight = n.x + NODE_BOX_W + 12 + TOOLTIP_W <= layout.value.width
+  const left = placedRight ? n.x + NODE_BOX_W + 12 : Math.max(8, n.x - TOOLTIP_W - 12)
+  // 让 tooltip 顶部和节点对齐，超出底部时向上挤
+  const top = Math.min(n.y, Math.max(8, layout.value.height - TOOLTIP_H - 8))
+  return { left: left + 'px', top: top + 'px', width: TOOLTIP_W + 'px' }
+})
+
 const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
 
 const tabs = [
@@ -408,7 +431,9 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                     class="absolute flex flex-col gap-1 rounded-xl border bg-white px-3 py-2 text-left shadow-sm transition hover:shadow-md"
                     :class="nodeBoxClass(n.id)"
                     :style="{ left: n.x + 'px', top: n.y + 'px', width: '220px', height: '84px' }"
-                    @click="selectedNodeId = n.id">
+                    @click="selectedNodeId = n.id"
+                    @mouseenter="hoveredNodeId = n.id"
+                    @mouseleave="hoveredNodeId = ''">
               <div class="flex items-center gap-1.5">
                 <span class="h-2 w-2 shrink-0 rounded-full" :class="nodeStatusMeta[nodeStatus(n.id)].dot"></span>
                 <span class="truncate text-[12.5px] font-semibold text-slate-800">{{ n.name || n.id }}</span>
@@ -427,6 +452,38 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               </div>
               <span v-if="nodeStatusByid[n.id]?.error" class="line-clamp-1 text-[10px] text-rose-600">{{ nodeStatusByid[n.id].error }}</span>
             </button>
+
+            <!-- hover tooltip（覆盖节点旁，pointer-events-none 不挡鼠标）-->
+            <div v-if="hoveredNode && hoveredHasInfo"
+                 class="pointer-events-none absolute z-20 rounded-lg border border-slate-300 bg-white p-3 shadow-xl"
+                 :style="tooltipStyle">
+              <div class="flex items-center gap-2 border-b border-slate-100 pb-2">
+                <span class="h-2 w-2 rounded-full" :class="nodeStatusMeta[nodeStatus(hoveredNode.id)].dot"></span>
+                <span class="text-[12px] font-bold text-slate-800">{{ hoveredNode.name || hoveredNode.id }}</span>
+                <span class="rounded px-1 font-mono text-[9.5px] font-bold uppercase"
+                      :class="{
+                        'bg-sky-50 text-sky-700': hoveredNode.type === 'params',
+                        'bg-blue-50 text-blue-700': hoveredNode.type === 'compare',
+                        'bg-emerald-50 text-emerald-700': hoveredNode.type === 'lineage',
+                        'bg-amber-50 text-amber-700': hoveredNode.type === 'excel_export',
+                        'bg-purple-50 text-purple-700': hoveredNode.type === 'http',
+                      }">{{ hoveredNode.type }}</span>
+                <span class="ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset" :class="nodeStatusMeta[nodeStatus(hoveredNode.id)].pill">
+                  {{ nodeStatusMeta[nodeStatus(hoveredNode.id)].label }}
+                </span>
+              </div>
+              <dl v-if="hoveredStatus" class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                <div><dt class="text-slate-400">开始</dt><dd class="font-mono text-slate-700">{{ hoveredStatus.started_at?.slice(11) || '—' }}</dd></div>
+                <div><dt class="text-slate-400">耗时</dt><dd class="font-mono text-slate-700">{{ hoveredStatus.elapsed_seconds }}s</dd></div>
+                <div><dt class="text-slate-400">node_id</dt><dd class="font-mono text-slate-700">{{ hoveredNode.id }}</dd></div>
+                <div v-if="(hoveredNode.depends_on || []).length"><dt class="text-slate-400">depends_on</dt><dd class="font-mono text-slate-700">{{ (hoveredNode.depends_on || []).join(', ') }}</dd></div>
+              </dl>
+              <p v-else class="mt-2 text-[11px] text-slate-400">未运行 — DAG 上展示的是上次运行的状态</p>
+              <div v-if="hoveredStatus?.error" class="mt-2 rounded border border-rose-200 bg-rose-50/60 px-2 py-1.5 text-[11px] leading-relaxed text-rose-800">
+                <p class="text-[10px] font-bold uppercase tracking-wider text-rose-700">错误</p>
+                <pre class="mt-1 whitespace-pre-wrap font-mono text-[10.5px]">{{ hoveredStatus.error }}</pre>
+              </div>
+            </div>
           </div>
         </div>
       </div>
