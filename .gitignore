@@ -45,3 +45,6 @@ frontend.zip
 wsl_setup_openclaw.sh
 *.tmp
 *.bak
+
+# Local skill / spec drafts — not for upstream
+JOB.md
