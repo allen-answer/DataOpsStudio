@@ -248,7 +248,7 @@ const selectedNodeEvents = computed(() => events.value.filter((ev) => ev.step ==
             <div v-if="selectedNode.output && Object.keys(selectedNode.output).length" class="border-b border-slate-100 px-4 py-3">
               <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">节点输出 ({{ Object.keys(selectedNode.output).length }} keys)</p>
               <pre class="mt-2 max-h-72 overflow-auto rounded-lg bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-100">{{ JSON.stringify(selectedNode.output, null, 2) }}</pre>
-              <p class="mt-1.5 font-mono text-[10.5px] text-slate-400">下游可通过 ${'$'}{nodes.{{ selectedNode.node_id }}.&lt;path&gt;} 引用</p>
+              <p class="mt-1.5 font-mono text-[10.5px] text-slate-400">下游可通过 <code>{{ '${nodes.' + selectedNode.node_id + '.<path>}' }}</code> 引用</p>
             </div>
 
             <!-- 该节点的事件 -->

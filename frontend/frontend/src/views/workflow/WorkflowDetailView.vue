@@ -303,7 +303,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             <li v-if="!(meta.parameters || []).length" class="px-3 py-3 text-center text-[11px] text-slate-400">暂无参数定义</li>
           </ul>
           <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
-            可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${'$'}{name}</code> 引用
+            可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
           </div>
         </div>
 
@@ -519,7 +519,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               <div v-if="node.type === 'compare' && node.task_id" class="mt-3 rounded-lg border border-slate-200 bg-slate-50/40 p-3">
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">引用任务的 SQL（可覆盖）</span>
-                  <span class="text-[10.5px] text-slate-500">在覆盖框里用 <code class="rounded bg-slate-100 px-1 font-mono text-[10px]">${'$'}{name}</code> 注入参数；留空则使用任务原始 SQL</span>
+                  <span class="text-[10.5px] text-slate-500">在覆盖框里用 <code class="rounded bg-slate-100 px-1 font-mono text-[10px]">${name}</code> 注入参数；留空则使用任务原始 SQL</span>
                 </div>
                 <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <div>
@@ -567,32 +567,32 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                     </thead>
                     <tbody class="divide-y divide-slate-100">
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{user_id}</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${user_id}</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">42</td>
                         <td class="py-1.5 text-slate-600">单值参数</td>
                       </tr>
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">'${'$'}{biz_date}'</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">'${biz_date}'</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">'2026-05-01'</td>
                         <td class="py-1.5 text-slate-600">字符串/日期，注意手动加引号</td>
                       </tr>
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{ids | sql_in}</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${ids | sql_in}</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">1, 5, 9</td>
                         <td class="py-1.5 text-slate-600">多值 → IN 子句体（数字保持原样）</td>
                       </tr>
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{names | sql_in}</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${names | sql_in}</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">'a', 'b'</td>
                         <td class="py-1.5 text-slate-600">多值字符串，自动单引号 + 转义</td>
                       </tr>
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{nodes.x.summary.diff}</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${nodes.x.summary.diff}</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">7</td>
                         <td class="py-1.5 text-slate-600">上游节点输出（要 depends_on）</td>
                       </tr>
                       <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${'$'}{nodes.params.ids.0}</td>
+                        <td class="py-1.5 pr-3 font-mono text-blue-700">${nodes.params.ids.0}</td>
                         <td class="py-1.5 pr-3 font-mono text-slate-600">1</td>
                         <td class="py-1.5 text-slate-600">取 list 第 N 项</td>
                       </tr>
@@ -602,13 +602,13 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                     <div class="rounded border border-slate-200 bg-white p-2">
                       <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · 单值条件</p>
                       <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
-WHERE dt = '${'$'}{biz_date}'
-  AND user_id = ${'$'}{user_id}</pre>
+WHERE dt = '${biz_date}'
+  AND user_id = ${user_id}</pre>
                     </div>
                     <div class="rounded border border-slate-200 bg-white p-2">
                       <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · IN 子句</p>
                       <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
-WHERE user_id IN (${'$'}{vip_users | sql_in})</pre>
+WHERE user_id IN (${vip_users | sql_in})</pre>
                     </div>
                   </div>
                   <p class="mt-2 text-[10.5px] text-slate-500">解析顺序：运行时变量 → 工作流默认 → params 节点输出 → 内置（today/now/...）。同名以前者覆盖后者。引用未定义变量节点会 FAILED，详见文档。</p>
@@ -682,7 +682,7 @@ WHERE user_id IN (${'$'}{vip_users | sql_in})</pre>
                 </ul>
 
                 <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
-                  解析后的参数会注入到 workflow 变量域，下游节点可用 <code class="rounded bg-slate-100 px-1 font-mono">${'$'}{name}</code> 引用
+                  解析后的参数会注入到 workflow 变量域，下游节点可用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
                 </div>
               </div>
               <div v-if="node.type === 'lineage'" class="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_140px]">
@@ -715,8 +715,8 @@ WHERE user_id IN (${'$'}{vip_users | sql_in})</pre>
               <!-- Excel 导出节点：文件名模板 + Sheet 列表 -->
               <div v-if="node.type === 'excel_export'" class="mt-3 space-y-3">
                 <label class="block">
-                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">文件名模板（支持 ${'$'}{var}）</span>
-                  <input v-model="node.filename" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs" placeholder="DataCompare_${'$'}{biz_date}_${'$'}{batch_id}.xlsx">
+                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">文件名模板（支持 ${var}）</span>
+                  <input v-model="node.filename" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs" placeholder="DataCompare_${biz_date}_${batch_id}.xlsx">
                 </label>
 
                 <div class="rounded-lg border border-slate-200 bg-white">
@@ -769,7 +769,7 @@ WHERE user_id IN (${'$'}{vip_users | sql_in})</pre>
                           </label>
                         </div>
                         <label v-if="sheet.source === 'custom'" class="mt-2 block">
-                          <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">自定义 SQL（${'$'}{var} 可用）</span>
+                          <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">自定义 SQL（${var} 可用）</span>
                           <textarea v-model="sheet.custom_sql" class="block min-h-[60px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[12px]" placeholder="SELECT ..."></textarea>
                         </label>
                         <div class="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
