@@ -998,6 +998,38 @@ const runWorkflowAsync = async () => {
   }
 }
 
+// 历史 tab 行内"重跑"用：直接给 workflowId + variables 起一次后台执行，
+// 不依赖 selectedWorkflowId 当前值，避免和正在编辑的 workflowDraft 串号。
+// 起好后挂到 workflowAsyncJob/Status 复用现有 polling 链路；poll 完成时
+// 仍然刷新 selectedWorkflowId 的 history 列表（同一个工作流的话就刚好）。
+const runWorkflowAsyncWith = async (workflowId, variables = {}) => {
+  if (!workflowId) return null
+  workflowResult.value = null
+  workflowAsyncStatus.value = null
+  try {
+    workflowAsyncJob.value = await apiJson(`/api/workflows/${workflowId}/run-async`, 'POST', { variables: variables || {} })
+    workflowAsyncStatus.value = workflowAsyncJob.value
+    setNotice('后台执行已提交')
+    workflowAsyncPollTimer.value = setInterval(async () => {
+      try {
+        workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
+        if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
+          stopWorkflowAsyncPoll()
+          if (selectedWorkflowId.value === workflowId) loadWorkflowRunHistory(workflowId)
+          loadAllWorkflowRuns()
+        }
+      } catch (error) {
+        stopWorkflowAsyncPoll()
+        setNotice(`后台状态查询失败：${toErrorMessage(error)}`)
+      }
+    }, 1200)
+    return workflowAsyncJob.value
+  } catch (error) {
+    setNotice(`后台执行提交失败：${toErrorMessage(error)}`)
+    return null
+  }
+}
+
 const cancelWorkflowAsync = async () => {
   if (!workflowAsyncJob.value) return
   try {
@@ -1160,7 +1192,7 @@ provide('app', {
   workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory, allWorkflowRuns,
   selectWorkflow, saveWorkflow, deleteWorkflow,
-  runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
+  runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   addParameter, removeParameter,

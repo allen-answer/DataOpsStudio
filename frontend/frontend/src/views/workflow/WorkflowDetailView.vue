@@ -14,7 +14,7 @@ const {
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
   allWorkflowRuns, loadAllWorkflowRuns,
   saveWorkflow, deleteWorkflow,
-  runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
+  runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   addParameter, removeParameter,
@@ -96,6 +96,22 @@ const historyRunStatusDisplay = (run) => {
     return { label: '已取消', pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400' }
   }
   return { label: status || '—', pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400' }
+}
+
+// 复用历史变量重跑时，剥掉内置变量（today/now/year/month/day）—— 否则
+// 内置时间会被冻结到历史那天，破坏 relative_date 这类参数的"每次跑都重算"语义。
+const REUSABLE_BUILTIN_KEYS = new Set(['today', 'now', 'year', 'month', 'day'])
+const reusableVariables = (vars) => {
+  if (!vars || typeof vars !== 'object') return {}
+  const out = {}
+  for (const [k, v] of Object.entries(vars)) {
+    if (!REUSABLE_BUILTIN_KEYS.has(k)) out[k] = v
+  }
+  return out
+}
+const reuseAndRerun = (run, detail) => {
+  const vars = reusableVariables(detail.variables || {})
+  runWorkflowAsyncWith(currentWorkflow.value.id, vars)
 }
 
 // 把 detail 拍平成 gantt 步骤（offset / duration / status），同 WorkflowRunView。
@@ -578,7 +594,14 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                 </td>
                 <td class="px-3 py-2.5 text-[11.5px] text-rose-600">{{ run.error || '' }}</td>
                 <td class="px-3 py-2.5 text-right" @click.stop>
-                  <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click="emit('open-run', run.run_id)">查看 →</button>
+                  <div class="inline-flex items-center gap-1">
+                    <button class="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 transition hover:bg-emerald-100"
+                            title="按当前作业流配置 + 默认变量重跑（不复用此次的运行变量）"
+                            @click="runWorkflowAsyncWith(currentWorkflow.id)">
+                      ↻ 重跑
+                    </button>
+                    <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click="emit('open-run', run.run_id)">查看 →</button>
+                  </div>
                 </td>
               </tr>
               <!-- 展开行：mini gantt -->
@@ -591,7 +614,12 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                       <span class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-500">
                         节点时间线 · 共 {{ Math.round(historyGantt(historyDetailCache[run.run_id]).totalSeconds) }} 秒
                       </span>
-                      <span class="text-[10.5px] text-slate-400">点击查看可看完整运行详情</span>
+                      <button v-if="Object.keys(reusableVariables(historyDetailCache[run.run_id].variables)).length"
+                              class="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10.5px] font-semibold text-blue-700 transition hover:bg-blue-100"
+                              :title="`复用本次的变量（${Object.keys(reusableVariables(historyDetailCache[run.run_id].variables)).join(', ')}）重跑；today/now 等内置变量不复用，每次跑重算`"
+                              @click="reuseAndRerun(run, historyDetailCache[run.run_id])">
+                        ↻ 复用此次变量重跑
+                      </button>
                     </div>
                     <div class="space-y-1">
                       <div v-for="step in historyGantt(historyDetailCache[run.run_id]).steps" :key="step.node.node_id"
