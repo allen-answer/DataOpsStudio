@@ -62,7 +62,7 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 ### 后端
 
-`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器。所有 HTTP 端点都在这一个文件中。
+`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器。`routes.py` 现在是聚合器（39 行），实际 endpoint 拆在 10 个领域子模块：`system` / `datasources` / `tasks` / `runs` / `workflows` / `workflow_runs` / `history` / `lineage` / `uploads` / `config_io`。新增 endpoint 加到对应子模块；不属于任何领域时新建子模块再 include 进 `routes.py`。
 
 **对比任务的数据流：**
 1. `routes.py` → `runner.run_task(task_id)`（同步）或 `jobs.submit_task_run(task_id)`（异步后台线程）
@@ -108,7 +108,13 @@ cp config/tasks.example.json config/tasks.json
 
 Vue 3 单页应用。`App.vue` 持有所有共享状态和后端调用，子视图（`views/*.vue`）通过 `provide('app', {...})` / `inject('app')` 拿到 reactive 引用——故意没引 Pinia，状态分层是后续决策，看用量再决定。当前视图：`DatasourceView` / `WorkbenchView`（对比任务）/ `WorkflowView`（作业流）/ `LineageView` / `BatchView` / `HistoryView`。
 
-作业流详情视图（`WorkflowDetailView.vue`）按节点类型把编辑器抽到 `components/workflow/`：`WorkflowParamsNodeEditor` / `WorkflowCompareNodeEditor` / `WorkflowLineageNodeEditor` / `WorkflowExcelExportNodeEditor`。新增节点类型时在这里加对应组件，DetailView 主文件 v-if 分发即可。
+作业流相关视图按职责拆到 `components/workflow/`，DetailView / RunView 主文件只剩布局壳：
+
+- **节点类型编辑器**（DetailView 节点配置 tab v-if 分发）：`WorkflowParamsNodeEditor` / `WorkflowCompareNodeEditor` / `WorkflowLineageNodeEditor` / `WorkflowExcelExportNodeEditor`。新增节点类型时加同名组件即可。
+- **WorkflowDagCanvas**（DetailView 主区域 DAG 画布）：SVG 节点 + 自动布局 + hover tooltip + 状态叠加。props: nodes / latestRun / v-model:selectedNodeId。
+- **WorkflowSettingsPanel**（DetailView 右侧元数据 sidebar）：参数预览 + 描述/项目/状态/owner/cron/tags + 输入/输出资产编辑器。
+- **WorkflowHistoryPanel**（DetailView 运行历史 tab）：行展开 + mini gantt + 状态徽章 + 复用变量重跑。
+- **WorkflowRunNodeDetail**（RunView 右侧节点详情面板）：节点头 + 错误块 + artifact 下载 + 5 种 type 输出（compare/excel_export/params/http/lineage）+ 折叠原始 JSON + 事件流。emits: rerun-from-node / rerun-defaults。
 
 构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。`static/spa/index.html` 和 `static/spa/assets/` 已 gitignore，由 CI / Docker / release 脚本生成；手写资源 `static/spa/favicon.svg` 等仍跟踪。`/spa` endpoint 加 `Cache-Control: no-cache`，避免 index.html 被浏览器缓存住引用旧 hash 的 bundle。
 
@@ -118,10 +124,19 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 ### 血缘分析
 
-`app/lineage/analyzer.py` — 单脚本 SQL 血缘分析（基于 `sqlglot`）。
-`app/lineage/batch_analyzer.py` — 多文件 ETL 血缘分析，支持 `.sql`/`.txt`/`.zip`。
+`app/lineage/` 是按职责拆出的多模块包（基于 `sqlglot`）：
 
-两者均可接受可选的 Schema 元数据文件，用于解析 `SELECT *` 和未限定列名。
+- `analyzer.py`（157 行）— 单脚本入口，编排其他模块产出结果
+- `batch_analyzer.py`（498 行）— 多文件 ETL 血缘，支持 `.sql`/`.txt`/`.zip`
+- `segments.py`（415 行）— 存储过程分段抽取（`CREATE PROCEDURE/FUNCTION/PACKAGE BODY/TRIGGER` 内 BEGIN/END token 平衡，PL/SQL 控制流壳子跳过）
+- `columns.py`（302 行）— 字段级 lineage 抽取
+- `dml.py`（300 行）— DML 语句解析（INSERT/UPDATE/MERGE/DELETE/CTAS/INSERT OVERWRITE/TRUNCATE）
+- `tables.py`（161 行）— 表引用归一化
+- `helpers.py`（139 行）— 公共辅助
+- `graph.py`（105 行）— 图结构装配
+- `_common.py` / `clauses.py` / `dialects.py` / `variables.py` / `warnings.py` — 方言映射、子句拆解、变量跟踪、warning 收集等小模块
+
+入口和批量分析都接受可选 Schema 元数据文件，用于解析 `SELECT *` 和未限定列名。
 
 **方言路由** — `_resolve_dialect()` 把用户传入的方言名映射到 sqlglot 实际方言。当前支持：
 - `mysql`、`oracle` — 直传
@@ -158,12 +173,13 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - **Phase 2（多来源对比）**：`SqlReader` / `ExcelReader` 抽象层、Excel vs Excel、Excel vs SQL、字段映射 + 类型标准化（日期/数字/Decimal/空值/trim/大小写）、字段筛选 UI（按列勾选 include/exclude）、对比结果导出增强
 - **Phase 3（作业流）**：模型 + 变量插值（`${var}` / `${nodes.X.Y}` / 过滤器）+ DAG 拓扑序执行引擎 + 5 种节点类型（params / compare / lineage / http / excel_export）+ HTTP API（CRUD/sync/async/cancel/局部重跑 from_node）+ `when:` 条件节点 + WorkflowRun 落盘 + Artifact 模型 + 删 run 连带清目录
 - **Phase 4（工程治理）**：
-  - 配置安全（`config/*.json` 不入库 + datasource 密码 API 脱敏 + 导出可选含密码）
-  - 模块拆分：`routes.py` 631 行 → 10 个 `app/api/<domain>.py`；`models.py` 540 行 → `app/models/` 5 个子模块；`workflow_nodes.py` 536 行 → `app/workflow/nodes/` 5 个 + `registry.py`
+  - 配置安全（`config/*.json` 不入库 + datasource 密码 API 脱敏 + 导出可选含密码 + 日志脱敏 + JsonStore 落盘 0600）
+  - 模块拆分（后端）：`routes.py` 631 行 → 10 个 `app/api/<domain>.py`；`models.py` 540 行 → `app/models/` 5 个子模块；`workflow_nodes.py` 536 行 → `app/workflow/nodes/` 5 个 + `registry.py`；`analyzer.py` 956 行 → 12 个 `app/lineage/<aspect>.py` 职责模块
+  - 模块拆分（前端）：`WorkflowDetailView.vue` 841 → 362 行（抽 4 个组件：HistoryPanel / DagCanvas / SettingsPanel + 4 个节点编辑器）；`WorkflowRunView.vue` 628 → 309 行（抽 RunNodeDetail）
   - response_model 全收口：所有 endpoint 挂 Pydantic schema（OpenAPI /docs 给前端 / 第三方一份准确契约）
-  - CI（GitHub Actions: pytest + frontend build）
+  - CI（GitHub Actions: pytest + frontend build + compileall + Docker build smoke + tag-触发的 Windows release）
   - 前端构建产物出库（`static/spa/index.html` + `assets/` 由 Dockerfile 多阶段 / Windows release 脚本生成）
-- **Phase 6（测试）**：283 个 unit + HTTP 集成测试（FastAPI TestClient，`tests/test_api_integration.py`，覆盖 CRUD / 异步执行 / artifact 下载 / mimetype 回归 / 密码脱敏）+ 浏览器 e2e 框架（`tests/e2e/`，可选装 Playwright，catch render-time throw 那种 bug）
+- **Phase 6（测试）**：285 个 unit + HTTP 集成测试（FastAPI TestClient，`tests/test_api_integration.py`，覆盖 CRUD / 异步执行 / artifact 下载 / mimetype 回归 / 密码脱敏）+ 浏览器 e2e 框架（`tests/e2e/`，可选装 Playwright，catch render-time throw 那种 bug）
 
 ### Phase 7（血缘语义增强 · 双轨方案 · 未排期）
 
