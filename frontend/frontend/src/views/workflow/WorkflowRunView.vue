@@ -1,33 +1,36 @@
 <script setup>
 import { computed, inject, ref } from 'vue'
-import { nodeStatusMeta, synthesizeEvents, getMeta, parameterTypeMeta } from '../../mock/workflow_meta'
+import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/workflow_meta'
 
 const emit = defineEmits(['back', 'open-detail'])
-const { state, workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync } = inject('app')
+const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync } = inject('app')
 
 const run = computed(() => workflowResult.value)
 const selectedNodeId = ref('')
 
-// 把运行的 variables 字典 + workflow 元数据中的参数定义合并起来。
-// 这样运行参数 chip 既能显示原始 value，又能带上类型信息。
-const wfIndex = computed(() => state.workflows.findIndex((wf) => wf.id === run.value?.workflow_id))
-const wfMeta = computed(() => getMeta(currentWorkflow.value, wfIndex.value === -1 ? 0 : wfIndex.value))
-const paramSpecs = computed(() => {
+// 真实参数类型来源：当前 workflow 里 type=params 节点的 config.parameters。
+// 之前从 mock workflow_meta.js 取，会把示例参数（biz_date / batch_id ...）
+// 也渲染成"真实运行变量"，造成混淆 —— 改成只用后端配置。
+const realParamSpecs = computed(() => {
   const map = {}
-  for (const p of wfMeta.value.parameters || []) map[p.name] = p
+  for (const node of currentWorkflow.value?.nodes || []) {
+    if (node.type !== 'params') continue
+    for (const p of node.config?.parameters || []) {
+      if (p?.name) map[p.name] = p
+    }
+  }
   return map
 })
+
+// chip 只展示本次 run 真实写入的 variables；类型从 realParamSpecs 取，
+// 没有 spec 的内置变量（today / now / year / month / day）退化为 fixed。
 const runParameterChips = computed(() => {
-  const chips = []
   const vars = run.value?.variables || {}
-  // 优先按参数定义顺序展示，最后追加变量里有但定义里没有的
-  for (const p of wfMeta.value.parameters || []) {
-    chips.push({ name: p.name, value: vars[p.name] ?? '—', type: p.type })
-  }
-  for (const k of Object.keys(vars)) {
-    if (!paramSpecs.value[k]) chips.push({ name: k, value: vars[k], type: 'fixed' })
-  }
-  return chips
+  return Object.keys(vars).map((name) => ({
+    name,
+    value: vars[name],
+    type: realParamSpecs.value[name]?.type || 'fixed',
+  }))
 })
 
 // 自动选第一个失败节点（如果有的话），否则第一个节点

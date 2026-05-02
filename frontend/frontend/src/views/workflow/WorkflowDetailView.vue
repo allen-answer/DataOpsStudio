@@ -38,6 +38,17 @@ const relativeDateSources = [
 // 当前选中的 compare 任务（用于 drill-in 显示其原始 SQL）
 const compareTaskById = (id) => state.tasks.find((t) => t.id === id)
 
+// 判断 SQL override 看起来是不是合法（首词必须是 SELECT 或 WITH）。
+// 后端有同样的硬校验，这里只是给一个保存前的软提示，避免用户填了 WHERE 片段。
+const overrideLooksInvalid = (sql) => {
+  if (!sql || !sql.trim()) return false
+  // 去掉行注释、块注释和前导空白
+  const stripped = sql.replace(/--[^\n]*\n?/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
+  if (!stripped) return false
+  const firstWord = stripped.match(/^[a-zA-Z_]+/)?.[0]?.toLowerCase()
+  return firstWord !== 'select' && firstWord !== 'with'
+}
+
 const showParamCheatsheet = ref(false)
 
 // 用于 Excel 节点 Sheet 配置
@@ -58,11 +69,28 @@ watch(selectedWorkflowId, (id) => {
 }, { immediate: true })
 
 // 元数据补全（从 mock 拿）。索引用工作流在数组中的位置。
+// 注意：除「运行参数」外，其它块（资产 / 调度 / 负责人 / 概要 / 告警）当前
+// 仍是 mock 模板数据，下面会标 "示例"。Phase 4 计划下沉到后端 Workflow 模型。
 const workflowIndex = computed(() => state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value))
 const meta = computed(() => getMeta(currentWorkflow.value, workflowIndex.value === -1 ? 0 : workflowIndex.value))
 
+// 真实参数：从作业流里所有 type=params 节点的 config.parameters 收集。
+// 有真实定义时，运行参数 panel 用真实数据；没有则回落到 mock，并标 "示例"。
+const realParameters = computed(() => {
+  const out = []
+  for (const node of workflowDraft.nodes || []) {
+    if (node.type !== 'params') continue
+    for (const p of node.parameters || []) {
+      if (p?.name) out.push(p)
+    }
+  }
+  return out
+})
+const paramsAreReal = computed(() => realParameters.value.length > 0)
+const displayParameters = computed(() => paramsAreReal.value ? realParameters.value : (meta.value.parameters || []))
+
 // 参数解析：把每个参数定义解析成下次运行将使用的具体值（预览用）。
-const resolvedParams = computed(() => resolveAllParameters(meta.value.parameters || []))
+const resolvedParams = computed(() => resolveAllParameters(displayParameters.value))
 
 const compareTaskOptions = computed(() => state.tasks.map((task) => ({ id: task.id, name: task.name })))
 
@@ -174,13 +202,20 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               <span v-if="latestRun" class="font-mono text-[11.5px] text-slate-500">
                 最近运行：{{ latestRun.started_at?.slice(5) }} · {{ latestRun.elapsed_seconds }}s
               </span>
-              <span class="font-mono text-[11.5px] text-slate-500">{{ meta.schedule.text }}</span>
+              <span class="inline-flex items-center gap-1 font-mono text-[11.5px] text-slate-500" title="示例数据 — 调度信息待后端落库">
+                {{ meta.schedule.text }}
+                <span class="rounded bg-amber-50 px-1 text-[8.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200">示例</span>
+              </span>
               <span class="text-slate-300">·</span>
-              <span class="text-[11.5px] text-slate-500">负责人 <span class="font-medium text-slate-700">{{ meta.owner }}</span></span>
+              <span class="inline-flex items-center gap-1 text-[11.5px] text-slate-500" title="示例数据 — 负责人字段待后端落库">
+                负责人 <span class="font-medium text-slate-700">{{ meta.owner }}</span>
+                <span class="rounded bg-amber-50 px-1 text-[8.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200">示例</span>
+              </span>
             </template>
           </div>
-          <div v-if="selectedWorkflowId !== 'new'" class="mt-1.5 flex flex-wrap gap-1">
+          <div v-if="selectedWorkflowId !== 'new'" class="mt-1.5 flex flex-wrap items-center gap-1">
             <span v-for="tag in meta.tags" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ tag }}</span>
+            <span v-if="meta.tags.length" class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="标签为示例数据">示例</span>
           </div>
           <p v-else class="mt-1.5 text-[11.5px] text-slate-500">填写名称、在「节点配置」中添加节点，然后保存。保存后即可执行。</p>
         </div>
@@ -278,11 +313,14 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         <!-- 运行参数：参数驱动作业流的核心信息 -->
         <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
-            <span class="text-[10.5px] text-slate-500">{{ (meta.parameters || []).length }} 个</span>
+            <div class="flex items-center gap-1.5">
+              <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
+              <span v-if="!paramsAreReal" class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="未定义 params 节点；展示示例参数">示例</span>
+            </div>
+            <span class="text-[10.5px] text-slate-500">{{ displayParameters.length }} 个</span>
           </div>
           <ul class="divide-y divide-slate-100">
-            <li v-for="param in (meta.parameters || [])" :key="param.name" class="px-3 py-2.5">
+            <li v-for="param in displayParameters" :key="param.name" class="px-3 py-2.5">
               <div class="flex items-center gap-1.5">
                 <span class="rounded px-1 py-0.5 text-[9.5px] font-bold uppercase ring-1 ring-inset" :class="parameterTypeMeta[param.type].accent">{{ parameterTypeMeta[param.type].glyph }} {{ parameterTypeMeta[param.type].label }}</span>
                 <span class="font-mono text-[12px] font-semibold text-slate-800">{{ param.name }}</span>
@@ -300,7 +338,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                 <span v-else class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">{{ resolvedParams[param.name].value }}</span>
               </div>
             </li>
-            <li v-if="!(meta.parameters || []).length" class="px-3 py-3 text-center text-[11px] text-slate-400">暂无参数定义</li>
+            <li v-if="!displayParameters.length" class="px-3 py-3 text-center text-[11px] text-slate-400">暂无参数定义</li>
           </ul>
           <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
             可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
@@ -308,12 +346,18 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">概要</p>
+          <div class="mb-2 flex items-center gap-1.5">
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">概要</p>
+            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 后端 Workflow 模型暂未存储该字段">示例</span>
+          </div>
           <p class="text-[12.5px] leading-relaxed text-slate-700">{{ meta.description }}</p>
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输入资产 ({{ meta.input_assets.length }})</p>
+          <div class="mb-2 flex items-center gap-1.5">
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输入资产 ({{ meta.input_assets.length }})</p>
+            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 资产元信息待 Phase 4 接入血缘服务">示例</span>
+          </div>
           <ul class="space-y-1.5">
             <li v-for="asset in meta.input_assets" :key="asset.key" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]">
               <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="healthMeta[asset.health]?.dot || 'bg-slate-300'"></span>
@@ -324,7 +368,10 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输出资产 ({{ meta.output_assets.length }})</p>
+          <div class="mb-2 flex items-center gap-1.5">
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输出资产 ({{ meta.output_assets.length }})</p>
+            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 资产元信息待 Phase 4 接入血缘服务">示例</span>
+          </div>
           <ul class="space-y-1.5">
             <li v-for="asset in meta.output_assets" :key="asset.key" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]">
               <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"></span>
@@ -335,7 +382,10 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">告警 / 资源</p>
+          <div class="mb-2 flex items-center gap-1.5">
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">告警 / 资源</p>
+            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 调度 / 队列 / 告警目标待 Phase 4 落库">示例</span>
+          </div>
           <dl class="space-y-1.5 text-[11.5px]">
             <div class="flex justify-between gap-2"><dt class="text-slate-500">资源队列</dt><dd class="font-mono text-slate-700">{{ meta.queue }}</dd></div>
             <div class="flex justify-between gap-2"><dt class="text-slate-500">告警目标</dt><dd class="text-right text-slate-700">{{ meta.alert_targets.join(' · ') }}</dd></div>
@@ -519,20 +569,48 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               <div v-if="node.type === 'compare' && node.task_id" class="mt-3 rounded-lg border border-slate-200 bg-slate-50/40 p-3">
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">引用任务的 SQL（可覆盖）</span>
-                  <span class="text-[10.5px] text-slate-500">在覆盖框里用 <code class="rounded bg-slate-100 px-1 font-mono text-[10px]">${name}</code> 注入参数；留空则使用任务原始 SQL</span>
                 </div>
+                <p class="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10.5px] leading-relaxed text-amber-900">
+                  ⚠ 覆盖必须是<strong>完整的 <code class="font-mono">SELECT</code> / <code class="font-mono">WITH</code> 查询</strong>，<strong>不能只填 WHERE 片段</strong>。常见做法：把左边任务原 SQL 复制到下面的覆盖框，再在 WHERE 里插入 <code class="rounded bg-white px-1 font-mono">${name}</code>。变量在执行前替换。留空则使用任务原始 SQL。
+                </p>
                 <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <div>
                     <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">源端 SQL（任务定义）</span>
                     <pre class="mb-1.5 max-h-32 overflow-auto rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-relaxed text-slate-600">{{ compareTaskById(node.task_id)?.source_sql || '(无)' }}</pre>
-                    <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
-                    <textarea v-model="node.source_sql_override" class="block min-h-[70px] w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11.5px]" placeholder="留空 = 不覆盖"></textarea>
+                    <div class="mb-1 flex items-center justify-between">
+                      <span class="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
+                      <button v-if="!node.source_sql_override?.trim()" type="button"
+                              class="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                              @click="node.source_sql_override = compareTaskById(node.task_id)?.source_sql || ''">
+                        ↗ 复制原 SQL
+                      </button>
+                    </div>
+                    <textarea v-model="node.source_sql_override"
+                              class="block min-h-[70px] w-full rounded-md border bg-white px-2 py-1.5 font-mono text-[11.5px]"
+                              :class="overrideLooksInvalid(node.source_sql_override) ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'"
+                              placeholder="留空 = 不覆盖；非空则必须以 SELECT 或 WITH 开头"></textarea>
+                    <p v-if="overrideLooksInvalid(node.source_sql_override)" class="mt-1 text-[10.5px] text-rose-600">
+                      首词不是 SELECT/WITH —— 保存时会被服务端拒绝。
+                    </p>
                   </div>
                   <div>
                     <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">目标端 SQL（任务定义）</span>
                     <pre class="mb-1.5 max-h-32 overflow-auto rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-relaxed text-slate-600">{{ compareTaskById(node.task_id)?.target_sql || '(无)' }}</pre>
-                    <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
-                    <textarea v-model="node.target_sql_override" class="block min-h-[70px] w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11.5px]" placeholder="留空 = 不覆盖"></textarea>
+                    <div class="mb-1 flex items-center justify-between">
+                      <span class="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
+                      <button v-if="!node.target_sql_override?.trim()" type="button"
+                              class="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                              @click="node.target_sql_override = compareTaskById(node.task_id)?.target_sql || ''">
+                        ↗ 复制原 SQL
+                      </button>
+                    </div>
+                    <textarea v-model="node.target_sql_override"
+                              class="block min-h-[70px] w-full rounded-md border bg-white px-2 py-1.5 font-mono text-[11.5px]"
+                              :class="overrideLooksInvalid(node.target_sql_override) ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'"
+                              placeholder="留空 = 不覆盖；非空则必须以 SELECT 或 WITH 开头"></textarea>
+                    <p v-if="overrideLooksInvalid(node.target_sql_override)" class="mt-1 text-[10.5px] text-rose-600">
+                      首词不是 SELECT/WITH —— 保存时会被服务端拒绝。
+                    </p>
                   </div>
                 </div>
               </div>

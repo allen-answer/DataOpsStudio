@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
@@ -476,6 +477,23 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: compare requires config.task_id")
             if task_store.get(task_id) is None:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: task {task_id} does not exist")
+            # Override 必须是完整的 SELECT/WITH 查询，不是 WHERE 片段。
+            # 把 ${...} 占位先替成 __var__ 再过一遍 sql_guard，提前拒掉
+            # 「id=${user_id}」这种半句 SQL，避免运行时才报错。
+            for override_field in ("source_sql_override", "target_sql_override"):
+                override = node.config.get(override_field)
+                if isinstance(override, str) and override.strip():
+                    stripped = re.sub(r"\$\{[^}]+\}", "__var__", override)
+                    try:
+                        validate_readonly_sql(stripped)
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"node {node.id}: {override_field} 必须是完整的 SELECT/WITH 查询，"
+                                f"不能只填 WHERE 片段（{exc}）"
+                            ),
+                        ) from exc
         elif kind == "lineage":
             if not str(node.config.get("sql") or "").strip():
                 raise HTTPException(status_code=400, detail=f"node {node.id}: lineage requires config.sql")
