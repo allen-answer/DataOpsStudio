@@ -11,16 +11,20 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 from app.models import WorkflowNodeType
 
 
-NodeRunner = Callable[[dict[str, Any], dict[str, str]], dict[str, Any]]
+NodeRunner = Callable[..., dict[str, Any]]
+"""Signature: (config, variables, *, outputs=None) -> dict.
+   `outputs` 是 {node_id: output_dict} 映射，仅 excel_export 这类需要读上游
+   产物的 runner 用得到，其他 runner 通过 **_ 吃掉。"""
 
 
-def run_params_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+def run_params_node(config: dict[str, Any], variables: dict[str, str], **_: Any) -> dict[str, Any]:
     """Resolve a list of typed parameters and emit them as the node's output.
 
     Caller-supplied `variables` (passed to run_workflow) take precedence over
@@ -82,7 +86,7 @@ def run_params_node(config: dict[str, Any], variables: dict[str, str]) -> dict[s
     return out
 
 
-def run_compare_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+def run_compare_node(config: dict[str, Any], variables: dict[str, str], **_: Any) -> dict[str, Any]:
     """Run a CompareTask by id and return its CompareResult.
 
     Optional config overrides (already variable-interpolated by the engine):
@@ -143,7 +147,7 @@ def _run_task_with_override(task_id: str, patched_task) -> Any:
         task_store.get = original_get   # type: ignore[assignment]
 
 
-def run_lineage_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+def run_lineage_node(config: dict[str, Any], variables: dict[str, str], **_: Any) -> dict[str, Any]:
     """Analyze a SQL string with the existing lineage_service.
 
     config: { sql: required, dialect?, schema?, schema_* (passthrough) }
@@ -170,7 +174,7 @@ def run_lineage_node(config: dict[str, Any], variables: dict[str, str]) -> dict[
 _HTTP_RESPONSE_BYTE_CAP = 256 * 1024     # 256 KB — enough for webhook responses, blocks log dumps
 
 
-def run_http_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+def run_http_node(config: dict[str, Any], variables: dict[str, str], **_: Any) -> dict[str, Any]:
     """Issue an HTTP request and return { status, body, headers }.
 
     config: { url: required, method? (default GET), headers? (dict),
@@ -234,37 +238,178 @@ def run_http_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str
     }
 
 
-def run_excel_export_node(config: dict[str, Any], variables: dict[str, str]) -> dict[str, Any]:
+_EXCEL_EXPORT_DEFAULT_MAX_ROWS = 100_000
+_EXCEL_EXPORT_HARD_CEILING = 1_000_000   # 单 sheet 行数硬上限，配置上限不能超
+
+
+def run_excel_export_node(
+    config: dict[str, Any],
+    variables: dict[str, str],
+    *,
+    outputs: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build a multi-sheet Excel report from upstream compare/lineage outputs.
 
-    First-version behavior: validate the config and emit a stub result
-    describing what *would* have been written. Real Excel writing reads
-    upstream node outputs (referenced via ${nodes.x.y} in user config)
-    and lays them into separate sheets. Wiring that into the existing
-    exporter machinery lands in a follow-up slice.
+    每个 sheet 的 source 由两个字段表达：
+      - source_node:  上游节点 id（必填）
+      - source_field: 节点 output 里的字段路径，dot 分隔；空 = 整个 output
 
-    文件名由调用方在写盘时按 run_id 自动命名（避免冲突 + 可追溯），
-    用户配置里没有 filename 字段。
+    例：
+      sheets:
+        - id: diff
+          sheet_name: 差异
+          source_node: compare1
+          source_field: samples.diff
+          max_rows: 100000
+
+    文件名由本 runner 自动生成 (workflow_export_<ts>_<rand>.xlsx)，写到 RESULTS_DIR
+    避免冲突。Compare 节点 samples 默认拿到的就是 list[dict]，刚好能直接落 sheet。
     """
+    from datetime import datetime as _dt
+    from openpyxl import Workbook
+    from app.utils.paths import RESULTS_DIR
+
     sheets = config.get("sheets") or []
     if not isinstance(sheets, list):
         raise ValueError("excel_export node config.sheets must be a list")
     enabled = [s for s in sheets if s.get("enabled", True)]
     if not enabled:
         raise ValueError("excel_export node requires at least one enabled sheet")
+
+    outputs = outputs or {}
+
+    book = Workbook()
+    book.remove(book.active)
+    used_names: set[str] = set()
+    sheet_results: list[dict[str, Any]] = []
+
+    for idx, sheet_def in enumerate(enabled):
+        source_node = str(sheet_def.get("source_node") or "").strip()
+        source_field = str(sheet_def.get("source_field") or "").strip()
+        sheet_name_raw = str(
+            sheet_def.get("sheet_name")
+            or sheet_def.get("id")
+            or f"Sheet{idx + 1}"
+        ).strip() or f"Sheet{idx + 1}"
+
+        max_rows = int(sheet_def.get("max_rows") or _EXCEL_EXPORT_DEFAULT_MAX_ROWS)
+        if max_rows > _EXCEL_EXPORT_HARD_CEILING:
+            max_rows = _EXCEL_EXPORT_HARD_CEILING
+
+        rows_data, source_resolved = _resolve_sheet_source(outputs, source_node, source_field)
+
+        truncated = False
+        if len(rows_data) > max_rows:
+            rows_data = rows_data[:max_rows]
+            truncated = True
+
+        sheet_name = _unique_excel_sheet_name(sheet_name_raw, used_names)
+        target = book.create_sheet(sheet_name)
+        rows_written = _write_rows_to_sheet(target, rows_data)
+
+        sheet_results.append({
+            "name": sheet_name,
+            "source_node": source_node,
+            "source_field": source_field,
+            "source_resolved": source_resolved,
+            "rows_written": rows_written,
+            "truncated": truncated,
+            "max_rows": max_rows,
+        })
+
+    if not book.sheetnames:
+        book.create_sheet("empty")
+
+    timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    suffix = uuid.uuid4().hex[:8]
+    filename = f"workflow_export_{timestamp}_{suffix}.xlsx"
+    output_path = RESULTS_DIR / filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    book.save(output_path)
+
     return {
-        "sheet_count": len(enabled),
-        "sheets": [
-            {
-                "name": s.get("sheet_name") or s.get("id") or f"Sheet{i+1}",
-                "source": s.get("source"),
-                "max_rows": s.get("max_rows"),
-                "rows_written": 0,   # stub — real run would populate from upstream output
-            }
-            for i, s in enumerate(enabled)
-        ],
-        "_stub": True,
+        "filename": filename,
+        "file_path": str(output_path),
+        "file_size": output_path.stat().st_size,
+        "sheet_count": len(sheet_results),
+        "sheets": sheet_results,
+        "total_rows_written": sum(s["rows_written"] for s in sheet_results),
     }
+
+
+def _resolve_sheet_source(
+    outputs: dict[str, dict[str, Any]],
+    source_node: str,
+    source_field: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Resolve a sheet's data source from completed outputs.
+
+    Returns (rows, resolved). resolved=False means the source pointer was empty
+    or didn't match any upstream output — caller still writes an empty sheet
+    so the Excel structure mirrors config 1:1, but flags it for the user.
+    """
+    if not source_node:
+        return [], False
+    node_out = outputs.get(source_node)
+    if not isinstance(node_out, dict):
+        return [], False
+
+    cursor: Any = node_out
+    if source_field:
+        for part in source_field.split("."):
+            if isinstance(cursor, dict) and part in cursor:
+                cursor = cursor[part]
+            else:
+                return [], False
+
+    if isinstance(cursor, list):
+        # 只接受 list[dict]；其他混合类型一律包成单列 value 落盘
+        return [item if isinstance(item, dict) else {"value": item} for item in cursor], True
+    if isinstance(cursor, dict):
+        # 单 dict（如 summary 统计字段）渲染为 1 行 N 列
+        return [cursor], True
+    return [{"value": cursor}], True
+
+
+def _write_rows_to_sheet(target, rows: list[dict[str, Any]]) -> int:
+    """Write rows to a sheet. Returns the count of data rows written
+    (header excluded). Empty rows → empty sheet (no header).
+    """
+    if not rows:
+        return 0
+    # Use first row's keys as header order, then union the rest in stable order.
+    header: list[str] = list(rows[0].keys())
+    seen = set(header)
+    for row in rows[1:]:
+        for key in row.keys():
+            if key not in seen:
+                header.append(key)
+                seen.add(key)
+    target.append(header)
+    for row in rows:
+        target.append([_excel_safe(row.get(col)) for col in header])
+    return len(rows)
+
+
+def _excel_safe(value: Any) -> Any:
+    """openpyxl handles primitives; complex objects → JSON repr to avoid
+    'Cannot convert' errors on dict / list cells."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _unique_excel_sheet_name(base: str, used: set[str]) -> str:
+    import re as _re
+    cleaned = _re.sub(r"[\[\]:*?/\\]", "_", base) or "Sheet"
+    name = cleaned[:31]
+    suffix = 1
+    while name in used:
+        tail = f"_{suffix}"
+        name = f"{cleaned[: 31 - len(tail)]}{tail}"
+        suffix += 1
+    used.add(name)
+    return name
 
 
 NODE_RUNNERS: dict[WorkflowNodeType, NodeRunner] = {

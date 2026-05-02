@@ -51,11 +51,14 @@ const overrideLooksInvalid = (sql) => {
 
 const showParamCheatsheet = ref(false)
 
-// 用于 Excel 节点 Sheet 配置
-const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'new_rows', 'field_diff', 'params', 'lineage', 'custom']
+// 用于 Excel 节点 Sheet 配置 —— 模板对应 compare 节点 output 里常见的字段路径
+const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'same']
 const sheetSourceLabel = {
-  summary: '汇总', diff: '差异明细', only_source: '源端缺失', only_target: '目标端缺失',
-  new_rows: '新增', field_diff: '字段级差异', params: '运行参数', lineage: '血缘分析', custom: '自定义 SQL',
+  summary:     '汇总（summary）',
+  diff:        '差异明细（samples.diff）',
+  only_source: '源端缺失（samples.only_source）',
+  only_target: '目标端缺失（samples.only_target）',
+  same:        '一致行（samples.same）',
 }
 const expandedSheets = ref({})   // node-idx_sheet-idx → bool
 const toggleSheet = (key) => { expandedSheets.value[key] = !expandedSheets.value[key] }
@@ -838,9 +841,10 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                                 @click="toggleSheet(`${index}_${sIdx}`)">
                           {{ expandedSheets[`${index}_${sIdx}`] ? '▾' : '▸' }}
                         </button>
-                        <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase text-slate-600">{{ sheetSourceLabel[sheet.source] || sheet.source }}</span>
                         <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
-                        <span class="font-mono text-[10.5px] text-slate-500">≤ {{ sheet.max_rows }} 行</span>
+                        <span class="font-mono text-[10.5px] text-slate-500" :class="!sheet.source_node ? 'text-amber-600' : ''">
+                          {{ sheet.source_node ? `${sheet.source_node}.${sheet.source_field || '*'}` : '⚠ 未选数据源' }}
+                        </span>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === 0" @click="moveExportSheet(node, sIdx, -1)">↑</button>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === node.sheets.length - 1" @click="moveExportSheet(node, sIdx, 1)">↓</button>
                         <button class="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100" @click="removeExportSheet(node, sIdx)">×</button>
@@ -850,29 +854,26 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                       <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5">
                         <div class="grid grid-cols-1 gap-2 lg:grid-cols-3">
                           <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据来源</span>
-                            <select v-model="sheet.source" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                              <option v-for="t in sheetTemplateIds" :key="t" :value="t">{{ sheetSourceLabel[t] }}</option>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">来源节点（上游 node id）</span>
+                            <select v-model="sheet.source_node" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
+                              <option value="">— 选择上游节点 —</option>
+                              <option v-for="depId in (node.depends_on || [])" :key="depId" :value="depId">{{ depId }}</option>
                             </select>
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">字段路径（dot-path）</span>
+                            <input v-model="sheet.source_field" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="samples.diff / summary / ...">
                           </label>
                           <label>
                             <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
                             <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
                           </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Sheet ID（内部）</span>
-                            <input v-model="sheet.id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
-                          </label>
                         </div>
-                        <label v-if="sheet.source === 'custom'" class="mt-2 block">
-                          <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">自定义 SQL（${var} 可用）</span>
-                          <textarea v-model="sheet.custom_sql" class="block min-h-[60px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[12px]" placeholder="SELECT ..."></textarea>
-                        </label>
-                        <div class="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
-                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.freeze_header" class="h-3 w-3 rounded text-blue-600">冻结表头</label>
-                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.auto_width" class="h-3 w-3 rounded text-blue-600">自动列宽</label>
-                          <label class="flex cursor-pointer items-center gap-1.5"><input type="checkbox" v-model="sheet.highlight_diff" class="h-3 w-3 rounded text-blue-600">高亮差异字段</label>
-                        </div>
+                        <p class="mt-1.5 text-[10.5px] text-slate-500">
+                          运行时读 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[source_node][source_field]</code>。compare 节点常用：
+                          <code class="rounded bg-white px-1 font-mono text-[10px]">samples.diff</code> / <code class="rounded bg-white px-1 font-mono text-[10px]">samples.only_source</code> / <code class="rounded bg-white px-1 font-mono text-[10px]">summary</code>。
+                          source_node 必须在本节点的 depends_on 里。
+                        </p>
                       </div>
                     </li>
                   </ul>

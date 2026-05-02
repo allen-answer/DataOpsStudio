@@ -134,24 +134,84 @@ def test_excel_export_requires_at_least_one_enabled_sheet():
         run_excel_export_node({"sheets": [{"id": "s1", "enabled": False}]}, {})
 
 
-def test_excel_export_emits_sheet_descriptors():
+def test_excel_export_writes_real_xlsx_with_upstream_rows(tmp_path, monkeypatch):
+    """Real run_excel_export_node should pull rows from outputs[source_node]
+    via dot-path source_field, write them as an actual .xlsx, and return
+    real rows_written / file_size."""
+    import openpyxl
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {
+        "compare1": {
+            "summary": {"only_source": 1, "only_target": 0, "diff": 2, "same": 5},
+            "samples": {
+                "diff": [
+                    {"id": 1, "old": "a", "new": "b"},
+                    {"id": 2, "old": "x", "new": "y"},
+                ],
+                "only_source": [{"id": 99, "name": "ghost"}],
+                "only_target": [],
+                "same": [],
+            },
+        },
+    }
     out = run_excel_export_node({
         "sheets": [
-            {"id": "summary", "enabled": True,  "sheet_name": "Summary", "source": "summary",       "max_rows": 100000},
-            {"id": "diff",    "enabled": True,  "sheet_name": "Diff",    "source": "diff",          "max_rows": 50000},
-            {"id": "skip",    "enabled": False, "sheet_name": "X",       "source": "only_source",   "max_rows": 1000},
+            {"id": "diff", "enabled": True, "sheet_name": "差异",
+             "source_node": "compare1", "source_field": "samples.diff", "max_rows": 100},
+            {"id": "stats", "enabled": True, "sheet_name": "汇总",
+             "source_node": "compare1", "source_field": "summary"},
+            {"id": "skip", "enabled": False, "sheet_name": "ignored",
+             "source_node": "compare1", "source_field": "samples.same"},
         ],
-    }, {})
+    }, {}, outputs=upstream)
 
-    assert "filename" not in out   # 文件名由调用方/写盘端自动生成
-    assert out["sheet_count"] == 2   # disabled sheet excluded
-    assert [s["name"] for s in out["sheets"]] == ["Summary", "Diff"]
-    assert out["_stub"] is True
+    assert out["sheet_count"] == 2
+    file_path = tmp_path / out["filename"]
+    assert file_path.exists()
+    assert out["file_size"] > 0
+    assert out["total_rows_written"] == 3   # 2 diff rows + 1 summary row
+
+    book = openpyxl.load_workbook(file_path)
+    assert set(book.sheetnames) == {"差异", "汇总"}
+    diff_sheet = book["差异"]
+    rows = list(diff_sheet.values)
+    assert rows[0] == ("id", "old", "new")
+    assert rows[1] == (1, "a", "b")
+    assert rows[2] == (2, "x", "y")
+    summary_sheet = book["汇总"]
+    summary_rows = list(summary_sheet.values)
+    assert "diff" in summary_rows[0]   # 表头里至少有 diff 字段
+    assert summary_rows[1][summary_rows[0].index("diff")] == 2
+
+
+def test_excel_export_max_rows_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {"src": {"rows": [{"id": i} for i in range(150)]}}
+    out = run_excel_export_node({
+        "sheets": [{"id": "s", "enabled": True, "sheet_name": "S",
+                    "source_node": "src", "source_field": "rows", "max_rows": 10}],
+    }, {}, outputs=upstream)
+    assert out["sheets"][0]["truncated"] is True
+    assert out["sheets"][0]["rows_written"] == 10
+
+
+def test_excel_export_unresolved_source_writes_empty_sheet(tmp_path, monkeypatch):
+    """source_node 不存在或 source_field 路径错 → 空 sheet + source_resolved=False。
+    用户能在节点 output 里看到为啥没数据，但整个 export 不会因此 FAILED。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "missing", "enabled": True, "sheet_name": "Missing",
+             "source_node": "no_such_node", "source_field": "x.y"},
+        ],
+    }, {}, outputs={})
+    assert out["sheets"][0]["source_resolved"] is False
+    assert out["sheets"][0]["rows_written"] == 0
 
 
 def test_excel_export_rejects_non_list_sheets():
     with pytest.raises(ValueError, match="must be a list"):
-        run_excel_export_node({"sheets": "not a list"}, {})
+        run_excel_export_node({"sheets": "not a list"}, {}, outputs={})
 
 
 def test_http_node_surfaces_4xx_body_without_raising():

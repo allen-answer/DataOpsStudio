@@ -31,7 +31,7 @@ def _wf(nodes: list[WorkflowNode], default_variables: dict[str, str] | None = No
 def test_runs_single_node_to_success():
     captured: dict = {}
 
-    def fake_runner(config, variables):
+    def fake_runner(config, variables, **_):
         captured["config"] = config
         captured["variables"] = dict(variables)
         return {"echoed": config}
@@ -49,7 +49,7 @@ def test_runs_single_node_to_success():
 def test_variable_interpolation_in_string_values():
     received: dict = {}
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         received["config"] = config
         return {}
 
@@ -65,7 +65,7 @@ def test_variable_interpolation_in_string_values():
 def test_caller_variables_override_default_variables():
     received: dict = {}
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         received["config"] = config
         return {}
 
@@ -81,7 +81,7 @@ def test_caller_variables_override_default_variables():
 def test_built_in_today_variable_available():
     received: dict = {}
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         received["config"] = config
         return {}
 
@@ -100,7 +100,7 @@ def test_unresolved_variable_fails_node_and_skips_dependents():
         WorkflowNode(id="n2", type=WorkflowNodeType.COMPARE, config={"y": "ok"}, depends_on=["n1"]),
     ])
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         return {}
 
     run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
@@ -114,7 +114,7 @@ def test_unresolved_variable_fails_node_and_skips_dependents():
 def test_node_failure_skips_dependent_chain():
     calls: list[str] = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config["tag"])
         if config["tag"] == "boom":
             raise RuntimeError("kaboom")
@@ -154,7 +154,7 @@ def test_empty_workflow_succeeds_trivially():
 def test_cancel_check_aborts_before_next_node():
     calls: list[str] = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config["tag"])
         return {}
 
@@ -186,7 +186,7 @@ def test_cancel_check_aborts_before_next_node():
 
 
 def test_cancel_check_before_first_node_skips_all():
-    def runner(config, variables):
+    def runner(config, variables, **_):
         raise AssertionError("should not run")
 
     workflow = _wf([
@@ -233,7 +233,7 @@ def test_independent_branches_run_after_unrelated_failure():
     """A failure in one branch must not skip an unrelated parallel branch."""
     calls: list[str] = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         tag = config["tag"]
         calls.append(tag)
         if tag == "boom":
@@ -260,7 +260,7 @@ def test_independent_branches_run_after_unrelated_failure():
 def test_diamond_dag_runs_all_paths():
     calls: list[str] = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config["tag"])
         return {}
 
@@ -281,17 +281,17 @@ def test_diamond_dag_runs_all_paths():
 def test_node_output_referenced_in_downstream_config():
     seen: dict = {}
 
-    def n1_runner(config, variables):
+    def n1_runner(config, variables, **_):
         return {"summary": {"diff": 7, "label": "alpha"}}
 
-    def n2_runner(config, variables):
+    def n2_runner(config, variables, **_):
         seen["config"] = config
         return {}
 
     runners = {WorkflowNodeType.COMPARE: n1_runner}
 
     # Two-node setup where n2 reads n1's output. Use a small dispatch by id.
-    def runner(config, variables):
+    def runner(config, variables, **_):
         return n1_runner(config, variables) if config.get("__which") == "n1" else n2_runner(config, variables)
 
     workflow = _wf([
@@ -358,7 +358,7 @@ def test_params_node_output_merges_into_workflow_variables():
     so downstream nodes can use ${biz_date} directly, not just ${nodes.x.y}."""
     seen = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         if config.get("__which") == "params":
             return {"biz_date": "2026-05-01", "batch_id": "B42"}
         seen.append(config)
@@ -413,7 +413,7 @@ def test_sql_in_filter_in_template_via_engine():
     """End-to-end: a multi_value parameter substituted into an IN clause."""
     seen = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         seen.append(config["sql"])
         return {}
 
@@ -438,7 +438,7 @@ def test_sql_in_filter_in_template_via_engine():
                      config={"sql": "SELECT * FROM users WHERE id IN (${nodes.src.ids | sql_in})"}),
     ])
     captured = {}
-    def runner2(config, variables):
+    def runner2(config, variables, **_):
         if config.get("_emit") == "list":
             return {"ids": [1, 5, 9]}
         captured["sql"] = config["sql"]
@@ -458,7 +458,7 @@ def test_unknown_filter_raises_clear_error():
 def test_when_true_runs_node():
     calls = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config.get("tag"))
         return {}
 
@@ -473,7 +473,7 @@ def test_when_true_runs_node():
 def test_when_false_skips_node_without_blocking_unrelated():
     calls = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config.get("tag"))
         return {}
 
@@ -493,7 +493,7 @@ def test_when_branches_on_upstream_output():
     runs when diff > 0 — the canonical use case for conditional execution."""
     seen = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         if config.get("kind") == "compare_no_diff":
             return {"summary": {"diff": 0}}
         if config.get("kind") == "compare_with_diff":
@@ -524,7 +524,7 @@ def test_when_branches_on_upstream_output():
 def test_when_supports_string_equality_and_logical_ops():
     calls = []
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         calls.append(config.get("tag"))
         return {}
 
@@ -573,7 +573,7 @@ def test_when_empty_runs_node():
 def test_interpolation_walks_nested_dict_and_list():
     received: dict = {}
 
-    def runner(config, variables):
+    def runner(config, variables, **_):
         received["config"] = config
         return {}
 

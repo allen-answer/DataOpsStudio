@@ -669,8 +669,16 @@ const fillWorkflowDraft = (wf) => {
     body: node.config?.body || '',
     expect_status: node.config?.expect_status ?? '',
     // excel_export: sheets list. Filename 由后端写盘时按 run_id 自动命名。
+    // source_node = 上游 node.id, source_field = 该 node output 里的 dot-path
     sheets: Array.isArray(node.config?.sheets)
-      ? node.config.sheets.map((s) => ({ ...s }))
+      ? node.config.sheets.map((s) => ({
+          id: s.id,
+          enabled: s.enabled !== false,
+          sheet_name: s.sheet_name || s.id,
+          source_node: s.source_node || '',
+          source_field: s.source_field || s.source || '',   // 兼容老配置
+          max_rows: Number(s.max_rows) || 100000,
+        }))
       : [],
     // params node: typed parameter list
     parameters: Array.isArray(node.config?.parameters)
@@ -714,12 +722,9 @@ const buildNodeConfig = (node) => {
       id: s.id,
       enabled: s.enabled !== false,
       sheet_name: s.sheet_name || s.id,
-      source: s.source || 'summary',
-      custom_sql: s.custom_sql || '',
+      source_node: s.source_node || '',
+      source_field: s.source_field || '',
       max_rows: Number(s.max_rows) || 100000,
-      freeze_header: s.freeze_header !== false,
-      auto_width: s.auto_width !== false,
-      highlight_diff: s.highlight_diff !== false,
     })),
   }
   return {}
@@ -796,8 +801,8 @@ const addWorkflowNode = () => {
     sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
     sheets: [
-      { id: 'summary', enabled: true,  sheet_name: '汇总',     source: 'summary',     max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
-      { id: 'diff',    enabled: true,  sheet_name: '差异明细', source: 'diff',        max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
+      { id: 'summary', enabled: true, sheet_name: '汇总',     source_node: '', source_field: 'summary',      max_rows: 100000 },
+      { id: 'diff',    enabled: true, sheet_name: '差异明细', source_node: '', source_field: 'samples.diff', max_rows: 100000 },
     ],
     parameters: [],
   })
@@ -816,16 +821,14 @@ const moveWorkflowNode = (index, delta) => {
 }
 
 // Excel-export sheet helpers (only meaningful when node.type === 'excel_export')
+// 模板填的是 (source_field, sheet_name) —— source_node 由用户在下拉里选哪个上游
+// compare 节点。后端 runner 读 outputs[source_node][source_field] (dot-path)。
 const SHEET_TEMPLATES = {
-  summary:        { sheet_name: '汇总',         source: 'summary' },
-  diff:           { sheet_name: '差异明细',     source: 'diff' },
-  only_source:    { sheet_name: '源端缺失',     source: 'only_source' },
-  only_target:    { sheet_name: '目标端缺失',   source: 'only_target' },
-  new_rows:       { sheet_name: '新增数据',     source: 'new_rows' },
-  field_diff:     { sheet_name: '字段级差异',   source: 'field_diff' },
-  params:         { sheet_name: '运行参数',     source: 'params' },
-  lineage:        { sheet_name: '血缘分析',     source: 'lineage' },
-  custom:         { sheet_name: '自定义查询',   source: 'custom' },
+  summary:        { sheet_name: '汇总',         source_field: 'summary' },
+  diff:           { sheet_name: '差异明细',     source_field: 'samples.diff' },
+  only_source:    { sheet_name: '源端缺失',     source_field: 'samples.only_source' },
+  only_target:    { sheet_name: '目标端缺失',   source_field: 'samples.only_target' },
+  same:           { sheet_name: '一致行',       source_field: 'samples.same' },
 }
 
 const addExportSheet = (node, templateId) => {
@@ -835,12 +838,9 @@ const addExportSheet = (node, templateId) => {
     id,
     enabled: true,
     sheet_name: tmpl.sheet_name,
-    source: tmpl.source,
-    custom_sql: '',
+    source_node: '',
+    source_field: tmpl.source_field,
     max_rows: 100000,
-    freeze_header: true,
-    auto_width: true,
-    highlight_diff: true,
   })
 }
 

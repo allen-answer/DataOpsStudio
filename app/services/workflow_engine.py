@@ -185,7 +185,9 @@ def run_workflow(
         node_run.started_at = node_started.isoformat(timespec="seconds")
         node_perf = time.perf_counter()
         try:
-            output = runner(resolved_config, dict(resolved_vars))
+            # outputs 提供给需要读上游节点输出的 runner（如 excel_export）。
+            # 大多数 runner 用 *args/**kwargs 忽略掉这个 kwarg。
+            output = runner(resolved_config, dict(resolved_vars), outputs=completed_outputs)
             node_run.output = output if isinstance(output, dict) else {"value": output}
             node_run.status = NodeRunStatus.SUCCESS
             completed_outputs[node.id] = node_run.output
