@@ -129,3 +129,37 @@ def test_empty_when_passes(stub_task):
         default_variables={},
     )
     _ensure_workflow_node_targets(payload)
+
+
+def test_workflow_metadata_fields_have_defaults():
+    """老 workflows.json 缺 description / owner / tags / schedule_cron 时
+    Pydantic 应该自动回落到默认值，不能 422。"""
+    from app.models import Workflow
+    wf = Workflow.model_validate({
+        "id": "abc",
+        "name": "legacy",
+        "nodes": [],
+        "default_variables": {},
+    })
+    assert wf.description == ""
+    assert wf.owner == ""
+    assert wf.tags == []
+    assert wf.schedule_cron == ""
+
+
+def test_workflow_metadata_fields_persist():
+    from app.models import Workflow
+    wf = Workflow.model_validate({
+        "id": "abc",
+        "name": "with-meta",
+        "nodes": [],
+        "default_variables": {},
+        "description": "订单日清洗",
+        "owner": "alice@team",
+        "tags": ["orders", "daily"],
+        "schedule_cron": "0 2 * * *",
+    })
+    assert wf.description == "订单日清洗"
+    assert wf.owner == "alice@team"
+    assert wf.tags == ["orders", "daily"]
+    assert wf.schedule_cron == "0 2 * * *"

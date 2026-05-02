@@ -181,8 +181,8 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         <div class="min-w-0">
           <div class="flex items-center gap-2 text-[11px] text-slate-500">
             <button class="text-slate-600 transition hover:text-blue-600" @click="emit('back')">← 作业流总览</button>
-            <span class="text-slate-300">/</span>
-            <span class="font-mono">{{ meta.project }}</span>
+            <span v-if="selectedWorkflowId !== 'new'" class="text-slate-300">/</span>
+            <span v-if="selectedWorkflowId !== 'new'" class="font-mono">{{ selectedWorkflowId.slice(0, 8) }}</span>
           </div>
           <div class="mt-1.5 flex flex-wrap items-center gap-2.5">
             <input v-if="selectedWorkflowId === 'new'"
@@ -202,20 +202,19 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
               <span v-if="latestRun" class="font-mono text-[11.5px] text-slate-500">
                 最近运行：{{ latestRun.started_at?.slice(5) }} · {{ latestRun.elapsed_seconds }}s
               </span>
-              <span class="inline-flex items-center gap-1 font-mono text-[11.5px] text-slate-500" title="示例数据 — 调度信息待后端落库">
-                {{ meta.schedule.text }}
-                <span class="rounded bg-amber-50 px-1 text-[8.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200">示例</span>
+              <span v-if="workflowDraft.schedule_cron" class="font-mono text-[11.5px] text-slate-500" title="cron 表达式（仅展示，外部调度器读取）">
+                ⏱ {{ workflowDraft.schedule_cron }}
               </span>
+              <span v-else class="text-[11px] text-slate-400">手动触发</span>
               <span class="text-slate-300">·</span>
-              <span class="inline-flex items-center gap-1 text-[11.5px] text-slate-500" title="示例数据 — 负责人字段待后端落库">
-                负责人 <span class="font-medium text-slate-700">{{ meta.owner }}</span>
-                <span class="rounded bg-amber-50 px-1 text-[8.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200">示例</span>
+              <span class="text-[11.5px] text-slate-500">
+                负责人 <span class="font-medium text-slate-700">{{ workflowDraft.owner || '—' }}</span>
               </span>
             </template>
           </div>
           <div v-if="selectedWorkflowId !== 'new'" class="mt-1.5 flex flex-wrap items-center gap-1">
-            <span v-for="tag in meta.tags" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ tag }}</span>
-            <span v-if="meta.tags.length" class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="标签为示例数据">示例</span>
+            <span v-for="tag in workflowDraft.tags" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ tag }}</span>
+            <span v-if="!workflowDraft.tags?.length" class="text-[10.5px] text-slate-300">无标签</span>
           </div>
           <p v-else class="mt-1.5 text-[11.5px] text-slate-500">填写名称、在「节点配置」中添加节点，然后保存。保存后即可执行。</p>
         </div>
@@ -345,12 +344,36 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
           </div>
         </div>
 
+        <!-- 元数据：可编辑，落到 Workflow 模型；保存后即生效 -->
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div class="mb-2 flex items-center gap-1.5">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">概要</p>
-            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 后端 Workflow 模型暂未存储该字段">示例</span>
+          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">元数据</p>
+          <div class="space-y-2">
+            <label class="block">
+              <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">描述</span>
+              <textarea v-model="workflowDraft.description" rows="3" placeholder="一句话说清这个作业流的目的"
+                        class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700"></textarea>
+            </label>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="block">
+                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">负责人</span>
+                <input v-model="workflowDraft.owner" placeholder="如 alice@team"
+                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
+              </label>
+              <label class="block">
+                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">cron（可选）</span>
+                <input v-model="workflowDraft.schedule_cron" placeholder="0 2 * * * 或留空"
+                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
+              </label>
+            </div>
+            <label class="block">
+              <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">标签（逗号分隔）</span>
+              <input :value="(workflowDraft.tags || []).join(', ')"
+                     @input="workflowDraft.tags = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+                     placeholder="orders, daily, prod"
+                     class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
+            </label>
+            <p class="text-[10px] text-slate-400">这些字段保存后落 config/workflows.json，列表页和详情页都会读到。</p>
           </div>
-          <p class="text-[12.5px] leading-relaxed text-slate-700">{{ meta.description }}</p>
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">

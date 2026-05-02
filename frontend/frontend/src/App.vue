@@ -104,6 +104,10 @@ const datasourceDraft = reactive({
 
 const workflowDraft = reactive({
   name: '',
+  description: '',
+  owner: '',
+  tags: [],
+  schedule_cron: '',
   default_variables: '',
   runtime_variables: '',
   nodes: [],
@@ -644,6 +648,10 @@ const stringifyVariables = (obj) =>
 
 const fillWorkflowDraft = (wf) => {
   workflowDraft.name = wf?.name || ''
+  workflowDraft.description = wf?.description || ''
+  workflowDraft.owner = wf?.owner || ''
+  workflowDraft.tags = Array.isArray(wf?.tags) ? [...wf.tags] : []
+  workflowDraft.schedule_cron = wf?.schedule_cron || ''
   workflowDraft.default_variables = stringifyVariables(wf?.default_variables)
   workflowDraft.runtime_variables = ''
   workflowDraft.nodes = (wf?.nodes || []).map((node) => ({
@@ -719,6 +727,10 @@ const buildNodeConfig = (node) => {
 
 const workflowPayload = () => ({
   name: workflowDraft.name,
+  description: workflowDraft.description || '',
+  owner: workflowDraft.owner || '',
+  tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags.filter(Boolean) : [],
+  schedule_cron: workflowDraft.schedule_cron || '',
   default_variables: parseVariables(workflowDraft.default_variables),
   nodes: workflowDraft.nodes.map((node) => ({
     id: node.id,

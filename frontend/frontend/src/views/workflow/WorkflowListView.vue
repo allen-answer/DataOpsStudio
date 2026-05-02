@@ -1,33 +1,30 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
-import { projects, owners, scheduleTypes, healthMeta, getMeta, workflowHealth } from '../../mock/workflow_meta'
+import { healthMeta, workflowHealth } from '../../mock/workflow_meta'
 
 const emit = defineEmits(['open-detail', 'run'])
 const { state, allWorkflowRuns, loadAllWorkflowRuns } = inject('app')
 
 onMounted(() => { loadAllWorkflowRuns() })
 
-const projectFilter = ref('all')
 const ownerFilter = ref('all')
-const scheduleFilter = ref('all')
 const healthFilter = ref('all')
 const searchTerm = ref('')
 
-// 通过下标分配 mock 元数据，让每个工作流看起来都有不同的 owner/project/schedule。
-const enriched = computed(() => state.workflows.map((wf, idx) => {
-  const meta = getMeta(wf, idx)
+// 现在元数据（owner / tags / schedule_cron）来自后端 Workflow 模型，
+// 不再用 mock 模板插值。健康度和 24 小时运行次数仍然由运行历史推导。
+const enriched = computed(() => state.workflows.map((wf) => {
   const wfRuns = allWorkflowRuns.value.filter((r) => r.workflow_id === wf.id)
   const latestRun = wfRuns[0] || null
   const success7d = wfRuns.slice(0, 7)
   const successCount = success7d.filter((r) => r.status === 'success').length
   return {
     ...wf,
-    meta,
-    project: meta.project,
-    owner: meta.owner,
-    schedule_text: meta.schedule.text,
-    schedule_type: meta.schedule.type,
-    schedule_status: meta.schedule.status,
+    owner: wf.owner || '—',
+    tags: Array.isArray(wf.tags) ? wf.tags : [],
+    schedule_text: wf.schedule_cron || '手动触发',
+    has_schedule: Boolean(wf.schedule_cron),
+    description: wf.description || '',
     latest_run: latestRun,
     health: workflowHealth(wf, latestRun),
     last_run_status: latestRun?.status || 'none',
@@ -35,17 +32,24 @@ const enriched = computed(() => state.workflows.map((wf, idx) => {
     last_duration: latestRun ? `${latestRun.elapsed_seconds}s` : '—',
     success_rate_7d: success7d.length ? successCount / success7d.length : null,
     runs_24h: wfRuns.filter((r) => r.started_at && r.started_at >= new Date(Date.now() - 86400_000).toISOString().slice(0, 19)).length,
-    asset_count: meta.input_assets.length,
-    downstream_count: meta.output_assets.reduce((acc, a) => acc + (a.downstream_count || 0), 0),
   }
 }))
 
+// 真实下拉来源：所有不重复的 owner / tag。
+const ownerOptions = computed(() => {
+  const set = new Set()
+  for (const wf of enriched.value) if (wf.owner && wf.owner !== '—') set.add(wf.owner)
+  return [...set].sort()
+})
+
 const filtered = computed(() => enriched.value.filter((wf) => {
-  if (projectFilter.value !== 'all' && wf.project !== projectFilter.value) return false
-  if (ownerFilter.value !== 'all' && wf.owner !== owners.find((o) => o.id === ownerFilter.value)?.name) return false
-  if (scheduleFilter.value !== 'all' && wf.schedule_type !== scheduleFilter.value) return false
+  if (ownerFilter.value !== 'all' && wf.owner !== ownerFilter.value) return false
   if (healthFilter.value !== 'all' && wf.health !== healthFilter.value) return false
-  if (searchTerm.value && !wf.name.includes(searchTerm.value)) return false
+  if (searchTerm.value) {
+    const term = searchTerm.value.toLowerCase()
+    const haystack = `${wf.name} ${wf.description} ${wf.tags.join(' ')} ${wf.owner}`.toLowerCase()
+    if (!haystack.includes(term)) return false
+  }
   return true
 }))
 
@@ -63,7 +67,6 @@ const stats = computed(() => {
   }
 })
 
-const projectName = (id) => projects.find((p) => p.id === id)?.name || id
 const successRateClass = (rate) => {
   if (rate === null) return 'text-slate-400'
   if (rate >= 0.95) return 'text-emerald-600'
@@ -109,21 +112,10 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
     <!-- 工具栏 -->
     <div class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
       <div class="flex items-center gap-1.5 text-xs">
-        <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">项目</span>
-        <select v-model="projectFilter" class="h-7 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-blue-400 focus:outline-none">
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-      </div>
-      <div class="flex items-center gap-1.5 text-xs">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">负责人</span>
         <select v-model="ownerFilter" class="h-7 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-blue-400 focus:outline-none">
-          <option v-for="o in owners" :key="o.id" :value="o.id">{{ o.name }}</option>
-        </select>
-      </div>
-      <div class="flex items-center gap-1.5 text-xs">
-        <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">调度</span>
-        <select v-model="scheduleFilter" class="h-7 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-blue-400 focus:outline-none">
-          <option v-for="s in scheduleTypes" :key="s.id" :value="s.id">{{ s.name }}</option>
+          <option value="all">全部</option>
+          <option v-for="name in ownerOptions" :key="name" :value="name">{{ name }}</option>
         </select>
       </div>
       <div class="flex items-center gap-1.5 text-xs">
@@ -137,7 +129,7 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
       </div>
       <input
         v-model="searchTerm"
-        placeholder="搜索作业流名称..."
+        placeholder="搜索作业流名称 / 描述 / 标签..."
         class="h-7 w-56 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
       >
       <div class="ml-auto flex items-center gap-1.5">
@@ -156,13 +148,10 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
         <thead class="border-b border-slate-200 bg-slate-50">
           <tr class="text-left">
             <th class="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">作业流</th>
-            <th class="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">项目</th>
             <th class="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">负责人</th>
             <th class="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">健康度</th>
             <th class="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">最近运行</th>
             <th class="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">调度</th>
-            <th class="px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">输入资产</th>
-            <th class="px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">下游依赖</th>
             <th class="px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">7 日成功率</th>
             <th class="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">操作</th>
           </tr>
@@ -174,11 +163,11 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
             <td class="px-4 py-3">
               <div class="flex items-center gap-2">
                 <span class="font-semibold text-slate-800">{{ wf.name }}</span>
-                <span v-for="tag in wf.meta.tags.slice(0, 2)" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600">{{ tag }}</span>
+                <span v-for="tag in wf.tags.slice(0, 2)" :key="tag" class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600">{{ tag }}</span>
               </div>
-              <p class="mt-0.5 line-clamp-1 max-w-md text-[11px] text-slate-500">{{ wf.meta.description }}</p>
+              <p v-if="wf.description" class="mt-0.5 line-clamp-1 max-w-md text-[11px] text-slate-500">{{ wf.description }}</p>
+              <p v-else class="mt-0.5 text-[11px] text-slate-300">无描述</p>
             </td>
-            <td class="px-3 py-3 text-slate-600">{{ projectName(wf.project) }}</td>
             <td class="px-3 py-3 text-slate-600">{{ wf.owner }}</td>
             <td class="px-3 py-3">
               <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset" :class="healthMeta[wf.health].pill">
@@ -191,11 +180,9 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
               <p class="font-mono text-[10.5px] text-slate-500">{{ wf.last_duration }}</p>
             </td>
             <td class="px-3 py-3">
-              <p class="font-mono text-[12px] text-slate-700">{{ wf.schedule_text }}</p>
-              <p class="text-[10.5px] text-slate-500">{{ { online: '已上线', paused: '已暂停', offline: '未上线' }[wf.schedule_status] }}</p>
+              <p v-if="wf.has_schedule" class="font-mono text-[12px] text-slate-700">{{ wf.schedule_text }}</p>
+              <p v-else class="text-[11.5px] text-slate-400">手动触发</p>
             </td>
-            <td class="px-3 py-3 text-right font-mono text-slate-700 tabular-nums">{{ wf.asset_count }}</td>
-            <td class="px-3 py-3 text-right font-mono text-slate-700 tabular-nums">{{ wf.downstream_count }}</td>
             <td class="px-3 py-3 text-right">
               <span class="font-semibold font-mono text-[13px] tabular-nums" :class="successRateClass(wf.success_rate_7d)">{{ successRateText(wf.success_rate_7d) }}</span>
             </td>
@@ -214,7 +201,7 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
             </td>
           </tr>
           <tr v-if="!filtered.length">
-            <td colspan="10" class="py-16 text-center">
+            <td colspan="7" class="py-16 text-center">
               <p class="text-sm text-slate-400">{{ state.workflows.length ? '没有匹配的作业流' : '还没有作业流，请先在「配置」中创建' }}</p>
             </td>
           </tr>

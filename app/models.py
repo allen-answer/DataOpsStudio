@@ -197,12 +197,23 @@ class Workflow(BaseModel):
     name: str = Field(..., min_length=1)
     nodes: list[WorkflowNode] = Field(default_factory=list)
     default_variables: dict[str, str] = Field(default_factory=dict)
+    # 元数据字段：UI 展示用，不影响执行。老数据缺这些字段会回落到默认值，
+    # JsonStore 自动兼容。资产 / 告警 / 调度状态等"派生"信息暂未下沉，
+    # 待血缘 + 调度系统接入。
+    description: str = ""
+    owner: str = ""
+    tags: list[str] = Field(default_factory=list)
+    schedule_cron: str = ""   # 留空 = 仅手动触发
 
 
 class WorkflowCreate(BaseModel):
     name: str = Field(..., min_length=1)
     nodes: list[WorkflowNode] = Field(default_factory=list)
     default_variables: dict[str, str] = Field(default_factory=dict)
+    description: str = ""
+    owner: str = ""
+    tags: list[str] = Field(default_factory=list)
+    schedule_cron: str = ""
 
 
 class NodeRunStatus(str, Enum):
