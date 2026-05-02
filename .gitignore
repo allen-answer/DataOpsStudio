@@ -16,8 +16,20 @@ logs/
 results/
 *.log
 .DS_Store
-*.bat
 wheels/
+
+# 默认忽略所有 .bat（多数是开发者本地 ad-hoc 脚本）；
+# 例外放行：离线 release 包要用的 install.bat / start.bat 模板。
+*.bat
+!scripts/offline/*.bat
+
+# Frontend build artefacts —— 由 CI / Dockerfile / release 脚本生成，不入库。
+# 手写的 favicon.svg / icons.svg 等静态资源仍然保留。
+static/spa/index.html
+static/spa/assets/
+
+# 离线 release zip 产物
+DataOpsStudio-win-offline-*.zip
 
 # Frontend local dependencies and build caches
 node_modules/

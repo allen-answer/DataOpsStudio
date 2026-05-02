@@ -21,10 +21,11 @@ services:
     ports:
       - "8010:8010"
     volumes:
+      # static/spa 不再 mount —— 改 Dockerfile 里 frontend 阶段构建后直接打入镜像。
+      # 想 dev 模式热改前端：`cd frontend/frontend && npm run dev`，vite proxy 到 app:8000。
       - ./config:/app/config
       - ./results:/app/results
       - ./logs:/app/logs
-      - ./static:/app/static
     depends_on:
       mysql8:
         condition: service_healthy

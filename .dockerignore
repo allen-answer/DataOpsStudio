@@ -1,0 +1,39 @@
+# node_modules / vite cache —— 镜像里的 frontend 阶段会自己 npm ci
+**/node_modules
+**/.vite
+**/dist
+
+# Python 本地虚拟环境与缓存
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 宿主机本地 build 产物 —— 由镜像内 frontend 阶段重新构建，避免 dirty 状态混入
+static/spa/index.html
+static/spa/assets/
+
+# 运行时数据：每次容器跑出来的，不该进镜像
+results/
+logs/
+wheels/
+
+# 真实配置（每个 clone 自己一份）
+config/datasources.json
+config/tasks.json
+config/jobs.json
+config/workflows.json
+
+# 编辑器 / 助手元数据
+.git/
+.idea/
+.vscode/
+.claude/
+
+# Release 包
+DataOpsStudio-win-offline-*.zip
