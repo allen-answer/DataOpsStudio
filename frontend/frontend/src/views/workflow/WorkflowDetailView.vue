@@ -126,8 +126,6 @@ const displayParameters = computed(() => realParameters.value)
 // 参数解析：把每个参数定义解析成下次运行将使用的具体值（预览用）。
 const resolvedParams = computed(() => resolveAllParameters(displayParameters.value))
 
-const compareTaskOptions = computed(() => state.tasks.map((task) => ({ id: task.id, name: task.name })))
-
 // 最近一次 run（用于 DAG canvas 上叠加节点状态）
 const latestRun = computed(() => workflowResult.value || null)
 const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null))
