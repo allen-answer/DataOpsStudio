@@ -1,4 +1,9 @@
-"""数据源 CRUD + 连通性测试。"""
+"""数据源 CRUD + 连通性测试。
+
+API 层 password 始终脱敏（返回空串）—— 内部 store 仍持明文供连接 / test 用。
+update 收到 password='' 视为"保持原值不变"，避免前端编辑表单时 password
+被空覆盖。
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -11,20 +16,31 @@ from app.services.repositories import datasource_store
 router = APIRouter()
 
 
+def _redact(ds: DataSource) -> DataSource:
+    """API 出口脱敏：password 清空。原对象不动（store 仍要明文跑 test）。"""
+    return ds.model_copy(update={"password": ""})
+
+
 @router.get("/api/datasources", response_model=list[DataSource])
 def list_datasources():
-    return datasource_store.list()
+    return [_redact(ds) for ds in datasource_store.list()]
 
 
 @router.post("/api/datasources", response_model=DataSource)
 def create_datasource(payload: DataSourceCreate):
-    return datasource_store.create(payload)
+    return _redact(datasource_store.create(payload))
 
 
 @router.put("/api/datasources/{datasource_id}", response_model=DataSource)
 def update_datasource(datasource_id: str, payload: DataSourceCreate):
+    # password 留空 = 保持原值（前端编辑表单不强制重输密码）
+    if not payload.password:
+        existing = datasource_store.get(datasource_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+        payload = payload.model_copy(update={"password": existing.password})
     try:
-        return datasource_store.update(datasource_id, payload)
+        return _redact(datasource_store.update(datasource_id, payload))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Datasource not found") from exc
 

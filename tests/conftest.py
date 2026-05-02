@@ -52,13 +52,16 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(paths_module, "JOBS_FILE", cfg / "jobs.json")
 
     # 3. 已经在 import 顶层绑住 path 的模块 —— 必须各自 patch
-    from app.services import workflow_history, history as history_svc, history_exporter, excel_uploads, jobs
+    from app.services import workflow_history, history as history_svc, history_exporter, excel_uploads, jobs, config_io as config_io_svc
     monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", wf_runs)
     monkeypatch.setattr(history_svc, "RESULTS_DIR", results)
     monkeypatch.setattr(history_exporter, "RESULTS_DIR", results)
     monkeypatch.setattr(excel_uploads, "RESULTS_DIR", results)
     monkeypatch.setattr(excel_uploads, "UPLOADS_DIR", uploads)
     monkeypatch.setattr(jobs, "JOBS_FILE", cfg / "jobs.json")
+    monkeypatch.setattr(config_io_svc, "DATASOURCES_FILE", cfg / "datasources.json")
+    monkeypatch.setattr(config_io_svc, "TASKS_FILE", cfg / "tasks.json")
+    monkeypatch.setattr(config_io_svc, "RESULTS_DIR", results)
     # jobs 模块的 _jobs 全局 dict 跨测试残留，清一下
     jobs._jobs.clear()
     jobs._futures.clear()

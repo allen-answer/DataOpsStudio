@@ -298,3 +298,96 @@ def test_drivers_response_schema(client, isolated_storage):
         assert "available" in info
         assert "installed_modules" in info
         assert "candidate_modules" in info
+
+
+# --- 密码脱敏 ---
+
+def test_datasource_password_redacted_on_all_read_endpoints(client, isolated_storage):
+    """create / list / bootstrap / update 返回的 password 必须空串 —— 内部
+    store 仍存明文跑 test 用，但永远不通过 API 暴露。"""
+    secret = "my-super-secret-pw-123"
+    created = client.post("/api/datasources", json={
+        "name": "ds-secret", "db_type": "MySQL", "host": "h", "port": 3306,
+        "password": secret,
+    }).json()
+    assert created["password"] == "", "create 响应漏密码"
+
+    listed = client.get("/api/datasources").json()
+    target = next(d for d in listed if d["id"] == created["id"])
+    assert target["password"] == "", "list 响应漏密码"
+
+    bootstrap = client.get("/api/bootstrap").json()
+    target = next(d for d in bootstrap["datasources"] if d["id"] == created["id"])
+    assert target["password"] == "", "bootstrap 响应漏密码"
+
+
+def test_datasource_update_with_empty_password_keeps_original(client, isolated_storage):
+    """前端编辑表单 password 留空 = 保持原密码不变。否则用户每次改 host 都要
+    重输密码——糟糕的 UX。"""
+    from app.services.repositories import datasource_store
+
+    secret = "original-pw"
+    created = client.post("/api/datasources", json={
+        "name": "ds-keep", "db_type": "MySQL", "host": "h1", "port": 3306,
+        "password": secret,
+    }).json()
+
+    # 留空 password 的 update —— 只想改 host
+    response = client.put(f"/api/datasources/{created['id']}", json={
+        "name": "ds-keep", "db_type": "MySQL", "host": "h2", "port": 3306,
+        "password": "",
+    })
+    assert response.status_code == 200
+    assert response.json()["host"] == "h2"
+
+    # 内部 store 必须仍存原密码（不是被空覆盖）
+    internal = datasource_store.get(created["id"])
+    assert internal.password == secret, "update with empty password 把密码覆盖空了"
+
+
+def test_datasource_update_with_new_password_replaces(client, isolated_storage):
+    """非空 password 正常覆盖。"""
+    from app.services.repositories import datasource_store
+
+    created = client.post("/api/datasources", json={
+        "name": "ds-rotate", "db_type": "MySQL", "host": "h", "port": 3306,
+        "password": "old",
+    }).json()
+
+    client.put(f"/api/datasources/{created['id']}", json={
+        "name": "ds-rotate", "db_type": "MySQL", "host": "h", "port": 3306,
+        "password": "new-rotated",
+    })
+    assert datasource_store.get(created["id"]).password == "new-rotated"
+
+
+def test_config_export_redacts_passwords_by_default(client, isolated_storage):
+    """/config/export 默认导出文件不含明文密码。"""
+    import json as _json
+
+    client.post("/api/datasources", json={
+        "name": "ds-export", "db_type": "MySQL", "host": "h", "port": 3306,
+        "password": "secret-must-not-leak",
+    })
+    response = client.get("/config/export")
+    assert response.status_code == 200
+    payload = _json.loads(response.content)
+    assert payload["passwords_included"] is False
+    for ds in payload["datasources"]:
+        assert ds["password"] == "", \
+            f"默认导出泄露明文密码：{ds.get('name')} -> {ds['password']!r}"
+
+
+def test_config_export_includes_passwords_when_explicitly_requested(client, isolated_storage):
+    """显式 ?include_passwords=true 才把明文密码写进去（用户自备份场景）。"""
+    import json as _json
+
+    client.post("/api/datasources", json={
+        "name": "ds-backup", "db_type": "MySQL", "host": "h", "port": 3306,
+        "password": "wanted-this-time",
+    })
+    response = client.get("/config/export?include_passwords=true")
+    payload = _json.loads(response.content)
+    assert payload["passwords_included"] is True
+    pwds = [ds["password"] for ds in payload["datasources"] if ds.get("name") == "ds-backup"]
+    assert "wanted-this-time" in pwds

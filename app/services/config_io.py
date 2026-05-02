@@ -9,10 +9,21 @@ from app.models import CompareTask, DataSource
 from app.utils.paths import DATASOURCES_FILE, RESULTS_DIR, TASKS_FILE
 
 
-def export_config() -> Path:
+def export_config(include_passwords: bool = False) -> Path:
+    """导出 datasources + tasks 到 results/config_export_{ts}.json。
+
+    `include_passwords` 默认 False —— 导出文件给别人 / 上传到协作平台时
+    不应该带明文密码。需要带密码（如自己备份回灌）时显式传 True。
+    """
+    datasources = _read_json_array(DATASOURCES_FILE)
+    if not include_passwords:
+        for ds in datasources:
+            if "password" in ds:
+                ds["password"] = ""
     payload = {
         "exported_at": datetime.now().isoformat(timespec="seconds"),
-        "datasources": _read_json_array(DATASOURCES_FILE),
+        "passwords_included": include_passwords,
+        "datasources": datasources,
         "tasks": _read_json_array(TASKS_FILE),
     }
     path = RESULTS_DIR / f"config_export_{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
@@ -38,6 +49,8 @@ def import_config(content: bytes) -> dict[str, int]:
 
 
 def _read_json_array(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
     data = json.loads(path.read_text(encoding="utf-8").strip() or "[]")
     if not isinstance(data, list):
         raise ValueError(f"{path.name} must contain a JSON array")

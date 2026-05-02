@@ -1192,6 +1192,13 @@ const analyzeBatch = async () => {
   }
 }
 
+// 含密码导出 —— 二次确认弹窗，避免误点把明文密码导出去。
+const confirmIncludePasswords = (event) => {
+  if (!confirm('导出文件将包含明文数据库密码。仅自用备份请确认；不要分享或提交到代码仓库。')) {
+    event.preventDefault()
+  }
+}
+
 const exportHistory = async () => {
   if (!selectedHistory.value.size) {
     setNotice('请先选择要导出的历史记录')
@@ -1323,7 +1330,16 @@ provide('app', {
           <span v-if="loading" class="ml-3 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600">加载中</span>
         </div>
         <div class="flex items-center gap-3">
-          <a class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600" href="/config/export">配置文件导出</a>
+          <a class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600"
+             href="/config/export" title="导出数据源 + 任务配置（密码已脱敏，可放心分享）">
+            配置文件导出
+          </a>
+          <a class="rounded-full border border-rose-100 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-100"
+             href="/config/export?include_passwords=true"
+             title="导出文件包含明文密码 —— 仅自己备份用，不要分享给他人 / 提交到代码仓库"
+             @click="confirmIncludePasswords">
+            含密码导出
+          </a>
         </div>
       </header>
 

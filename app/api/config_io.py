@@ -15,8 +15,10 @@ router = APIRouter()
 
 
 @router.get("/config/export")
-def config_export():
-    path = export_config()
+def config_export(include_passwords: bool = False):
+    """导出 datasources + tasks。默认密码脱敏；显式 ?include_passwords=true
+    才把数据源明文密码写进去（用户备份场景）。"""
+    path = export_config(include_passwords=include_passwords)
     return FileResponse(path, filename=path.name)
 
 
