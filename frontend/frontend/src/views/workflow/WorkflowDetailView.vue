@@ -1,13 +1,13 @@
 <script setup>
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
-import { healthMeta, nodeStatusMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
+import { healthMeta, workflowHealth, synthesizeEvents, resolveAllParameters } from '../../mock/workflow_meta'
 import WorkflowCompareNodeEditor     from '../../components/workflow/WorkflowCompareNodeEditor.vue'
 import WorkflowParamsNodeEditor      from '../../components/workflow/WorkflowParamsNodeEditor.vue'
 import WorkflowLineageNodeEditor     from '../../components/workflow/WorkflowLineageNodeEditor.vue'
 import WorkflowExcelExportNodeEditor from '../../components/workflow/WorkflowExcelExportNodeEditor.vue'
 import WorkflowHistoryPanel          from '../../components/workflow/WorkflowHistoryPanel.vue'
-
-const parameterTypeMeta = _ptm
+import WorkflowDagCanvas             from '../../components/workflow/WorkflowDagCanvas.vue'
+import WorkflowSettingsPanel         from '../../components/workflow/WorkflowSettingsPanel.vue'
 
 const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.vue'))
 
@@ -62,87 +62,13 @@ const latestRun = computed(() => workflowResult.value || null)
 const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null) || 'none')
 const healthDisplay = computed(() => healthMeta[health.value] || healthMeta.none)
 
-const nodeStatusByid = computed(() => {
-  const map = {}
-  if (latestRun.value) {
-    for (const n of latestRun.value.nodes || []) map[n.node_id] = n
-  }
-  return map
-})
-
-// DAG 自动布局
-const layout = computed(() => {
-  const nodes = workflowDraft.nodes.map((n) => ({ id: n.id, name: n.name, type: n.type, depends_on: n.depends_on || [] }))
-  return layoutDAG(nodes, { nodeW: 220, nodeH: 84, gapX: 80, gapY: 28, padX: 40, padY: 40 })
-})
-
-const positionedById = computed(() => {
-  const map = {}
-  for (const n of layout.value.positioned) map[n.id] = n
-  return map
-})
-
-const allEdges = computed(() => {
-  const out = []
-  for (const n of workflowDraft.nodes) {
-    for (const dep of n.depends_on || []) out.push({ source: dep, target: n.id })
-  }
-  return out
-})
-
-const edgePath = (edge) => {
-  const s = positionedById.value[edge.source]
-  const t = positionedById.value[edge.target]
-  if (!s || !t) return ''
-  const sx = s.x + 220
-  const sy = s.y + 84 / 2
-  const tx = t.x
-  const ty = t.y + 84 / 2
-  const dx = Math.max(40, (tx - sx) * 0.5)
-  return `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`
-}
-
-const edgeHighlighted = (edge) =>
-  selectedNodeId.value && (edge.source === selectedNodeId.value || edge.target === selectedNodeId.value)
-
-const nodeStatus = (nodeId) => nodeStatusByid.value[nodeId]?.status || 'pending'
-
-// DAG canvas 节点 box 描边色 —— 失败/跳过的节点要醒目，光看小圆点容易漏。
-// selected 仍走蓝环；非 selected 时按状态着色。
-const nodeBoxClass = (nodeId) => {
-  if (selectedNodeId.value === nodeId) return 'border-blue-400 ring-2 ring-blue-200'
-  const status = nodeStatus(nodeId)
-  if (status === 'failed')   return 'border-rose-300 bg-rose-50/50'
-  if (status === 'skipped')  return 'border-amber-300 bg-amber-50/40'
-  if (status === 'running')  return 'border-blue-300 ring-1 ring-blue-100 animate-pulse'
-  if (status === 'success')  return 'border-emerald-200'
-  return 'border-slate-200'
-}
-
-// DAG canvas hover tooltip：显示完整 error / 时间 / 节点 id 等。
-// 用 mouseenter/leave 切 hoveredNodeId；popover 绝对定位在节点旁，
-// pointer-events-none 让鼠标穿透到节点本身（避免 hover 闪烁）。
-const NODE_BOX_W = 220
-const NODE_BOX_H = 84
-const hoveredNodeId = ref('')
-const hoveredNode = computed(() => layout.value.positioned.find((n) => n.id === hoveredNodeId.value) || null)
-const hoveredStatus = computed(() => nodeStatusByid.value[hoveredNodeId.value] || null)
-const hoveredHasInfo = computed(() => Boolean(hoveredStatus.value || hoveredNode.value))
-
-// 计算 popover 位置：默认放节点右侧；右边放不下则放左侧；都放不下就上方。
-const TOOLTIP_W = 300
-const TOOLTIP_H = 160
-const tooltipStyle = computed(() => {
-  if (!hoveredNode.value) return { display: 'none' }
-  const n = hoveredNode.value
-  const placedRight = n.x + NODE_BOX_W + 12 + TOOLTIP_W <= layout.value.width
-  const left = placedRight ? n.x + NODE_BOX_W + 12 : Math.max(8, n.x - TOOLTIP_W - 12)
-  // 让 tooltip 顶部和节点对齐，超出底部时向上挤
-  const top = Math.min(n.y, Math.max(8, layout.value.height - TOOLTIP_H - 8))
-  return { left: left + 'px', top: top + 'px', width: TOOLTIP_W + 'px' }
-})
-
 const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
+
+// 空态点 "+ 添加" 时跳到节点配置 tab 并新增第一个节点
+const handleAddNodeFromCanvas = () => {
+  activeTab.value = 'config'
+  addWorkflowNode()
+}
 
 const tabs = [
   { id: 'history',  label: '运行历史' },
@@ -247,258 +173,16 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
 
     <!-- 主区域：左 DAG canvas + 右元数据 -->
     <div class="grid grid-cols-[minmax(0,1fr)_320px] gap-3">
-      <!-- DAG canvas -->
-      <div class="flex flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div class="flex items-center justify-between border-b border-slate-200 bg-slate-50/60 px-3 py-1.5">
-          <span class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-500">DAG · 节点 {{ workflowDraft.nodes.length }} · 依赖 {{ allEdges.length }}</span>
-          <div class="flex items-center gap-3 text-[10.5px] text-slate-500">
-            <span v-for="(meta2, key) in nodeStatusMeta" :key="key" class="flex items-center gap-1">
-              <span class="h-1.5 w-1.5 rounded-full" :class="meta2.dot"></span>{{ meta2.label }}
-            </span>
-          </div>
-        </div>
-        <div class="relative max-h-[520px] flex-1 overflow-auto">
-          <div v-if="!workflowDraft.nodes.length" class="grid h-[280px] place-items-center">
-            <div class="text-center">
-              <p class="text-sm text-slate-400">还没有节点</p>
-              <button class="mt-2 inline-flex h-7 items-center gap-1 rounded-lg bg-blue-600 px-2.5 text-xs font-semibold text-white transition hover:bg-blue-700" @click="activeTab = 'config'; addWorkflowNode()">+ 在「节点配置」中添加</button>
-            </div>
-          </div>
-          <div v-else
-               class="relative"
-               :style="{
-                 width: layout.width + 'px',
-                 height: layout.height + 'px',
-                 backgroundImage: 'radial-gradient(circle at 1px 1px, rgb(203 213 225 / 0.6) 1px, transparent 0)',
-                 backgroundSize: '24px 24px',
-                 minHeight: '280px',
-               }">
-            <svg class="pointer-events-none absolute inset-0" :width="layout.width" :height="layout.height" :viewBox="`0 0 ${layout.width} ${layout.height}`">
-              <defs>
-                <marker id="wf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
-                <marker id="wf-arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
-              </defs>
-              <path v-for="(edge, idx) in allEdges" :key="idx"
-                    :d="edgePath(edge)" fill="none"
-                    :stroke="edgeHighlighted(edge) ? '#2563eb' : '#94a3b8'"
-                    :stroke-width="edgeHighlighted(edge) ? 2 : 1.2"
-                    :stroke-opacity="edgeHighlighted(edge) ? 0.9 : 0.55"
-                    :marker-end="edgeHighlighted(edge) ? 'url(#wf-arrow-active)' : 'url(#wf-arrow)'" />
-            </svg>
-            <button v-for="n in layout.positioned" :key="n.id"
-                    class="absolute flex flex-col gap-1 rounded-xl border bg-white px-3 py-2 text-left shadow-sm transition hover:shadow-md"
-                    :class="nodeBoxClass(n.id)"
-                    :style="{ left: n.x + 'px', top: n.y + 'px', width: '220px', height: '84px' }"
-                    @click="selectedNodeId = n.id"
-                    @mouseenter="hoveredNodeId = n.id"
-                    @mouseleave="hoveredNodeId = ''">
-              <div class="flex items-center gap-1.5">
-                <span class="h-2 w-2 shrink-0 rounded-full" :class="nodeStatusMeta[nodeStatus(n.id)].dot"></span>
-                <span class="truncate text-[12.5px] font-semibold text-slate-800">{{ n.name || n.id }}</span>
-              </div>
-              <div class="flex items-center gap-1.5 text-[10.5px]">
-                <span class="rounded px-1 font-mono text-[9.5px] font-bold uppercase"
-                      :class="{
-                        'bg-sky-50 text-sky-700': n.type === 'params',
-                        'bg-blue-50 text-blue-700': n.type === 'compare',
-                        'bg-emerald-50 text-emerald-700': n.type === 'lineage',
-                        'bg-amber-50 text-amber-700': n.type === 'excel_export',
-                        'bg-purple-50 text-purple-700': n.type === 'http',
-                      }">{{ n.type }}</span>
-                <span class="font-mono text-slate-500">{{ n.id }}</span>
-                <span v-if="nodeStatusByid[n.id]" class="ml-auto font-mono text-slate-500">{{ nodeStatusByid[n.id].elapsed_seconds }}s</span>
-              </div>
-              <span v-if="nodeStatusByid[n.id]?.error" class="line-clamp-1 text-[10px] text-rose-600">{{ nodeStatusByid[n.id].error }}</span>
-            </button>
+      <WorkflowDagCanvas
+        :nodes="workflowDraft.nodes"
+        :latest-run="latestRun"
+        v-model:selected-node-id="selectedNodeId"
+        @add-node="handleAddNodeFromCanvas" />
 
-            <!-- hover tooltip（覆盖节点旁，pointer-events-none 不挡鼠标）-->
-            <div v-if="hoveredNode && hoveredHasInfo"
-                 class="pointer-events-none absolute z-20 rounded-lg border border-slate-300 bg-white p-3 shadow-xl"
-                 :style="tooltipStyle">
-              <div class="flex items-center gap-2 border-b border-slate-100 pb-2">
-                <span class="h-2 w-2 rounded-full" :class="nodeStatusMeta[nodeStatus(hoveredNode.id)].dot"></span>
-                <span class="text-[12px] font-bold text-slate-800">{{ hoveredNode.name || hoveredNode.id }}</span>
-                <span class="rounded px-1 font-mono text-[9.5px] font-bold uppercase"
-                      :class="{
-                        'bg-sky-50 text-sky-700': hoveredNode.type === 'params',
-                        'bg-blue-50 text-blue-700': hoveredNode.type === 'compare',
-                        'bg-emerald-50 text-emerald-700': hoveredNode.type === 'lineage',
-                        'bg-amber-50 text-amber-700': hoveredNode.type === 'excel_export',
-                        'bg-purple-50 text-purple-700': hoveredNode.type === 'http',
-                      }">{{ hoveredNode.type }}</span>
-                <span class="ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset" :class="nodeStatusMeta[nodeStatus(hoveredNode.id)].pill">
-                  {{ nodeStatusMeta[nodeStatus(hoveredNode.id)].label }}
-                </span>
-              </div>
-              <dl v-if="hoveredStatus" class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
-                <div><dt class="text-slate-400">开始</dt><dd class="font-mono text-slate-700">{{ hoveredStatus.started_at?.slice(11) || '—' }}</dd></div>
-                <div><dt class="text-slate-400">耗时</dt><dd class="font-mono text-slate-700">{{ hoveredStatus.elapsed_seconds }}s</dd></div>
-                <div><dt class="text-slate-400">node_id</dt><dd class="font-mono text-slate-700">{{ hoveredNode.id }}</dd></div>
-                <div v-if="(hoveredNode.depends_on || []).length"><dt class="text-slate-400">depends_on</dt><dd class="font-mono text-slate-700">{{ (hoveredNode.depends_on || []).join(', ') }}</dd></div>
-              </dl>
-              <p v-else class="mt-2 text-[11px] text-slate-400">未运行 — DAG 上展示的是上次运行的状态</p>
-              <div v-if="hoveredStatus?.error" class="mt-2 rounded border border-rose-200 bg-rose-50/60 px-2 py-1.5 text-[11px] leading-relaxed text-rose-800">
-                <p class="text-[10px] font-bold uppercase tracking-wider text-rose-700">错误</p>
-                <pre class="mt-1 whitespace-pre-wrap font-mono text-[10.5px]">{{ hoveredStatus.error }}</pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 元数据侧栏 -->
-      <aside class="flex flex-col gap-3">
-        <!-- 运行参数：参数驱动作业流的核心信息 -->
-        <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
-            <span class="text-[10.5px] text-slate-500">{{ displayParameters.length }} 个</span>
-          </div>
-          <ul class="divide-y divide-slate-100">
-            <li v-for="param in displayParameters" :key="param.name" class="px-3 py-2.5">
-              <div class="flex items-center gap-1.5">
-                <span class="rounded px-1 py-0.5 text-[9.5px] font-bold uppercase ring-1 ring-inset" :class="parameterTypeMeta[param.type].accent">{{ parameterTypeMeta[param.type].glyph }} {{ parameterTypeMeta[param.type].label }}</span>
-                <span class="font-mono text-[12px] font-semibold text-slate-800">{{ param.name }}</span>
-                <span v-if="param.required" class="ml-auto text-[10px] font-semibold text-rose-600">必填</span>
-                <span v-else class="ml-auto text-[10px] text-slate-400">可选</span>
-              </div>
-              <p class="mt-0.5 text-[11px] text-slate-500">{{ param.description }}</p>
-              <div class="mt-1 flex items-baseline gap-1.5">
-                <span class="text-[10px] uppercase tracking-wider text-slate-400">解析后</span>
-                <span v-if="resolvedParams[param.name].kind === 'list'" class="font-mono text-[11px]">
-                  <span v-for="(v, i) in resolvedParams[param.name].value" :key="i" class="mr-1 rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">{{ v }}</span>
-                </span>
-                <span v-else-if="resolvedParams[param.name].kind === 'pending'" class="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700 ring-1 ring-emerald-200">{{ resolvedParams[param.name].value }}</span>
-                <span v-else-if="resolvedParams[param.name].kind === 'derived'" class="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[11px] text-blue-700 ring-1 ring-blue-200">{{ resolvedParams[param.name].value }}</span>
-                <span v-else class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">{{ resolvedParams[param.name].value }}</span>
-              </div>
-            </li>
-            <li v-if="!displayParameters.length" class="px-3 py-3 text-center text-[11px] text-slate-400">还没有参数定义 — 在画布添加 <code class="rounded bg-slate-100 px-1 font-mono">params</code> 节点，或保存后右上角直接添加</li>
-          </ul>
-          <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
-            可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
-          </div>
-        </div>
-
-        <!-- 元数据：可编辑，落到 Workflow 模型；保存后即生效 -->
-        <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">元数据</p>
-          <div class="space-y-2">
-            <label class="block">
-              <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">描述</span>
-              <textarea v-model="workflowDraft.description" rows="3" placeholder="一句话说清这个作业流的目的"
-                        class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700"></textarea>
-            </label>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">项目</span>
-                <input v-model="workflowDraft.project" placeholder="如 dw / risk / growth"
-                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">状态</span>
-                <select v-model="workflowDraft.status" class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
-                  <option value="draft">草稿</option>
-                  <option value="active">已上线</option>
-                  <option value="paused">暂停</option>
-                  <option value="archived">归档</option>
-                </select>
-              </label>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">负责人</span>
-                <input v-model="workflowDraft.owner" placeholder="如 alice@team"
-                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">cron（可选）</span>
-                <input v-model="workflowDraft.schedule_cron" placeholder="0 2 * * * 或留空"
-                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
-              </label>
-            </div>
-            <label class="block">
-              <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">标签（逗号分隔）</span>
-              <input :value="(workflowDraft.tags || []).join(', ')"
-                     @input="workflowDraft.tags = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
-                     placeholder="orders, daily, prod"
-                     class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
-            </label>
-
-            <!-- 输入资产编辑器 -->
-            <div>
-              <div class="mb-1 flex items-center justify-between">
-                <span class="text-[10px] font-semibold text-slate-500">输入资产</span>
-                <button class="text-[10.5px] font-semibold text-blue-600 hover:underline"
-                        @click="workflowDraft.input_assets.push({ key: '', kind: 'table', description: '' })">+ 添加</button>
-              </div>
-              <ul class="space-y-1">
-                <li v-for="(asset, i) in workflowDraft.input_assets" :key="i" class="grid grid-cols-[minmax(0,1fr)_80px_24px] gap-1">
-                  <input v-model="asset.key" placeholder="schema.table 或 路径"
-                         class="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
-                  <select v-model="asset.kind" class="rounded-md border border-slate-200 bg-white px-1 py-1 text-[11px] text-slate-700">
-                    <option value="table">表</option>
-                    <option value="file">文件</option>
-                    <option value="stream">流</option>
-                  </select>
-                  <button class="rounded text-rose-600 hover:bg-rose-50" title="删除"
-                          @click="workflowDraft.input_assets.splice(i, 1)">×</button>
-                </li>
-              </ul>
-            </div>
-
-            <!-- 输出资产编辑器 -->
-            <div>
-              <div class="mb-1 flex items-center justify-between">
-                <span class="text-[10px] font-semibold text-slate-500">输出资产</span>
-                <button class="text-[10.5px] font-semibold text-blue-600 hover:underline"
-                        @click="workflowDraft.output_assets.push({ key: '', kind: 'table', description: '' })">+ 添加</button>
-              </div>
-              <ul class="space-y-1">
-                <li v-for="(asset, i) in workflowDraft.output_assets" :key="i" class="grid grid-cols-[minmax(0,1fr)_80px_24px] gap-1">
-                  <input v-model="asset.key" placeholder="schema.table 或 路径"
-                         class="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
-                  <select v-model="asset.kind" class="rounded-md border border-slate-200 bg-white px-1 py-1 text-[11px] text-slate-700">
-                    <option value="table">表</option>
-                    <option value="file">文件</option>
-                    <option value="stream">流</option>
-                  </select>
-                  <button class="rounded text-rose-600 hover:bg-rose-50" title="删除"
-                          @click="workflowDraft.output_assets.splice(i, 1)">×</button>
-                </li>
-              </ul>
-            </div>
-
-            <p class="text-[10px] text-slate-400">这些字段保存后落 config/workflows.json，列表页和详情页都会读到。</p>
-          </div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输入资产 ({{ workflowDraft.input_assets.length }})</p>
-          <ul v-if="workflowDraft.input_assets.length" class="space-y-1.5">
-            <li v-for="(asset, i) in workflowDraft.input_assets" :key="i" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]"
-                :title="asset.description">
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400"></span>
-              <span class="truncate font-mono text-slate-700">{{ asset.key }}</span>
-              <span class="ml-auto rounded bg-white px-1.5 py-0.5 font-mono text-[9.5px] text-slate-500">{{ asset.kind }}</span>
-            </li>
-          </ul>
-          <p v-else class="text-[11px] text-slate-400">还没有声明输入资产 — 在「基础设置」面板下方添加</p>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输出资产 ({{ workflowDraft.output_assets.length }})</p>
-          <ul v-if="workflowDraft.output_assets.length" class="space-y-1.5">
-            <li v-for="(asset, i) in workflowDraft.output_assets" :key="i" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]"
-                :title="asset.description">
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"></span>
-              <span class="truncate font-mono text-slate-700">{{ asset.key }}</span>
-              <span class="ml-auto rounded bg-white px-1.5 py-0.5 font-mono text-[9.5px] text-slate-500">{{ asset.kind }}</span>
-            </li>
-          </ul>
-          <p v-else class="text-[11px] text-slate-400">还没有声明输出资产 — 在「基础设置」面板下方添加</p>
-        </div>
-      </aside>
+      <WorkflowSettingsPanel
+        :workflow-draft="workflowDraft"
+        :parameters="displayParameters"
+        :resolved-params="resolvedParams" />
     </div>
 
     <!-- 标签页区域 -->
