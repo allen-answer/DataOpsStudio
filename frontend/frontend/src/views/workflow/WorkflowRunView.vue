@@ -3,7 +3,43 @@ import { computed, inject, ref } from 'vue'
 import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/workflow_meta'
 
 const emit = defineEmits(['back', 'open-detail'])
-const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync } = inject('app')
+const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
+        workflowAsyncJob, workflowAsyncStatus, cancelWorkflowAsync, copyField } = inject('app')
+
+// 历史 run 复用变量重跑：剥掉内置变量，避免冻结时间。和 detail view 共享
+// 同样的 helper 语义。
+const REUSABLE_BUILTIN_KEYS = new Set(['today', 'now', 'year', 'month', 'day'])
+const reusableVars = (vars) => {
+  const out = {}
+  for (const [k, v] of Object.entries(vars || {})) {
+    if (!REUSABLE_BUILTIN_KEYS.has(k)) out[k] = v
+  }
+  return out
+}
+
+const rerunSameVars = () => {
+  if (!run.value) return
+  runWorkflowAsyncWith(run.value.workflow_id, reusableVars(run.value.variables))
+}
+const rerunDefaults = () => {
+  if (!run.value) return
+  runWorkflowAsyncWith(run.value.workflow_id, {})
+}
+
+// "终止"按钮只在本 run 是活跃后台任务且未结束时可用 —— 否则当前界面看到的
+// 是历史 run 的快照，"终止"无意义。
+const canCancel = computed(() => {
+  if (!run.value || !workflowAsyncJob.value) return false
+  // job 是后端 task or workflow run；用 run_id 比对（async submit 时 run_id 才挂上）
+  if (workflowAsyncStatus.value?.status === 'running') {
+    // 当前展示的 run 必须就是后台任务对应的那次（result 里的 run_id 一致）
+    const activeRunId = workflowAsyncStatus.value?.result?.run_id
+    if (activeRunId && activeRunId === run.value.run_id) return true
+    // 或后台任务尚未产出 run（仍在排队），workflow_id 一致也算
+    if (workflowAsyncStatus.value.workflow_id === run.value.workflow_id) return true
+  }
+  return false
+})
 
 const run = computed(() => workflowResult.value)
 const selectedNodeId = ref('')
@@ -208,13 +244,20 @@ const runStatusDisplay = computed(() => {
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-xs font-semibold text-white transition hover:bg-amber-700" @click="runWorkflow">
-            ⟳ 重跑失败节点
+          <button v-if="Object.keys(reusableVars(run.variables || {})).length"
+                  class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-xs font-semibold text-white transition hover:bg-amber-700"
+                  :title="`复用本次的真实变量（${Object.keys(reusableVars(run.variables)).join(', ')}）重跑；today/now 等内置不复用`"
+                  @click="rerunSameVars">
+            ⟳ 复用变量重跑
           </button>
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50" @click="runWorkflowAsync">
-            重跑全部
+          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                  title="按当前作业流配置 + 默认变量重跑"
+                  @click="rerunDefaults">
+            ↻ 重跑
           </button>
-          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100">
+          <button v-if="canCancel"
+                  class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                  @click="cancelWorkflowAsync">
             ▣ 终止
           </button>
         </div>
@@ -316,8 +359,16 @@ const runStatusDisplay = computed(() => {
               <p class="text-[11px] font-bold uppercase tracking-wider text-rose-700">错误</p>
               <pre class="mt-1 whitespace-pre-wrap font-mono text-[12px] text-rose-900">{{ selectedNode.error }}</pre>
               <div class="mt-2 flex gap-2">
-                <button class="inline-flex h-7 items-center gap-1 rounded-lg bg-rose-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-rose-700">⟳ 重试此节点</button>
-                <button class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">复制堆栈</button>
+                <button class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                        @click="copyField(selectedNode.error)">
+                  ⎘ 复制错误
+                </button>
+                <button v-if="run && run.workflow_id"
+                        class="inline-flex h-7 items-center gap-1 rounded-lg bg-rose-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-rose-700"
+                        title="重跑整个作业流（默认变量），不是单节点重试 —— 单节点重试需要后端 resume-from-node 支持，未实现"
+                        @click="rerunDefaults">
+                  ↻ 重跑作业流
+                </button>
               </div>
             </div>
 
