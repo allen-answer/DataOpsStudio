@@ -105,7 +105,7 @@ const {
 
       <div v-if="batchActiveTab === 'warnings'" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 class="mb-4 text-xl font-bold text-slate-800">风险提示</h2>
-        <div class="overflow-auto"><table><thead><tr><th>文件</th><th>类型</th><th>说明</th></tr></thead><tbody><tr v-for="item in batch.result.warnings" :key="item.file_name + item.message"><td><code>{{ item.file_name }}</code></td><td>{{ item.type }}</td><td>{{ item.message }}</td></tr><tr v-if="!batch.result.warnings.length"><td colspan="3" class="text-slate-400">暂无提示</td></tr></tbody></table></div>
+        <div class="overflow-auto"><table><thead><tr><th>文件</th><th>类型</th><th>说明</th></tr></thead><tbody><tr v-for="item in batch.result.warnings" :key="item.file_name + item.message"><td><code>{{ item.file_name }}</code></td><td>{{ item.type }}</td><td>{{ item.message }}</td></tr><tr v-if="!batch.result.warnings.length"><td colspan="3" class="text-slate-400">没有风险提示 — 所有脚本都成功解析，且没有发现可疑模式</td></tr></tbody></table></div>
       </div>
     </div>
   </section>

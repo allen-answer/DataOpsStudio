@@ -549,7 +549,10 @@ onBeforeUnmount(() => graph?.destroy())
     <div class="grid lg:grid-cols-[minmax(0,1fr)_340px]">
       <div>
         <div v-if="viewMode === 'graph'">
-          <div v-if="!graphData.nodes.length" class="p-4 text-sm text-slate-500">暂无可绘制的血缘边</div>
+          <div v-if="!graphData.nodes.length" class="p-6 text-center text-sm text-slate-500">
+            <p>当前过滤条件下没有可绘制的血缘边</p>
+            <p class="mt-1 text-[12px] text-slate-400">放宽顶部的角色 / 边类型 / 可信度筛选，或清空搜索词后重试。</p>
+          </div>
           <div ref="graphEl" class="h-[520px] w-full"></div>
         </div>
         <div v-else class="max-h-[520px] overflow-auto">
@@ -573,7 +576,7 @@ onBeforeUnmount(() => graph?.destroy())
                 <td class="px-3 py-2 text-right text-slate-600">{{ row.upstream }}</td>
                 <td class="px-3 py-2 text-right text-slate-600">{{ row.downstream }}</td>
               </tr>
-              <tr v-if="!tableRows.length"><td colspan="6" class="p-4 text-center text-slate-500">暂无血缘节点</td></tr>
+              <tr v-if="!tableRows.length"><td colspan="6" class="p-6 text-center text-slate-500">没有命中节点 — 调整左上角的过滤条件，或在顶部搜索框输入表名重试</td></tr>
             </tbody>
           </table>
         </div>

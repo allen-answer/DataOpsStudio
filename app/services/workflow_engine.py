@@ -41,6 +41,45 @@ logger = logging.getLogger(__name__)
 _VARIABLE_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
+def _transitive_descendants(nodes: list[WorkflowNode], start_id: str) -> set[str]:
+    """Set of node ids consisting of `start_id` plus every node that
+    transitively depends on it. Used by partial rerun to decide which
+    nodes must re-execute."""
+    children: dict[str, list[str]] = {node.id: [] for node in nodes}
+    for node in nodes:
+        for dep in node.depends_on:
+            if dep in children:
+                children[dep].append(node.id)
+    result: set[str] = set()
+    stack = [start_id]
+    while stack:
+        cur = stack.pop()
+        if cur in result:
+            continue
+        result.add(cur)
+        stack.extend(children.get(cur, []))
+    return result
+
+
+def transitive_ancestors(nodes: list[WorkflowNode], start_id: str) -> set[str]:
+    """Set of node ids whose successful completion is required for
+    `start_id` to have valid inputs. Used by the rerun API to validate
+    that all ancestors previously succeeded."""
+    by_id = {node.id: node for node in nodes}
+    result: set[str] = set()
+    stack = [start_id]
+    while stack:
+        cur = stack.pop()
+        node = by_id.get(cur)
+        if node is None:
+            continue
+        for dep in node.depends_on:
+            if dep not in result:
+                result.add(dep)
+                stack.append(dep)
+    return result
+
+
 def topological_order(nodes: list[WorkflowNode]) -> list[int]:
     """Return indices into `nodes` in execution order.
 
@@ -89,12 +128,22 @@ def run_workflow(
     variables: Mapping[str, str] | None = None,
     runners: Mapping[Any, NodeRunner] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    resume_from: WorkflowRun | None = None,
+    from_node_id: str | None = None,
 ) -> WorkflowRun:
     """Execute `workflow` as a DAG. See module docstring for semantics.
 
     `runners` is a test seam — pass a custom registry to substitute fakes;
     default is the production NODE_RUNNERS. `cancel_check` is polled before
-    each node; returning True aborts pending nodes."""
+    each node; returning True aborts pending nodes.
+
+    Partial rerun: pass `resume_from` (a previous WorkflowRun) and
+    `from_node_id` to re-execute that node + its transitive descendants.
+    All其他 nodes inherit the previous run's outputs (status=success,
+    reused=True). Caller MUST guarantee every transitive ancestor of
+    `from_node_id` was previously SUCCESS — otherwise we'd execute
+    downstream nodes against stale or missing inputs.
+    """
     runners = NODE_RUNNERS if runners is None else runners
     resolved_vars = {**_default_variables(), **workflow.default_variables, **(variables or {})}
     started = datetime.now()
@@ -121,6 +170,27 @@ def run_workflow(
         logger.warning("workflow %s rejected: %s", workflow.id, exc)
         return run
 
+    # Partial rerun: figure out which nodes execute vs. reuse.
+    rerun_targets: set[str] | None = None
+    previous_node_runs: dict[str, WorkflowNodeRun] = {}
+    if resume_from is not None and from_node_id is not None:
+        node_ids = {node.id for node in workflow.nodes}
+        if from_node_id not in node_ids:
+            run.status = WorkflowRunStatus.FAILED
+            run.error = f"from_node_id {from_node_id!r} not in workflow"
+            run.finished_at = datetime.now().isoformat(timespec="seconds")
+            run.elapsed_seconds = round(time.perf_counter() - start_perf, 3)
+            for node_run in run.nodes:
+                node_run.status = NodeRunStatus.SKIPPED
+            return run
+        rerun_targets = _transitive_descendants(workflow.nodes, from_node_id)
+        previous_node_runs = {node_run.node_id: node_run for node_run in resume_from.nodes}
+        run.resumed_from = {"run_id": resume_from.run_id, "from_node_id": from_node_id}
+        logger.info(
+            "workflow rerun id=%s previous_run=%s from_node=%s rerun_targets=%d",
+            workflow.id, resume_from.run_id, from_node_id, len(rerun_targets),
+        )
+
     logger.info("workflow start id=%s name=%s nodes=%d", workflow.id, workflow.name, len(workflow.nodes))
 
     blocked_ids: set[str] = set()  # nodes whose upstream failed or was cancelled
@@ -130,6 +200,34 @@ def run_workflow(
     for index in execution_order:
         node = workflow.nodes[index]
         node_run = run.nodes[index]
+
+        # Partial rerun: nodes outside rerun_targets reuse the previous run's
+        # output. Their depends_on still resolved (from previous_node_runs);
+        # we copy timing / status / output verbatim and continue.
+        if rerun_targets is not None and node.id not in rerun_targets:
+            previous = previous_node_runs.get(node.id)
+            if previous is None or previous.status != NodeRunStatus.SUCCESS:
+                node_run.status = NodeRunStatus.FAILED
+                node_run.error = (
+                    f"cannot reuse previous output for node {node.id!r}: "
+                    f"previous status was {previous.status.value if previous else 'missing'}"
+                )
+                blocked_ids.add(node.id)
+                continue
+            node_run.status = NodeRunStatus.SUCCESS
+            node_run.output = dict(previous.output or {})
+            node_run.started_at = previous.started_at
+            node_run.finished_at = previous.finished_at
+            node_run.elapsed_seconds = previous.elapsed_seconds
+            node_run.reused = True
+            completed_outputs[node.id] = node_run.output
+            # 同 normal-run 一样，params 节点把标量结果合并回 variable scope，
+            # 让下游 ${biz_date} 直接引用上次的解析值。
+            if str(getattr(node.type, "value", node.type)) == "params":
+                for key, value in node_run.output.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        resolved_vars[key] = str(value)
+            continue
 
         # Transitive skip: any failed/skipped upstream blocks this node.
         if any(dep in blocked_ids for dep in node.depends_on):

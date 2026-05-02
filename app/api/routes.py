@@ -14,13 +14,22 @@ from app.models import (
     CompareResult,
     CompareTask,
     CompareTaskCreate,
+    ConnectionTestResult,
     DataSource,
     DataSourceCreate,
     DatabaseType,
+    DriverInfo,
+    ExcelUploadResponse,
+    HistoryItem,
     JobInfo,
     LineageAnalyzeResult,
     LineageBatchAnalyzeResponse,
+    NodeRunStatus,
+    OkResponse,
+    PreviewColumnsResponse,
+    PreviewRowsResponse,
     SourceKind,
+    SqlAssistResponse,
     SqlMode,
     Workflow,
     WorkflowCreate,
@@ -36,7 +45,9 @@ from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.runner import run_task
 from app.services.sql_tools import sql_assist
-from app.services.workflow_engine import run_workflow, topological_order, validate_when_syntax
+from app.services.workflow_engine import (
+    run_workflow, topological_order, transitive_ancestors, validate_when_syntax,
+)
 from app.services.workflow_history import (
     delete_workflow_run, get_workflow_run, list_workflow_runs, persist_workflow_run,
 )
@@ -61,8 +72,8 @@ def spa_page():
     return FileResponse(path)
 
 
-@router.get("/api/drivers")
-def drivers() -> dict[str, dict[str, object]]:
+@router.get("/api/drivers", response_model=dict[str, DriverInfo])
+def drivers():
     result = detect_drivers()
     logger.info("driver detection result=%s", result)
     return result
@@ -101,7 +112,7 @@ def update_datasource(datasource_id: str, payload: DataSourceCreate):
         raise HTTPException(status_code=404, detail="Datasource not found") from exc
 
 
-@router.delete("/api/datasources/{datasource_id}")
+@router.delete("/api/datasources/{datasource_id}", response_model=OkResponse)
 def delete_datasource(datasource_id: str):
     try:
         datasource_store.delete(datasource_id)
@@ -110,7 +121,7 @@ def delete_datasource(datasource_id: str):
     return {"ok": True}
 
 
-@router.post("/api/datasources/{datasource_id}/test")
+@router.post("/api/datasources/{datasource_id}/test", response_model=ConnectionTestResult)
 def test_datasource(datasource_id: str):
     datasource = datasource_store.get(datasource_id)
     if datasource is None:
@@ -141,7 +152,7 @@ def update_task(task_id: str, payload: CompareTaskCreate):
         raise HTTPException(status_code=404, detail="Task not found") from exc
 
 
-@router.delete("/api/tasks/{task_id}")
+@router.delete("/api/tasks/{task_id}", response_model=OkResponse)
 def delete_task(task_id: str):
     try:
         task_store.delete(task_id)
@@ -222,7 +233,7 @@ def update_workflow(workflow_id: str, payload: WorkflowCreate):
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
 
 
-@router.delete("/api/workflows/{workflow_id}")
+@router.delete("/api/workflows/{workflow_id}", response_model=OkResponse)
 def delete_workflow(workflow_id: str):
     try:
         workflow_store.delete(workflow_id)
@@ -273,7 +284,7 @@ def get_workflow_run_api(run_id: str):
     return run
 
 
-@router.delete("/api/workflow-runs/{run_id}")
+@router.delete("/api/workflow-runs/{run_id}", response_model=OkResponse)
 def delete_workflow_run_api(run_id: str):
     try:
         delete_workflow_run(run_id)
@@ -282,12 +293,73 @@ def delete_workflow_run_api(run_id: str):
     return {"ok": True}
 
 
-@router.get("/api/history")
+@router.post("/api/workflow-runs/{run_id}/rerun", response_model=JobInfo)
+def rerun_workflow_run_api(run_id: str, payload: dict[str, object] | None = Body(None)):
+    """从指定节点重跑：上次 run 的 from_node_id 及其所有传递下游重新执行；
+    其他节点（必然是 from_node 的祖先 + 旁支）若上次 success 则复用 output。
+
+    Body: {"from_node_id": str, "variables": {...}?}
+    Variables 缺省沿用上次 run 的（剥掉 today/now 等内置时间变量）。
+    """
+    payload = payload or {}
+    from_node_id = str(payload.get("from_node_id") or "").strip()
+    if not from_node_id:
+        raise HTTPException(status_code=400, detail="from_node_id 不能为空")
+
+    previous_run_data = get_workflow_run(run_id)
+    if previous_run_data is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    previous_run = WorkflowRun.model_validate(previous_run_data)
+
+    workflow = workflow_store.get(previous_run.workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="对应的 Workflow 已不存在，无法重跑")
+
+    node_ids = {node.id for node in workflow.nodes}
+    if from_node_id not in node_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"from_node_id {from_node_id!r} 不在当前 workflow 节点列表里",
+        )
+
+    # 上一次 run 里 from_node 的所有祖先必须是 success——否则重跑会拿不到上游 output。
+    ancestors = transitive_ancestors(workflow.nodes, from_node_id)
+    previous_status = {nr.node_id: nr.status for nr in previous_run.nodes}
+    bad_ancestors = [
+        anc for anc in ancestors
+        if previous_status.get(anc) != NodeRunStatus.SUCCESS
+    ]
+    if bad_ancestors:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"无法从 {from_node_id!r} 重跑：祖先节点 {bad_ancestors} 上次未成功 "
+                f"（请从最早的失败节点重跑）"
+            ),
+        )
+
+    payload_vars = payload.get("variables")
+    if payload_vars is not None:
+        variables = _coerce_string_dict(payload_vars)
+    else:
+        # 沿用上次 run 的变量；剥掉每次跑都该重算的内置时间变量。
+        builtin_keys = {"today", "now", "year", "month", "day"}
+        variables = {k: v for k, v in previous_run.variables.items() if k not in builtin_keys}
+
+    return submit_workflow_run(
+        previous_run.workflow_id,
+        variables,
+        resume_from=previous_run,
+        from_node_id=from_node_id,
+    )
+
+
+@router.get("/api/history", response_model=list[HistoryItem])
 def result_history_api(task_id: str = ""):
     return list_result_history(task_id)
 
 
-@router.delete("/api/history/{run_id}")
+@router.delete("/api/history/{run_id}", response_model=OkResponse)
 def delete_history_api(run_id: str):
     try:
         delete_result(run_id)
@@ -308,7 +380,7 @@ def export_history_page(
     return FileResponse(path, filename=path.name)
 
 
-@router.post("/api/tasks/{task_id}/preview")
+@router.post("/api/tasks/{task_id}/preview", response_model=PreviewRowsResponse)
 def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None)):
     payload = payload or {}
     task = task_store.get(task_id)
@@ -336,7 +408,7 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
     return {"side": side, "limit": preview_limit, "truncated": len(rows) == preview_limit, "rows": rows}
 
 
-@router.post("/api/preview/columns")
+@router.post("/api/preview/columns", response_model=PreviewColumnsResponse)
 def preview_columns_api(payload: dict[str, object] = Body(...)):
     """Return column names for a SQL query or Excel sheet without persisting
     a task. Used by the field-selection UI so users can pick include/exclude
@@ -369,7 +441,7 @@ def preview_columns_api(payload: dict[str, object] = Body(...)):
     raise HTTPException(status_code=400, detail=f"Unknown kind: {kind}")
 
 
-@router.post("/api/sql/assist")
+@router.post("/api/sql/assist", response_model=SqlAssistResponse)
 def sql_assist_api(payload: dict[str, str] = Body(...)):
     try:
         return sql_assist(payload.get("sql", ""), payload.get("dialect") or None, payload.get("target_dialect") or None)
@@ -377,7 +449,7 @@ def sql_assist_api(payload: dict[str, str] = Body(...)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/uploads/excel")
+@router.post("/api/uploads/excel", response_model=ExcelUploadResponse)
 def upload_excel_api(file: UploadFile = File(...)):
     return excel_uploads.save_uploaded_excel(file)
 

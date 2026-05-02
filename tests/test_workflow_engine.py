@@ -570,6 +570,235 @@ def test_when_empty_runs_node():
     assert evaluate_when("   ", {}, {}) is True
 
 
+# --- partial rerun (resume_from / from_node_id) ---
+
+def _success_run(workflow: Workflow, runners: dict) -> "WorkflowRun":  # type: ignore[name-defined]
+    """Helper: run `workflow` once and return the (presumably successful)
+    WorkflowRun for use as `resume_from` in a follow-up rerun."""
+    return run_workflow(workflow, runners=runners)
+
+
+def test_rerun_from_node_reuses_upstream_output_and_reruns_target_and_descendants():
+    """A→B→C linear chain. Rerun from B: A reused, B+C re-executed."""
+    calls: list[str] = []
+
+    def runner(config, variables, **_):
+        tag = config["tag"]
+        calls.append(tag)
+        return {"value": f"{tag}-out"}
+
+    workflow = _wf([
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, config={"tag": "a"}),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, config={"tag": "b"}, depends_on=["a"]),
+        WorkflowNode(id="c", type=WorkflowNodeType.COMPARE, config={"tag": "c"}, depends_on=["b"]),
+    ])
+    first_run = _success_run(workflow, {WorkflowNodeType.COMPARE: runner})
+    assert first_run.status == WorkflowRunStatus.SUCCESS
+    assert calls == ["a", "b", "c"]
+
+    calls.clear()
+    rerun = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: runner},
+        resume_from=first_run,
+        from_node_id="b",
+    )
+
+    assert rerun.status == WorkflowRunStatus.SUCCESS
+    assert calls == ["b", "c"]  # `a` not re-executed
+    statuses = {n.node_id: n.status for n in rerun.nodes}
+    reused = {n.node_id: n.reused for n in rerun.nodes}
+    assert statuses == {
+        "a": NodeRunStatus.SUCCESS,
+        "b": NodeRunStatus.SUCCESS,
+        "c": NodeRunStatus.SUCCESS,
+    }
+    assert reused == {"a": True, "b": False, "c": False}
+    # `a`'s reused output is what the original run produced.
+    a_run = next(n for n in rerun.nodes if n.node_id == "a")
+    assert a_run.output == {"value": "a-out"}
+    assert rerun.resumed_from == {"run_id": first_run.run_id, "from_node_id": "b"}
+    assert rerun.run_id != first_run.run_id  # new run id
+
+
+def test_rerun_does_not_touch_unrelated_branches():
+    """Diamond: root→{left, right}→join. Rerun from `left`: root and right
+    reused (right is unrelated to the rerun target), left and join re-run."""
+    calls: list[str] = []
+
+    def runner(config, variables, **_):
+        calls.append(config["tag"])
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="root", type=WorkflowNodeType.COMPARE, config={"tag": "root"}),
+        WorkflowNode(id="left", type=WorkflowNodeType.COMPARE, config={"tag": "left"}, depends_on=["root"]),
+        WorkflowNode(id="right", type=WorkflowNodeType.COMPARE, config={"tag": "right"}, depends_on=["root"]),
+        WorkflowNode(id="join", type=WorkflowNodeType.COMPARE, config={"tag": "join"}, depends_on=["left", "right"]),
+    ])
+    first_run = _success_run(workflow, {WorkflowNodeType.COMPARE: runner})
+
+    calls.clear()
+    rerun = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: runner},
+        resume_from=first_run,
+        from_node_id="left",
+    )
+
+    assert rerun.status == WorkflowRunStatus.SUCCESS
+    assert calls == ["left", "join"]
+    reused = {n.node_id: n.reused for n in rerun.nodes}
+    assert reused == {"root": True, "left": False, "right": True, "join": False}
+
+
+def test_rerun_propagates_reused_node_output_to_downstream_template():
+    """Downstream nodes referencing ${nodes.<reused>.<key>} must still see the
+    reused output — proves we put it back into completed_outputs."""
+    seen: dict = {}
+
+    def runner(config, variables, **_):
+        if config.get("__which") == "src":
+            return {"diff": 7}
+        seen["config"] = dict(config)
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="src", type=WorkflowNodeType.COMPARE, config={"__which": "src"}),
+        WorkflowNode(
+            id="dst",
+            type=WorkflowNodeType.COMPARE,
+            config={"upstream_diff": "${nodes.src.diff}"},
+            depends_on=["src"],
+        ),
+    ])
+    first_run = _success_run(workflow, {WorkflowNodeType.COMPARE: runner})
+    seen.clear()
+
+    rerun = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: runner},
+        resume_from=first_run,
+        from_node_id="dst",
+    )
+    assert rerun.status == WorkflowRunStatus.SUCCESS
+    # `src` reused, `dst` re-executed; the template resolved against the
+    # reused output.
+    assert seen["config"]["upstream_diff"] == "7"
+
+
+def test_rerun_with_unsuccessful_ancestor_fails_target_with_clear_error():
+    """If a transitive ancestor of the rerun target was previously NOT
+    successful, we cannot reuse its output — the engine must surface a
+    clear failure on that node rather than silently produce wrong results.
+    The API layer is supposed to reject this earlier; this is the engine
+    safety net."""
+    calls: list[str] = []
+
+    def runner(config, variables, **_):
+        tag = config["tag"]
+        calls.append(tag)
+        if tag == "a-boom":
+            raise RuntimeError("a failed first time")
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, config={"tag": "a-boom"}),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, config={"tag": "b"}, depends_on=["a"]),
+    ])
+    first_run = run_workflow(workflow, runners={WorkflowNodeType.COMPARE: runner})
+    assert first_run.status == WorkflowRunStatus.FAILED
+    assert first_run.nodes[0].status == NodeRunStatus.FAILED
+
+    calls.clear()
+    rerun = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: lambda c, v, **_: {}},
+        resume_from=first_run,
+        from_node_id="b",  # but `a` was failed last run
+    )
+    # a not re-executed, but its output is unusable — engine must mark `a` failed.
+    assert calls == []
+    statuses = {n.node_id: n.status for n in rerun.nodes}
+    assert statuses["a"] == NodeRunStatus.FAILED
+    assert "cannot reuse" in rerun.nodes[0].error.lower()
+    # `b` blocked by failed parent.
+    assert statuses["b"] == NodeRunStatus.SKIPPED
+
+
+def test_rerun_with_unknown_from_node_id_fails_run_cleanly():
+    workflow = _wf([
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE, config={"tag": "a"}),
+    ])
+    first_run = _success_run(workflow, {WorkflowNodeType.COMPARE: lambda c, v, **_: {}})
+
+    rerun = run_workflow(
+        workflow,
+        runners={WorkflowNodeType.COMPARE: lambda c, v, **_: {}},
+        resume_from=first_run,
+        from_node_id="ghost",
+    )
+    assert rerun.status == WorkflowRunStatus.FAILED
+    assert "ghost" in rerun.error
+    assert all(n.status == NodeRunStatus.SKIPPED for n in rerun.nodes)
+
+
+def test_transitive_ancestors_helper():
+    from app.services.workflow_engine import transitive_ancestors
+
+    nodes = [
+        WorkflowNode(id="a", type=WorkflowNodeType.COMPARE),
+        WorkflowNode(id="b", type=WorkflowNodeType.COMPARE, depends_on=["a"]),
+        WorkflowNode(id="c", type=WorkflowNodeType.COMPARE, depends_on=["a"]),
+        WorkflowNode(id="d", type=WorkflowNodeType.COMPARE, depends_on=["b", "c"]),
+    ]
+    assert transitive_ancestors(nodes, "d") == {"a", "b", "c"}
+    assert transitive_ancestors(nodes, "b") == {"a"}
+    assert transitive_ancestors(nodes, "a") == set()
+
+
+def test_rerun_reuses_params_node_and_keeps_variables_in_scope():
+    """A `params` node's output normally merges back into resolved_vars so
+    downstream `${biz_date}` works. When that params node is reused, the
+    same merge must still happen — otherwise reused-then-rerun loses
+    workflow-level variables."""
+    seen: list[dict] = []
+
+    def runner(config, variables, **_):
+        if config.get("__which") == "params":
+            return {"biz_date": "2026-05-01"}
+        seen.append(dict(config))
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="p", type=WorkflowNodeType.PARAMS, config={"__which": "params"}),
+        WorkflowNode(
+            id="dst",
+            type=WorkflowNodeType.COMPARE,
+            config={"d": "${biz_date}"},
+            depends_on=["p"],
+        ),
+    ])
+    first_run = run_workflow(workflow, runners={
+        WorkflowNodeType.PARAMS: runner,
+        WorkflowNodeType.COMPARE: runner,
+    })
+    assert first_run.status == WorkflowRunStatus.SUCCESS
+
+    seen.clear()
+    rerun = run_workflow(
+        workflow,
+        runners={
+            WorkflowNodeType.PARAMS: runner,
+            WorkflowNodeType.COMPARE: runner,
+        },
+        resume_from=first_run,
+        from_node_id="dst",
+    )
+    assert rerun.status == WorkflowRunStatus.SUCCESS
+    assert seen and seen[0]["d"] == "2026-05-01"
+
+
 def test_interpolation_walks_nested_dict_and_list():
     received: dict = {}
 

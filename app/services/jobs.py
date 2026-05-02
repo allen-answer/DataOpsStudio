@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from app.models import WorkflowRun
 from app.services.runner import run_task
 from app.services.repositories import workflow_store
 from app.services.workflow_engine import run_workflow
@@ -49,25 +50,40 @@ def submit_task_run(task_id: str) -> dict[str, Any]:
     return get_job(job_id)
 
 
-def submit_workflow_run(workflow_id: str, variables: dict[str, str] | None = None) -> dict[str, Any]:
+def submit_workflow_run(
+    workflow_id: str,
+    variables: dict[str, str] | None = None,
+    resume_from: WorkflowRun | None = None,
+    from_node_id: str | None = None,
+) -> dict[str, Any]:
     job_id = uuid4().hex
-    _set_job(
+    job_record: dict[str, Any] = {
+        "job_id": job_id,
+        "kind": "workflow",
+        "workflow_id": workflow_id,
+        "variables": dict(variables or {}),
+        "status": "queued",
+        "message": "等待执行",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "result": None,
+        "error": "",
+        "cancel_requested": False,
+    }
+    if resume_from is not None and from_node_id:
+        job_record["resumed_from"] = {
+            "run_id": resume_from.run_id,
+            "from_node_id": from_node_id,
+        }
+    _set_job(job_id, job_record)
+    future = _executor.submit(
+        _run_workflow_job,
         job_id,
-        {
-            "job_id": job_id,
-            "kind": "workflow",
-            "workflow_id": workflow_id,
-            "variables": dict(variables or {}),
-            "status": "queued",
-            "message": "等待执行",
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "result": None,
-            "error": "",
-            "cancel_requested": False,
-        },
+        workflow_id,
+        dict(variables or {}),
+        resume_from,
+        from_node_id,
     )
-    future = _executor.submit(_run_workflow_job, job_id, workflow_id, dict(variables or {}))
     with _lock:
         _futures[job_id] = future
     return get_job(job_id)
@@ -121,7 +137,13 @@ def _run_job(job_id: str, task_id: str) -> None:
             _futures.pop(job_id, None)
 
 
-def _run_workflow_job(job_id: str, workflow_id: str, variables: dict[str, str]) -> None:
+def _run_workflow_job(
+    job_id: str,
+    workflow_id: str,
+    variables: dict[str, str],
+    resume_from: WorkflowRun | None = None,
+    from_node_id: str | None = None,
+) -> None:
     try:
         if _is_cancel_requested(job_id):
             _patch_job(job_id, status="cancelled", message="已取消", error="任务已取消")
@@ -130,7 +152,13 @@ def _run_workflow_job(job_id: str, workflow_id: str, variables: dict[str, str]) 
         workflow = workflow_store.get(workflow_id)
         if workflow is None:
             raise ValueError(f"Workflow not found: {workflow_id}")
-        run = run_workflow(workflow, variables, cancel_check=lambda: _is_cancel_requested(job_id))
+        run = run_workflow(
+            workflow,
+            variables,
+            cancel_check=lambda: _is_cancel_requested(job_id),
+            resume_from=resume_from,
+            from_node_id=from_node_id,
+        )
         persist_workflow_run(run)   # best-effort — persists to results/workflow_runs/<run_id>.json
         result = run.model_dump(mode="json")
         if run.error == "cancelled":

@@ -66,7 +66,14 @@ const {
         </div>
       </template>
       <div class="h-[620px] overflow-auto rounded-b-2xl border border-slate-200 bg-white">
-        <div v-if="!filteredHistory.length" class="grid h-full place-items-center text-sm text-slate-400">{{ historyActiveTab === 'compare' ? '暂无数据对比历史' : '暂无血缘分析历史' }}</div>
+        <div v-if="!filteredHistory.length" class="grid h-full place-items-center px-6 text-center text-sm text-slate-400">
+          <div>
+            <p class="text-slate-500">{{ historyActiveTab === 'compare' ? '还没有对比历史' : '还没有血缘分析历史' }}</p>
+            <p class="mt-1 text-[12px] text-slate-400">
+              {{ historyActiveTab === 'compare' ? '去「数据对比」执行一次任务，结果会落到这里。' : '去「血缘分析」上传脚本批量分析，结果会落到这里。' }}
+            </p>
+          </div>
+        </div>
         <template v-if="historyActiveTab === 'compare'">
           <div v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="grid w-full grid-cols-[44px_1.2fr_1.3fr_repeat(4,90px)_160px_40px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm">
             <input class="w-auto" type="checkbox" :value="item.run_id" :checked="selectedHistory.has(item.run_id)" @change="$event.target.checked ? selectedHistory.add(item.run_id) : selectedHistory.delete(item.run_id)">

@@ -4,6 +4,7 @@ import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/
 
 const emit = defineEmits(['back', 'open-detail'])
 const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
+        rerunWorkflowFromNode,
         workflowAsyncJob, workflowAsyncStatus, cancelWorkflowAsync, copyField } = inject('app')
 
 // 历史 run 复用变量重跑：剥掉内置变量，避免冻结时间。和 detail view 共享
@@ -24,6 +25,13 @@ const rerunSameVars = () => {
 const rerunDefaults = () => {
   if (!run.value) return
   runWorkflowAsyncWith(run.value.workflow_id, {})
+}
+
+// 局部重跑：从指定节点起跑。上游沿用本次 run 的 output（reused），自身和
+// 下游全部重跑。变量沿用本次（不传 variables → 后端复用上次 run.variables）。
+const rerunFromNode = (nodeId) => {
+  if (!run.value || !nodeId) return
+  rerunWorkflowFromNode(run.value.run_id, nodeId)
 }
 
 // "终止"按钮只在本 run 是活跃后台任务且未结束时可用 —— 否则当前界面看到的
@@ -326,6 +334,9 @@ const runStatusDisplay = computed(() => {
               <p class="truncate text-[12.5px] font-semibold text-slate-700">{{ n.name || n.node_id }}</p>
               <p class="font-mono text-[10.5px] text-slate-500">{{ n.type }} · {{ n.elapsed_seconds }}s</p>
             </div>
+            <span v-if="n.reused"
+                  class="rounded bg-amber-50 px-1 py-0.5 text-[9.5px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200"
+                  title="本次没有实际执行此节点，沿用上一次 run 的输出">复用</span>
             <span class="rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="nodeStatusMeta[n.status]?.pill || ''">{{ nodeStatusMeta[n.status]?.label }}</span>
           </button>
         </div>
@@ -344,6 +355,9 @@ const runStatusDisplay = computed(() => {
               <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold uppercase"
                     :class="{ 'bg-blue-50 text-blue-700': selectedNode.type === 'compare', 'bg-emerald-50 text-emerald-700': selectedNode.type === 'lineage', 'bg-purple-50 text-purple-700': selectedNode.type === 'http' }">{{ selectedNode.type }}</span>
               <span class="rounded-full px-2 py-0.5 text-[10.5px] font-semibold ring-1 ring-inset" :class="nodeStatusMeta[selectedNode.status]?.pill">{{ nodeStatusMeta[selectedNode.status]?.label }}</span>
+              <span v-if="selectedNode.reused"
+                    class="rounded-full bg-amber-50 px-2 py-0.5 text-[10.5px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200"
+                    title="本次没有实际执行此节点，沿用上一次 run 的输出">复用上次</span>
             </div>
             <dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[11.5px] md:grid-cols-4">
               <div><dt class="text-slate-400">开始</dt><dd class="font-mono text-slate-700">{{ selectedNode.started_at || '—' }}</dd></div>
@@ -363,11 +377,17 @@ const runStatusDisplay = computed(() => {
                         @click="copyField(selectedNode.error)">
                   ⎘ 复制错误
                 </button>
-                <button v-if="run && run.workflow_id"
+                <button v-if="run && run.run_id"
                         class="inline-flex h-7 items-center gap-1 rounded-lg bg-rose-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-rose-700"
-                        title="重跑整个作业流（默认变量），不是单节点重试 —— 单节点重试需要后端 resume-from-node 支持，未实现"
+                        title="从此节点开始重跑：上游沿用本次输出，此节点及其下游重新执行；变量沿用本次"
+                        @click="rerunFromNode(selectedNode.node_id)">
+                  ↻ 从此节点重跑
+                </button>
+                <button v-if="run && run.workflow_id"
+                        class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                        title="按当前作业流配置 + 默认变量重跑全部节点"
                         @click="rerunDefaults">
-                  ↻ 重跑作业流
+                  ↻ 全量重跑
                 </button>
               </div>
             </div>

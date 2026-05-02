@@ -518,7 +518,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                 <span v-else class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">{{ resolvedParams[param.name].value }}</span>
               </div>
             </li>
-            <li v-if="!displayParameters.length" class="px-3 py-3 text-center text-[11px] text-slate-400">暂无参数定义</li>
+            <li v-if="!displayParameters.length" class="px-3 py-3 text-center text-[11px] text-slate-400">还没有参数定义 — 在画布添加 <code class="rounded bg-slate-100 px-1 font-mono">params</code> 节点，或保存后右上角直接添加</li>
           </ul>
           <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
             可在 SQL / 文件名 / Sheet 名等位置用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
@@ -701,7 +701,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                 </td>
               </tr>
             </template>
-            <tr v-if="!workflowRunHistory.length"><td colspan="8" class="py-8 text-center text-[12.5px] text-slate-400">还没有历史运行</td></tr>
+            <tr v-if="!workflowRunHistory.length"><td colspan="8" class="py-8 text-center text-[12.5px] text-slate-400">还没有历史运行 — 顶部点「执行」或「后台执行」跑一次，结果会留在这里</td></tr>
           </tbody>
         </table>
       </div>
@@ -709,7 +709,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
       <!-- 事件日志（基于最近一次运行合成） -->
       <div v-else-if="activeTab === 'events'" class="px-3 py-2">
         <div v-if="!recentEvents.length" class="py-8 text-center text-[12.5px] text-slate-400">
-          还没有运行记录
+          还没有运行记录 — 跑过一次后，事件日志才会有内容
         </div>
         <div v-else class="font-mono text-[12px]">
           <div v-for="(ev, idx) in recentEvents" :key="idx" class="grid grid-cols-[140px_140px_1fr] items-start gap-3 border-b border-slate-100 px-2 py-1.5 last:border-0">
@@ -777,7 +777,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             <h3 class="text-sm font-bold text-slate-700">节点 ({{ workflowDraft.nodes.length }})</h3>
             <button class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-blue-700" @click="addWorkflowNode">+ 新增节点</button>
           </div>
-          <div v-if="!workflowDraft.nodes.length" class="rounded-lg border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-400">还没有节点</div>
+          <div v-if="!workflowDraft.nodes.length" class="rounded-lg border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-400">还没有节点 — 点右上角「+ 新增节点」开始（推荐 params 起步，再接 compare/lineage/http）</div>
           <div v-else class="space-y-2">
             <div v-for="(node, index) in workflowDraft.nodes" :key="index" class="rounded-lg border border-slate-200 bg-white p-3">
               <div class="mb-2 flex items-center justify-between gap-2">

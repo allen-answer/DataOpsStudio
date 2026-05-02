@@ -1030,6 +1030,40 @@ const runWorkflowAsyncWith = async (workflowId, variables = {}) => {
   }
 }
 
+// 局部重跑：根据上次 run 的 run_id 和起点 node_id 起一次部分执行。
+// 上游已 success 的节点会被复用 output，from_node 及其下游全部重跑。
+// 起好后挂到 workflowAsyncJob/Status，跑完自动刷新历史。
+const rerunWorkflowFromNode = async (runId, fromNodeId, variables = null) => {
+  if (!runId || !fromNodeId) return null
+  workflowResult.value = null
+  workflowAsyncStatus.value = null
+  try {
+    const body = { from_node_id: fromNodeId }
+    if (variables !== null) body.variables = variables
+    workflowAsyncJob.value = await apiJson(`/api/workflow-runs/${runId}/rerun`, 'POST', body)
+    workflowAsyncStatus.value = workflowAsyncJob.value
+    setNotice(`已提交从 ${fromNodeId} 起的局部重跑`)
+    workflowAsyncPollTimer.value = setInterval(async () => {
+      try {
+        workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
+        if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
+          stopWorkflowAsyncPoll()
+          const wfId = workflowAsyncJob.value.workflow_id
+          if (selectedWorkflowId.value === wfId) loadWorkflowRunHistory(wfId)
+          loadAllWorkflowRuns()
+        }
+      } catch (error) {
+        stopWorkflowAsyncPoll()
+        setNotice(`后台状态查询失败：${toErrorMessage(error)}`)
+      }
+    }, 1200)
+    return workflowAsyncJob.value
+  } catch (error) {
+    setNotice(`局部重跑提交失败：${toErrorMessage(error)}`)
+    return null
+  }
+}
+
 const cancelWorkflowAsync = async () => {
   if (!workflowAsyncJob.value) return
   try {
@@ -1192,7 +1226,7 @@ provide('app', {
   workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory, allWorkflowRuns,
   selectWorkflow, saveWorkflow, deleteWorkflow,
-  runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
+  runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, rerunWorkflowFromNode, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   addParameter, removeParameter,

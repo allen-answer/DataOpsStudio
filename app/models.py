@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DatabaseType(str, Enum):
@@ -234,6 +234,9 @@ class WorkflowNodeRun(BaseModel):
     elapsed_seconds: float = 0
     output: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
+    # 局部重跑时，沿用上次 run 该节点的 output 而不重执行。值为 True 时
+    # status 仍是 success，前端可据此打"复用上次结果"badge。
+    reused: bool = False
 
 
 class WorkflowRunStatus(str, Enum):
@@ -253,6 +256,8 @@ class WorkflowRun(BaseModel):
     finished_at: str = ""
     elapsed_seconds: float = 0
     error: str = ""
+    # 局部重跑：记录起源。None = 全量执行；否则指向上一次 run + 起跑节点。
+    resumed_from: dict[str, str] | None = None
 
 
 # --- API response schemas ---
@@ -293,8 +298,12 @@ class WorkflowRunSummary(BaseModel):
 
 
 class DriverInfo(BaseModel):
+    """每个 DatabaseType 的驱动可用性。`installed_modules` 是当前 Python
+    环境真装上的，`candidate_modules` 是该 db_type 支持的全部备选——前端
+    可据此提示"装其中一个就能用"。"""
     available: bool
-    modules: list[str] = Field(default_factory=list)
+    installed_modules: list[str] = Field(default_factory=list)
+    candidate_modules: list[str] = Field(default_factory=list)
 
 
 class BootstrapResponse(BaseModel):
@@ -311,15 +320,81 @@ class BootstrapResponse(BaseModel):
 
 
 class HistoryItem(BaseModel):
-    """compare 任务的历史结果项（来自 /api/history）。"""
+    """历史结果项（来自 /api/history）。compare 与 lineage 类型共用同一接口
+    返回，字段集略有差异（lineage 形态多 read_tables / write_tables / 等
+    汇总字段），所以放宽 extra=allow 而不是把全部 lineage 字段都列出来。"""
+    model_config = ConfigDict(extra="allow")
+
     run_id: str
     task_id: str = ""
     task_name: str = ""
     started_at: str = ""
     elapsed_seconds: float = 0
-    summary: CompareSummary | None = None
+    source_rows: int = 0
+    target_rows: int = 0
+    summary: dict[str, Any] = Field(default_factory=dict)
     result_filename: str = ""
     excel_filename: str = ""
+    sort_time: str = ""
+    type: str = "compare"   # "compare" | "lineage"
+
+
+# --- 杂项 API 响应（response_model 第三波）---
+# 都是早期 dict 落地的轻量响应，加 schema 主要是让 /docs 给前端 / 第三方
+# 一份准确契约。结构对齐底层服务返回，改字段时要两处一起改。
+
+class OkResponse(BaseModel):
+    """删除 / 取消等无返回数据的接口的统一形状。"""
+    ok: bool = True
+
+
+class ConnectionTestResult(BaseModel):
+    """POST /api/datasources/{id}/test 返回。失败时直接 4xx，所以这里只
+    描述成功形态。`sample` 是探测 SQL（select 1）拿到的第一行，主要给
+    用户一个"驱动通了"的可视化反馈。"""
+    ok: bool = True
+    message: str = ""
+    datasource: str = ""
+    db_type: str = ""
+    elapsed_seconds: float = 0
+    sample: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PreviewRowsResponse(BaseModel):
+    """POST /api/tasks/{task_id}/preview 返回。`truncated=True` 表示行数
+    达到 `limit` 上限，可能还有更多——前端据此显示 "已截断" 提示。"""
+    side: str
+    limit: int
+    truncated: bool
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PreviewColumnsResponse(BaseModel):
+    """POST /api/preview/columns 返回。SQL kind 与 Excel kind 共用同一
+    形状——只输出列名列表，元数据由调用方自行决定怎么用。"""
+    columns: list[str] = Field(default_factory=list)
+
+
+class SqlAssistResponse(BaseModel):
+    """POST /api/sql/assist 返回。`readonly_ok` 反映 sql_guard 的判定，
+    便于前端给只读保护的 SQL 标个绿勾；`converted_sql` 仅当请求带
+    `target_dialect` 时才填，否则空串。"""
+    readonly_ok: bool = True
+    readonly_error: str = ""
+    formatted_sql: str = ""
+    converted_sql: str = ""
+    output_columns: list[str] = Field(default_factory=list)
+    key_candidates: list[str] = Field(default_factory=list)
+
+
+class ExcelUploadResponse(BaseModel):
+    """POST /api/uploads/excel 返回。`path` 是相对仓库根的存储路径，前端
+    回填到任务表单后下次执行时以此 resolve。`columns_by_sheet` 是每个
+    sheet 第 1 行作为 header 抽出来的列名，让用户立刻能选 key columns。"""
+    path: str
+    filename: str
+    sheets: list[str] = Field(default_factory=list)
+    columns_by_sheet: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # --- Lineage analyze response ---
