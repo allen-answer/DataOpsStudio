@@ -55,9 +55,20 @@ Vite 默认把 `/api/*`、`/results/*` 等请求代理到 `http://app:8000`（�
 ### 跑测试
 
 ```bash
-pytest                              # 全部
+pytest                              # 全部 unit + HTTP 集成测试
 pytest tests/test_compare_engine.py # 单文件
 ```
+
+浏览器 e2e（可选，catch render-time throw 那种 UI bug）：
+
+```bash
+pip install -r requirements-e2e.txt
+playwright install chromium
+# 应用必须在 :8010 跑（docker compose up -d / 本地 uvicorn）
+pytest tests/e2e/
+```
+
+主 `pytest` 默认跳过 e2e，避免 unit 流程被 chromium 二进制拖慢。
 
 前端构建（一次性产 SPA 用于本地预览）：
 

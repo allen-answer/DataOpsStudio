@@ -13,6 +13,13 @@ from __future__ import annotations
 import pytest
 
 
+# 默认 `pytest` 跑 unit + integration，跳过 e2e（playwright 浏览器测试）
+# —— e2e 需要装 chromium 二进制 + 应用在 :8010 真跑起来。
+# 显式 `pytest tests/e2e/` 才会跑（直接传路径绕过 ignore）。
+# 用 collect_ignore（list，不是 glob 版）：仅在没显式指定时排除。
+collect_ignore = ["e2e"]
+
+
 @pytest.fixture
 def isolated_storage(tmp_path, monkeypatch):
     """所有 storage 路径重定向到 tmp_path。yield 一个 dict 给测试拿子目录。"""

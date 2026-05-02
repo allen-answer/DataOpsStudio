@@ -1,0 +1,13 @@
+# 浏览器 e2e 测试依赖（playwright + 配套）。
+#
+# 装：
+#   pip install -r requirements-e2e.txt
+#   playwright install chromium      # 顺带把 chromium binary 拉下来
+#
+# 跑（应用必须已经在 :8010 跑起来）：
+#   pytest tests/e2e/
+#
+# 这些不放进 requirements.txt：playwright 带 ~150MB chromium binary，
+# 主开发流程和 CI backend job 都不需要。
+playwright>=1.50
+pytest-playwright>=0.5
