@@ -24,6 +24,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 编译期 syntax 检查 —— 防止 import-time SyntaxError 漏到运行时才暴露
+      - name: Compile-check all Python sources
+        run: python -m compileall -q app main.py tests
+
       - name: Run pytest
         run: pytest -q
 
@@ -47,3 +51,32 @@ jobs:
 
       - name: Build SPA
         run: npm run build
+
+      # 把 build 产物当 artifact 上传 —— 失败时方便排查；release 流程也可以基于这个
+      - name: Upload SPA artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spa-build
+          path: static/spa/
+          retention-days: 7
+
+  docker-build:
+    name: Docker (multi-stage build smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不 push 镜像，只验证 Dockerfile 本身能 build 通（含 node 阶段构建前端 +
+      # python 阶段装依赖）。catch 类似"修了 import 但忘改 Dockerfile COPY 路径"
+      # 那种 bug —— pytest / npm build 都过、Dockerfile 装不上才发现。
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: dataops-studio:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

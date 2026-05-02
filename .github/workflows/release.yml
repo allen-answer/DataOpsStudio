@@ -1,0 +1,44 @@
+name: Release (Windows offline)
+
+# git tag 推送即触发：构建前端 → 下载 Python wheels → 装配目录 → 打 zip →
+# 上传到 GitHub Release。日常开发不触发；只在 `git tag v0.x.y && git push --tags` 时跑。
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows-offline:
+    name: Build DataOpsStudio-win-offline-{version}.zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/frontend/package-lock.json
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        # refs/tags/v0.2.0 → 0.2.0
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Run offline release packaging script
+        shell: pwsh
+        run: |
+          .\scripts\build_offline_windows.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DataOpsStudio-win-offline-${{ steps.version.outputs.version }}.zip
+          # 草稿状态推上去——maintainer 可以手动审一下版本号 / changelog 再 publish
+          draft: true
+          generate_release_notes: true
