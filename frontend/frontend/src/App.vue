@@ -1200,11 +1200,33 @@ const exportHistory = async () => {
   const form = new FormData()
   Array.from(selectedHistory.value).forEach((id) => form.append('run_ids', id))
   Array.from(selectedSheets.value).forEach((sheet) => form.append('sheet_names', sheet))
-  const response = await fetch('/history/export', { method: 'POST', body: form })
-  if (!response.ok) throw new Error(await response.text())
+  let response
+  try {
+    response = await fetch('/history/export', { method: 'POST', body: form })
+  } catch (error) {
+    setNotice(`导出失败：${toErrorMessage(error)}`)
+    return
+  }
+  if (!response.ok) {
+    setNotice(`导出失败：${await response.text()}`)
+    return
+  }
+  // 从 Content-Disposition 抽 filename；后端走 FastAPI FileResponse 会给。
+  // 兜底：用时间戳避免文件名空。注意不能直接 window.open(blobUrl) —— 浏览器
+  // 会按 inline 渲染 .xlsx 二进制成乱码，必须主动 <a download> 触发下载。
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
+  const filename = match ? decodeURIComponent(match[1]) : `history_export_${Date.now()}.xlsx`
   const blob = await response.blob()
   const url = URL.createObjectURL(blob)
-  window.open(url, '_blank')
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // 让浏览器有机会启动下载，再回收 URL。延后些避免 Edge 偶发 download 中断。
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 watch(activeView, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })

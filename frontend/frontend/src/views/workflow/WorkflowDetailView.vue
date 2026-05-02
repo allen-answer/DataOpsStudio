@@ -414,10 +414,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         <!-- 运行参数：参数驱动作业流的核心信息 -->
         <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-            <div class="flex items-center gap-1.5">
-              <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
-              <span v-if="!paramsAreReal" class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="未定义 params 节点；展示示例参数">示例</span>
-            </div>
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
             <span class="text-[10.5px] text-slate-500">{{ displayParameters.length }} 个</span>
           </div>
           <ul class="divide-y divide-slate-100">
