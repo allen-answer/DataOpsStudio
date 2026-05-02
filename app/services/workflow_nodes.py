@@ -242,39 +242,47 @@ _EXCEL_EXPORT_DEFAULT_MAX_ROWS = 100_000
 _EXCEL_EXPORT_HARD_CEILING = 1_000_000   # 单 sheet 行数硬上限，配置上限不能超
 
 
+# Compare 节点的 dataset 短名 → output 字段 dot-path 映射。
+# 用户在 UI 选 dataset='diff'，runner 知道实际去 outputs[node].samples.diff 拿。
+_COMPARE_DATASET_PATHS = {
+    "summary":     "summary",
+    "diff":        "samples.diff",
+    "only_source": "samples.only_source",
+    "only_target": "samples.only_target",
+    "same":        "samples.same",
+}
+
+
 def run_excel_export_node(
     config: dict[str, Any],
     variables: dict[str, str],
     *,
     outputs: dict[str, dict[str, Any]] | None = None,
     depends_on: list[str] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build a multi-sheet Excel report from upstream compare/lineage outputs.
+    """Build a multi-sheet Excel report from upstream node outputs or history runs.
 
-    每个 sheet 的 source 由两个字段表达：
-      - source_node:  上游节点 id（可空，为空则用 depends_on 的第一个上游）
-      - source_field: 节点 output 里的字段路径，dot 分隔；空 = 整个 output
+    Sheet config:
+      - source_type: 'node_output'(默认) | 'history_run'
+      - node_id:     节点 id；node_output 模式下空则用 depends_on 第一个
+      - dataset:     字段名（compare 节点支持简短名 summary/diff/only_source/
+                     only_target/same，自动映射到 samples.*；其他节点直接当
+                     顶层字段；含点 → 当 dot-path）
+      - run_id:      仅 history_run 模式 — 指向某次历史 workflow_run
+      - max_rows:    单 sheet 上限，硬天花板 1M
+      - sheet_name:  Excel 里显示的名字
 
-    例：
-      sheets:
-        - id: diff
-          sheet_name: 差异
-          source_node: compare1     # 显式指定
-          source_field: samples.diff
-          max_rows: 100000
+    向后兼容：老配置的 source_node → node_id, source_field → dataset。
 
-      # 单上游时可省 source_node：
-      sheets:
-        - id: summary
-          sheet_name: 汇总
-          source_field: summary    # 自动从 depends_on[0] 读
-
-    文件名由本 runner 自动生成 (workflow_export_<ts>_<rand>.xlsx)，写到 RESULTS_DIR
-    避免冲突。Compare 节点 samples 默认拿到的就是 list[dict]，刚好能直接落 sheet。
+    输出文件落到 results/workflow_runs/<run_id>/exports/<filename>，删 run 时
+    连带清理。run_id 由引擎传入；本 runner 不知道 run_id 时退回 RESULTS_DIR 根
+    （仅单元测试场景）。
     """
     from datetime import datetime as _dt
     from openpyxl import Workbook
     from app.utils.paths import RESULTS_DIR
+    from app.services import workflow_history
 
     sheets = config.get("sheets") or []
     if not isinstance(sheets, list):
@@ -285,7 +293,7 @@ def run_excel_export_node(
 
     outputs = outputs or {}
     deps = depends_on or []
-    # source_node 空时用 depends_on 的第一个，让单上游 excel_export 不用配这个字段
+    # node_output 模式 source 缺省：depends_on 第一个完成的上游
     default_source_node = next((d for d in deps if d in outputs), "")
 
     book = Workbook()
@@ -293,20 +301,41 @@ def run_excel_export_node(
     used_names: set[str] = set()
     sheet_results: list[dict[str, Any]] = []
 
+    # history_run 模式按 run_id 缓存历史 outputs，同一 run 多个 sheet 不重读
+    historical_outputs_cache: dict[str, dict[str, dict[str, Any]] | None] = {}
+
     for idx, sheet_def in enumerate(enabled):
-        source_node = str(sheet_def.get("source_node") or "").strip() or default_source_node
-        source_field = str(sheet_def.get("source_field") or "").strip()
+        # 字段名兼容：新 (node_id/dataset) > 老 (source_node/source_field)
+        source_type = str(sheet_def.get("source_type") or "node_output").strip()
+        node_id = str(sheet_def.get("node_id") or sheet_def.get("source_node") or "").strip()
+        dataset = str(sheet_def.get("dataset") or sheet_def.get("source_field") or "").strip()
+        history_target_run = str(sheet_def.get("run_id") or "").strip()
+
         sheet_name_raw = str(
             sheet_def.get("sheet_name")
             or sheet_def.get("id")
             or f"Sheet{idx + 1}"
         ).strip() or f"Sheet{idx + 1}"
-
         max_rows = int(sheet_def.get("max_rows") or _EXCEL_EXPORT_DEFAULT_MAX_ROWS)
         if max_rows > _EXCEL_EXPORT_HARD_CEILING:
             max_rows = _EXCEL_EXPORT_HARD_CEILING
 
-        rows_data, source_resolved = _resolve_sheet_source(outputs, source_node, source_field)
+        # 选数据源
+        if source_type == "history_run":
+            if not history_target_run:
+                source_outputs: dict[str, dict[str, Any]] | None = None
+            else:
+                if history_target_run not in historical_outputs_cache:
+                    historical_outputs_cache[history_target_run] = _load_historical_outputs(
+                        workflow_history, history_target_run
+                    )
+                source_outputs = historical_outputs_cache[history_target_run]
+        else:   # node_output
+            source_outputs = outputs
+            if not node_id:
+                node_id = default_source_node
+
+        rows_data, source_resolved = _resolve_sheet_source(source_outputs or {}, node_id, dataset)
 
         truncated = False
         if len(rows_data) > max_rows:
@@ -319,8 +348,10 @@ def run_excel_export_node(
 
         sheet_results.append({
             "name": sheet_name,
-            "source_node": source_node,
-            "source_field": source_field,
+            "source_type": source_type,
+            "node_id": node_id,
+            "dataset": dataset,
+            "run_id": history_target_run if source_type == "history_run" else "",
             "source_resolved": source_resolved,
             "rows_written": rows_written,
             "truncated": truncated,
@@ -333,13 +364,22 @@ def run_excel_export_node(
     timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
     suffix = uuid.uuid4().hex[:8]
     filename = f"workflow_export_{timestamp}_{suffix}.xlsx"
-    output_path = RESULTS_DIR / filename
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 文件归到本次 run 的 exports 子目录下，删 run 时连带清理
+    if run_id:
+        output_dir = RESULTS_DIR / "workflow_runs" / run_id / "exports"
+    else:
+        output_dir = RESULTS_DIR    # 仅单测兜底
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
     book.save(output_path)
+
+    # 相对路径，用于前端下载链接拼接：/results/{relative_path}
+    relative_path = str(output_path.relative_to(RESULTS_DIR)).replace("\\", "/")
 
     return {
         "filename": filename,
         "file_path": str(output_path),
+        "relative_path": relative_path,
         "file_size": output_path.stat().st_size,
         "sheet_count": len(sheet_results),
         "sheets": sheet_results,
@@ -347,36 +387,64 @@ def run_excel_export_node(
     }
 
 
+def _load_historical_outputs(workflow_history_module, target_run_id: str) -> dict[str, dict[str, Any]] | None:
+    """Read a past WorkflowRun's per-node outputs as {node_id: output_dict}.
+    Returns None if run not found or unreadable; runner treats this as
+    'source unresolved' rather than failing the whole export."""
+    payload = workflow_history_module.get_workflow_run(target_run_id)
+    if not payload:
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for node_run in payload.get("nodes") or []:
+        node_id = node_run.get("node_id")
+        node_out = node_run.get("output")
+        if node_id and isinstance(node_out, dict):
+            out[node_id] = node_out
+    return out
+
+
 def _resolve_sheet_source(
     outputs: dict[str, dict[str, Any]],
-    source_node: str,
-    source_field: str,
+    node_id: str,
+    dataset: str,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Resolve a sheet's data source from completed outputs.
+    """Resolve a sheet's data source from a {node_id: output_dict} mapping.
 
-    Returns (rows, resolved). resolved=False means the source pointer was empty
-    or didn't match any upstream output — caller still writes an empty sheet
-    so the Excel structure mirrors config 1:1, but flags it for the user.
+    `dataset` 解析顺序：
+      1. compare 节点（output 含 'samples' 字典）+ dataset 在预设映射里 → samples.<dataset>
+      2. dataset 是顶层字段 → 直接取
+      3. dataset 含点 → 当 dot-path 解
+      4. 都没命中 → (空列表, False)
     """
-    if not source_node:
+    if not node_id:
         return [], False
-    node_out = outputs.get(source_node)
+    node_out = outputs.get(node_id)
     if not isinstance(node_out, dict):
+        return [], False
+    if not dataset:
+        # 没指定 dataset → 整个 output 当一行 dict
+        return [node_out], True
+
+    # 计算 dot-path
+    if dataset in _COMPARE_DATASET_PATHS and isinstance(node_out.get("samples"), dict):
+        path = _COMPARE_DATASET_PATHS[dataset]
+    elif dataset in node_out:
+        path = dataset
+    elif "." in dataset:
+        path = dataset
+    else:
         return [], False
 
     cursor: Any = node_out
-    if source_field:
-        for part in source_field.split("."):
-            if isinstance(cursor, dict) and part in cursor:
-                cursor = cursor[part]
-            else:
-                return [], False
+    for part in path.split("."):
+        if isinstance(cursor, dict) and part in cursor:
+            cursor = cursor[part]
+        else:
+            return [], False
 
     if isinstance(cursor, list):
-        # 只接受 list[dict]；其他混合类型一律包成单列 value 落盘
         return [item if isinstance(item, dict) else {"value": item} for item in cursor], True
     if isinstance(cursor, dict):
-        # 单 dict（如 summary 统计字段）渲染为 1 行 N 列
         return [cursor], True
     return [{"value": cursor}], True
 

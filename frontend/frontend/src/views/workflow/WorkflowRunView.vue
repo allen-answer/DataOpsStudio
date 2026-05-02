@@ -356,7 +356,7 @@ const toggleRawJson = (id) => { showRawJson.value[id] = !showRawJson.value[id] }
                       </p>
                     </div>
                     <a v-if="selectedNode.output.filename"
-                       :href="`/results/${selectedNode.output.filename}`"
+                       :href="`/results/${selectedNode.output.relative_path || selectedNode.output.filename}`"
                        target="_blank"
                        class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 text-[11px] font-semibold text-white transition hover:bg-emerald-700">
                       ⬇ 下载
@@ -377,7 +377,8 @@ const toggleRawJson = (id) => { showRawJson.value[id] = !showRawJson.value[id] }
                       <tr v-for="(sh, i) in selectedNode.output.sheets" :key="i">
                         <td class="px-3 py-1 font-semibold text-slate-700">{{ sh.name }}</td>
                         <td class="px-3 py-1 font-mono text-[10.5px] text-slate-600">
-                          {{ sh.source_node || '默认' }}<span class="text-slate-300">.</span>{{ sh.source_field || '*' }}
+                          <span v-if="sh.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200" :title="`run ${sh.run_id}`">历史</span>
+                          {{ (sh.node_id || sh.source_node) || '默认' }}<span class="text-slate-300">.</span>{{ (sh.dataset || sh.source_field) || '*' }}
                         </td>
                         <td class="px-3 py-1 text-right font-mono tabular-nums text-slate-700">{{ formatNumber(sh.rows_written) }} / {{ formatNumber(sh.max_rows) }}</td>
                         <td class="px-3 py-1">

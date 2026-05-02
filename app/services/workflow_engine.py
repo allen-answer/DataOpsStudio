@@ -185,14 +185,14 @@ def run_workflow(
         node_run.started_at = node_started.isoformat(timespec="seconds")
         node_perf = time.perf_counter()
         try:
-            # outputs 提供给需要读上游节点输出的 runner（如 excel_export）。
-            # 大多数 runner 用 *args/**kwargs 忽略掉这两个 kwargs。
-            # depends_on 让 runner 在用户没显式指定 source 时缺省回退到上游。
+            # outputs / depends_on / run_id 提供给需要它们的 runner（如 excel_export）。
+            # 大多数 runner 用 **_ 吃掉这些 kwargs。
             output = runner(
                 resolved_config,
                 dict(resolved_vars),
                 outputs=completed_outputs,
                 depends_on=list(node.depends_on or []),
+                run_id=run.run_id,
             )
             node_run.output = output if isinstance(output, dict) else {"value": output}
             node_run.status = NodeRunStatus.SUCCESS

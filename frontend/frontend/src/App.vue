@@ -668,22 +668,33 @@ const fillWorkflowDraft = (wf) => {
     url: node.config?.url || '',
     body: node.config?.body || '',
     expect_status: node.config?.expect_status ?? '',
-    // excel_export: sheets list. Filename 由后端写盘时按 run_id 自动命名。
-    // source_node = 上游 node.id, source_field = 该 node output 里的 dot-path
-    // 老配置只有隐式 source: 'summary' —— 这里自动推断 source_node：
-    //   depends_on 恰好 1 个上游时直接用之，多上游则留空让用户在 UI 选。
+    // excel_export sheets. 字段语义：
+    //   source_type: 'node_output' | 'history_run'
+    //   node_id:     上游节点 id（或历史 run 里的节点 id）
+    //   dataset:     compare 简短名 (summary/diff/...) 或顶层字段，runner 自动映射
+    //   run_id:      仅 history_run 模式
+    // 兼容三个老格式：source_node → node_id, source_field → dataset, source → dataset
+    // dataset 老 dot-path 反向归一化：'samples.diff' → 'diff'（让 UI 下拉能选中）
     sheets: Array.isArray(node.config?.sheets)
       ? (() => {
           const deps = Array.isArray(node.depends_on) ? node.depends_on : []
           const singleDep = deps.length === 1 ? deps[0] : ''
-          return node.config.sheets.map((s) => ({
-            id: s.id,
-            enabled: s.enabled !== false,
-            sheet_name: s.sheet_name || s.id,
-            source_node: s.source_node || singleDep || '',
-            source_field: s.source_field || s.source || '',   // 兼容老配置
-            max_rows: Number(s.max_rows) || 100000,
-          }))
+          return node.config.sheets.map((s) => {
+            let dataset = s.dataset || s.source_field || s.source || ''
+            // 把 'samples.<bucket>' 归一化到短名
+            const m = /^samples\.(only_source|only_target|diff|same)$/.exec(dataset)
+            if (m) dataset = m[1]
+            return {
+              id: s.id,
+              enabled: s.enabled !== false,
+              sheet_name: s.sheet_name || s.id,
+              source_type: s.source_type || 'node_output',
+              node_id: s.node_id || s.source_node || singleDep || '',
+              dataset,
+              run_id: s.run_id || '',
+              max_rows: Number(s.max_rows) || 100000,
+            }
+          })
         })()
       : [],
     // params node: typed parameter list
@@ -728,8 +739,11 @@ const buildNodeConfig = (node) => {
       id: s.id,
       enabled: s.enabled !== false,
       sheet_name: s.sheet_name || s.id,
-      source_node: s.source_node || '',
-      source_field: s.source_field || '',
+      source_type: s.source_type || 'node_output',
+      node_id: s.node_id || '',
+      dataset: s.dataset || '',
+      // run_id 只在 history_run 模式下保存，避免污染 node_output 配置
+      ...(s.source_type === 'history_run' && s.run_id ? { run_id: s.run_id } : {}),
       max_rows: Number(s.max_rows) || 100000,
     })),
   }
@@ -807,8 +821,8 @@ const addWorkflowNode = () => {
     sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
     sheets: [
-      { id: 'summary', enabled: true, sheet_name: '汇总',     source_node: '', source_field: 'summary',      max_rows: 100000 },
-      { id: 'diff',    enabled: true, sheet_name: '差异明细', source_node: '', source_field: 'samples.diff', max_rows: 100000 },
+      { id: 'summary', enabled: true, sheet_name: '汇总对照', source_type: 'node_output', node_id: '', dataset: 'summary', run_id: '', max_rows: 100000 },
+      { id: 'diff',    enabled: true, sheet_name: '差异明细', source_type: 'node_output', node_id: '', dataset: 'diff',    run_id: '', max_rows: 100000 },
     ],
     parameters: [],
   })
@@ -827,14 +841,15 @@ const moveWorkflowNode = (index, delta) => {
 }
 
 // Excel-export sheet helpers (only meaningful when node.type === 'excel_export')
-// 模板填的是 (source_field, sheet_name) —— source_node 由用户在下拉里选哪个上游
-// compare 节点。后端 runner 读 outputs[source_node][source_field] (dot-path)。
+// dataset 是面向用户的简洁名（compare 节点的 summary/diff/only_source/only_target/
+// same）。后端 runner 自动映射到 samples.* 路径。其他节点类型时 dataset 直接当
+// 顶层字段名。
 const SHEET_TEMPLATES = {
-  summary:        { sheet_name: '汇总',         source_field: 'summary' },
-  diff:           { sheet_name: '差异明细',     source_field: 'samples.diff' },
-  only_source:    { sheet_name: '源端缺失',     source_field: 'samples.only_source' },
-  only_target:    { sheet_name: '目标端缺失',   source_field: 'samples.only_target' },
-  same:           { sheet_name: '一致行',       source_field: 'samples.same' },
+  summary:        { sheet_name: '汇总对照',     dataset: 'summary' },
+  diff:           { sheet_name: '差异明细',     dataset: 'diff' },
+  only_source:    { sheet_name: '源端缺失',     dataset: 'only_source' },
+  only_target:    { sheet_name: '目标端缺失',   dataset: 'only_target' },
+  same:           { sheet_name: '一致行',       dataset: 'same' },
 }
 
 const addExportSheet = (node, templateId) => {
@@ -844,8 +859,10 @@ const addExportSheet = (node, templateId) => {
     id,
     enabled: true,
     sheet_name: tmpl.sheet_name,
-    source_node: '',
-    source_field: tmpl.source_field,
+    source_type: 'node_output',
+    node_id: '',
+    dataset: tmpl.dataset,
+    run_id: '',
     max_rows: 100000,
   })
 }
@@ -887,12 +904,17 @@ const workflowDraftWarnings = () => {
   const warnings = []
   for (const node of workflowDraft.nodes) {
     if (node.type === 'excel_export') {
-      // source_node 留空时后端会回退到 depends_on，所以无依赖才报警
       const noDeps = !Array.isArray(node.depends_on) || node.depends_on.length === 0
-      if (noDeps) {
-        const orphanSheets = (node.sheets || []).filter(s => s.enabled && !s.source_node)
-        if (orphanSheets.length) {
-          warnings.push(`节点 ${node.id} 没有 depends_on 且 sheet 未指定 source_node —— 跑出来会是空 sheet`)
+      for (const s of (node.sheets || [])) {
+        if (!s.enabled) continue
+        if (s.source_type === 'history_run') {
+          if (!s.run_id) warnings.push(`节点 ${node.id} 的 sheet "${s.sheet_name || s.id}" 选了"历史运行"但未填 run_id`)
+          if (!s.node_id) warnings.push(`节点 ${node.id} 的 sheet "${s.sheet_name || s.id}" 选了"历史运行"但未填 node_id`)
+        } else {
+          // node_output 模式：node_id 空时后端会用 depends_on 兜底
+          if (noDeps && !s.node_id) {
+            warnings.push(`节点 ${node.id} 没有 depends_on 且 sheet "${s.sheet_name || s.id}" 未选数据源 —— 跑出来会是空 sheet`)
+          }
         }
       }
     }

@@ -11,6 +11,7 @@ const emit = defineEmits(['back', 'open-run'])
 const {
   state, workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
+  allWorkflowRuns, loadAllWorkflowRuns,
   saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
@@ -69,14 +70,28 @@ const overrideLooksInvalid = (sql) => {
 
 const showParamCheatsheet = ref(false)
 
-// 用于 Excel 节点 Sheet 配置 —— 模板对应 compare 节点 output 里常见的字段路径
+// Excel 节点 sheet 模板 —— 对应 compare 节点 dataset 短名
 const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'same']
 const sheetSourceLabel = {
-  summary:     '汇总（summary）',
-  diff:        '差异明细（samples.diff）',
-  only_source: '源端缺失（samples.only_source）',
-  only_target: '目标端缺失（samples.only_target）',
-  same:        '一致行（samples.same）',
+  summary:     '汇总对照',
+  diff:        '差异明细',
+  only_source: '仅源端',
+  only_target: '仅目标',
+  same:        '一致行',
+}
+
+// 各节点类型可用的 dataset 预设（驱动下拉）。空 dataset 也允许用户手输（lineage
+// 节点可能想拿 'tables' / 'edges' 等顶层字段）。
+const datasetPresetsByType = {
+  compare: ['summary', 'diff', 'only_source', 'only_target', 'same'],
+  lineage: ['sources', 'targets', 'edges', 'warnings', 'field_mappings'],
+  params:  [],   // params 节点的字段就是参数名，让用户手输
+  http:    ['body', 'json', 'headers'],
+}
+const datasetPresetsForNode = (workflowNodes, nodeId) => {
+  const target = (workflowNodes || []).find((n) => n.id === nodeId)
+  if (!target) return []
+  return datasetPresetsByType[target.type] || []
 }
 const expandedSheets = ref({})   // node-idx_sheet-idx → bool
 const toggleSheet = (key) => { expandedSheets.value[key] = !expandedSheets.value[key] }
@@ -852,7 +867,7 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
 
                   <ul v-else class="divide-y divide-slate-100">
                     <li v-for="(sheet, sIdx) in node.sheets" :key="sheet.id" class="px-3 py-2">
-                      <!-- 折叠态：单行紧凑展示 -->
+                      <!-- 折叠态 -->
                       <div class="flex items-center gap-2">
                         <input type="checkbox" v-model="sheet.enabled" class="h-3.5 w-3.5 rounded text-blue-600" :title="sheet.enabled ? '已启用' : '已禁用'">
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 transition hover:bg-slate-50"
@@ -861,9 +876,8 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                         </button>
                         <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
                         <span class="font-mono text-[10.5px] text-slate-500">
-                          {{ sheet.source_node
-                              ? `${sheet.source_node}.${sheet.source_field || '*'}`
-                              : `默认.${sheet.source_field || '*'}` }}
+                          <span v-if="sheet.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200">历史</span>
+                          {{ sheet.node_id || '默认' }}<span class="text-slate-300">.</span>{{ sheet.dataset || '*' }}
                         </span>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === 0" @click="moveExportSheet(node, sIdx, -1)">↑</button>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === node.sheets.length - 1" @click="moveExportSheet(node, sIdx, 1)">↓</button>
@@ -871,35 +885,94 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                       </div>
 
                       <!-- 展开态：详细配置 -->
-                      <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5">
-                        <div class="grid grid-cols-1 gap-2 lg:grid-cols-3">
+                      <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5 space-y-2">
+                        <!-- 数据源类型切换：节点输出 vs 历史运行 -->
+                        <div class="flex items-center gap-2">
+                          <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据源</span>
+                          <div class="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-[10.5px]">
+                            <button type="button"
+                                    class="rounded px-2 py-0.5 transition"
+                                    :class="sheet.source_type !== 'history_run' ? 'bg-blue-600 text-white' : 'text-slate-600'"
+                                    @click="sheet.source_type = 'node_output'; sheet.run_id = ''">
+                              节点输出
+                            </button>
+                            <button type="button"
+                                    class="rounded px-2 py-0.5 transition"
+                                    :class="sheet.source_type === 'history_run' ? 'bg-purple-600 text-white' : 'text-slate-600'"
+                                    @click="sheet.source_type = 'history_run'">
+                              历史运行
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- node_output 模式 -->
+                        <div v-if="sheet.source_type !== 'history_run'" class="grid grid-cols-1 gap-2 lg:grid-cols-3">
                           <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">来源节点</span>
-                            <select v-model="sheet.source_node"
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">节点</span>
+                            <select v-model="sheet.node_id"
                                     @change="ensureSheetDependency(node, sheet)"
                                     class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
-                              <option value="">默认（依赖的对比任务）</option>
+                              <option value="">默认（depends_on 第一个）</option>
                               <option v-for="cand in candidateSourceNodes(node)" :key="cand.id" :value="cand.id">
                                 {{ cand.id }}（{{ cand.type }}）{{ cand.name ? ' · ' + cand.name : '' }}
                               </option>
                             </select>
                           </label>
                           <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">字段路径（dot-path）</span>
-                            <input v-model="sheet.source_field" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="samples.diff / summary / ...">
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
+                            <input v-model="sheet.dataset"
+                                   :list="`dataset-presets-${node.id}-${sIdx}`"
+                                   class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs"
+                                   placeholder="summary / diff / only_source / ...">
+                            <datalist :id="`dataset-presets-${node.id}-${sIdx}`">
+                              <option v-for="d in datasetPresetsForNode(workflowDraft.nodes, sheet.node_id)" :key="d" :value="d" />
+                            </datalist>
                           </label>
                           <label>
                             <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
                             <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
                           </label>
                         </div>
-                        <p class="mt-1.5 text-[10.5px] text-slate-500">
-                          运行时读 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[source_node][source_field]</code>。
-                          来源节点留空 = 默认用本节点 depends_on 的第一个上游（适合"单 compare → 一个 excel_export"）。
-                          compare 节点常用字段：<code class="rounded bg-white px-1 font-mono text-[10px]">samples.diff</code> /
-                          <code class="rounded bg-white px-1 font-mono text-[10px]">samples.only_source</code> /
-                          <code class="rounded bg-white px-1 font-mono text-[10px]">summary</code>。
-                          选中来源节点会自动加入本节点的 depends_on。
+
+                        <!-- history_run 模式 -->
+                        <div v-else class="grid grid-cols-1 gap-2 lg:grid-cols-3">
+                          <label class="lg:col-span-3">
+                            <span class="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                              历史运行（run_id）
+                              <button type="button" class="text-[10px] font-mono normal-case text-blue-600 hover:underline" @click="loadAllWorkflowRuns">↻ 刷新列表</button>
+                            </span>
+                            <select v-model="sheet.run_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
+                              <option value="">— 选择一次历史 run —</option>
+                              <option v-for="r in (allWorkflowRuns || [])" :key="r.run_id" :value="r.run_id">
+                                {{ r.workflow_name }} · {{ r.run_id.slice(0, 8) }} · {{ r.started_at?.slice(5, 16) || '' }} · {{ r.status }}
+                              </option>
+                            </select>
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">该 run 的节点 id</span>
+                            <input v-model="sheet.node_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="例如 n1">
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
+                            <input v-model="sheet.dataset" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="summary / diff / ...">
+                          </label>
+                          <label>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
+                            <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
+                          </label>
+                        </div>
+
+                        <p class="text-[10.5px] text-slate-500">
+                          <template v-if="sheet.source_type === 'history_run'">
+                            从指定的历史 run 拿 <code class="rounded bg-white px-1 font-mono text-[10px]">nodes[node_id].output[dataset]</code>。
+                            run_id 是某次执行的唯一标识，不是任务定义。
+                          </template>
+                          <template v-else>
+                            从本次运行的 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[node_id][dataset]</code> 拿数据。
+                            节点留空 = 用 depends_on 第一个；选中节点会自动加入 depends_on。
+                            compare 节点 dataset 用短名（summary / diff / only_source / only_target / same），
+                            runner 自动映射到 samples.* 字段。
+                          </template>
                         </p>
                       </div>
                     </li>

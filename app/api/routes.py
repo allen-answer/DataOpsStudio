@@ -442,8 +442,10 @@ def config_import(config_file: UploadFile = File(...)):
     )
 
 
-@router.get("/results/{filename}")
+@router.get("/results/{filename:path}")
 def download_result(filename: str):
+    """支持子目录的下载：/results/workflow_runs/<run>/exports/<file>.xlsx 也走这里。
+    path traversal 防御：解析后必须仍位于 RESULTS_DIR 之下。"""
     path = (RESULTS_DIR / filename).resolve()
     if RESULTS_DIR.resolve() not in path.parents or not path.exists():
         raise HTTPException(status_code=404, detail="Result not found")

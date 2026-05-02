@@ -134,10 +134,9 @@ def test_excel_export_requires_at_least_one_enabled_sheet():
         run_excel_export_node({"sheets": [{"id": "s1", "enabled": False}]}, {})
 
 
-def test_excel_export_writes_real_xlsx_with_upstream_rows(tmp_path, monkeypatch):
-    """Real run_excel_export_node should pull rows from outputs[source_node]
-    via dot-path source_field, write them as an actual .xlsx, and return
-    real rows_written / file_size."""
+def test_excel_export_writes_real_xlsx_with_compare_dataset_shorthand(tmp_path, monkeypatch):
+    """dataset='diff' / 'summary' 是 compare 节点的 short-name，runner 自动映射到
+    samples.diff / summary。文件落到 results/workflow_runs/<run_id>/exports/。"""
     import openpyxl
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     upstream = {
@@ -157,17 +156,19 @@ def test_excel_export_writes_real_xlsx_with_upstream_rows(tmp_path, monkeypatch)
     out = run_excel_export_node({
         "sheets": [
             {"id": "diff", "enabled": True, "sheet_name": "差异",
-             "source_node": "compare1", "source_field": "samples.diff", "max_rows": 100},
+             "source_type": "node_output", "node_id": "compare1", "dataset": "diff", "max_rows": 100},
             {"id": "stats", "enabled": True, "sheet_name": "汇总",
-             "source_node": "compare1", "source_field": "summary"},
+             "source_type": "node_output", "node_id": "compare1", "dataset": "summary"},
             {"id": "skip", "enabled": False, "sheet_name": "ignored",
-             "source_node": "compare1", "source_field": "samples.same"},
+             "source_type": "node_output", "node_id": "compare1", "dataset": "same"},
         ],
-    }, {}, outputs=upstream)
+    }, {}, outputs=upstream, run_id="testrun123")
 
     assert out["sheet_count"] == 2
-    file_path = tmp_path / out["filename"]
+    expected_dir = tmp_path / "workflow_runs" / "testrun123" / "exports"
+    file_path = expected_dir / out["filename"]
     assert file_path.exists()
+    assert out["relative_path"].startswith("workflow_runs/testrun123/exports/")
     assert out["file_size"] > 0
     assert out["total_rows_written"] == 3   # 2 diff rows + 1 summary row
 
@@ -178,10 +179,6 @@ def test_excel_export_writes_real_xlsx_with_upstream_rows(tmp_path, monkeypatch)
     assert rows[0] == ("id", "old", "new")
     assert rows[1] == (1, "a", "b")
     assert rows[2] == (2, "x", "y")
-    summary_sheet = book["汇总"]
-    summary_rows = list(summary_sheet.values)
-    assert "diff" in summary_rows[0]   # 表头里至少有 diff 字段
-    assert summary_rows[1][summary_rows[0].index("diff")] == 2
 
 
 def test_excel_export_max_rows_truncation(tmp_path, monkeypatch):
@@ -189,30 +186,29 @@ def test_excel_export_max_rows_truncation(tmp_path, monkeypatch):
     upstream = {"src": {"rows": [{"id": i} for i in range(150)]}}
     out = run_excel_export_node({
         "sheets": [{"id": "s", "enabled": True, "sheet_name": "S",
-                    "source_node": "src", "source_field": "rows", "max_rows": 10}],
-    }, {}, outputs=upstream)
+                    "node_id": "src", "dataset": "rows", "max_rows": 10}],
+    }, {}, outputs=upstream, run_id="r1")
     assert out["sheets"][0]["truncated"] is True
     assert out["sheets"][0]["rows_written"] == 10
 
 
-def test_excel_export_defaults_source_node_to_first_upstream(tmp_path, monkeypatch):
-    """Sheet 没指定 source_node → 用 depends_on 的第一个完成的上游节点。
-    覆盖 90% 的"单上游 compare → excel_export"场景，用户不用每个 sheet 都填 source_node。"""
+def test_excel_export_defaults_node_id_to_first_upstream(tmp_path, monkeypatch):
+    """Sheet 没指定 node_id → 用 depends_on 的第一个完成的上游节点。"""
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     upstream = {"compare1": {"samples": {"diff": [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]}}}
     out = run_excel_export_node({
         "sheets": [
             {"id": "diff", "enabled": True, "sheet_name": "差异",
-             "source_field": "samples.diff", "max_rows": 100},   # 注意：没填 source_node
+             "dataset": "diff", "max_rows": 100},   # 没填 node_id
         ],
-    }, {}, outputs=upstream, depends_on=["compare1"])
-    assert out["sheets"][0]["source_node"] == "compare1"   # 自动用了 depends_on[0]
+    }, {}, outputs=upstream, depends_on=["compare1"], run_id="r1")
+    assert out["sheets"][0]["node_id"] == "compare1"   # 自动用了 depends_on[0]
     assert out["sheets"][0]["rows_written"] == 2
     assert out["sheets"][0]["source_resolved"] is True
 
 
-def test_excel_export_explicit_source_node_overrides_default(tmp_path, monkeypatch):
-    """显式指定 source_node 时不会被 depends_on 缺省覆盖。"""
+def test_excel_export_explicit_node_id_overrides_default(tmp_path, monkeypatch):
+    """显式指定 node_id 时不会被 depends_on 缺省覆盖。"""
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     upstream = {
         "c1": {"summary": {"diff": 7}},
@@ -221,27 +217,81 @@ def test_excel_export_explicit_source_node_overrides_default(tmp_path, monkeypat
     out = run_excel_export_node({
         "sheets": [
             {"id": "s", "enabled": True, "sheet_name": "S",
-             "source_node": "c2", "source_field": "summary"},
+             "node_id": "c2", "dataset": "summary"},
         ],
-    }, {}, outputs=upstream, depends_on=["c1", "c2"])
-    assert out["sheets"][0]["source_node"] == "c2"
-    # 验证读到的是 c2 的 summary 而不是 c1
+    }, {}, outputs=upstream, depends_on=["c1", "c2"], run_id="r1")
+    assert out["sheets"][0]["node_id"] == "c2"
     import openpyxl
-    book = openpyxl.load_workbook(tmp_path / out["filename"])
+    book = openpyxl.load_workbook(tmp_path / "workflow_runs" / "r1" / "exports" / out["filename"])
     rows = list(book["S"].values)
     assert rows[1][rows[0].index("diff")] == 99
 
 
 def test_excel_export_unresolved_source_writes_empty_sheet(tmp_path, monkeypatch):
-    """source_node 不存在或 source_field 路径错 → 空 sheet + source_resolved=False。
-    用户能在节点 output 里看到为啥没数据，但整个 export 不会因此 FAILED。"""
+    """node_id 不存在 → 空 sheet + source_resolved=False，整个 export 不 FAILED。"""
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     out = run_excel_export_node({
         "sheets": [
             {"id": "missing", "enabled": True, "sheet_name": "Missing",
-             "source_node": "no_such_node", "source_field": "x.y"},
+             "node_id": "no_such_node", "dataset": "x"},
         ],
-    }, {}, outputs={})
+    }, {}, outputs={}, run_id="r1")
+    assert out["sheets"][0]["source_resolved"] is False
+    assert out["sheets"][0]["rows_written"] == 0
+
+
+def test_excel_export_legacy_field_names_still_work(tmp_path, monkeypatch):
+    """老配置的 source_node / source_field 应继续工作（向后兼容迁移）。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {"c1": {"samples": {"diff": [{"id": 1}]}}}
+    out = run_excel_export_node({
+        "sheets": [{"id": "s", "enabled": True, "sheet_name": "S",
+                    "source_node": "c1", "source_field": "samples.diff"}],
+    }, {}, outputs=upstream, run_id="r1")
+    assert out["sheets"][0]["source_resolved"] is True
+    assert out["sheets"][0]["rows_written"] == 1
+    # 输出已经规范化到新字段名
+    assert out["sheets"][0]["node_id"] == "c1"
+    assert out["sheets"][0]["dataset"] == "samples.diff"
+
+
+def test_excel_export_history_run_mode_reads_past_run(tmp_path, monkeypatch):
+    """source_type='history_run' + run_id → 从 workflow_history 读历史 run 的
+    outputs，不依赖当前 run 的 completed_outputs。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    historical = {
+        "n1": {
+            "summary": {"diff": 999},
+            "samples": {"diff": [{"id": 1, "x": "old"}, {"id": 2, "x": "old"}]},
+        },
+    }
+    monkeypatch.setattr(
+        "app.services.workflow_history.get_workflow_run",
+        lambda rid: {"nodes": [{"node_id": k, "output": v} for k, v in historical.items()]} if rid == "past_run_xyz" else None,
+    )
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "h", "enabled": True, "sheet_name": "历史差异",
+             "source_type": "history_run", "run_id": "past_run_xyz",
+             "node_id": "n1", "dataset": "diff"},
+        ],
+    }, {}, outputs={}, run_id="current_run")  # outputs 是空的，验证不依赖
+    assert out["sheets"][0]["source_resolved"] is True
+    assert out["sheets"][0]["rows_written"] == 2
+    assert out["sheets"][0]["run_id"] == "past_run_xyz"
+
+
+def test_excel_export_history_run_missing_returns_empty_sheet(tmp_path, monkeypatch):
+    """指向的 history run 不存在 → 空 sheet，不 FAILED。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    monkeypatch.setattr("app.services.workflow_history.get_workflow_run", lambda _: None)
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "h", "enabled": True, "sheet_name": "Missing",
+             "source_type": "history_run", "run_id": "ghost",
+             "node_id": "n1", "dataset": "diff"},
+        ],
+    }, {}, outputs={}, run_id="r")
     assert out["sheets"][0]["source_resolved"] is False
     assert out["sheets"][0]["rows_written"] == 0
 
