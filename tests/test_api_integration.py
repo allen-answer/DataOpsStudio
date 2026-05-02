@@ -378,6 +378,56 @@ def test_config_export_redacts_passwords_by_default(client, isolated_storage):
             f"默认导出泄露明文密码：{ds.get('name')} -> {ds['password']!r}"
 
 
+def test_log_redaction_filter_masks_password_in_messages():
+    """RedactingFilter 兜底未来代码不慎 log password 出去。这里直接喂构造的
+    LogRecord 验证替换。"""
+    import logging
+    from app.utils.logging_config import RedactingFilter
+
+    f = RedactingFilter()
+
+    # form / kwargs 风格
+    rec = logging.LogRecord("x", logging.INFO, "p", 0, "user login password=secret123 ok", (), None)
+    assert f.filter(rec) is True
+    assert "secret123" not in rec.getMessage()
+    assert "password=***" in rec.getMessage()
+
+    # JSON 风格
+    rec2 = logging.LogRecord("x", logging.INFO, "p", 0, '{"name": "ds", "password": "p@ss!", "ok": true}', (), None)
+    f.filter(rec2)
+    assert "p@ss!" not in rec2.getMessage()
+    assert '"password": "***"' in rec2.getMessage()
+
+    # 不影响无敏感字段的消息
+    rec3 = logging.LogRecord("x", logging.INFO, "p", 0, "workflow finish status=success", (), None)
+    f.filter(rec3)
+    assert rec3.getMessage() == "workflow finish status=success"
+
+
+def test_jsonstore_writes_files_with_owner_only_perms(tmp_path):
+    """POSIX 系统上 datasource JSON 应当只有 owner 可读写（0600）。
+    Windows 上 chmod 行为不同，本测试在 Windows 自动跳过。"""
+    import os
+    import stat
+    import sys
+
+    if sys.platform.startswith("win"):
+        import pytest
+        pytest.skip("chmod 0600 在 Windows 上不是 POSIX 语义")
+
+    from app.models import DataSource, DataSourceCreate
+    from app.services.json_store import JsonStore
+
+    path = tmp_path / "ds.json"
+    store = JsonStore(path, DataSource)
+    store.create(DataSourceCreate(
+        name="t", db_type="MySQL", host="h", port=3306, password="leak-me",
+    ))
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600, f"datasource JSON 权限应当是 0600，实际是 {oct(mode)}"
+
+
 def test_config_export_includes_passwords_when_explicitly_requested(client, isolated_storage):
     """显式 ?include_passwords=true 才把明文密码写进去（用户自备份场景）。"""
     import json as _json

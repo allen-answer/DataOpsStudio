@@ -86,7 +86,18 @@ class JsonStore(Generic[ModelT, CreateT]):
         self._cache_mtime_ns = self.path.stat().st_mtime_ns
 
     def _replace_file(self, data: list[dict]) -> None:
+        import os
+        import stat as _stat
+
         content = json.dumps(data, ensure_ascii=False, indent=2)
         tmp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(content, encoding="utf-8")
+        # 数据源 JSON 含明文密码 —— 在 POSIX 系统上限制为 600（仅 owner 可读
+        # 写）防止系统其它用户 cat 出来。Windows 上 chmod 行为不同（不分用户
+        # 组），os.chmod 仍然能调，但实际 ACL 控制不在 mode 位上 —— noop 即可，
+        # 没有副作用。
+        try:
+            os.chmod(tmp_path, _stat.S_IRUSR | _stat.S_IWUSR)
+        except OSError:
+            pass
         tmp_path.replace(self.path)
