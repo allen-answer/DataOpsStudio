@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import mimetypes
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -7,6 +9,18 @@ from app.api.routes import router
 from app.utils.logging_config import setup_logging
 from app.utils.paths import BASE_DIR, ensure_dirs
 
+
+# 注册 Office / 数据相关扩展名的 mimetype。python:3.12-slim 镜像没装
+# /etc/mime.types，python `mimetypes` 默认表里也认不出 .xlsx —— 导致
+# FileResponse 用 text/plain 回 .xlsx 二进制，浏览器把它当文本渲染就成了
+# 一坨乱码。在 import 阶段统一 add_type 一次，所有 FileResponse 自动用对。
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"
+)
+mimetypes.add_type(
+    "application/vnd.ms-excel.sheet.macroEnabled.12", ".xlsm"
+)
+mimetypes.add_type("application/json", ".json")
 
 ensure_dirs()
 setup_logging()
