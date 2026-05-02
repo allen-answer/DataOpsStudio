@@ -320,3 +320,71 @@ class HistoryItem(BaseModel):
     summary: CompareSummary | None = None
     result_filename: str = ""
     excel_filename: str = ""
+
+
+# --- Lineage analyze response ---
+# 顶层契约先固化；每条 list[dict] 项的字段太散（~80 个键，按 dialect / 输入
+# 形态变化），暂保留 dict[str, Any]。后续如果哪个具体字段被前端深度依赖，
+# 单独提取成 model。
+
+class LineageAnalyzeResult(BaseModel):
+    """单 SQL 血缘分析的响应（/api/lineage/analyze 和 analyze-form）。"""
+    statement_count: int = 0
+    tables: list[dict[str, Any]] = Field(default_factory=list)
+    columns: list[dict[str, Any]] = Field(default_factory=list)
+    insert_mappings: list[dict[str, Any]] = Field(default_factory=list)
+    joins: list[dict[str, Any]] = Field(default_factory=list)
+    filters: list[dict[str, Any]] = Field(default_factory=list)
+    group_by: list[dict[str, Any]] = Field(default_factory=list)
+    unions: list[dict[str, Any]] = Field(default_factory=list)
+    variables: list[dict[str, Any]] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    dynamic_sql_count: int = 0
+    dynamic_sql_segments: list[dict[str, Any]] = Field(default_factory=list)
+    procedure_segments: list[dict[str, Any]] = Field(default_factory=list)
+    graph_edges: list[dict[str, Any]] = Field(default_factory=list)
+    graph_groups: list[dict[str, Any]] = Field(default_factory=list)
+    parse_errors: list[dict[str, str]] = Field(default_factory=list)
+    warnings: list[Any] = Field(default_factory=list)
+    statements: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LineageBatchSummary(BaseModel):
+    """批量血缘分析的汇总卡片，前端 stats 区直接读这一段。"""
+    files: int = 0
+    success_files: int = 0
+    failed_files: int = 0
+    read_tables: int = 0
+    write_tables: int = 0
+    table_edges: int = 0
+    script_edges: int = 0
+    dag_cycles: int = 0
+    write_conflicts: int = 0
+    warnings: int = 0
+
+
+class LineageBatchResult(BaseModel):
+    """批量血缘分析的核心结果 (analyze_lineage_batch 直接返回)。"""
+    file_count: int = 0
+    files: list[dict[str, Any]] = Field(default_factory=list)
+    table_edges: list[dict[str, Any]] = Field(default_factory=list)
+    table_groups: list[dict[str, Any]] = Field(default_factory=list)
+    script_edges: list[dict[str, Any]] = Field(default_factory=list)
+    field_mappings: list[dict[str, Any]] = Field(default_factory=list)
+    impact_analysis: dict[str, list[str]] = Field(default_factory=dict)
+    dag: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[Any] = Field(default_factory=list)
+    summary: LineageBatchSummary = Field(default_factory=LineageBatchSummary)
+
+
+class LineageBatchExports(BaseModel):
+    """批量分析落盘的 JSON / Excel 文件名（在 results/ 下，可直接走
+    /results/{filename} 下载）。"""
+    json_filename: str = ""
+    excel_filename: str = ""
+
+
+class LineageBatchAnalyzeResponse(BaseModel):
+    """/api/lineage/batch/analyze 的完整响应：核心结果 + 落盘导出文件。"""
+    result: LineageBatchResult
+    exports: LineageBatchExports = Field(default_factory=LineageBatchExports)

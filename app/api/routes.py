@@ -18,6 +18,8 @@ from app.models import (
     DataSourceCreate,
     DatabaseType,
     JobInfo,
+    LineageAnalyzeResult,
+    LineageBatchAnalyzeResponse,
     SourceKind,
     SqlMode,
     Workflow,
@@ -380,7 +382,7 @@ def upload_excel_api(file: UploadFile = File(...)):
     return excel_uploads.save_uploaded_excel(file)
 
 
-@router.post("/api/lineage/analyze")
+@router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
 def lineage_api(payload: dict[str, str] = Body(...)):
     try:
         return lineage_service.analyze_json(payload)
@@ -390,7 +392,7 @@ def lineage_api(payload: dict[str, str] = Body(...)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/lineage/analyze-form")
+@router.post("/api/lineage/analyze-form", response_model=LineageAnalyzeResult)
 def lineage_form_api(
     sql: str = Form(""),
     dialect: str = Form(""),
@@ -414,7 +416,7 @@ def lineage_form_api(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/lineage/batch/analyze")
+@router.post("/api/lineage/batch/analyze", response_model=LineageBatchAnalyzeResponse)
 def lineage_batch_api(
     dialect: str = Form(""),
     schema_datasource_id: str = Form(""),
