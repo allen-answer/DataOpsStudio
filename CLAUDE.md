@@ -150,7 +150,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 ## 路线图
 
-整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理**。
+整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强（双轨）**。
 
 ### 已完成
 
@@ -165,6 +165,34 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
   - 前端构建产物出库（`static/spa/index.html` + `assets/` 由 Dockerfile 多阶段 / Windows release 脚本生成）
 - **Phase 6（测试）**：283 个 unit + HTTP 集成测试（FastAPI TestClient，`tests/test_api_integration.py`，覆盖 CRUD / 异步执行 / artifact 下载 / mimetype 回归 / 密码脱敏）+ 浏览器 e2e 框架（`tests/e2e/`，可选装 Playwright，catch render-time throw 那种 bug）
 
+### Phase 7（血缘语义增强 · 双轨方案 · 未排期）
+
+**核心原则**：离线规则分析必须能独立工作；AI 只提高"可读性、业务归纳、风险解释"，不能替代解析器；同一个 SQL 在无 AI 环境下也必须能输出可用的语义血缘。
+
+#### 轨道 A：AI 可插拔增强（可选启用）
+
+目标：用户有 AI 能力时，提升语义理解和展示质量。
+
+- **Provider 抽象**：不绑定具体厂商，统一 `LineageAIProvider` 接口。支持 OpenAI / Azure OpenAI / 私有大模型 / Ollama / 本地模型。
+- **默认关闭**：通过配置（`config/lineage_ai.json` 或 env）启用。
+- **AI 只做语义增强，不作为血缘事实来源**。AI 输入必须基于系统确定性解析结果 + SQL 注释 + 表名/字段名；AI 输出落到 `ai_enrichment` 字段，不覆盖原始 lineage。
+- **每条 AI 结论必须有** `confidence` / `reason` / `evidence` 三元组。
+- **AI 异常不能影响普通血缘分析**——provider 调用失败时静默降级，规则结果照常输出。
+- **前端明确标识"AI 辅助判断"**——徽章 + 颜色区分规则结论与 AI 结论。
+
+#### 轨道 B：离线确定性分析增强（无 AI 也能用）
+
+目标：没有 AI 的环境下，也能明显提升 SQL / 存储过程分析准确性。
+
+1. **存储过程分段解析**——支持 Oracle / DM / OB / MySQL；识别 BEGIN/END 内多段 `SELECT INTO` / `DELETE` / `INSERT` / `UPDATE` / `MERGE` / `COMMIT`；每段保留 `statement_index` / `line_start` / `line_end` / 前置注释。
+2. **DML 聚合**——按目标表聚合 INSERT/UPDATE/MERGE 次数，识别 `DELETE+INSERT` / `TRUNCATE+INSERT` 全量重刷模式。输出 `target_summary`：`target_table` / `insert_count` / `update_count` / `merge_count` / `delete_before_insert` / `refresh_mode`。
+3. **Oracle 方言增强**——正确处理 `/*+ parallel(...) */` hint、`table@dblink` DB Link、`SELECT ... INTO variable`、包/过程/变量赋值/游标/动态 SQL 片段；对无法静态解析的 `EXECUTE IMMEDIATE` 输出风险提示。
+4. **表角色识别**（纯规则，不依赖 AI）：`config` / `reference` / `dimension` / `source_fact` / `filter|exclusion` / `target` / `intermediate` / `remote_dblink`。
+5. **业务分组规则**——可配置规则文件 `lineage_group_rules.yml`，按表名 / schema / 注释关键词分组。示例：`a_ks_jg_*` → 机构、`a_ks_r_*` → 融资融券、`a_ks_qq_*` → 期权、`*_stock` → 持仓/市值、`t_config` / `bbq` → 配置、`pcyyyb` / `cust_base_info` → 过滤/排除。
+6. **注释利用**——提取 INSERT 前最近的中文注释作为 `statement_title`；用注释辅助业务分组和节点标签（"集中交易" / "机构柜台" / "融资融券" / "期权" / "A股主板股票"等）。
+7. **语义血缘结构** `semantic_lineage`——即使没有 AI 也输出：`procedure` / `target_summary` / `table_roles` / `business_groups` / `grouped_edges` / `observations` / `risks`。
+8. **前端两个视图**——原始血缘图（详细表/字段关系） + 语义血缘图（业务分组 → 目标中间表 → 下游消费）。AI 开启时展示 AI 增强标签；AI 关闭时展示规则分析标签。
+
 ### 还可以做（未排期）
 
 - 前端状态管理（视情况引入 Pinia）
@@ -173,6 +201,8 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - 多项目空间 + 用户权限 + 审计日志
 - 数据源连接池
 - CSV / Parquet 数据对比
+- 字段级血缘（column-level lineage，独立于 Phase 7 双轨之外）
+- workflow 模板能力 + 端到端测试 + 乱码清理
 
 ## 血缘图设计（LineageGraph.vue）
 
