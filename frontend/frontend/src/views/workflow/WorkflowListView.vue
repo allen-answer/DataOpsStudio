@@ -18,6 +18,7 @@ const enriched = computed(() => state.workflows.map((wf) => {
   const latestRun = wfRuns[0] || null
   const success7d = wfRuns.slice(0, 7)
   const successCount = success7d.filter((r) => r.status === 'success').length
+  const counts = latestRun?.node_status_counts || {}
   return {
     ...wf,
     owner: wf.owner || '—',
@@ -30,6 +31,12 @@ const enriched = computed(() => state.workflows.map((wf) => {
     last_run_status: latestRun?.status || 'none',
     last_run_at: latestRun?.started_at || '',
     last_duration: latestRun ? `${latestRun.elapsed_seconds}s` : '—',
+    last_run_counts: {
+      success: counts.success || 0,
+      failed: counts.failed || 0,
+      skipped: counts.skipped || 0,
+    },
+    has_skipped: (counts.skipped || 0) > 0,
     success_rate_7d: success7d.length ? successCount / success7d.length : null,
     runs_24h: wfRuns.filter((r) => r.started_at && r.started_at >= new Date(Date.now() - 86400_000).toISOString().slice(0, 19)).length,
   }
@@ -177,7 +184,18 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
             </td>
             <td class="px-3 py-3">
               <p class="font-mono text-[12px] text-slate-700">{{ wf.last_run_at ? wf.last_run_at.slice(5) : '—' }}</p>
-              <p class="font-mono text-[10.5px] text-slate-500">{{ wf.last_duration }}</p>
+              <div class="mt-0.5 flex items-center gap-2 font-mono text-[10.5px]">
+                <span class="text-slate-500">{{ wf.last_duration }}</span>
+                <span v-if="wf.latest_run" class="flex items-center gap-1.5">
+                  <span class="text-emerald-600">✓{{ wf.last_run_counts.success }}</span>
+                  <span v-if="wf.last_run_counts.failed" class="text-rose-600">✕{{ wf.last_run_counts.failed }}</span>
+                  <span v-if="wf.last_run_counts.skipped"
+                        class="text-amber-600"
+                        title="when 条件 false 跳过 / 上游失败级联">
+                    ⊘{{ wf.last_run_counts.skipped }}
+                  </span>
+                </span>
+              </div>
             </td>
             <td class="px-3 py-3">
               <p v-if="wf.has_schedule" class="font-mono text-[12px] text-slate-700">{{ wf.schedule_text }}</p>

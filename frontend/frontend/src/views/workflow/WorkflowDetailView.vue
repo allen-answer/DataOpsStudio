@@ -239,6 +239,18 @@ const edgeHighlighted = (edge) =>
 
 const nodeStatus = (nodeId) => nodeStatusByid.value[nodeId]?.status || 'pending'
 
+// DAG canvas 节点 box 描边色 —— 失败/跳过的节点要醒目，光看小圆点容易漏。
+// selected 仍走蓝环；非 selected 时按状态着色。
+const nodeBoxClass = (nodeId) => {
+  if (selectedNodeId.value === nodeId) return 'border-blue-400 ring-2 ring-blue-200'
+  const status = nodeStatus(nodeId)
+  if (status === 'failed')   return 'border-rose-300 bg-rose-50/50'
+  if (status === 'skipped')  return 'border-amber-300 bg-amber-50/40'
+  if (status === 'running')  return 'border-blue-300 ring-1 ring-blue-100 animate-pulse'
+  if (status === 'success')  return 'border-emerald-200'
+  return 'border-slate-200'
+}
+
 const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
 
 const tabs = [
@@ -378,7 +390,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             </svg>
             <button v-for="n in layout.positioned" :key="n.id"
                     class="absolute flex flex-col gap-1 rounded-xl border bg-white px-3 py-2 text-left shadow-sm transition hover:shadow-md"
-                    :class="selectedNodeId === n.id ? 'border-blue-400 ring-2 ring-blue-200' : 'border-slate-200'"
+                    :class="nodeBoxClass(n.id)"
                     :style="{ left: n.x + 'px', top: n.y + 'px', width: '220px', height: '84px' }"
                     @click="selectedNodeId = n.id">
               <div class="flex items-center gap-1.5">
