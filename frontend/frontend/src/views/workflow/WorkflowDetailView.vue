@@ -1,5 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
+import { apiGet } from '../../api'
 import { healthMeta, nodeStatusMeta, getMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
 
 const parameterTypeMeta = _ptm
@@ -55,6 +56,65 @@ const ensureSheetDependency = (node, sheet) => {
   if (!node.depends_on.includes(sheet.source_node)) {
     node.depends_on.push(sheet.source_node)
   }
+}
+
+// --- 运行历史 tab：展开行加 mini gantt ---
+const expandedHistoryRun = ref('')          // 当前展开的 run_id（每次只展一行）
+const historyDetailCache = ref({})          // run_id → 完整 run 详情
+const historyDetailLoading = ref({})        // run_id → bool
+const toggleHistoryExpand = async (runId) => {
+  if (expandedHistoryRun.value === runId) {
+    expandedHistoryRun.value = ''
+    return
+  }
+  expandedHistoryRun.value = runId
+  if (historyDetailCache.value[runId]) return
+  historyDetailLoading.value[runId] = true
+  try {
+    historyDetailCache.value[runId] = await apiGet(`/api/workflow-runs/${runId}`)
+  } catch (_) {
+    historyDetailCache.value[runId] = null
+  } finally {
+    historyDetailLoading.value[runId] = false
+  }
+}
+
+// 历史运行行的状态显示：success + 有 skipped 节点 → "部分跳过"，色调改琥珀。
+const historyRunStatusDisplay = (run) => {
+  const status = run.status
+  const skipped = run.node_status_counts?.skipped || 0
+  if (status === 'success' && skipped > 0) {
+    return { label: `部分跳过 (${skipped})`, pillClass: 'bg-amber-50 text-amber-700 ring-amber-200', dotClass: 'bg-amber-500' }
+  }
+  if (status === 'success') {
+    return { label: '成功', pillClass: 'bg-emerald-50 text-emerald-700 ring-emerald-200', dotClass: 'bg-emerald-500' }
+  }
+  if (status === 'failed') {
+    return { label: '失败', pillClass: 'bg-rose-50 text-rose-700 ring-rose-200', dotClass: 'bg-rose-500' }
+  }
+  if (status === 'cancelled') {
+    return { label: '已取消', pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400' }
+  }
+  return { label: status || '—', pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400' }
+}
+
+// 把 detail 拍平成 gantt 步骤（offset / duration / status），同 WorkflowRunView。
+const historyGantt = (detail) => {
+  if (!detail || !Array.isArray(detail.nodes)) return { steps: [], totalSeconds: 1 }
+  const parseTs = (s) => {
+    if (!s) return null
+    const t = Date.parse(s.includes('T') ? s : s.replace(' ', 'T'))
+    return isFinite(t) ? t : null
+  }
+  const startTs = parseTs(detail.started_at)
+  let total = detail.elapsed_seconds || 1
+  const steps = detail.nodes.map((n) => {
+    const offsetSec = n.started_at && startTs ? Math.max(0, (parseTs(n.started_at) - startTs) / 1000) : 0
+    const duration = n.elapsed_seconds || 0
+    if (offsetSec + duration > total) total = offsetSec + duration
+    return { node: n, offsetSec, duration }
+  })
+  return { steps, totalSeconds: Math.max(total, 1) }
 }
 
 // 判断 SQL override 看起来是不是合法（首词必须是 SELECT 或 WITH）。
@@ -471,6 +531,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
         <table class="w-full text-sm">
           <thead class="border-b border-slate-200 bg-slate-50/60">
             <tr class="text-left">
+              <th class="w-8"></th>
               <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">状态</th>
               <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">运行 ID</th>
               <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">开始时间</th>
@@ -481,28 +542,69 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             </tr>
           </thead>
           <tbody>
-            <tr v-for="run in workflowRunHistory" :key="run.run_id" class="border-b border-slate-100 last:border-0 hover:bg-slate-50/70">
-              <td class="px-3 py-2.5">
-                <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset"
-                      :class="run.status === 'success' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-rose-200'">
-                  <span class="h-1.5 w-1.5 rounded-full" :class="run.status === 'success' ? 'bg-emerald-500' : 'bg-rose-500'"></span>
-                  {{ run.status === 'success' ? '成功' : '失败' }}
-                </span>
-              </td>
-              <td class="px-3 py-2.5 font-mono text-[11.5px] text-slate-600">{{ run.run_id.slice(0, 12) }}</td>
-              <td class="px-3 py-2.5 font-mono text-[11.5px] text-slate-700">{{ run.started_at }}</td>
-              <td class="px-3 py-2.5 text-right font-mono text-[11.5px] text-slate-700">{{ run.elapsed_seconds }}s</td>
-              <td class="px-3 py-2.5 text-[11px]">
-                <span class="text-emerald-600 font-mono">✓{{ run.node_status_counts.success || 0 }}</span>
-                <span v-if="run.node_status_counts.failed" class="ml-2 text-rose-600 font-mono">✕{{ run.node_status_counts.failed }}</span>
-                <span v-if="run.node_status_counts.skipped" class="ml-2 text-slate-500 font-mono">⊘{{ run.node_status_counts.skipped }}</span>
-              </td>
-              <td class="px-3 py-2.5 text-[11.5px] text-rose-600">{{ run.error || '' }}</td>
-              <td class="px-3 py-2.5 text-right">
-                <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click="emit('open-run', run.run_id)">查看 →</button>
-              </td>
-            </tr>
-            <tr v-if="!workflowRunHistory.length"><td colspan="7" class="py-8 text-center text-[12.5px] text-slate-400">还没有历史运行</td></tr>
+            <template v-for="run in workflowRunHistory" :key="run.run_id">
+              <tr class="cursor-pointer border-b border-slate-100 last:border-0 transition hover:bg-slate-50/70"
+                  :class="expandedHistoryRun === run.run_id ? 'bg-blue-50/30' : ''"
+                  @click="toggleHistoryExpand(run.run_id)">
+                <td class="px-2 py-2.5 text-center font-mono text-[10px] text-slate-400">
+                  {{ expandedHistoryRun === run.run_id ? '▾' : '▸' }}
+                </td>
+                <td class="px-3 py-2.5">
+                  <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset"
+                        :class="historyRunStatusDisplay(run).pillClass">
+                    <span class="h-1.5 w-1.5 rounded-full" :class="historyRunStatusDisplay(run).dotClass"></span>
+                    {{ historyRunStatusDisplay(run).label }}
+                  </span>
+                </td>
+                <td class="px-3 py-2.5 font-mono text-[11.5px] text-slate-600">{{ run.run_id.slice(0, 12) }}</td>
+                <td class="px-3 py-2.5 font-mono text-[11.5px] text-slate-700">{{ run.started_at }}</td>
+                <td class="px-3 py-2.5 text-right font-mono text-[11.5px] text-slate-700">{{ run.elapsed_seconds }}s</td>
+                <td class="px-3 py-2.5 text-[11px]">
+                  <span class="text-emerald-600 font-mono">✓{{ run.node_status_counts.success || 0 }}</span>
+                  <span v-if="run.node_status_counts.failed" class="ml-2 text-rose-600 font-mono">✕{{ run.node_status_counts.failed }}</span>
+                  <span v-if="run.node_status_counts.skipped" class="ml-2 text-slate-500 font-mono">⊘{{ run.node_status_counts.skipped }}</span>
+                </td>
+                <td class="px-3 py-2.5 text-[11.5px] text-rose-600">{{ run.error || '' }}</td>
+                <td class="px-3 py-2.5 text-right" @click.stop>
+                  <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click="emit('open-run', run.run_id)">查看 →</button>
+                </td>
+              </tr>
+              <!-- 展开行：mini gantt -->
+              <tr v-if="expandedHistoryRun === run.run_id">
+                <td colspan="8" class="border-b border-slate-100 bg-slate-50/40 px-4 py-3">
+                  <div v-if="historyDetailLoading[run.run_id]" class="text-center text-[11.5px] text-slate-400">加载中...</div>
+                  <div v-else-if="!historyDetailCache[run.run_id]" class="text-center text-[11.5px] text-rose-500">加载失败 — 请重试</div>
+                  <div v-else>
+                    <div class="mb-2 flex items-center justify-between">
+                      <span class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-500">
+                        节点时间线 · 共 {{ Math.round(historyGantt(historyDetailCache[run.run_id]).totalSeconds) }} 秒
+                      </span>
+                      <span class="text-[10.5px] text-slate-400">点击查看可看完整运行详情</span>
+                    </div>
+                    <div class="space-y-1">
+                      <div v-for="step in historyGantt(historyDetailCache[run.run_id]).steps" :key="step.node.node_id"
+                           class="grid grid-cols-[160px_minmax(0,1fr)_60px] items-center gap-3 text-[11px]">
+                        <span class="flex items-center gap-1.5 truncate">
+                          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="nodeStatusMeta[step.node.status]?.dot || 'bg-slate-300'"></span>
+                          <span class="truncate font-medium text-slate-700">{{ step.node.name || step.node.node_id }}</span>
+                          <span class="font-mono text-[9.5px] text-slate-400">· {{ step.node.type }}</span>
+                        </span>
+                        <span class="relative h-2 rounded-full bg-slate-100">
+                          <span class="absolute top-0 h-2 rounded-full"
+                                :class="nodeStatusMeta[step.node.status]?.bar || 'bg-slate-300'"
+                                :style="{
+                                  left: (step.offsetSec / historyGantt(historyDetailCache[run.run_id]).totalSeconds * 100) + '%',
+                                  width: Math.max(0.5, step.duration / historyGantt(historyDetailCache[run.run_id]).totalSeconds * 100) + '%',
+                                }"></span>
+                        </span>
+                        <span class="text-right font-mono tabular-nums text-[10.5px] text-slate-500">{{ step.duration }}s</span>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+            <tr v-if="!workflowRunHistory.length"><td colspan="8" class="py-8 text-center text-[12.5px] text-slate-400">还没有历史运行</td></tr>
           </tbody>
         </table>
       </div>
