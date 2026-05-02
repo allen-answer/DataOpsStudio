@@ -92,11 +92,13 @@ cp config/tasks.example.json config/tasks.json
 
 **SQL 安全** — 用户提交的所有 SQL 在执行前都经过 `utils/sql_guard.py` 校验。只允许 `SELECT`/`WITH`，遇到 DML/DDL 关键字直接拒绝。
 
-**作业流（Phase 3）** — 参数驱动的多步骤数据对比作业：
-- `services/workflow_engine.py` 提供 `run_workflow(workflow, variables, runners, cancel_check)`，按 `depends_on` 拓扑序执行
-- 节点类型：`params` / `compare` / `lineage` / `http` / `excel_export`，注册在 `services/workflow_nodes.py` 的 `NODE_RUNNERS`。新节点类型 (1) 在 `models.WorkflowNodeType` 加值 (2) 写 `(config, variables) -> dict` runner (3) 注册到字典
+**作业流** — 参数驱动的多步骤数据对比作业：
+- `services/workflow_engine.py` 提供 `run_workflow(workflow, variables, runners, cancel_check, resume_from, from_node_id)`，按 `depends_on` 拓扑序执行
+- 节点类型：`params` / `compare` / `lineage` / `http` / `excel_export`，runner 拆在 `app/workflow/nodes/<type>.py`，集中注册在 `app/workflow/registry.NODE_RUNNERS`。`app/services/workflow_nodes.py` 是向后兼容 shim。新节点类型 (1) 在 `models.workflow.WorkflowNodeType` 加值 (2) `app/workflow/nodes/<type>.py` 写 `(config, variables, **_) -> dict` runner (3) 在 registry 注册
 - **变量与参数引用语法详见 `docs/PARAMETERS.md`**。要点：`${name}` 引用变量、`${nodes.X.Y}` 引用上游节点输出、`${var | sql_in}` 等过滤器把 list 渲染成 SQL IN 子句体；`params` 节点的标量输出自动合并回 workflow 变量域
 - 单节点失败 → 下游 `SKIPPED`、旁路继续；`when:` 表达式可让节点条件性跳过
+- **局部重跑**：`POST /api/workflow-runs/{run_id}/rerun` 指定 `from_node_id`，上游沿用上次 output（`reused=true`），自身和下游重跑。所有祖先必须上次 SUCCESS 否则拒。
+- **Artifact 模型**：节点产出文件统一通过 `output.artifacts: list[Artifact]` 声明，`WorkflowRun.artifacts` computed 顶层聚合。前端 `/results/<relative_path>` 下载。删 run 连带 rmtree `results/workflow_runs/<run_id>/` 整目录
 - `cancel_check` 在节点之间被轮询；`services/jobs.py` 的 `submit_workflow_run` 把它接到现有的 `_is_cancel_requested` 标志，所以 `/api/runs/{job_id}/cancel` 对作业流和对比任务一视同仁
 - WorkflowRun 落盘到 `results/workflow_runs/<run_id>.json`，由 `services/workflow_history.py` 管理
 
@@ -104,7 +106,11 @@ cp config/tasks.example.json config/tasks.json
 
 ### 前端
 
-Vue 3 单页应用。`App.vue` 持有所有共享状态和后端调用，子视图（`views/*.vue`）通过 `provide('app', {...})` / `inject('app')` 拿到 reactive 引用——故意没引 Pinia，状态分层是 Phase 4 决策，看用量再决定。当前视图：`DatasourceView` / `WorkbenchView`（对比任务）/ `WorkflowView`（作业流）/ `LineageView` / `BatchView` / `HistoryView`。构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。
+Vue 3 单页应用。`App.vue` 持有所有共享状态和后端调用，子视图（`views/*.vue`）通过 `provide('app', {...})` / `inject('app')` 拿到 reactive 引用——故意没引 Pinia，状态分层是后续决策，看用量再决定。当前视图：`DatasourceView` / `WorkbenchView`（对比任务）/ `WorkflowView`（作业流）/ `LineageView` / `BatchView` / `HistoryView`。
+
+作业流详情视图（`WorkflowDetailView.vue`）按节点类型把编辑器抽到 `components/workflow/`：`WorkflowParamsNodeEditor` / `WorkflowCompareNodeEditor` / `WorkflowLineageNodeEditor` / `WorkflowExcelExportNodeEditor`。新增节点类型时在这里加对应组件，DetailView 主文件 v-if 分发即可。
+
+构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。`static/spa/index.html` 和 `static/spa/assets/` 已 gitignore，由 CI / Docker / release 脚本生成；手写资源 `static/spa/favicon.svg` 等仍跟踪。`/spa` endpoint 加 `Cache-Control: no-cache`，避免 index.html 被浏览器缓存住引用旧 hash 的 bundle。
 
 主要依赖：`@antv/g6`（血缘图）、`@codemirror/*`（SQL 编辑器）、`@vueuse/core`（工具函数，如 `useClipboard`）、Tailwind CSS v3（样式）。
 
@@ -150,23 +156,23 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 - **Phase 1（血缘）**：`analyzer.py` / `batch_analyzer.py` 拆分、方言路由、存储过程深度解析、动态 SQL 识别、`App.vue` 子组件拆分、API 服务化（`lineage_service.py` / `schema_service.py`）、方言测试 fixture
 - **Phase 2（多来源对比）**：`SqlReader` / `ExcelReader` 抽象层、Excel vs Excel、Excel vs SQL、字段映射 + 类型标准化（日期/数字/Decimal/空值/trim/大小写）、字段筛选 UI（按列勾选 include/exclude）、对比结果导出增强
-- **Phase 3 已交付的部分**：作业流模型 + 变量插值（`${var}`）+ 顺序执行引擎 + `compare` 节点 + HTTP API（CRUD/sync/async）+ 取消支持 + 前端编排页面
-- **Phase 4 已交付的部分**：配置安全清理（`config/*.json` 不入库）+ CI（GitHub Actions: pytest + frontend build）
+- **Phase 3（作业流）**：模型 + 变量插值（`${var}` / `${nodes.X.Y}` / 过滤器）+ DAG 拓扑序执行引擎 + 5 种节点类型（params / compare / lineage / http / excel_export）+ HTTP API（CRUD/sync/async/cancel/局部重跑 from_node）+ `when:` 条件节点 + WorkflowRun 落盘 + Artifact 模型 + 删 run 连带清目录
+- **Phase 4（工程治理）**：
+  - 配置安全（`config/*.json` 不入库 + datasource 密码 API 脱敏 + 导出可选含密码）
+  - 模块拆分：`routes.py` 631 行 → 10 个 `app/api/<domain>.py`；`models.py` 540 行 → `app/models/` 5 个子模块；`workflow_nodes.py` 536 行 → `app/workflow/nodes/` 5 个 + `registry.py`
+  - response_model 全收口：所有 endpoint 挂 Pydantic schema（OpenAPI /docs 给前端 / 第三方一份准确契约）
+  - CI（GitHub Actions: pytest + frontend build）
+  - 前端构建产物出库（`static/spa/index.html` + `assets/` 由 Dockerfile 多阶段 / Windows release 脚本生成）
+- **Phase 6（测试）**：283 个 unit + HTTP 集成测试（FastAPI TestClient，`tests/test_api_integration.py`，覆盖 CRUD / 异步执行 / artifact 下载 / mimetype 回归 / 密码脱敏）+ 浏览器 e2e 框架（`tests/e2e/`，可选装 Playwright，catch render-time throw 那种 bug）
 
-### Phase 3 还没做
+### 还可以做（未排期）
 
-- **新节点类型**：`lineage` / `excel_export` / `batch_lineage` 等（注册表已就位）
-- **真 DAG**：`depends_on` 字段 + 拓扑排序 + 并行执行
-- **执行历史持久化**：`WorkflowRun` 当前不落盘，复用 `jobs.json` 但记录残缺
-- **条件节点**：`when: ${diff_count} > 0` 之类的跳过判断
-
-### Phase 4 还没做
-
-- API 响应模型（lineage / compare / workflow Pydantic schemas）
 - 前端状态管理（视情况引入 Pinia）
 - 任务系统增强（job TTL、失败重试）
-- 大文件保护（Excel 行数 / SQL 结果 / 导出大小上限）
-- 用户文档
+- 调度器（cron/sensor）+ 通知（企业微信 / 邮件 / Webhook）
+- 多项目空间 + 用户权限 + 审计日志
+- 数据源连接池
+- CSV / Parquet 数据对比
 
 ## 血缘图设计（LineageGraph.vue）
 

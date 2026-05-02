@@ -144,7 +144,28 @@ docker compose up -d --build app
 ```
 .
 ├── app/
-│   ├── api/routes.py           # 所有 HTTP 端点（待按领域拆分）
+│   ├── api/                    # HTTP 端点（按领域拆 10 个子模块）
+│   │   ├── routes.py           #   聚合 router（include 各子模块）
+│   │   ├── _shared.py          #   跨子模块共用校验 helper
+│   │   ├── system.py           #   /, /spa, /api/drivers, /api/bootstrap, /results
+│   │   ├── datasources.py      #   /api/datasources/*
+│   │   ├── tasks.py            #   /api/tasks/* (含 preview)
+│   │   ├── runs.py             #   /api/runs/{job_id}/* (异步任务状态/cancel)
+│   │   ├── workflows.py        #   /api/workflows/*
+│   │   ├── workflow_runs.py    #   /api/workflow-runs/* (含 rerun)
+│   │   ├── history.py          #   /api/history + /history/export
+│   │   ├── lineage.py          #   /api/lineage/*
+│   │   ├── uploads.py          #   /api/preview/columns + /api/sql/assist + /api/uploads/excel
+│   │   └── config_io.py        #   /config/import + /config/export
+│   ├── models/                 # Pydantic schema（按领域拆 5 个子模块）
+│   │   ├── common.py           #   DatabaseType / SqlMode / SourceKind
+│   │   ├── datasource.py       #   DataSource(Create)
+│   │   ├── compare.py          #   CompareTask / CompareResult / HistoryItem 等
+│   │   ├── workflow.py         #   Workflow / Node / Asset / Artifact / Run / Job
+│   │   └── responses.py        #   API 响应专用 schema（含 lineage 结果）
+│   ├── workflow/               # 作业流执行运行时
+│   │   ├── nodes/              #   每种节点一个文件：params/compare/lineage/http/excel_export
+│   │   └── registry.py         #   NODE_RUNNERS 注册表
 │   ├── compare/engine.py       # 数据对比引擎
 │   ├── lineage/                # SQL 血缘分析（analyzer + batch_analyzer）
 │   ├── dbclients/              # 数据库驱动与连接工厂
