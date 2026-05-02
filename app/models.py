@@ -348,13 +348,15 @@ class JobInfo(BaseModel):
     task_id: str = ""
     workflow_id: str = ""
     variables: dict[str, str] = Field(default_factory=dict)
-    status: Literal["running", "success", "failed", "cancelled"]
+    status: Literal["queued", "running", "cancelling", "success", "failed", "cancelled"]
     message: str = ""
     created_at: str = ""
     updated_at: str = ""
     result: dict[str, Any] | None = None
     error: str = ""
     cancel_requested: bool = False
+    # 局部重跑场景下记录起源（前端可据此显示 "局部重跑自 run X · from node Y"）
+    resumed_from: dict[str, str] | None = None
 
 
 class WorkflowRunSummary(BaseModel):
