@@ -2,6 +2,10 @@
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
 import { apiGet } from '../../api'
 import { nodeStatusMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
+import WorkflowCompareNodeEditor     from '../../components/workflow/WorkflowCompareNodeEditor.vue'
+import WorkflowParamsNodeEditor      from '../../components/workflow/WorkflowParamsNodeEditor.vue'
+import WorkflowLineageNodeEditor     from '../../components/workflow/WorkflowLineageNodeEditor.vue'
+import WorkflowExcelExportNodeEditor from '../../components/workflow/WorkflowExcelExportNodeEditor.vue'
 
 const parameterTypeMeta = _ptm
 
@@ -9,6 +13,9 @@ const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.
 
 const emit = defineEmits(['back', 'open-run'])
 
+// 注：节点编辑器（params / compare / lineage / excel_export）已抽成子组件，
+// 它们各自从 inject('app') 拿需要的全局方法（addParameter / addExportSheet
+// 等），所以这里不再解构那些 helper。父组件保留 addWorkflowNode 等还在用的。
 const {
   state, workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
@@ -16,47 +23,8 @@ const {
   saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
-  addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
-  addParameter, removeParameter,
   loadWorkflowRunDetail,
 } = inject('app')
-
-// 参数类型可选项（与 mock/workflow_meta.parameterTypeMeta 对齐）
-const paramTypeOptions = [
-  { id: 'fixed',         label: '固定值' },
-  { id: 'date',          label: '日期' },
-  { id: 'relative_date', label: '相对日期' },
-  { id: 'multi_value',   label: '多值' },
-  { id: 'sql_result',    label: 'SQL 结果' },
-  { id: 'json',          label: 'JSON' },
-]
-const relativeDateSources = [
-  { id: 'today',      label: '今天 today' },
-  { id: 'yesterday',  label: '昨天 yesterday' },
-  { id: 'last_month', label: '上月 last_month' },
-  { id: 'now',        label: '当前时间 now' },
-]
-
-// 当前选中的 compare 任务（用于 drill-in 显示其原始 SQL）
-const compareTaskById = (id) => state.tasks.find((t) => t.id === id)
-
-// excel_export sheet 数据源候选：作业流里所有能产出 dict 输出的节点。
-// 列表里排除自身和 http 节点（http 输出 status/body，结构化弱）。
-const candidateSourceNodes = (currentNode) =>
-  workflowDraft.nodes.filter((n) =>
-    n.id !== currentNode.id &&
-    ['compare', 'lineage', 'params'].includes(n.type)
-  )
-
-// 用户在 sheet 下拉里选了 source_node → 自动把这个节点加进当前 excel_export
-// 节点的 depends_on，避免还要手动去依赖列表勾选。
-const ensureSheetDependency = (node, sheet) => {
-  if (!sheet.source_node) return
-  if (!Array.isArray(node.depends_on)) node.depends_on = []
-  if (!node.depends_on.includes(sheet.source_node)) {
-    node.depends_on.push(sheet.source_node)
-  }
-}
 
 // --- 运行历史 tab：展开行加 mini gantt ---
 const expandedHistoryRun = ref('')          // 当前展开的 run_id（每次只展一行）
@@ -133,46 +101,7 @@ const historyGantt = (detail) => {
   return { steps, totalSeconds: Math.max(total, 1) }
 }
 
-// 判断 SQL override 看起来是不是合法（首词必须是 SELECT 或 WITH）。
-// 后端有同样的硬校验，这里只是给一个保存前的软提示，避免用户填了 WHERE 片段。
-const overrideLooksInvalid = (sql) => {
-  if (!sql || !sql.trim()) return false
-  // 去掉行注释、块注释和前导空白
-  const stripped = sql.replace(/--[^\n]*\n?/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
-  if (!stripped) return false
-  const firstWord = stripped.match(/^[a-zA-Z_]+/)?.[0]?.toLowerCase()
-  return firstWord !== 'select' && firstWord !== 'with'
-}
-
-const showParamCheatsheet = ref(false)
-
-// Excel 节点 sheet 模板 —— 对应 compare 节点 dataset 短名
-const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'same']
-const sheetSourceLabel = {
-  summary:     '汇总对照',
-  diff:        '差异明细',
-  only_source: '仅源端',
-  only_target: '仅目标',
-  same:        '一致行',
-}
-
-// 各节点类型可用的 dataset 预设（驱动下拉）。空 dataset 也允许用户手输（lineage
-// 节点可能想拿 'tables' / 'edges' 等顶层字段）。
-const datasetPresetsByType = {
-  compare: ['summary', 'diff', 'only_source', 'only_target', 'same'],
-  lineage: ['sources', 'targets', 'edges', 'warnings', 'field_mappings'],
-  params:  [],   // params 节点的字段就是参数名，让用户手输
-  http:    ['body', 'json', 'headers'],
-}
-const datasetPresetsForNode = (workflowNodes, nodeId) => {
-  const target = (workflowNodes || []).find((n) => n.id === nodeId)
-  if (!target) return []
-  return datasetPresetsByType[target.type] || []
-}
-const expandedSheets = ref({})   // node-idx_sheet-idx → bool
-const toggleSheet = (key) => { expandedSheets.value[key] = !expandedSheets.value[key] }
-
-const activeTab = ref('history')   // history / events / lineage / config / quality
+const activeTab = ref('history')   // history / events / lineage / config
 const selectedNodeId = ref('')
 
 // 新建态：自动落到「节点配置」tab，引导用户开始编辑
@@ -855,223 +784,15 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                   <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">显示名称</span>
                   <input v-model="node.name" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
                 </label>
-                <label v-if="node.type === 'compare'">
-                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">引用对比任务</span>
-                  <select v-model="node.task_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
-                    <option value="">— 选择 —</option>
-                    <option v-for="task in compareTaskOptions" :key="task.id" :value="task.id">{{ task.name }}</option>
-                  </select>
-                </label>
               </div>
+              <!-- compare 节点编辑器（含任务选择 + SQL drill-in 覆盖） -->
+              <WorkflowCompareNodeEditor v-if="node.type === 'compare'" :node="node" class="mt-3" />
 
-              <!-- compare 节点：drill into 引用任务的 SQL，可以覆盖并注入 ${var} -->
-              <div v-if="node.type === 'compare' && node.task_id" class="mt-3 rounded-lg border border-slate-200 bg-slate-50/40 p-3">
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">引用任务的 SQL（可覆盖）</span>
-                </div>
-                <p class="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10.5px] leading-relaxed text-amber-900">
-                  ⚠ 覆盖必须是<strong>完整的 <code class="font-mono">SELECT</code> / <code class="font-mono">WITH</code> 查询</strong>，<strong>不能只填 WHERE 片段</strong>。常见做法：把左边任务原 SQL 复制到下面的覆盖框，再在 WHERE 里插入 <code class="rounded bg-white px-1 font-mono">${name}</code>。变量在执行前替换。留空则使用任务原始 SQL。
-                </p>
-                <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  <div>
-                    <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">源端 SQL（任务定义）</span>
-                    <pre class="mb-1.5 max-h-32 overflow-auto rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-relaxed text-slate-600">{{ compareTaskById(node.task_id)?.source_sql || '(无)' }}</pre>
-                    <div class="mb-1 flex items-center justify-between">
-                      <span class="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
-                      <button v-if="!node.source_sql_override?.trim()" type="button"
-                              class="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-                              @click="node.source_sql_override = compareTaskById(node.task_id)?.source_sql || ''">
-                        ↗ 复制原 SQL
-                      </button>
-                    </div>
-                    <textarea v-model="node.source_sql_override"
-                              class="block min-h-[70px] w-full rounded-md border bg-white px-2 py-1.5 font-mono text-[11.5px]"
-                              :class="overrideLooksInvalid(node.source_sql_override) ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'"
-                              placeholder="留空 = 不覆盖；非空则必须以 SELECT 或 WITH 开头"></textarea>
-                    <p v-if="overrideLooksInvalid(node.source_sql_override)" class="mt-1 text-[10.5px] text-rose-600">
-                      首词不是 SELECT/WITH —— 保存时会被服务端拒绝。
-                    </p>
-                  </div>
-                  <div>
-                    <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">目标端 SQL（任务定义）</span>
-                    <pre class="mb-1.5 max-h-32 overflow-auto rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-relaxed text-slate-600">{{ compareTaskById(node.task_id)?.target_sql || '(无)' }}</pre>
-                    <div class="mb-1 flex items-center justify-between">
-                      <span class="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">本节点覆盖（可选）</span>
-                      <button v-if="!node.target_sql_override?.trim()" type="button"
-                              class="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-                              @click="node.target_sql_override = compareTaskById(node.task_id)?.target_sql || ''">
-                        ↗ 复制原 SQL
-                      </button>
-                    </div>
-                    <textarea v-model="node.target_sql_override"
-                              class="block min-h-[70px] w-full rounded-md border bg-white px-2 py-1.5 font-mono text-[11.5px]"
-                              :class="overrideLooksInvalid(node.target_sql_override) ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'"
-                              placeholder="留空 = 不覆盖；非空则必须以 SELECT 或 WITH 开头"></textarea>
-                    <p v-if="overrideLooksInvalid(node.target_sql_override)" class="mt-1 text-[10.5px] text-rose-600">
-                      首词不是 SELECT/WITH —— 保存时会被服务端拒绝。
-                    </p>
-                  </div>
-                </div>
-              </div>
+              <!-- params 节点编辑器（参数列表 + 引用语法速查） -->
+              <WorkflowParamsNodeEditor v-if="node.type === 'params'" :node="node" class="mt-3" />
 
-              <!-- params 节点：参数列表编辑器 -->
-              <div v-if="node.type === 'params'" class="mt-3 rounded-lg border border-slate-200 bg-white">
-                <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">参数列表（{{ (node.parameters || []).length }}）</span>
-                  <div class="flex items-center gap-1.5">
-                    <button class="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-                            @click="showParamCheatsheet = !showParamCheatsheet">
-                      ? 引用语法速查
-                    </button>
-                    <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
-                            @change="addParameter(node, $event.target.value); $event.target.value = ''">
-                      <option value="" disabled selected>+ 新增参数</option>
-                      <option v-for="t in paramTypeOptions" :key="t.id" :value="t.id">{{ t.label }}</option>
-                    </select>
-                  </div>
-                </div>
-
-                <!-- 速查表：一眼看懂如何在 SQL / 文件名 / 任意字符串字段里引用参数 -->
-                <div v-if="showParamCheatsheet" class="border-b border-slate-200 bg-slate-50/60 px-3 py-3 text-[12px] leading-relaxed">
-                  <p class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">参数引用语法速查 · 完整文档见 <code class="rounded bg-white px-1 py-0.5 font-mono text-[10.5px] text-slate-700">docs/PARAMETERS.md</code></p>
-                  <table class="w-full border-collapse text-[11.5px]">
-                    <thead>
-                      <tr class="border-b border-slate-200">
-                        <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[44%]">写法</th>
-                        <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[34%]">解析后</th>
-                        <th class="py-1.5 text-left font-semibold text-slate-500">用于</th>
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-100">
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${user_id}</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">42</td>
-                        <td class="py-1.5 text-slate-600">单值参数</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">'${biz_date}'</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">'2026-05-01'</td>
-                        <td class="py-1.5 text-slate-600">字符串/日期，注意手动加引号</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${ids | sql_in}</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">1, 5, 9</td>
-                        <td class="py-1.5 text-slate-600">多值 → IN 子句体（数字保持原样）</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${names | sql_in}</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">'a', 'b'</td>
-                        <td class="py-1.5 text-slate-600">多值字符串，自动单引号 + 转义</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${nodes.x.summary.diff}</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">7</td>
-                        <td class="py-1.5 text-slate-600">上游节点输出（要 depends_on）</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1.5 pr-3 font-mono text-blue-700">${nodes.params.ids.0}</td>
-                        <td class="py-1.5 pr-3 font-mono text-slate-600">1</td>
-                        <td class="py-1.5 text-slate-600">取 list 第 N 项</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div class="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
-                    <div class="rounded border border-slate-200 bg-white p-2">
-                      <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · 单值条件</p>
-                      <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
-WHERE dt = '${biz_date}'
-  AND user_id = ${user_id}</pre>
-                    </div>
-                    <div class="rounded border border-slate-200 bg-white p-2">
-                      <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">典型用法 · IN 子句</p>
-                      <pre class="mt-1 overflow-x-auto font-mono text-[11px] text-slate-700">SELECT * FROM orders
-WHERE user_id IN (${vip_users | sql_in})</pre>
-                    </div>
-                  </div>
-                  <p class="mt-2 text-[10.5px] text-slate-500">解析顺序：运行时变量 → 工作流默认 → params 节点输出 → 内置（today/now/...）。同名以前者覆盖后者。引用未定义变量节点会 FAILED，详见文档。</p>
-                </div>
-
-                <div v-if="!(node.parameters || []).length" class="px-3 py-6 text-center text-[11px] text-slate-400">
-                  还没有参数。从右上方添加第一个参数。
-                </div>
-
-                <ul v-else class="divide-y divide-slate-100">
-                  <li v-for="(p, pIdx) in node.parameters" :key="pIdx" class="px-3 py-2.5">
-                    <div class="grid grid-cols-1 gap-2 lg:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_60px]">
-                      <label>
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">类型</span>
-                        <select v-model="p.type" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                          <option v-for="t in paramTypeOptions" :key="t.id" :value="t.id">{{ t.label }}</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">名称</span>
-                        <input v-model="p.name" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="例如 biz_date">
-                      </label>
-                      <label>
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">说明</span>
-                        <input v-model="p.description" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs" placeholder="给协作者的简短说明">
-                      </label>
-                      <div class="flex items-end justify-end gap-1">
-                        <label class="flex cursor-pointer items-center gap-1 text-[10.5px] text-slate-600"><input type="checkbox" v-model="p.required" class="h-3 w-3 rounded text-blue-600">必填</label>
-                        <button class="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100" @click="removeParameter(node, pIdx)">×</button>
-                      </div>
-                    </div>
-
-                    <!-- 类型相关字段 -->
-                    <div class="mt-2">
-                      <label v-if="p.type === 'fixed' || p.type === 'date' || p.type === 'json'" class="block">
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">默认值</span>
-                        <input v-if="p.type !== 'json'" v-model="p.default" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" :placeholder="p.type === 'date' ? '2026-05-01' : '默认值'">
-                        <textarea v-else v-model="p.default" class="block min-h-[50px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder='{"key": "value"}'></textarea>
-                      </label>
-
-                      <label v-if="p.type === 'relative_date'" class="block">
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">相对来源</span>
-                        <select v-model="p.source" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                          <option v-for="src in relativeDateSources" :key="src.id" :value="src.id">{{ src.label }}</option>
-                        </select>
-                      </label>
-
-                      <label v-if="p.type === 'multi_value'" class="block">
-                        <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">默认值（每行一个）</span>
-                        <textarea
-                          :value="Array.isArray(p.default) ? p.default.join('\n') : (p.default || '')"
-                          @input="p.default = $event.target.value.split('\n').map(s => s.trim()).filter(Boolean)"
-                          class="block min-h-[50px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="A\nB\nC"></textarea>
-                      </label>
-
-                      <div v-if="p.type === 'sql_result'" class="grid grid-cols-1 gap-2 lg:grid-cols-[160px_minmax(0,1fr)]">
-                        <label>
-                          <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据源</span>
-                          <select v-model="p.datasource" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                            <option value="">— 选择 —</option>
-                            <option v-for="ds in state.datasources" :key="ds.id" :value="ds.id">{{ ds.name }}</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">SQL（取第一列作为参数值）</span>
-                          <textarea v-model="p.sql" class="block min-h-[50px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="SELECT id FROM ..."></textarea>
-                        </label>
-                      </div>
-                    </div>
-                  </li>
-                </ul>
-
-                <div class="border-t border-slate-100 px-3 py-2 text-[10.5px] text-slate-500">
-                  解析后的参数会注入到 workflow 变量域，下游节点可用 <code class="rounded bg-slate-100 px-1 font-mono">${name}</code> 引用
-                </div>
-              </div>
-              <div v-if="node.type === 'lineage'" class="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_140px]">
-                <label>
-                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">SQL</span>
-                  <textarea v-model="node.sql" class="block min-h-[60px] w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-[12px]" placeholder="SELECT * FROM ..."></textarea>
-                </label>
-                <label>
-                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">方言</span>
-                  <input v-model="node.dialect" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs" placeholder="mysql">
-                </label>
-              </div>
+              <!-- lineage 节点编辑器（SQL + 方言） -->
+              <WorkflowLineageNodeEditor v-if="node.type === 'lineage'" :node="node" class="mt-2" />
               <div v-if="node.type === 'http'" class="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[100px_minmax(0,1fr)_120px]">
                 <label>
                   <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">方法</span>
@@ -1089,136 +810,8 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                 </label>
               </div>
 
-              <!-- Excel 导出节点：Sheet 列表（文件名由后端按 run_id 自动命名）-->
-              <div v-if="node.type === 'excel_export'" class="mt-3 space-y-3">
-                <div class="rounded-lg border border-slate-200 bg-white">
-                  <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-                    <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Sheet 列表（{{ (node.sheets || []).length }}）</span>
-                    <div class="flex items-center gap-1">
-                      <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
-                              @change="addExportSheet(node, $event.target.value); $event.target.value = ''">
-                        <option value="" disabled selected>+ 添加 Sheet</option>
-                        <option v-for="t in sheetTemplateIds" :key="t" :value="t">{{ sheetSourceLabel[t] }}</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div v-if="!(node.sheets || []).length" class="px-3 py-6 text-center text-[11px] text-slate-400">还没有 Sheet，从上方下拉添加</div>
-
-                  <ul v-else class="divide-y divide-slate-100">
-                    <li v-for="(sheet, sIdx) in node.sheets" :key="sheet.id" class="px-3 py-2">
-                      <!-- 折叠态 -->
-                      <div class="flex items-center gap-2">
-                        <input type="checkbox" v-model="sheet.enabled" class="h-3.5 w-3.5 rounded text-blue-600" :title="sheet.enabled ? '已启用' : '已禁用'">
-                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 transition hover:bg-slate-50"
-                                @click="toggleSheet(`${index}_${sIdx}`)">
-                          {{ expandedSheets[`${index}_${sIdx}`] ? '▾' : '▸' }}
-                        </button>
-                        <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
-                        <span class="font-mono text-[10.5px] text-slate-500">
-                          <span v-if="sheet.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200">历史</span>
-                          {{ sheet.node_id || '默认' }}<span class="text-slate-300">.</span>{{ sheet.dataset || '*' }}
-                        </span>
-                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === 0" @click="moveExportSheet(node, sIdx, -1)">↑</button>
-                        <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === node.sheets.length - 1" @click="moveExportSheet(node, sIdx, 1)">↓</button>
-                        <button class="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100" @click="removeExportSheet(node, sIdx)">×</button>
-                      </div>
-
-                      <!-- 展开态：详细配置 -->
-                      <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5 space-y-2">
-                        <!-- 数据源类型切换：节点输出 vs 历史运行 -->
-                        <div class="flex items-center gap-2">
-                          <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据源</span>
-                          <div class="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-[10.5px]">
-                            <button type="button"
-                                    class="rounded px-2 py-0.5 transition"
-                                    :class="sheet.source_type !== 'history_run' ? 'bg-blue-600 text-white' : 'text-slate-600'"
-                                    @click="sheet.source_type = 'node_output'; sheet.run_id = ''">
-                              节点输出
-                            </button>
-                            <button type="button"
-                                    class="rounded px-2 py-0.5 transition"
-                                    :class="sheet.source_type === 'history_run' ? 'bg-purple-600 text-white' : 'text-slate-600'"
-                                    @click="sheet.source_type = 'history_run'">
-                              历史运行
-                            </button>
-                          </div>
-                        </div>
-
-                        <!-- node_output 模式 -->
-                        <div v-if="sheet.source_type !== 'history_run'" class="grid grid-cols-1 gap-2 lg:grid-cols-3">
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">节点</span>
-                            <select v-model="sheet.node_id"
-                                    @change="ensureSheetDependency(node, sheet)"
-                                    class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
-                              <option value="">默认（depends_on 第一个）</option>
-                              <option v-for="cand in candidateSourceNodes(node)" :key="cand.id" :value="cand.id">
-                                {{ cand.id }}（{{ cand.type }}）{{ cand.name ? ' · ' + cand.name : '' }}
-                              </option>
-                            </select>
-                          </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
-                            <input v-model="sheet.dataset"
-                                   :list="`dataset-presets-${node.id}-${sIdx}`"
-                                   class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs"
-                                   placeholder="summary / diff / only_source / ...">
-                            <datalist :id="`dataset-presets-${node.id}-${sIdx}`">
-                              <option v-for="d in datasetPresetsForNode(workflowDraft.nodes, sheet.node_id)" :key="d" :value="d" />
-                            </datalist>
-                          </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
-                            <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                          </label>
-                        </div>
-
-                        <!-- history_run 模式 -->
-                        <div v-else class="grid grid-cols-1 gap-2 lg:grid-cols-3">
-                          <label class="lg:col-span-3">
-                            <span class="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                              历史运行（run_id）
-                              <button type="button" class="text-[10px] font-mono normal-case text-blue-600 hover:underline" @click="loadAllWorkflowRuns">↻ 刷新列表</button>
-                            </span>
-                            <select v-model="sheet.run_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
-                              <option value="">— 选择一次历史 run —</option>
-                              <option v-for="r in (allWorkflowRuns || [])" :key="r.run_id" :value="r.run_id">
-                                {{ r.workflow_name }} · {{ r.run_id.slice(0, 8) }} · {{ r.started_at?.slice(5, 16) || '' }} · {{ r.status }}
-                              </option>
-                            </select>
-                          </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">该 run 的节点 id</span>
-                            <input v-model="sheet.node_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="例如 n1">
-                          </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
-                            <input v-model="sheet.dataset" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="summary / diff / ...">
-                          </label>
-                          <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
-                            <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                          </label>
-                        </div>
-
-                        <p class="text-[10.5px] text-slate-500">
-                          <template v-if="sheet.source_type === 'history_run'">
-                            从指定的历史 run 拿 <code class="rounded bg-white px-1 font-mono text-[10px]">nodes[node_id].output[dataset]</code>。
-                            run_id 是某次执行的唯一标识，不是任务定义。
-                          </template>
-                          <template v-else>
-                            从本次运行的 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[node_id][dataset]</code> 拿数据。
-                            节点留空 = 用 depends_on 第一个；选中节点会自动加入 depends_on。
-                            compare 节点 dataset 用短名（summary / diff / only_source / only_target / same），
-                            runner 自动映射到 samples.* 字段。
-                          </template>
-                        </p>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-              </div>
+              <!-- excel_export 节点编辑器（sheet 列表 + 节点输出 / 历史 run 切换） -->
+              <WorkflowExcelExportNodeEditor v-if="node.type === 'excel_export'" :node="node" class="mt-3" />
               <div v-if="otherNodeIds(node.id).length" class="mt-2">
                 <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">依赖（depends_on）</span>
                 <div class="flex flex-wrap gap-1.5">
