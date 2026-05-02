@@ -1,4 +1,4 @@
-"""Tests for workflow CRUD validation in app.api.routes._ensure_workflow_node_targets.
+"""Tests for workflow CRUD validation in app.api._shared.ensure_workflow_node_targets.
 
 Specifically guarding the SQL override check: a compare node with
 `source_sql_override="id=${user_id}"` must be rejected at save time
@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.api.routes import _ensure_workflow_node_targets
+from app.api._shared import ensure_workflow_node_targets as _ensure_workflow_node_targets
 from app.models import WorkflowCreate
 from app.services.repositories import task_store
 
