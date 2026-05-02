@@ -670,15 +670,21 @@ const fillWorkflowDraft = (wf) => {
     expect_status: node.config?.expect_status ?? '',
     // excel_export: sheets list. Filename 由后端写盘时按 run_id 自动命名。
     // source_node = 上游 node.id, source_field = 该 node output 里的 dot-path
+    // 老配置只有隐式 source: 'summary' —— 这里自动推断 source_node：
+    //   depends_on 恰好 1 个上游时直接用之，多上游则留空让用户在 UI 选。
     sheets: Array.isArray(node.config?.sheets)
-      ? node.config.sheets.map((s) => ({
-          id: s.id,
-          enabled: s.enabled !== false,
-          sheet_name: s.sheet_name || s.id,
-          source_node: s.source_node || '',
-          source_field: s.source_field || s.source || '',   // 兼容老配置
-          max_rows: Number(s.max_rows) || 100000,
-        }))
+      ? (() => {
+          const deps = Array.isArray(node.depends_on) ? node.depends_on : []
+          const singleDep = deps.length === 1 ? deps[0] : ''
+          return node.config.sheets.map((s) => ({
+            id: s.id,
+            enabled: s.enabled !== false,
+            sheet_name: s.sheet_name || s.id,
+            source_node: s.source_node || singleDep || '',
+            source_field: s.source_field || s.source || '',   // 兼容老配置
+            max_rows: Number(s.max_rows) || 100000,
+          }))
+        })()
       : [],
     // params node: typed parameter list
     parameters: Array.isArray(node.config?.parameters)
@@ -875,7 +881,31 @@ const removeParameter = (node, idx) => {
   if (Array.isArray(node.parameters)) node.parameters.splice(idx, 1)
 }
 
+// 保存前的软校验：找出明显能提前发现的配置问题（不阻断保存，只是
+// 提示用户去 UI 修；后端有硬校验做最后一道把关）。
+const workflowDraftWarnings = () => {
+  const warnings = []
+  for (const node of workflowDraft.nodes) {
+    if (node.type === 'excel_export') {
+      // source_node 留空时后端会回退到 depends_on，所以无依赖才报警
+      const noDeps = !Array.isArray(node.depends_on) || node.depends_on.length === 0
+      if (noDeps) {
+        const orphanSheets = (node.sheets || []).filter(s => s.enabled && !s.source_node)
+        if (orphanSheets.length) {
+          warnings.push(`节点 ${node.id} 没有 depends_on 且 sheet 未指定 source_node —— 跑出来会是空 sheet`)
+        }
+      }
+    }
+  }
+  return warnings
+}
+
 const saveWorkflow = async () => {
+  const warnings = workflowDraftWarnings()
+  if (warnings.length) {
+    const ok = confirm(`保存前请确认：\n\n• ${warnings.join('\n• ')}\n\n继续保存？`)
+    if (!ok) { setNotice('保存已取消'); return }
+  }
   setNotice('保存中...')
   try {
     if (selectedWorkflowId.value === 'new') {

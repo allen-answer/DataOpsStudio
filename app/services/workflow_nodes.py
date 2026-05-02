@@ -247,20 +247,27 @@ def run_excel_export_node(
     variables: dict[str, str],
     *,
     outputs: dict[str, dict[str, Any]] | None = None,
+    depends_on: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a multi-sheet Excel report from upstream compare/lineage outputs.
 
     每个 sheet 的 source 由两个字段表达：
-      - source_node:  上游节点 id（必填）
+      - source_node:  上游节点 id（可空，为空则用 depends_on 的第一个上游）
       - source_field: 节点 output 里的字段路径，dot 分隔；空 = 整个 output
 
     例：
       sheets:
         - id: diff
           sheet_name: 差异
-          source_node: compare1
+          source_node: compare1     # 显式指定
           source_field: samples.diff
           max_rows: 100000
+
+      # 单上游时可省 source_node：
+      sheets:
+        - id: summary
+          sheet_name: 汇总
+          source_field: summary    # 自动从 depends_on[0] 读
 
     文件名由本 runner 自动生成 (workflow_export_<ts>_<rand>.xlsx)，写到 RESULTS_DIR
     避免冲突。Compare 节点 samples 默认拿到的就是 list[dict]，刚好能直接落 sheet。
@@ -277,6 +284,9 @@ def run_excel_export_node(
         raise ValueError("excel_export node requires at least one enabled sheet")
 
     outputs = outputs or {}
+    deps = depends_on or []
+    # source_node 空时用 depends_on 的第一个，让单上游 excel_export 不用配这个字段
+    default_source_node = next((d for d in deps if d in outputs), "")
 
     book = Workbook()
     book.remove(book.active)
@@ -284,7 +294,7 @@ def run_excel_export_node(
     sheet_results: list[dict[str, Any]] = []
 
     for idx, sheet_def in enumerate(enabled):
-        source_node = str(sheet_def.get("source_node") or "").strip()
+        source_node = str(sheet_def.get("source_node") or "").strip() or default_source_node
         source_field = str(sheet_def.get("source_field") or "").strip()
         sheet_name_raw = str(
             sheet_def.get("sheet_name")

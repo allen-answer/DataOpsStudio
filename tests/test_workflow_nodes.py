@@ -195,6 +195,43 @@ def test_excel_export_max_rows_truncation(tmp_path, monkeypatch):
     assert out["sheets"][0]["rows_written"] == 10
 
 
+def test_excel_export_defaults_source_node_to_first_upstream(tmp_path, monkeypatch):
+    """Sheet 没指定 source_node → 用 depends_on 的第一个完成的上游节点。
+    覆盖 90% 的"单上游 compare → excel_export"场景，用户不用每个 sheet 都填 source_node。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {"compare1": {"samples": {"diff": [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]}}}
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "diff", "enabled": True, "sheet_name": "差异",
+             "source_field": "samples.diff", "max_rows": 100},   # 注意：没填 source_node
+        ],
+    }, {}, outputs=upstream, depends_on=["compare1"])
+    assert out["sheets"][0]["source_node"] == "compare1"   # 自动用了 depends_on[0]
+    assert out["sheets"][0]["rows_written"] == 2
+    assert out["sheets"][0]["source_resolved"] is True
+
+
+def test_excel_export_explicit_source_node_overrides_default(tmp_path, monkeypatch):
+    """显式指定 source_node 时不会被 depends_on 缺省覆盖。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {
+        "c1": {"summary": {"diff": 7}},
+        "c2": {"summary": {"diff": 99}},
+    }
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "s", "enabled": True, "sheet_name": "S",
+             "source_node": "c2", "source_field": "summary"},
+        ],
+    }, {}, outputs=upstream, depends_on=["c1", "c2"])
+    assert out["sheets"][0]["source_node"] == "c2"
+    # 验证读到的是 c2 的 summary 而不是 c1
+    import openpyxl
+    book = openpyxl.load_workbook(tmp_path / out["filename"])
+    rows = list(book["S"].values)
+    assert rows[1][rows[0].index("diff")] == 99
+
+
 def test_excel_export_unresolved_source_writes_empty_sheet(tmp_path, monkeypatch):
     """source_node 不存在或 source_field 路径错 → 空 sheet + source_resolved=False。
     用户能在节点 output 里看到为啥没数据，但整个 export 不会因此 FAILED。"""

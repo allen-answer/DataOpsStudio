@@ -38,6 +38,24 @@ const relativeDateSources = [
 // 当前选中的 compare 任务（用于 drill-in 显示其原始 SQL）
 const compareTaskById = (id) => state.tasks.find((t) => t.id === id)
 
+// excel_export sheet 数据源候选：作业流里所有能产出 dict 输出的节点。
+// 列表里排除自身和 http 节点（http 输出 status/body，结构化弱）。
+const candidateSourceNodes = (currentNode) =>
+  workflowDraft.nodes.filter((n) =>
+    n.id !== currentNode.id &&
+    ['compare', 'lineage', 'params'].includes(n.type)
+  )
+
+// 用户在 sheet 下拉里选了 source_node → 自动把这个节点加进当前 excel_export
+// 节点的 depends_on，避免还要手动去依赖列表勾选。
+const ensureSheetDependency = (node, sheet) => {
+  if (!sheet.source_node) return
+  if (!Array.isArray(node.depends_on)) node.depends_on = []
+  if (!node.depends_on.includes(sheet.source_node)) {
+    node.depends_on.push(sheet.source_node)
+  }
+}
+
 // 判断 SQL override 看起来是不是合法（首词必须是 SELECT 或 WITH）。
 // 后端有同样的硬校验，这里只是给一个保存前的软提示，避免用户填了 WHERE 片段。
 const overrideLooksInvalid = (sql) => {
@@ -842,8 +860,10 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                           {{ expandedSheets[`${index}_${sIdx}`] ? '▾' : '▸' }}
                         </button>
                         <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
-                        <span class="font-mono text-[10.5px] text-slate-500" :class="!sheet.source_node ? 'text-amber-600' : ''">
-                          {{ sheet.source_node ? `${sheet.source_node}.${sheet.source_field || '*'}` : '⚠ 未选数据源' }}
+                        <span class="font-mono text-[10.5px] text-slate-500">
+                          {{ sheet.source_node
+                              ? `${sheet.source_node}.${sheet.source_field || '*'}`
+                              : `默认.${sheet.source_field || '*'}` }}
                         </span>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === 0" @click="moveExportSheet(node, sIdx, -1)">↑</button>
                         <button class="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 transition hover:bg-slate-50 disabled:opacity-30" :disabled="sIdx === node.sheets.length - 1" @click="moveExportSheet(node, sIdx, 1)">↓</button>
@@ -854,10 +874,14 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                       <div v-if="expandedSheets[`${index}_${sIdx}`]" class="mt-2 rounded-md bg-slate-50/60 p-2.5">
                         <div class="grid grid-cols-1 gap-2 lg:grid-cols-3">
                           <label>
-                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">来源节点（上游 node id）</span>
-                            <select v-model="sheet.source_node" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
-                              <option value="">— 选择上游节点 —</option>
-                              <option v-for="depId in (node.depends_on || [])" :key="depId" :value="depId">{{ depId }}</option>
+                            <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">来源节点</span>
+                            <select v-model="sheet.source_node"
+                                    @change="ensureSheetDependency(node, sheet)"
+                                    class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
+                              <option value="">默认（依赖的对比任务）</option>
+                              <option v-for="cand in candidateSourceNodes(node)" :key="cand.id" :value="cand.id">
+                                {{ cand.id }}（{{ cand.type }}）{{ cand.name ? ' · ' + cand.name : '' }}
+                              </option>
                             </select>
                           </label>
                           <label>
@@ -870,9 +894,12 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                           </label>
                         </div>
                         <p class="mt-1.5 text-[10.5px] text-slate-500">
-                          运行时读 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[source_node][source_field]</code>。compare 节点常用：
-                          <code class="rounded bg-white px-1 font-mono text-[10px]">samples.diff</code> / <code class="rounded bg-white px-1 font-mono text-[10px]">samples.only_source</code> / <code class="rounded bg-white px-1 font-mono text-[10px]">summary</code>。
-                          source_node 必须在本节点的 depends_on 里。
+                          运行时读 <code class="rounded bg-white px-1 font-mono text-[10px]">outputs[source_node][source_field]</code>。
+                          来源节点留空 = 默认用本节点 depends_on 的第一个上游（适合"单 compare → 一个 excel_export"）。
+                          compare 节点常用字段：<code class="rounded bg-white px-1 font-mono text-[10px]">samples.diff</code> /
+                          <code class="rounded bg-white px-1 font-mono text-[10px]">samples.only_source</code> /
+                          <code class="rounded bg-white px-1 font-mono text-[10px]">summary</code>。
+                          选中来源节点会自动加入本节点的 depends_on。
                         </p>
                       </div>
                     </li>

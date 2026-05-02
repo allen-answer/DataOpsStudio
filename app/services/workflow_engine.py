@@ -186,8 +186,14 @@ def run_workflow(
         node_perf = time.perf_counter()
         try:
             # outputs 提供给需要读上游节点输出的 runner（如 excel_export）。
-            # 大多数 runner 用 *args/**kwargs 忽略掉这个 kwarg。
-            output = runner(resolved_config, dict(resolved_vars), outputs=completed_outputs)
+            # 大多数 runner 用 *args/**kwargs 忽略掉这两个 kwargs。
+            # depends_on 让 runner 在用户没显式指定 source 时缺省回退到上游。
+            output = runner(
+                resolved_config,
+                dict(resolved_vars),
+                outputs=completed_outputs,
+                depends_on=list(node.depends_on or []),
+            )
             node_run.output = output if isinstance(output, dict) else {"value": output}
             node_run.status = NodeRunStatus.SUCCESS
             completed_outputs[node.id] = node_run.output
