@@ -9,7 +9,22 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
 from app.dbclients.factory import fetch_columns, fetch_rows, test_connection
-from app.models import CompareTaskCreate, DataSourceCreate, DatabaseType, SourceKind, SqlMode, WorkflowCreate
+from app.models import (
+    BootstrapResponse,
+    CompareResult,
+    CompareTask,
+    CompareTaskCreate,
+    DataSource,
+    DataSourceCreate,
+    DatabaseType,
+    JobInfo,
+    SourceKind,
+    SqlMode,
+    Workflow,
+    WorkflowCreate,
+    WorkflowRun,
+    WorkflowRunSummary,
+)
 from app.readers.excel_reader import list_columns as read_excel_columns
 from app.services import excel_uploads, lineage_service
 from app.services.history import delete_result, list_result_history
@@ -51,7 +66,7 @@ def drivers() -> dict[str, dict[str, object]]:
     return result
 
 
-@router.get("/api/bootstrap")
+@router.get("/api/bootstrap", response_model=BootstrapResponse)
 def bootstrap():
     history = list_result_history()
     return {
@@ -62,21 +77,21 @@ def bootstrap():
         "db_types": [item.value for item in DatabaseType],
         "sql_modes": [item.value for item in SqlMode],
         "history": history[:200],
-        "history_sheets": AVAILABLE_HISTORY_SHEETS,
+        "history_sheets": list(AVAILABLE_HISTORY_SHEETS),
     }
 
 
-@router.get("/api/datasources")
+@router.get("/api/datasources", response_model=list[DataSource])
 def list_datasources():
     return datasource_store.list()
 
 
-@router.post("/api/datasources")
+@router.post("/api/datasources", response_model=DataSource)
 def create_datasource(payload: DataSourceCreate):
     return datasource_store.create(payload)
 
 
-@router.put("/api/datasources/{datasource_id}")
+@router.put("/api/datasources/{datasource_id}", response_model=DataSource)
 def update_datasource(datasource_id: str, payload: DataSourceCreate):
     try:
         return datasource_store.update(datasource_id, payload)
@@ -104,18 +119,18 @@ def test_datasource(datasource_id: str):
         raise HTTPException(status_code=400, detail=f"连接失败：{exc}") from exc
 
 
-@router.get("/api/tasks")
+@router.get("/api/tasks", response_model=list[CompareTask])
 def list_tasks():
     return task_store.list()
 
 
-@router.post("/api/tasks")
+@router.post("/api/tasks", response_model=CompareTask)
 def create_task(payload: CompareTaskCreate):
     _ensure_datasources_for_kind(payload)
     return task_store.create(payload)
 
 
-@router.put("/api/tasks/{task_id}")
+@router.put("/api/tasks/{task_id}", response_model=CompareTask)
 def update_task(task_id: str, payload: CompareTaskCreate):
     _ensure_datasources_for_kind(payload)
     try:
@@ -133,7 +148,7 @@ def delete_task(task_id: str):
     return {"ok": True}
 
 
-@router.post("/api/tasks/{task_id}/copy")
+@router.post("/api/tasks/{task_id}/copy", response_model=CompareTask)
 def copy_task_api(task_id: str):
     task = task_store.get(task_id)
     if task is None:
@@ -152,7 +167,7 @@ def copy_task_api(task_id: str):
     return task_store.create(payload)
 
 
-@router.post("/api/tasks/{task_id}/run")
+@router.post("/api/tasks/{task_id}/run", response_model=CompareResult)
 def run_task_api(task_id: str):
     try:
         return run_task(task_id)
@@ -162,14 +177,14 @@ def run_task_api(task_id: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/tasks/{task_id}/run-async")
+@router.post("/api/tasks/{task_id}/run-async", response_model=JobInfo)
 def run_task_async_api(task_id: str):
     if task_store.get(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return submit_task_run(task_id)
 
 
-@router.get("/api/runs/{job_id}")
+@router.get("/api/runs/{job_id}", response_model=JobInfo)
 def run_status_api(job_id: str):
     try:
         return get_job(job_id)
@@ -177,7 +192,7 @@ def run_status_api(job_id: str):
         raise HTTPException(status_code=404, detail="Run not found") from exc
 
 
-@router.post("/api/runs/{job_id}/cancel")
+@router.post("/api/runs/{job_id}/cancel", response_model=JobInfo)
 def cancel_run_api(job_id: str):
     try:
         return cancel_job(job_id)
@@ -185,18 +200,18 @@ def cancel_run_api(job_id: str):
         raise HTTPException(status_code=404, detail="Run not found") from exc
 
 
-@router.get("/api/workflows")
+@router.get("/api/workflows", response_model=list[Workflow])
 def list_workflows():
     return workflow_store.list()
 
 
-@router.post("/api/workflows")
+@router.post("/api/workflows", response_model=Workflow)
 def create_workflow(payload: WorkflowCreate):
     _ensure_workflow_node_targets(payload)
     return workflow_store.create(payload)
 
 
-@router.put("/api/workflows/{workflow_id}")
+@router.put("/api/workflows/{workflow_id}", response_model=Workflow)
 def update_workflow(workflow_id: str, payload: WorkflowCreate):
     _ensure_workflow_node_targets(payload)
     try:
@@ -214,7 +229,7 @@ def delete_workflow(workflow_id: str):
     return {"ok": True}
 
 
-@router.post("/api/workflows/{workflow_id}/run")
+@router.post("/api/workflows/{workflow_id}/run", response_model=WorkflowRun)
 def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
     workflow = workflow_store.get(workflow_id)
     if workflow is None:
@@ -225,10 +240,10 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     persist_workflow_run(run)
-    return run.model_dump(mode="json")
+    return run
 
 
-@router.post("/api/workflows/{workflow_id}/run-async")
+@router.post("/api/workflows/{workflow_id}/run-async", response_model=JobInfo)
 def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
     if workflow_store.get(workflow_id) is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -236,19 +251,19 @@ def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None =
     return submit_workflow_run(workflow_id, variables)
 
 
-@router.get("/api/workflows/{workflow_id}/runs")
+@router.get("/api/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
 def list_workflow_runs_api(workflow_id: str, limit: int = 50):
     if workflow_store.get(workflow_id) is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return list_workflow_runs(workflow_id, limit=limit)
 
 
-@router.get("/api/workflow-runs")
+@router.get("/api/workflow-runs", response_model=list[WorkflowRunSummary])
 def list_all_workflow_runs_api(limit: int = 200):
     return list_workflow_runs("", limit=limit)
 
 
-@router.get("/api/workflow-runs/{run_id}")
+@router.get("/api/workflow-runs/{run_id}", response_model=WorkflowRun)
 def get_workflow_run_api(run_id: str):
     run = get_workflow_run(run_id)
     if run is None:

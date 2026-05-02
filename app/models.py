@@ -253,3 +253,70 @@ class WorkflowRun(BaseModel):
     finished_at: str = ""
     elapsed_seconds: float = 0
     error: str = ""
+
+
+# --- API response schemas ---
+# 这些 schema 主要给 FastAPI response_model 用，让 /docs 给前端 / 第三方
+# 一份准确的 API 契约。运行时仍然是 dict（jobs / workflow-runs 早期落盘
+# 实现），FastAPI 会按 model_dump 顺序序列化校验。
+
+class JobInfo(BaseModel):
+    """异步任务（compare 或 workflow run）的运行时状态。和 jobs.py 内部
+    dict 结构保持对齐 —— 改字段记得两处一起改。"""
+    job_id: str
+    kind: Literal["task", "workflow"]
+    task_id: str = ""
+    workflow_id: str = ""
+    variables: dict[str, str] = Field(default_factory=dict)
+    status: Literal["running", "success", "failed", "cancelled"]
+    message: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    result: dict[str, Any] | None = None
+    error: str = ""
+    cancel_requested: bool = False
+
+
+class WorkflowRunSummary(BaseModel):
+    """list_workflow_runs 摘要项，比完整 WorkflowRun 轻 —— 不含
+    nodes[*].output 和 variables，只够列表展示用。"""
+    run_id: str
+    workflow_id: str = ""
+    workflow_name: str = ""
+    status: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    elapsed_seconds: float = 0
+    error: str = ""
+    node_count: int = 0
+    node_status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class DriverInfo(BaseModel):
+    available: bool
+    modules: list[str] = Field(default_factory=list)
+
+
+class BootstrapResponse(BaseModel):
+    """单次首屏拉取：列出数据源 / 对比任务 / 作业流 / 历史 + 当前可用的 DB
+    驱动 + 字典常量（db_types / sql_modes / history_sheets）。前端启动时调一次。"""
+    datasources: list[DataSource] = Field(default_factory=list)
+    tasks: list[CompareTask] = Field(default_factory=list)
+    workflows: list[Workflow] = Field(default_factory=list)
+    drivers: dict[str, DriverInfo] = Field(default_factory=dict)
+    db_types: list[str] = Field(default_factory=list)
+    sql_modes: list[str] = Field(default_factory=list)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    history_sheets: tuple[str, ...] | list[str] = Field(default_factory=list)
+
+
+class HistoryItem(BaseModel):
+    """compare 任务的历史结果项（来自 /api/history）。"""
+    run_id: str
+    task_id: str = ""
+    task_name: str = ""
+    started_at: str = ""
+    elapsed_seconds: float = 0
+    summary: CompareSummary | None = None
+    result_filename: str = ""
+    excel_filename: str = ""
