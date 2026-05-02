@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
 import { apiGet } from '../../api'
-import { nodeStatusMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
+import { healthMeta, nodeStatusMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
 import WorkflowCompareNodeEditor     from '../../components/workflow/WorkflowCompareNodeEditor.vue'
 import WorkflowParamsNodeEditor      from '../../components/workflow/WorkflowParamsNodeEditor.vue'
 import WorkflowLineageNodeEditor     from '../../components/workflow/WorkflowLineageNodeEditor.vue'
@@ -78,6 +78,7 @@ const reusableVariables = (vars) => {
   return out
 }
 const reuseAndRerun = (run, detail) => {
+  if (!currentWorkflow.value?.id) return
   const vars = reusableVariables(detail.variables || {})
   runWorkflowAsyncWith(currentWorkflow.value.id, vars)
 }
@@ -128,7 +129,10 @@ const resolvedParams = computed(() => resolveAllParameters(displayParameters.val
 
 // 最近一次 run（用于 DAG canvas 上叠加节点状态）
 const latestRun = computed(() => workflowResult.value || null)
-const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null))
+// health 兜底：workflowHealth 可能返回 healthMeta 里没有的 key（旧数据 / 边界
+// 状态），直接 healthMeta[health].pill 会炸渲染。统一走 healthDisplay 取兜底值。
+const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null) || 'none')
+const healthDisplay = computed(() => healthMeta[health.value] || healthMeta.none)
 
 const nodeStatusByid = computed(() => {
   const map = {}
@@ -236,7 +240,14 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
 </script>
 
 <template>
-  <div v-if="!currentWorkflow && selectedWorkflowId !== 'new'" class="rounded-xl border border-dashed border-slate-200 bg-white p-12 text-center text-sm text-slate-400">
+  <!-- 必须二选一才进详情：要么是新建态（selectedWorkflowId='new'），要么有真实选中的
+       currentWorkflow。否则下面的 currentWorkflow.xxx 会炸渲染（'new' 时 currentWorkflow
+       是 undefined，但 currentWorkflow?.xxx 也只是不渲染，下面新建态的 input 仍能显示）。
+       注意区分两种空状态：
+       - 已经在用、但还没选作业流 → 引导去总览选
+       - 选了但作业流被删 / id 错 → 同样引导去总览
+       两个 case 文案合并成一条。 -->
+  <div v-if="selectedWorkflowId !== 'new' && !currentWorkflow" class="rounded-xl border border-dashed border-slate-200 bg-white p-12 text-center text-sm text-slate-400">
     请先从「作业流总览」中选择一个作业流，或点击右上角「新建作业流」
   </div>
 
@@ -255,15 +266,15 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                    v-model="workflowDraft.name"
                    placeholder="新建作业流名称..."
                    class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xl font-bold text-slate-800 focus:border-blue-400 focus:outline-none">
-            <h1 v-else class="text-xl font-bold text-slate-800">{{ currentWorkflow.name }}</h1>
+            <h1 v-else class="text-xl font-bold text-slate-800">{{ currentWorkflow?.name }}</h1>
             <span v-if="selectedWorkflowId === 'new'" class="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200">
               <span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
               草稿（未保存）
             </span>
             <template v-else>
-              <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset" :class="healthMeta[health].pill">
-                <span class="h-1.5 w-1.5 rounded-full" :class="healthMeta[health].dot"></span>
-                {{ healthMeta[health].label }}
+              <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset" :class="healthDisplay.pill">
+                <span class="h-1.5 w-1.5 rounded-full" :class="healthDisplay.dot"></span>
+                {{ healthDisplay.label }}
               </span>
               <span v-if="latestRun" class="font-mono text-[11.5px] text-slate-500">
                 最近运行：{{ latestRun.started_at?.slice(5) }} · {{ latestRun.elapsed_seconds }}s
@@ -617,7 +628,7 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                   <div class="inline-flex items-center gap-1">
                     <button class="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 transition hover:bg-emerald-100"
                             title="按当前作业流配置 + 默认变量重跑（不复用此次的运行变量）"
-                            @click="runWorkflowAsyncWith(currentWorkflow.id)">
+                            @click="runWorkflowAsyncWith(currentWorkflow?.id)">
                       ↻ 重跑
                     </button>
                     <button class="rounded bg-slate-700 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-blue-600" @click="emit('open-run', run.run_id)">查看 →</button>

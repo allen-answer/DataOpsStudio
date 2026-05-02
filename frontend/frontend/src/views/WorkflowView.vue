@@ -4,7 +4,7 @@ import WorkflowListView from './workflow/WorkflowListView.vue'
 import WorkflowDetailView from './workflow/WorkflowDetailView.vue'
 import WorkflowRunView from './workflow/WorkflowRunView.vue'
 
-const { selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync } = inject('app')
+const { state, selectedWorkflowId, workflowResult, selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync, setNotice } = inject('app')
 
 const subPage = ref('list')      // list / detail / run
 
@@ -29,6 +29,24 @@ const runFromList = (workflowId) => {
   runWorkflowAsync()
 }
 
+// 顶部 subnav 切换：单纯切 subPage 不够 ——「详情」/「运行详情」对状态有依赖。
+// - 点详情：没选中过任何作业流（仍是初始 'new' 态）+ 库里有作业流 → 自动选第一个，避免半初始化空白
+// - 点详情：库里没作业流 → 仍允许进入，进去后会引导新建（'new' 态）
+// - 点运行详情：没有 workflowResult（没看过任何 run）→ 提示先去详情选一个 run
+const goSubPage = (id) => {
+  if (id === 'detail') {
+    if (selectedWorkflowId.value === 'new' && state.workflows?.length) {
+      selectWorkflow(state.workflows[0].id)
+    }
+  } else if (id === 'run') {
+    if (!workflowResult.value) {
+      setNotice?.('请先在「作业流详情」选择一次运行记录查看')
+      return
+    }
+  }
+  subPage.value = id
+}
+
 const subnav = [
   { id: 'list',   label: '作业流总览', hint: '健康度 / 调度 / 影响' },
   { id: 'detail', label: '作业流详情', hint: 'DAG / 配置 / 历史' },
@@ -43,7 +61,7 @@ const subnav = [
       <button v-for="page in subnav" :key="page.id"
               class="flex flex-col items-start rounded-lg px-3 py-1.5 text-left transition"
               :class="subPage === page.id ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'"
-              @click="subPage = page.id">
+              @click="goSubPage(page.id)">
         <span class="text-[12.5px] font-semibold">{{ page.label }}</span>
         <span class="text-[10.5px]" :class="subPage === page.id ? 'text-blue-100' : 'text-slate-400'">{{ page.hint }}</span>
       </button>
