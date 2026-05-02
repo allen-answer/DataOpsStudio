@@ -799,6 +799,81 @@ def test_rerun_reuses_params_node_and_keeps_variables_in_scope():
     assert seen and seen[0]["d"] == "2026-05-01"
 
 
+def test_engine_backfills_node_id_into_runner_artifacts():
+    """runner 不知道自己的 node_id，输出 artifacts 时留空。引擎在调完
+    runner 后必须回填 node_id（同时兜底 run_id），否则前端无法把 artifact
+    关联回节点。"""
+    def runner(config, variables, **_):
+        return {
+            "artifacts": [
+                {"id": "a1", "run_id": "", "node_id": "", "type": "excel",
+                 "name": "f.xlsx", "relative_path": "x/f.xlsx", "size_bytes": 0,
+                 "created_at": "", "description": ""},
+            ],
+        }
+
+    workflow = _wf([
+        WorkflowNode(id="exporter", type=WorkflowNodeType.EXCEL_EXPORT, config={}),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.EXCEL_EXPORT: runner})
+
+    assert run.status == WorkflowRunStatus.SUCCESS
+    arts = run.nodes[0].output.get("artifacts")
+    assert arts and arts[0]["node_id"] == "exporter"
+    assert arts[0]["run_id"] == run.run_id   # engine 兜底
+
+
+def test_workflow_run_aggregates_artifacts_across_nodes():
+    """WorkflowRun.artifacts computed_field 把所有节点的 artifacts 扁平
+    收集起来，方便前端一次性拿下载列表。"""
+    def runner(config, variables, **_):
+        which = config.get("which")
+        return {
+            "artifacts": [{
+                "id": f"id-{which}", "run_id": "", "node_id": "",
+                "type": "excel", "name": f"{which}.xlsx",
+                "relative_path": f"x/{which}.xlsx", "size_bytes": 1,
+                "created_at": "2026-01-01T00:00:00", "description": "",
+            }],
+        }
+
+    workflow = _wf([
+        WorkflowNode(id="ex1", type=WorkflowNodeType.EXCEL_EXPORT, config={"which": "a"}),
+        WorkflowNode(id="ex2", type=WorkflowNodeType.EXCEL_EXPORT, config={"which": "b"}),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.EXCEL_EXPORT: runner})
+
+    assert len(run.artifacts) == 2
+    assert {a.node_id for a in run.artifacts} == {"ex1", "ex2"}
+    assert {a.name for a in run.artifacts} == {"a.xlsx", "b.xlsx"}
+    # 序列化也带上 artifacts 顶层字段（前端直接 read run.artifacts）
+    payload = run.model_dump(mode="json")
+    assert "artifacts" in payload
+    assert len(payload["artifacts"]) == 2
+
+
+def test_workflow_run_artifacts_skips_malformed_entries():
+    """单条 artifact schema 错（缺 id 等必填），不能拖垮整个 run 序列化。"""
+    def runner(config, variables, **_):
+        return {
+            "artifacts": [
+                {"hello": "world"},   # 形状全错
+                {"id": "ok", "run_id": "", "node_id": "", "type": "excel",
+                 "name": "f.xlsx", "relative_path": "x/f.xlsx",
+                 "size_bytes": 0, "created_at": "", "description": ""},
+            ],
+        }
+
+    workflow = _wf([
+        WorkflowNode(id="exporter", type=WorkflowNodeType.EXCEL_EXPORT, config={}),
+    ])
+    run = run_workflow(workflow, runners={WorkflowNodeType.EXCEL_EXPORT: runner})
+
+    # 坏的跳过，好的保留
+    assert len(run.artifacts) == 1
+    assert run.artifacts[0].id == "ok"
+
+
 def test_interpolation_walks_nested_dict_and_list():
     received: dict = {}
 

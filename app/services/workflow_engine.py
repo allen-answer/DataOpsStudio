@@ -293,6 +293,15 @@ def run_workflow(
                 run_id=run.run_id,
             )
             node_run.output = output if isinstance(output, dict) else {"value": output}
+            # runner 不知道自己 node_id，统一在引擎层补 artifacts.node_id。
+            # 同时兜底 run_id（避免 runner 拿不到 run_id 时留空）。
+            artifacts_out = node_run.output.get("artifacts")
+            if isinstance(artifacts_out, list):
+                for art in artifacts_out:
+                    if isinstance(art, dict):
+                        art["node_id"] = node.id
+                        if not art.get("run_id"):
+                            art["run_id"] = run.run_id
             node_run.status = NodeRunStatus.SUCCESS
             completed_outputs[node.id] = node_run.output
             # `params` nodes feed their resolved values back into the

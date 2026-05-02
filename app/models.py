@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class DatabaseType(str, Enum):
@@ -256,6 +256,28 @@ class NodeRunStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class ArtifactType(str, Enum):
+    """节点产出文件的类型。前端据此选图标 / 决定怎么打开。"""
+    EXCEL = "excel"
+    JSON = "json"
+    OTHER = "other"
+
+
+class Artifact(BaseModel):
+    """节点产出的可下载文件。`relative_path` 是相对 RESULTS_DIR 的路径，
+    前端拼 /results/<relative_path> 即可下载。所有 artifacts 都归到
+    results/workflow_runs/<run_id>/ 下面，删 run 时连带清理。"""
+    id: str
+    run_id: str
+    node_id: str
+    type: ArtifactType
+    name: str
+    relative_path: str
+    size_bytes: int = 0
+    created_at: str = ""
+    description: str = ""
+
+
 class WorkflowNodeRun(BaseModel):
     node_id: str
     type: WorkflowNodeType
@@ -290,6 +312,27 @@ class WorkflowRun(BaseModel):
     error: str = ""
     # 局部重跑：记录起源。None = 全量执行；否则指向上一次 run + 起跑节点。
     resumed_from: dict[str, str] | None = None
+
+    @computed_field
+    @property
+    def artifacts(self) -> list[Artifact]:
+        """顶层 artifacts 聚合：扁平收集所有节点 output.artifacts。
+        前端可以直接读 run.artifacts 拿到下载列表，不用 re-walk nodes。
+        老 run 没有 artifacts 字段时返回空列表。"""
+        result: list[Artifact] = []
+        for node_run in self.nodes:
+            raw = (node_run.output or {}).get("artifacts")
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    result.append(Artifact.model_validate(item))
+                except Exception:
+                    # 跳过形状不对的——别让一条坏数据拖垮整个 run 序列化
+                    continue
+        return result
 
 
 # --- API response schemas ---

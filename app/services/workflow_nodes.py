@@ -385,15 +385,33 @@ def run_excel_export_node(
 
     # 相对路径，用于前端下载链接拼接：/results/{relative_path}
     relative_path = str(output_path.relative_to(RESULTS_DIR)).replace("\\", "/")
+    file_size = output_path.stat().st_size
+    total_rows = sum(s["rows_written"] for s in sheet_results)
+
+    # artifacts: 统一的产物声明，引擎调完 runner 会回填 node_id。
+    # 老的散字段（filename / relative_path / file_size）保留作为向后兼容入口，
+    # 前端可以读 artifacts 列表，也可以读老字段。
+    artifact = {
+        "id": uuid.uuid4().hex,
+        "run_id": run_id or "",
+        "node_id": "",   # engine 在 runner 调完后回填
+        "type": "excel",
+        "name": filename,
+        "relative_path": relative_path,
+        "size_bytes": file_size,
+        "created_at": _dt.now().isoformat(timespec="seconds"),
+        "description": f"{len(sheet_results)} sheet · {total_rows} 行",
+    }
 
     return {
         "filename": filename,
         "file_path": str(output_path),
         "relative_path": relative_path,
-        "file_size": output_path.stat().st_size,
+        "file_size": file_size,
         "sheet_count": len(sheet_results),
         "sheets": sheet_results,
-        "total_rows_written": sum(s["rows_written"] for s in sheet_results),
+        "total_rows_written": total_rows,
+        "artifacts": [artifact],
     }
 
 

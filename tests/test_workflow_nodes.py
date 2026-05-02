@@ -181,6 +181,31 @@ def test_excel_export_writes_real_xlsx_with_compare_dataset_shorthand(tmp_path, 
     assert rows[2] == (2, "x", "y")
 
 
+def test_excel_export_emits_artifact_with_metadata(tmp_path, monkeypatch):
+    """runner 输出 artifacts 列表，每个 artifact 携带前端拼下载链接所需
+    的 relative_path / size / type 等字段。node_id 由 engine 层回填，
+    runner 自己留空字符串。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    upstream = {"src": {"rows": [{"id": 1}, {"id": 2}]}}
+    out = run_excel_export_node({
+        "sheets": [{"id": "main", "enabled": True, "sheet_name": "main",
+                    "source_type": "node_output", "node_id": "src", "dataset": "rows"}],
+    }, {}, outputs=upstream, run_id="run-art-1")
+
+    assert "artifacts" in out
+    assert len(out["artifacts"]) == 1
+    art = out["artifacts"][0]
+    assert art["type"] == "excel"
+    assert art["run_id"] == "run-art-1"
+    assert art["node_id"] == ""    # runner 不填，engine 回填
+    assert art["name"] == out["filename"]
+    assert art["relative_path"] == out["relative_path"]
+    assert art["size_bytes"] == out["file_size"]
+    assert "1 sheet" in art["description"] and "2 行" in art["description"]
+    assert art["created_at"]   # ISO 时间戳非空
+    assert art["id"]   # uuid 非空
+
+
 def test_excel_export_max_rows_truncation(tmp_path, monkeypatch):
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     upstream = {"src": {"rows": [{"id": i} for i in range(150)]}}

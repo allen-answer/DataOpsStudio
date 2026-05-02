@@ -110,6 +110,52 @@ def test_delete_removes_file(tmp_path, monkeypatch):
     assert workflow_history.get_workflow_run("run-del") is None
 
 
+def test_delete_also_removes_artifacts_directory(tmp_path, monkeypatch):
+    """每个 run 的 artifacts（excel_export 等节点的产物）落到
+    WORKFLOW_RUNS_DIR/<run_id>/exports/，删 run 时必须连带 rmtree
+    整个 <run_id>/ 目录，否则磁盘上残留垃圾文件。"""
+    from app.services import workflow_history
+
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+    run = _make_run("run-with-arts")
+    workflow_history.persist_workflow_run(run)
+
+    # 模拟 excel_export runner 生成一个产物
+    arts_dir = tmp_path / "run-with-arts" / "exports"
+    arts_dir.mkdir(parents=True)
+    artifact_file = arts_dir / "report.xlsx"
+    artifact_file.write_bytes(b"fake xlsx")
+    assert artifact_file.exists()
+
+    workflow_history.delete_workflow_run("run-with-arts")
+
+    assert workflow_history.get_workflow_run("run-with-arts") is None
+    assert not (tmp_path / "run-with-arts").exists()
+
+
+def test_delete_run_without_artifacts_directory_succeeds(tmp_path, monkeypatch):
+    """run 没产生过 artifacts（比如纯 compare 节点的 workflow）→
+    artifacts 目录不存在，delete 不能因此失败。"""
+    from app.services import workflow_history
+
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+    run = _make_run("run-clean")
+    workflow_history.persist_workflow_run(run)
+
+    workflow_history.delete_workflow_run("run-clean")
+    assert workflow_history.get_workflow_run("run-clean") is None
+
+
+def test_delete_rejects_path_traversal(tmp_path, monkeypatch):
+    """run_id='../foo' 不应该把 artifacts dir 解析到 WORKFLOW_RUNS_DIR
+    外的位置——校验失败时直接 KeyError，不可 rmtree 任何东西。"""
+    from app.services import workflow_history
+
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+    with pytest.raises(KeyError):
+        workflow_history.delete_workflow_run("../escape")
+
+
 def test_delete_unknown_raises_key_error(tmp_path, monkeypatch):
     from app.services import workflow_history
 

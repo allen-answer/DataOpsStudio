@@ -145,6 +145,14 @@ const formatBytes = (n) => {
 }
 const formatNumber = (n) => (n == null ? '—' : n.toLocaleString('en-US'))
 
+// artifact type → icon。type 由后端 ArtifactType 枚举给出，未知值兜底
+// 显示通用文件 glyph，避免空白格。
+const artifactTypeIcon = (type) => {
+  if (type === 'excel') return '📊'
+  if (type === 'json')  return '🧾'
+  return '📦'
+}
+
 // compare 节点：四种归类的颜色
 const compareBuckets = [
   { key: 'only_source', label: '仅源端', barClass: 'bg-rose-500',    textClass: 'text-rose-700' },
@@ -392,6 +400,31 @@ const runStatusDisplay = computed(() => {
               </div>
             </div>
 
+            <!-- 产物（artifacts）—— 任意节点产生的可下载文件统一在这里展示。
+                 老节点（compare）的 excel_filename / result_filename 还没收口到
+                 artifacts 列表，下面 compare 区块仍保留内联下载按钮兜底。 -->
+            <div v-if="(selectedNode.output && (selectedNode.output.artifacts || []).length)" class="border-b border-slate-100 bg-emerald-50/30 px-4 py-3">
+              <p class="text-[11px] font-bold uppercase tracking-wider text-emerald-700">产物 ({{ selectedNode.output.artifacts.length }})</p>
+              <ul class="mt-2 space-y-1.5">
+                <li v-for="art in selectedNode.output.artifacts" :key="art.id"
+                    class="flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2">
+                  <span class="text-[14px]">{{ artifactTypeIcon(art.type) }}</span>
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate font-mono text-[12px] font-semibold text-slate-800">{{ art.name }}</p>
+                    <p class="text-[10.5px] text-slate-500">
+                      <span class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[9.5px] uppercase">{{ art.type }}</span>
+                      <span v-if="art.description"> · {{ art.description }}</span>
+                      <span v-if="art.size_bytes"> · {{ formatBytes(art.size_bytes) }}</span>
+                    </p>
+                  </div>
+                  <a :href="`/results/${art.relative_path}`" target="_blank"
+                     class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-emerald-700">
+                    ⬇ 下载
+                  </a>
+                </li>
+              </ul>
+            </div>
+
             <!-- 节点输出（按 type 结构化） -->
             <div v-if="selectedNode.output && Object.keys(selectedNode.output).length" class="border-b border-slate-100 px-4 py-3">
 
@@ -444,27 +477,13 @@ const runStatusDisplay = computed(() => {
                 </div>
               </div>
 
-              <!-- excel_export 节点：文件卡 + sheet 表 -->
+              <!-- excel_export 节点：sheet 表（文件本身在上面 artifacts 面板下载） -->
               <div v-else-if="selectedNode.type === 'excel_export'">
-                <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Excel 导出</p>
-                <div class="mt-2 rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2">
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="min-w-0">
-                      <p class="font-mono text-[12px] font-semibold text-slate-800 truncate">{{ selectedNode.output.filename || '—' }}</p>
-                      <p class="mt-0.5 text-[10.5px] text-slate-500">
-                        {{ formatBytes(selectedNode.output.file_size) }} ·
-                        {{ selectedNode.output.sheet_count }} 个 sheet ·
-                        共 <span class="font-mono">{{ formatNumber(selectedNode.output.total_rows_written) }}</span> 行
-                      </p>
-                    </div>
-                    <a v-if="selectedNode.output.filename"
-                       :href="`/results/${selectedNode.output.relative_path || selectedNode.output.filename}`"
-                       target="_blank"
-                       class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 text-[11px] font-semibold text-white transition hover:bg-emerald-700">
-                      ⬇ 下载
-                    </a>
-                  </div>
-                </div>
+                <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Excel 导出 · sheet 详情</p>
+                <p class="mt-1 text-[10.5px] text-slate-500">
+                  {{ selectedNode.output.sheet_count }} 个 sheet · 共
+                  <span class="font-mono">{{ formatNumber(selectedNode.output.total_rows_written) }}</span> 行
+                </p>
                 <div v-if="(selectedNode.output.sheets || []).length" class="mt-2 rounded-lg border border-slate-200">
                   <table class="w-full text-[11.5px]">
                     <thead class="bg-slate-50/60">

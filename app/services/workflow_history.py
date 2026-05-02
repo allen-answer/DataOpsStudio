@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -82,10 +83,26 @@ def get_workflow_run(run_id: str) -> dict[str, Any] | None:
 
 
 def delete_workflow_run(run_id: str) -> None:
-    path = (WORKFLOW_RUNS_DIR / f"{run_id}.json").resolve()
-    if WORKFLOW_RUNS_DIR.resolve() not in path.parents or not path.exists():
+    """删 run JSON + 连带清理它所有 artifacts。
+
+    每个 run 的产物归档到 WORKFLOW_RUNS_DIR/<run_id>/（excel_export 等节点
+    把文件落到 <run_id>/exports/）。直接 rmtree 整个目录就把 artifacts 清掉，
+    不需要遍历 run.artifacts 一个个删。
+
+    路径用 resolve + parents 校验防 traversal——避免 run_id='..' 这类输入
+    把 results/ 整个目录干掉。
+    """
+    json_path = (WORKFLOW_RUNS_DIR / f"{run_id}.json").resolve()
+    if WORKFLOW_RUNS_DIR.resolve() not in json_path.parents or not json_path.exists():
         raise KeyError(run_id)
-    path.unlink()
+    json_path.unlink()
+
+    artifacts_dir = (WORKFLOW_RUNS_DIR / run_id).resolve()
+    if (
+        WORKFLOW_RUNS_DIR.resolve() in artifacts_dir.parents
+        and artifacts_dir.is_dir()
+    ):
+        shutil.rmtree(artifacts_dir, ignore_errors=True)
 
 
 def _count_node_statuses(node_runs: list[dict[str, Any]]) -> dict[str, int]:
