@@ -660,8 +660,7 @@ const fillWorkflowDraft = (wf) => {
     url: node.config?.url || '',
     body: node.config?.body || '',
     expect_status: node.config?.expect_status ?? '',
-    // excel_export: filename + sheets list. Each sheet keeps its own draft state.
-    filename: node.config?.filename || '',
+    // excel_export: sheets list. Filename 由后端写盘时按 run_id 自动命名。
     sheets: Array.isArray(node.config?.sheets)
       ? node.config.sheets.map((s) => ({ ...s }))
       : [],
@@ -703,7 +702,6 @@ const buildNodeConfig = (node) => {
     ...(node.expect_status !== '' && node.expect_status !== null && node.expect_status !== undefined ? { expect_status: Number(node.expect_status) } : {}),
   }
   if (node.type === 'excel_export') return {
-    filename: node.filename || 'export.xlsx',
     sheets: (node.sheets || []).map((s) => ({
       id: s.id,
       enabled: s.enabled !== false,
@@ -785,7 +783,6 @@ const addWorkflowNode = () => {
     task_id: '', source_sql_override: '', target_sql_override: '',
     sql: '', dialect: '',
     method: 'GET', url: '', body: '', expect_status: '',
-    filename: 'DataCompare_${biz_date}.xlsx',
     sheets: [
       { id: 'summary', enabled: true,  sheet_name: '汇总',     source: 'summary',     max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },
       { id: 'diff',    enabled: true,  sheet_name: '差异明细', source: 'diff',        max_rows: 100000, freeze_header: true, auto_width: true, highlight_diff: true },

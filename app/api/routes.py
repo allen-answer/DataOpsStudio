@@ -19,7 +19,7 @@ from app.services.config_io import export_config, import_config
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.runner import run_task
 from app.services.sql_tools import sql_assist
-from app.services.workflow_engine import run_workflow, topological_order
+from app.services.workflow_engine import run_workflow, topological_order, validate_when_syntax
 from app.services.workflow_history import (
     delete_workflow_run, get_workflow_run, list_workflow_runs, persist_workflow_run,
 )
@@ -463,6 +463,16 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
     """Validate per-type config + the DAG is well-formed. Catching this at
     create time gives a clear 400 instead of a confusing failure mid-run."""
     for node in payload.nodes:
+        # `when` 表达式语法预检：空字符串放行；非空但坏（如空 LHS：
+        # ` == "prod"`）直接拒掉，不留到运行时才报错。
+        try:
+            validate_when_syntax(node.when or "")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"node {node.id}: {exc}",
+            ) from exc
+
         kind = node.type.value
         if kind == "params":
             params = node.config.get("parameters") or []
@@ -507,8 +517,6 @@ def _ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
             sheets = node.config.get("sheets") or []
             if not isinstance(sheets, list) or not [s for s in sheets if s.get("enabled", True)]:
                 raise HTTPException(status_code=400, detail=f"node {node.id}: excel_export 至少需要一个启用的 Sheet")
-            if not str(node.config.get("filename") or "").strip():
-                raise HTTPException(status_code=400, detail=f"node {node.id}: excel_export 需要文件名模板")
     try:
         topological_order(payload.nodes)
     except ValueError as exc:

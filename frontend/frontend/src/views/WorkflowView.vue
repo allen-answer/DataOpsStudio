@@ -4,7 +4,7 @@ import WorkflowListView from './workflow/WorkflowListView.vue'
 import WorkflowDetailView from './workflow/WorkflowDetailView.vue'
 import WorkflowRunView from './workflow/WorkflowRunView.vue'
 
-const { selectWorkflow, loadWorkflowRunDetail } = inject('app')
+const { selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync } = inject('app')
 
 const subPage = ref('list')      // list / detail / run
 
@@ -20,6 +20,13 @@ const goList = () => { subPage.value = 'list' }
 const goDetailFromRun = (workflowId) => {
   if (workflowId) selectWorkflow(workflowId)
   subPage.value = 'detail'
+}
+
+// 列表页"立即运行"：先选中再跳到详情页跑，保留可观测性
+const runFromList = (workflowId) => {
+  selectWorkflow(workflowId)
+  subPage.value = 'detail'
+  runWorkflowAsync()
 }
 
 const subnav = [
@@ -45,7 +52,7 @@ const subnav = [
       </div>
     </nav>
 
-    <WorkflowListView v-if="subPage === 'list'" @open-detail="goDetail" />
+    <WorkflowListView v-if="subPage === 'list'" @open-detail="goDetail" @run="runFromList" />
     <WorkflowDetailView v-else-if="subPage === 'detail'" @back="goList" @open-run="goRun" />
     <WorkflowRunView v-else-if="subPage === 'run'" @back="subPage = 'detail'" @open-detail="goDetailFromRun" />
   </section>

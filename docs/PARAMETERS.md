@@ -183,13 +183,15 @@ nodes:
       body: '{"text": "${nodes.compare.summary.diff} 行差异"}'
 ```
 
-### 4.4 文件名 / Sheet 名也支持参数
+### 4.4 Sheet 名也支持参数
+
+文件名由 `excel_export` 在写盘时自动命名（`<workflow_name>_<run_id_short>.xlsx`），
+避免冲突 + 可追溯。Sheet 名则可以引用变量。
 
 ```yaml
 - id: export
   type: excel_export
   config:
-    filename: "DataCompare_${biz_date}_${batch_id}.xlsx"
     sheets:
       - id: summary
         sheet_name: "汇总_${biz_date}"
@@ -265,12 +267,11 @@ nodes:
       body: |
         {"text": "[${biz_date}] orders vs orders_v2 发现 ${nodes.compare.summary.diff} 行差异"}
 
-  # ──── 导出 Excel 报告（文件名带参数）────────────
+  # ──── 导出 Excel 报告（文件名由引擎自动生成）─────
   - id: export
     type: excel_export
     depends_on: [compare]
     config:
-      filename: "OrderDiff_${biz_date}_${batch_id}.xlsx"
       sheets:
         - { id: summary, sheet_name: "汇总", source: summary, max_rows: 10000 }
         - { id: diff,    sheet_name: "差异_${biz_date}", source: diff, max_rows: 100000 }

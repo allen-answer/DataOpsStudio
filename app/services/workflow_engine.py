@@ -405,6 +405,36 @@ def _interpolate_for_expression(
     return _VARIABLE_PATTERN.sub(replace, text)
 
 
+def validate_when_syntax(expression: str) -> None:
+    """Static syntax check for `when:` expressions.
+
+    Used at save time so坏表达式（空 LHS、未闭合括号等）早点拒掉。
+    Replaces ${...} placeholders with a neutral identifier — runtime values
+    aren't known yet, but token shape is enough to catch syntax errors.
+
+    Empty / whitespace is fine (means "always run").
+    """
+    if not expression or not expression.strip():
+        return
+    # 用整数字面量 1 替占位 —— 是 ast.Constant（在 allowlist 内），
+    # 又能在 ==、>、< 等比较里语法上成立。runtime 才会用真实值评估。
+    test_expr = _VARIABLE_PATTERN.sub("1", expression)
+    test_expr = test_expr.replace("&&", " and ").replace("||", " or ")
+    test_expr = re.sub(r"(?<![=!<>])!(?!=)", " not ", test_expr)
+    test_expr = re.sub(r"\bnull\b", "None", test_expr)
+    test_expr = re.sub(r"\btrue\b", "True", test_expr)
+    test_expr = re.sub(r"\bfalse\b", "False", test_expr)
+    try:
+        tree = ast.parse(test_expr, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"`when` 语法错误：{exc.msg}") from exc
+    for node in ast.walk(tree):
+        if type(node) not in _WHEN_ALLOWED_AST_NODES:
+            raise ValueError(
+                f"`when` 不允许的构造：{type(node).__name__}"
+            )
+
+
 def evaluate_when(
     expression: str,
     variables: Mapping[str, str],

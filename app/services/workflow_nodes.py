@@ -242,19 +242,17 @@ def run_excel_export_node(config: dict[str, Any], variables: dict[str, str]) -> 
     upstream node outputs (referenced via ${nodes.x.y} in user config)
     and lays them into separate sheets. Wiring that into the existing
     exporter machinery lands in a follow-up slice.
+
+    文件名由调用方在写盘时按 run_id 自动命名（避免冲突 + 可追溯），
+    用户配置里没有 filename 字段。
     """
-    filename = str(config.get("filename") or "").strip() or "export.xlsx"
     sheets = config.get("sheets") or []
     if not isinstance(sheets, list):
         raise ValueError("excel_export node config.sheets must be a list")
     enabled = [s for s in sheets if s.get("enabled", True)]
     if not enabled:
         raise ValueError("excel_export node requires at least one enabled sheet")
-    # Variables / upstream node refs are already substituted by the engine
-    # before this runner sees `config`, so filename + sheet_name come in
-    # already-resolved.
     return {
-        "filename": filename,
         "sheet_count": len(enabled),
         "sheets": [
             {

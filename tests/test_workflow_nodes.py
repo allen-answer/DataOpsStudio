@@ -128,15 +128,14 @@ def test_params_node_skips_anonymous_entries():
 
 def test_excel_export_requires_at_least_one_enabled_sheet():
     with pytest.raises(ValueError, match="enabled sheet"):
-        run_excel_export_node({"filename": "x.xlsx", "sheets": []}, {})
+        run_excel_export_node({"sheets": []}, {})
 
     with pytest.raises(ValueError, match="enabled sheet"):
-        run_excel_export_node({"filename": "x.xlsx", "sheets": [{"id": "s1", "enabled": False}]}, {})
+        run_excel_export_node({"sheets": [{"id": "s1", "enabled": False}]}, {})
 
 
 def test_excel_export_emits_sheet_descriptors():
     out = run_excel_export_node({
-        "filename": "DataCompare_2026-05-01.xlsx",
         "sheets": [
             {"id": "summary", "enabled": True,  "sheet_name": "Summary", "source": "summary",       "max_rows": 100000},
             {"id": "diff",    "enabled": True,  "sheet_name": "Diff",    "source": "diff",          "max_rows": 50000},
@@ -144,7 +143,7 @@ def test_excel_export_emits_sheet_descriptors():
         ],
     }, {})
 
-    assert out["filename"] == "DataCompare_2026-05-01.xlsx"
+    assert "filename" not in out   # 文件名由调用方/写盘端自动生成
     assert out["sheet_count"] == 2   # disabled sheet excluded
     assert [s["name"] for s in out["sheets"]] == ["Summary", "Diff"]
     assert out["_stub"] is True
@@ -152,7 +151,7 @@ def test_excel_export_emits_sheet_descriptors():
 
 def test_excel_export_rejects_non_list_sheets():
     with pytest.raises(ValueError, match="must be a list"):
-        run_excel_export_node({"filename": "x.xlsx", "sheets": "not a list"}, {})
+        run_excel_export_node({"sheets": "not a list"}, {})
 
 
 def test_http_node_surfaces_4xx_body_without_raising():

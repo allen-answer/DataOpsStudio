@@ -2,7 +2,7 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { projects, owners, scheduleTypes, healthMeta, getMeta, workflowHealth } from '../../mock/workflow_meta'
 
-const emit = defineEmits(['open-detail'])
+const emit = defineEmits(['open-detail', 'run'])
 const { state, allWorkflowRuns, loadAllWorkflowRuns } = inject('app')
 
 onMounted(() => { loadAllWorkflowRuns() })
@@ -201,13 +201,13 @@ const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 1
             </td>
             <td class="px-4 py-3 text-right" @click.stop>
               <div class="flex items-center justify-end gap-0.5">
-                <button class="rounded p-1.5 text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700" title="立即运行">
+                <button class="rounded p-1.5 text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700" title="立即运行（后台执行）" @click="emit('run', wf.id)">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6 4l10 6-10 6V4z"/></svg>
                 </button>
                 <button class="rounded p-1.5 text-slate-500 transition hover:bg-blue-50 hover:text-blue-700" title="查看详情" @click="emit('open-detail', wf.id)">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h14M3 10h14M3 16h14"/></svg>
                 </button>
-                <button class="rounded p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" title="编辑">
+                <button class="rounded p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" title="编辑（同详情页）" @click="emit('open-detail', wf.id)">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4l2 2-9 9-3 1 1-3 9-9z"/></svg>
                 </button>
               </div>

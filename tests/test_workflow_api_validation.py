@@ -89,3 +89,43 @@ def test_override_with_sql_in_filter_passes(stub_task):
         "source_sql_override": "SELECT id FROM users WHERE id IN (${ids | sql_in})",
     })
     _ensure_workflow_node_targets(payload)
+
+
+def test_rejects_when_with_empty_lhs(stub_task):
+    """`when` 表达式空 LHS 在保存时就拒掉，不留到运行时。"""
+    payload = WorkflowCreate(
+        name="t",
+        nodes=[
+            {"id": "n1", "type": "compare", "name": "", "config": {"task_id": "x"},
+             "depends_on": [], "when": ' == "prod"'}
+        ],
+        default_variables={},
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _ensure_workflow_node_targets(payload)
+    assert excinfo.value.status_code == 400
+    assert "when" in excinfo.value.detail.lower()
+
+
+def test_accepts_valid_when_expression(stub_task):
+    payload = WorkflowCreate(
+        name="t",
+        nodes=[
+            {"id": "n1", "type": "compare", "name": "", "config": {"task_id": "x"},
+             "depends_on": [], "when": '${env} == "prod" && ${count} > 0'}
+        ],
+        default_variables={},
+    )
+    _ensure_workflow_node_targets(payload)
+
+
+def test_empty_when_passes(stub_task):
+    payload = WorkflowCreate(
+        name="t",
+        nodes=[
+            {"id": "n1", "type": "compare", "name": "", "config": {"task_id": "x"},
+             "depends_on": [], "when": ""}
+        ],
+        default_variables={},
+    )
+    _ensure_workflow_node_targets(payload)

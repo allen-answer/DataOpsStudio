@@ -790,13 +790,8 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
                 </label>
               </div>
 
-              <!-- Excel 导出节点：文件名模板 + Sheet 列表 -->
+              <!-- Excel 导出节点：Sheet 列表（文件名由后端按 run_id 自动命名）-->
               <div v-if="node.type === 'excel_export'" class="mt-3 space-y-3">
-                <label class="block">
-                  <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">文件名模板（支持 ${var}）</span>
-                  <input v-model="node.filename" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs" placeholder="DataCompare_${biz_date}_${batch_id}.xlsx">
-                </label>
-
                 <div class="rounded-lg border border-slate-200 bg-white">
                   <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
                     <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Sheet 列表（{{ (node.sheets || []).length }}）</span>
