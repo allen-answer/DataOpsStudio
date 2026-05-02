@@ -1,32 +1,10 @@
-// 元数据补全：后端 Workflow 模型只存了 name + nodes + variables。
-// 在产品演进期间，我们把项目归属/负责人/调度/资产关系/质量检查这些
-// "数据平台后台才会有"的维度先用 mock 补上，等后端落库后再切换。
+// UI 元数据 + 派生工具：状态色板、参数类型 chip、DAG 自动布局、健康度推导、
+// 事件流合成。这些都不是业务数据，是把后端模型转成 UI 可用形态的工具函数。
 //
-// 通过工作流 id 或下标找到对应的元数据模板。
-
-export const projects = [
-  { id: 'all',     name: '全部项目' },
-  { id: 'dw',      name: '数据仓库' },
-  { id: 'risk',    name: '风控管理' },
-  { id: 'growth',  name: '增长分析' },
-  { id: 'finance', name: '财务报表' },
-]
-
-export const owners = [
-  { id: 'all',      name: '全部负责人' },
-  { id: 'zhangsan', name: '张三' },
-  { id: 'lina',     name: '李娜' },
-  { id: 'wangwei',  name: '王伟' },
-  { id: 'sunqi',    name: '孙琪' },
-  { id: 'zhoumin',  name: '周敏' },
-]
-
-export const scheduleTypes = [
-  { id: 'all',      name: '全部调度' },
-  { id: 'cron',     name: 'Cron 定时' },
-  { id: 'sensor',   name: '事件触发' },
-  { id: 'manual',   name: '手动触发' },
-]
+// 注：早先版本里这里还塞了 projects/owners/scheduleTypes 三个固定下拉、
+// 4 个 TEMPLATES 假元数据、getMeta() 按下标 mod 4 派模板的"假装真业务"逻辑。
+// 后端 Workflow 模型已经下沉了 owner/tags/schedule_cron/project/status/
+// input_assets/output_assets，那些 mock 已经全部移除。
 
 // 健康度语义贴合系统其他模块（compare/lineage）：成功/失败/运行中/等待/跳过/过期。
 export const healthMeta = {
@@ -56,109 +34,6 @@ export const parameterTypeMeta = {
   sql_result:    { label: 'SQL',    glyph: '⌖', accent: 'text-emerald-700 bg-emerald-50 ring-emerald-200' },
   multi_value:   { label: '多值',    glyph: '≡', accent: 'text-purple-700 bg-purple-50  ring-purple-200' },
   json:          { label: 'JSON',   glyph: '{}', accent: 'text-amber-700  bg-amber-50   ring-amber-200'  },
-}
-
-const TEMPLATES = [
-  {
-    project: 'dw', owner: '张三', description: '订单事实表日清洗作业流。每日 02:00 触发，依赖 ods.orders、ods.refunds，输出到 dwd.fact_orders。',
-    tags: ['tier-1', 'prod', 'critical'],
-    schedule: { cron: '0 2 * * *', text: '每日 02:00', type: 'cron', status: 'online' },
-    parameters: [
-      { name: 'biz_date',       type: 'relative_date', source: 'yesterday',          required: true,  description: '业务日期，默认昨天' },
-      { name: 'batch_id',       type: 'fixed',         default: '1001',              required: true,  description: '批次号' },
-      { name: 'system_code',    type: 'fixed',         default: 'CRM',               required: true,  description: '系统代码' },
-      { name: 'partition_dates',type: 'multi_value',   default: ['2026-04-30','2026-05-01'], required: false, description: '需要对比的分区列表' },
-      { name: 'tier1_users',    type: 'sql_result',    sql: 'SELECT id FROM dim_users WHERE tier = 1 AND active = 1', datasource: 'mysql8',
-                                 required: false, description: 'tier=1 活跃用户 ID（SQL 解析时执行）', preview_count: 142 },
-    ],
-    alert_targets: ['张三', '@数据值班群'], queue: 'spark-large',
-    input_assets:  [
-      { key: 'ods/orders',  kind: 'table', health: 'healthy', last_materialized: '2026-05-02 01:55' },
-      { key: 'ods/refunds', kind: 'table', health: 'stale',   last_materialized: '2026-04-30 02:00' },
-    ],
-    output_assets: [
-      { key: 'dwd/fact_orders',  kind: 'table', downstream_count: 7 },
-      { key: 'dwd/dim_orders',   kind: 'table', downstream_count: 3 },
-    ],
-    quality_checks: [
-      { name: 'row_count_floor',     severity: '阻断', status: 'passed', message: '行数 ≥ 1000',                last_run: '2026-05-02 02:01:42' },
-      { name: 'no_negative_amount',  severity: '阻断', status: 'passed', message: '没有负数金额行',              last_run: '2026-05-02 02:01:42' },
-      { name: 'partition_coverage',  severity: '警告', status: 'failed', message: '近 7 天有 1 个分区缺失',       last_run: '2026-05-02 02:01:42' },
-      { name: 'currency_allowlist',  severity: '阻断', status: 'passed', message: '币种全部在 {USD, EUR, CNY}',   last_run: '2026-05-02 02:01:42' },
-    ],
-  },
-  {
-    project: 'risk', owner: '王伟', description: '反欺诈规则评分作业流。每 30 分钟触发，对在线交易实时计算风险分。',
-    tags: ['tier-1', 'realtime'],
-    schedule: { cron: '*/30 * * * *', text: '每 30 分钟', type: 'cron', status: 'online' },
-    parameters: [
-      { name: 'window_minutes', type: 'fixed',         default: '30',                required: true, description: '滚动窗口（分钟）' },
-      { name: 'rule_set_id',    type: 'fixed',         default: 'rules_v42',         required: true, description: '生效规则集' },
-      { name: 'now',            type: 'relative_date', source: 'now',                required: true, description: '当前时间戳（自动）' },
-      { name: 'risk_thresholds',type: 'json',          default: '{"low":0.2,"high":0.7}', required: true, description: '风险阈值配置' },
-    ],
-    alert_targets: ['王伟', '@风控值班'], queue: 'realtime',
-    input_assets: [
-      { key: 'ods/transactions', kind: 'stream', health: 'healthy', last_materialized: '实时' },
-      { key: 'dim/users',        kind: 'table',  health: 'healthy', last_materialized: '2026-05-02 03:00' },
-    ],
-    output_assets: [
-      { key: 'rt/fraud_scores',  kind: 'stream', downstream_count: 4 },
-    ],
-    quality_checks: [
-      { name: 'score_distribution', severity: '警告', status: 'passed', message: '分布无突变',                  last_run: '2026-05-02 09:30:00' },
-      { name: 'rule_coverage',      severity: '阻断', status: 'passed', message: '规则集全部命中',              last_run: '2026-05-02 09:30:00' },
-    ],
-  },
-  {
-    project: 'growth', owner: '孙琪', description: '广告归因日报。每日 05:15 触发，关联渠道日志和订单数据生成归因明细。',
-    tags: ['daily', 'prod'],
-    schedule: { cron: '15 5 * * *', text: '每日 05:15', type: 'cron', status: 'online' },
-    parameters: [
-      { name: 'report_date', type: 'relative_date', source: 'yesterday', required: true, description: '报告日期' },
-      { name: 'channels',    type: 'multi_value',   default: ['baidu','toutiao','wechat'], required: true, description: '渠道集合' },
-      { name: 'lookback_days', type: 'fixed',       default: '7',         required: true, description: '归因回看窗口（天）' },
-    ],
-    alert_targets: ['孙琪'], queue: 'spark-default',
-    input_assets: [
-      { key: 'ods/ad_clicks',   kind: 'table', health: 'healthy', last_materialized: '2026-05-02 04:30' },
-      { key: 'dwd/fact_orders', kind: 'table', health: 'healthy', last_materialized: '2026-05-02 02:01' },
-    ],
-    output_assets: [
-      { key: 'app/ad_attribution_daily', kind: 'table', downstream_count: 2 },
-    ],
-    quality_checks: [
-      { name: 'attribution_sum_match', severity: '阻断', status: 'passed', message: '归因金额 = 订单金额',     last_run: '2026-05-02 05:18:01' },
-    ],
-  },
-  {
-    project: 'finance', owner: '周敏', description: '现金流日报，对账系统的下游输入。每日 06:00 触发。',
-    tags: ['daily', 'finance'],
-    schedule: { cron: '0 6 * * *', text: '每日 06:00', type: 'cron', status: 'online' },
-    parameters: [
-      { name: 'biz_date', type: 'relative_date', source: 'yesterday', required: true, description: '业务日期' },
-      { name: 'currencies', type: 'multi_value', default: ['USD','EUR','CNY'], required: true, description: '币种白名单' },
-      { name: 'tolerance_amount', type: 'fixed', default: '0.01', required: true, description: '余额容差（元）' },
-    ],
-    alert_targets: ['周敏', '@财务对账群'], queue: 'default',
-    input_assets: [
-      { key: 'dwd/fact_orders',     kind: 'table', health: 'healthy', last_materialized: '2026-05-02 02:01' },
-      { key: 'ods/refunds',         kind: 'table', health: 'stale',   last_materialized: '2026-04-30 02:00' },
-      { key: 'dwd/fact_payments',   kind: 'table', health: 'healthy', last_materialized: '2026-05-02 03:00' },
-    ],
-    output_assets: [
-      { key: 'app/cashflow_daily',  kind: 'table', downstream_count: 1 },
-    ],
-    quality_checks: [
-      { name: 'balance_zero',  severity: '阻断', status: 'passed', message: '收支差额 = 0',  last_run: '2026-05-02 06:00:42' },
-    ],
-  },
-]
-
-// 简单地按下标取模分配模板。真实生产里这一层应该来自数据库列。
-export function getMeta(workflow, index = 0) {
-  if (!workflow) return TEMPLATES[0]
-  return TEMPLATES[index % TEMPLATES.length]
 }
 
 // DAG 自动布局：按 depends_on 拓扑排序计算每个节点的层级 (level)，同层垂直排开。

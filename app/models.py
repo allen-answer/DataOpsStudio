@@ -192,18 +192,46 @@ class WorkflowNode(BaseModel):
     when: str = ""
 
 
+class AssetKind(str, Enum):
+    """资产形态。`table` 是最常见的（表 / 视图 / 物化视图），`file` 给
+    Excel / CSV / Parquet 输入输出留位，`stream` 给将来接 Kafka / CDC 留位。"""
+    TABLE = "table"
+    FILE = "file"
+    STREAM = "stream"
+
+
+class AssetRef(BaseModel):
+    """作业流的输入 / 输出资产引用。`key` 是稳定标识（例如 schema.table 或
+    存储路径），后续可以用它接血缘系统、做影响分析。`description` 给人看，
+    UI 上可以展开成 hover 说明。"""
+    key: str = Field(..., min_length=1)
+    kind: AssetKind = AssetKind.TABLE
+    description: str = ""
+
+
+class WorkflowStatus(str, Enum):
+    """作业流生命周期状态——和单次 run 状态不同，这是定义层。"""
+    DRAFT = "draft"        # 编辑中，未上线
+    ACTIVE = "active"      # 上线，按调度 / 手动可触发
+    PAUSED = "paused"      # 暂停，调度跳过；手动可触发（运维场景常用）
+    ARCHIVED = "archived"  # 归档，不再触发；保留历史和定义供查阅
+
+
 class Workflow(BaseModel):
     id: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
     nodes: list[WorkflowNode] = Field(default_factory=list)
     default_variables: dict[str, str] = Field(default_factory=dict)
     # 元数据字段：UI 展示用，不影响执行。老数据缺这些字段会回落到默认值，
-    # JsonStore 自动兼容。资产 / 告警 / 调度状态等"派生"信息暂未下沉，
-    # 待血缘 + 调度系统接入。
+    # JsonStore 自动兼容。
     description: str = ""
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     schedule_cron: str = ""   # 留空 = 仅手动触发
+    project: str = ""         # 所属项目分组，UI 列表筛选用
+    status: WorkflowStatus = WorkflowStatus.DRAFT
+    input_assets: list[AssetRef] = Field(default_factory=list)
+    output_assets: list[AssetRef] = Field(default_factory=list)
 
 
 class WorkflowCreate(BaseModel):
@@ -214,6 +242,10 @@ class WorkflowCreate(BaseModel):
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     schedule_cron: str = ""
+    project: str = ""
+    status: WorkflowStatus = WorkflowStatus.DRAFT
+    input_assets: list[AssetRef] = Field(default_factory=list)
+    output_assets: list[AssetRef] = Field(default_factory=list)
 
 
 class NodeRunStatus(str, Enum):

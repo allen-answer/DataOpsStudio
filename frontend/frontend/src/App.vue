@@ -108,6 +108,10 @@ const workflowDraft = reactive({
   owner: '',
   tags: [],
   schedule_cron: '',
+  project: '',
+  status: 'draft',           // draft | active | paused | archived
+  input_assets: [],          // [{key, kind, description}]
+  output_assets: [],
   default_variables: '',
   runtime_variables: '',
   nodes: [],
@@ -652,6 +656,14 @@ const fillWorkflowDraft = (wf) => {
   workflowDraft.owner = wf?.owner || ''
   workflowDraft.tags = Array.isArray(wf?.tags) ? [...wf.tags] : []
   workflowDraft.schedule_cron = wf?.schedule_cron || ''
+  workflowDraft.project = wf?.project || ''
+  workflowDraft.status = wf?.status || 'draft'
+  workflowDraft.input_assets = Array.isArray(wf?.input_assets)
+    ? wf.input_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
+    : []
+  workflowDraft.output_assets = Array.isArray(wf?.output_assets)
+    ? wf.output_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
+    : []
   workflowDraft.default_variables = stringifyVariables(wf?.default_variables)
   workflowDraft.runtime_variables = ''
   workflowDraft.nodes = (wf?.nodes || []).map((node) => ({
@@ -756,6 +768,15 @@ const workflowPayload = () => ({
   owner: workflowDraft.owner || '',
   tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags.filter(Boolean) : [],
   schedule_cron: workflowDraft.schedule_cron || '',
+  project: workflowDraft.project || '',
+  status: workflowDraft.status || 'draft',
+  // assets：丢掉 key 为空的行，避免后端 min_length 校验失败
+  input_assets: (workflowDraft.input_assets || [])
+    .filter((a) => a.key && a.key.trim())
+    .map((a) => ({ key: a.key.trim(), kind: a.kind || 'table', description: a.description || '' })),
+  output_assets: (workflowDraft.output_assets || [])
+    .filter((a) => a.key && a.key.trim())
+    .map((a) => ({ key: a.key.trim(), kind: a.kind || 'table', description: a.description || '' })),
   default_variables: parseVariables(workflowDraft.default_variables),
   nodes: workflowDraft.nodes.map((node) => ({
     id: node.id,

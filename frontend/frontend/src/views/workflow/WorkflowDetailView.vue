@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
 import { apiGet } from '../../api'
-import { healthMeta, nodeStatusMeta, getMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
+import { nodeStatusMeta, layoutDAG, workflowHealth, synthesizeEvents, parameterTypeMeta as _ptm, resolveAllParameters } from '../../mock/workflow_meta'
 
 const parameterTypeMeta = _ptm
 
@@ -180,14 +180,8 @@ watch(selectedWorkflowId, (id) => {
   if (id === 'new') activeTab.value = 'config'
 }, { immediate: true })
 
-// 元数据补全（从 mock 拿）。索引用工作流在数组中的位置。
-// 注意：除「运行参数」外，其它块（资产 / 调度 / 负责人 / 概要 / 告警）当前
-// 仍是 mock 模板数据，下面会标 "示例"。Phase 4 计划下沉到后端 Workflow 模型。
-const workflowIndex = computed(() => state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value))
-const meta = computed(() => getMeta(currentWorkflow.value, workflowIndex.value === -1 ? 0 : workflowIndex.value))
-
-// 真实参数：从作业流里所有 type=params 节点的 config.parameters 收集。
-// 有真实定义时，运行参数 panel 用真实数据；没有则回落到 mock，并标 "示例"。
+// 运行参数：从作业流里所有 type=params 节点的 config.parameters 收集。
+// 没有 params 节点 → 空列表，UI 显示"还没有参数定义"占位。
 const realParameters = computed(() => {
   const out = []
   for (const node of workflowDraft.nodes || []) {
@@ -198,8 +192,7 @@ const realParameters = computed(() => {
   }
   return out
 })
-const paramsAreReal = computed(() => realParameters.value.length > 0)
-const displayParameters = computed(() => paramsAreReal.value ? realParameters.value : (meta.value.parameters || []))
+const displayParameters = computed(() => realParameters.value)
 
 // 参数解析：把每个参数定义解析成下次运行将使用的具体值（预览用）。
 const resolvedParams = computed(() => resolveAllParameters(displayParameters.value))
@@ -297,7 +290,6 @@ const tabs = [
   { id: 'events',   label: '事件日志' },
   { id: 'lineage',  label: '依赖关系' },
   { id: 'config',   label: '节点配置' },
-  { id: 'quality',  label: '质量检查' },
 ]
 
 // 合成事件流（来自最近一次运行）
@@ -536,6 +528,22 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
             </label>
             <div class="grid grid-cols-2 gap-2">
               <label class="block">
+                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">项目</span>
+                <input v-model="workflowDraft.project" placeholder="如 dw / risk / growth"
+                       class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
+              </label>
+              <label class="block">
+                <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">状态</span>
+                <select v-model="workflowDraft.status" class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
+                  <option value="draft">草稿</option>
+                  <option value="active">已上线</option>
+                  <option value="paused">暂停</option>
+                  <option value="archived">归档</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="block">
                 <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">负责人</span>
                 <input v-model="workflowDraft.owner" placeholder="如 alice@team"
                        class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
@@ -553,47 +561,79 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                      placeholder="orders, daily, prod"
                      class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
             </label>
+
+            <!-- 输入资产编辑器 -->
+            <div>
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[10px] font-semibold text-slate-500">输入资产</span>
+                <button class="text-[10.5px] font-semibold text-blue-600 hover:underline"
+                        @click="workflowDraft.input_assets.push({ key: '', kind: 'table', description: '' })">+ 添加</button>
+              </div>
+              <ul class="space-y-1">
+                <li v-for="(asset, i) in workflowDraft.input_assets" :key="i" class="grid grid-cols-[minmax(0,1fr)_80px_24px] gap-1">
+                  <input v-model="asset.key" placeholder="schema.table 或 路径"
+                         class="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
+                  <select v-model="asset.kind" class="rounded-md border border-slate-200 bg-white px-1 py-1 text-[11px] text-slate-700">
+                    <option value="table">表</option>
+                    <option value="file">文件</option>
+                    <option value="stream">流</option>
+                  </select>
+                  <button class="rounded text-rose-600 hover:bg-rose-50" title="删除"
+                          @click="workflowDraft.input_assets.splice(i, 1)">×</button>
+                </li>
+              </ul>
+            </div>
+
+            <!-- 输出资产编辑器 -->
+            <div>
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[10px] font-semibold text-slate-500">输出资产</span>
+                <button class="text-[10.5px] font-semibold text-blue-600 hover:underline"
+                        @click="workflowDraft.output_assets.push({ key: '', kind: 'table', description: '' })">+ 添加</button>
+              </div>
+              <ul class="space-y-1">
+                <li v-for="(asset, i) in workflowDraft.output_assets" :key="i" class="grid grid-cols-[minmax(0,1fr)_80px_24px] gap-1">
+                  <input v-model="asset.key" placeholder="schema.table 或 路径"
+                         class="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
+                  <select v-model="asset.kind" class="rounded-md border border-slate-200 bg-white px-1 py-1 text-[11px] text-slate-700">
+                    <option value="table">表</option>
+                    <option value="file">文件</option>
+                    <option value="stream">流</option>
+                  </select>
+                  <button class="rounded text-rose-600 hover:bg-rose-50" title="删除"
+                          @click="workflowDraft.output_assets.splice(i, 1)">×</button>
+                </li>
+              </ul>
+            </div>
+
             <p class="text-[10px] text-slate-400">这些字段保存后落 config/workflows.json，列表页和详情页都会读到。</p>
           </div>
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div class="mb-2 flex items-center gap-1.5">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输入资产 ({{ meta.input_assets.length }})</p>
-            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 资产元信息待 Phase 4 接入血缘服务">示例</span>
-          </div>
-          <ul class="space-y-1.5">
-            <li v-for="asset in meta.input_assets" :key="asset.key" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]">
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="healthMeta[asset.health]?.dot || 'bg-slate-300'"></span>
+          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输入资产 ({{ workflowDraft.input_assets.length }})</p>
+          <ul v-if="workflowDraft.input_assets.length" class="space-y-1.5">
+            <li v-for="(asset, i) in workflowDraft.input_assets" :key="i" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]"
+                :title="asset.description">
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400"></span>
               <span class="truncate font-mono text-slate-700">{{ asset.key }}</span>
               <span class="ml-auto rounded bg-white px-1.5 py-0.5 font-mono text-[9.5px] text-slate-500">{{ asset.kind }}</span>
             </li>
           </ul>
+          <p v-else class="text-[11px] text-slate-400">还没有声明输入资产 — 在「基础设置」面板下方添加</p>
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div class="mb-2 flex items-center gap-1.5">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输出资产 ({{ meta.output_assets.length }})</p>
-            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 资产元信息待 Phase 4 接入血缘服务">示例</span>
-          </div>
-          <ul class="space-y-1.5">
-            <li v-for="asset in meta.output_assets" :key="asset.key" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]">
+          <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">输出资产 ({{ workflowDraft.output_assets.length }})</p>
+          <ul v-if="workflowDraft.output_assets.length" class="space-y-1.5">
+            <li v-for="(asset, i) in workflowDraft.output_assets" :key="i" class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11.5px]"
+                :title="asset.description">
               <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"></span>
               <span class="truncate font-mono text-slate-700">{{ asset.key }}</span>
-              <span class="ml-auto text-[10.5px] text-slate-500">下游 {{ asset.downstream_count }}</span>
+              <span class="ml-auto rounded bg-white px-1.5 py-0.5 font-mono text-[9.5px] text-slate-500">{{ asset.kind }}</span>
             </li>
           </ul>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div class="mb-2 flex items-center gap-1.5">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">告警 / 资源</p>
-            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="示例数据 — 调度 / 队列 / 告警目标待 Phase 4 落库">示例</span>
-          </div>
-          <dl class="space-y-1.5 text-[11.5px]">
-            <div class="flex justify-between gap-2"><dt class="text-slate-500">资源队列</dt><dd class="font-mono text-slate-700">{{ meta.queue }}</dd></div>
-            <div class="flex justify-between gap-2"><dt class="text-slate-500">告警目标</dt><dd class="text-right text-slate-700">{{ meta.alert_targets.join(' · ') }}</dd></div>
-          </dl>
+          <p v-else class="text-[11px] text-slate-400">还没有声明输出资产 — 在「基础设置」面板下方添加</p>
         </div>
       </aside>
     </div>
@@ -607,7 +647,6 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
                 @click="activeTab = t.id">
           {{ t.label }}
           <span v-if="t.id === 'history'" class="ml-1 rounded bg-slate-100 px-1 text-[10px] font-mono text-slate-500">{{ workflowRunHistory.length }}</span>
-          <span v-if="t.id === 'quality'" class="ml-1 rounded bg-slate-100 px-1 text-[10px] font-mono text-slate-500">{{ meta.quality_checks.length }}</span>
         </button>
       </nav>
 
@@ -732,30 +771,32 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
       <!-- 依赖关系（输入 / 输出资产） -->
       <div v-else-if="activeTab === 'lineage'" class="grid grid-cols-2 gap-4 p-4">
         <div>
-          <h3 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">输入资产</h3>
-          <ul class="space-y-2">
-            <li v-for="asset in meta.input_assets" :key="asset.key" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-              <span class="h-2 w-2 rounded-full" :class="healthMeta[asset.health]?.dot || 'bg-slate-300'"></span>
+          <h3 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">输入资产 ({{ workflowDraft.input_assets.length }})</h3>
+          <ul v-if="workflowDraft.input_assets.length" class="space-y-2">
+            <li v-for="(asset, i) in workflowDraft.input_assets" :key="i" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <span class="h-2 w-2 rounded-full bg-slate-400"></span>
               <div class="min-w-0 flex-1">
                 <p class="truncate font-mono text-[12.5px] font-semibold text-slate-800">{{ asset.key }}</p>
-                <p class="text-[11px] text-slate-500">类型 {{ asset.kind }} · 最近物化 {{ asset.last_materialized }}</p>
+                <p v-if="asset.description" class="text-[11px] text-slate-500">{{ asset.description }}</p>
               </div>
               <span class="rounded bg-white px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ asset.kind }}</span>
             </li>
           </ul>
+          <p v-else class="text-[12px] text-slate-400">还没有声明输入资产 — 在「基础设置」面板下方添加</p>
         </div>
         <div>
-          <h3 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">输出资产 / 下游影响</h3>
-          <ul class="space-y-2">
-            <li v-for="asset in meta.output_assets" :key="asset.key" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+          <h3 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">输出资产 ({{ workflowDraft.output_assets.length }})</h3>
+          <ul v-if="workflowDraft.output_assets.length" class="space-y-2">
+            <li v-for="(asset, i) in workflowDraft.output_assets" :key="i" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
               <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
               <div class="min-w-0 flex-1">
                 <p class="truncate font-mono text-[12.5px] font-semibold text-slate-800">{{ asset.key }}</p>
-                <p class="text-[11px] text-slate-500">影响 {{ asset.downstream_count }} 个下游资产</p>
+                <p v-if="asset.description" class="text-[11px] text-slate-500">{{ asset.description }}</p>
               </div>
               <span class="rounded bg-white px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{{ asset.kind }}</span>
             </li>
           </ul>
+          <p v-else class="text-[12px] text-slate-400">还没有声明输出资产 — 在「基础设置」面板下方添加</p>
         </div>
       </div>
 
@@ -1196,19 +1237,6 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
         </div>
       </div>
 
-      <!-- 质量检查 -->
-      <div v-else-if="activeTab === 'quality'" class="space-y-2 p-4">
-        <div v-for="check in meta.quality_checks" :key="check.name" class="rounded-xl border border-slate-200 bg-white p-3">
-          <div class="flex items-center gap-2.5">
-            <span class="h-2 w-2 rounded-full" :class="check.status === 'passed' ? 'bg-emerald-500' : 'bg-rose-500'"></span>
-            <span class="font-mono text-[13.5px] font-semibold text-slate-800">{{ check.name }}</span>
-            <span class="rounded px-1.5 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="check.severity === '阻断' ? 'text-rose-700 bg-rose-50 ring-rose-200' : 'text-amber-700 bg-amber-50 ring-amber-200'">{{ check.severity }}</span>
-            <span class="ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset" :class="check.status === 'passed' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-rose-200'">{{ check.status === 'passed' ? '通过' : '未通过' }}</span>
-          </div>
-          <p class="mt-1.5 text-[12px] text-slate-600">{{ check.message }}</p>
-          <p class="mt-1 font-mono text-[10.5px] text-slate-400">最近评估：{{ check.last_run }}</p>
-        </div>
-      </div>
     </div>
   </div>
 </template>
