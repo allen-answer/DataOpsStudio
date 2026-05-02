@@ -134,6 +134,36 @@ const flattenSampleRow = (row, kind) => {
 // 折叠状态
 const showRawJson = ref({})   // node_id → bool
 const toggleRawJson = (id) => { showRawJson.value[id] = !showRawJson.value[id] }
+
+// Run 顶部状态 pill 细分。后端只发 success / failed / cancelled / running，
+// 这里把 success + 有 skipped 节点拆成"部分跳过"，区分"全成功"和"有 when
+// 跳过"——便于一眼知道是不是有节点被条件路由跳过。
+const runStatusDisplay = computed(() => {
+  if (!run.value) return null
+  const status = run.value.status
+  const skipped = (run.value.nodes || []).filter((n) => n.status === 'skipped').length
+  if (status === 'success' && skipped > 0) {
+    return {
+      label: `部分跳过 (${skipped})`,
+      pillClass: 'bg-amber-50 text-amber-700 ring-amber-200',
+      dotClass:  'bg-amber-500',
+      hint: `${skipped} 个节点未执行（when 条件 false 或上游跳过级联）`,
+    }
+  }
+  if (status === 'success') {
+    return { label: '成功', pillClass: 'bg-emerald-50 text-emerald-700 ring-emerald-200', dotClass: 'bg-emerald-500', hint: '' }
+  }
+  if (status === 'failed') {
+    return { label: '失败', pillClass: 'bg-rose-50 text-rose-700 ring-rose-200', dotClass: 'bg-rose-500', hint: '' }
+  }
+  if (status === 'cancelled') {
+    return { label: '已取消', pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400', hint: '' }
+  }
+  if (status === 'running') {
+    return { label: '运行中', pillClass: 'bg-blue-50 text-blue-700 ring-blue-200', dotClass: 'bg-blue-500 animate-pulse', hint: '' }
+  }
+  return { label: status, pillClass: 'bg-slate-100 text-slate-600 ring-slate-200', dotClass: 'bg-slate-400', hint: '' }
+})
 </script>
 
 <template>
@@ -155,9 +185,10 @@ const toggleRawJson = (id) => { showRawJson.value[id] = !showRawJson.value[id] }
           </div>
           <div class="mt-1 flex items-center gap-2">
             <span class="rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset"
-                  :class="run.status === 'success' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-rose-200'">
-              <span class="mr-1 inline-block h-1.5 w-1.5 rounded-full" :class="run.status === 'success' ? 'bg-emerald-500' : 'bg-rose-500'"></span>
-              {{ run.status === 'success' ? '成功' : run.status === 'failed' ? '失败' : run.status }}
+                  :class="runStatusDisplay?.pillClass"
+                  :title="runStatusDisplay?.hint || ''">
+              <span class="mr-1 inline-block h-1.5 w-1.5 rounded-full" :class="runStatusDisplay?.dotClass"></span>
+              {{ runStatusDisplay?.label }}
             </span>
             <span class="font-mono text-[12.5px] text-slate-700">耗时 {{ run.elapsed_seconds }}s</span>
             <span class="text-slate-300">·</span>
@@ -374,19 +405,31 @@ const toggleRawJson = (id) => { showRawJson.value[id] = !showRawJson.value[id] }
                       </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
-                      <tr v-for="(sh, i) in selectedNode.output.sheets" :key="i">
-                        <td class="px-3 py-1 font-semibold text-slate-700">{{ sh.name }}</td>
-                        <td class="px-3 py-1 font-mono text-[10.5px] text-slate-600">
-                          <span v-if="sh.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200" :title="`run ${sh.run_id}`">历史</span>
-                          {{ (sh.node_id || sh.source_node) || '默认' }}<span class="text-slate-300">.</span>{{ (sh.dataset || sh.source_field) || '*' }}
-                        </td>
-                        <td class="px-3 py-1 text-right font-mono tabular-nums text-slate-700">{{ formatNumber(sh.rows_written) }} / {{ formatNumber(sh.max_rows) }}</td>
-                        <td class="px-3 py-1">
-                          <span v-if="sh.truncated" class="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200">⚠ 截断</span>
-                          <span v-else-if="!sh.source_resolved" class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">空 sheet</span>
-                          <span v-else class="text-emerald-600">✓</span>
-                        </td>
-                      </tr>
+                      <template v-for="(sh, i) in selectedNode.output.sheets" :key="i">
+                        <tr>
+                          <td class="px-3 py-1 font-semibold text-slate-700">{{ sh.name }}</td>
+                          <td class="px-3 py-1 font-mono text-[10.5px] text-slate-600">
+                            <span v-if="sh.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200" :title="`run ${sh.run_id}`">历史</span>
+                            {{ (sh.node_id || sh.source_node) || '默认' }}<span class="text-slate-300">.</span>{{ (sh.dataset || sh.source_field) || '*' }}
+                          </td>
+                          <td class="px-3 py-1 text-right font-mono tabular-nums text-slate-700">{{ formatNumber(sh.rows_written) }} / {{ formatNumber(sh.max_rows) }}</td>
+                          <td class="px-3 py-1">
+                            <span v-if="sh.truncated" class="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200" title="超出 max_rows，已截断">⚠ 截断</span>
+                            <span v-else-if="!sh.source_resolved" class="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 ring-1 ring-inset ring-rose-200">空 sheet</span>
+                            <span v-else-if="sh.rows_written === 0" class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500" title="数据源解析成功但本身无数据">0 行</span>
+                            <span v-else class="text-emerald-600">✓</span>
+                          </td>
+                        </tr>
+                        <!-- 失败原因展开行：解析失败时让用户一眼看到为啥 -->
+                        <tr v-if="!sh.source_resolved && sh.unresolved_reason">
+                          <td colspan="4" class="border-t-0 px-3 pb-2 pt-0">
+                            <div class="rounded border border-rose-200 bg-rose-50/60 px-2.5 py-1.5 text-[11px] text-rose-800">
+                              <span class="font-semibold">原因：</span>
+                              <span class="font-mono">{{ sh.unresolved_reason }}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      </template>
                     </tbody>
                   </table>
                 </div>

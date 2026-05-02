@@ -321,21 +321,30 @@ def run_excel_export_node(
             max_rows = _EXCEL_EXPORT_HARD_CEILING
 
         # 选数据源
+        unresolved_reason = ""
         if source_type == "history_run":
             if not history_target_run:
                 source_outputs: dict[str, dict[str, Any]] | None = None
+                unresolved_reason = "history_run 模式但未指定 run_id"
             else:
                 if history_target_run not in historical_outputs_cache:
                     historical_outputs_cache[history_target_run] = _load_historical_outputs(
                         workflow_history, history_target_run
                     )
                 source_outputs = historical_outputs_cache[history_target_run]
+                if source_outputs is None:
+                    unresolved_reason = f"找不到历史 run {history_target_run!r}（可能已删除或 id 错误）"
         else:   # node_output
             source_outputs = outputs
             if not node_id:
                 node_id = default_source_node
 
-        rows_data, source_resolved = _resolve_sheet_source(source_outputs or {}, node_id, dataset)
+        if unresolved_reason:
+            rows_data, source_resolved = [], False
+        else:
+            rows_data, source_resolved, resolve_reason = _resolve_sheet_source(source_outputs or {}, node_id, dataset)
+            if not source_resolved:
+                unresolved_reason = resolve_reason
 
         truncated = False
         if len(rows_data) > max_rows:
@@ -353,6 +362,7 @@ def run_excel_export_node(
             "dataset": dataset,
             "run_id": history_target_run if source_type == "history_run" else "",
             "source_resolved": source_resolved,
+            "unresolved_reason": unresolved_reason,
             "rows_written": rows_written,
             "truncated": truncated,
             "max_rows": max_rows,
@@ -407,23 +417,28 @@ def _resolve_sheet_source(
     outputs: dict[str, dict[str, Any]],
     node_id: str,
     dataset: str,
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], bool, str]:
     """Resolve a sheet's data source from a {node_id: output_dict} mapping.
+
+    Returns (rows, resolved, reason). reason is empty when resolved=True.
+    Caller surfaces reason in sheet output so users see *why* a sheet ended
+    up empty instead of a generic "空 sheet"。
 
     `dataset` 解析顺序：
       1. compare 节点（output 含 'samples' 字典）+ dataset 在预设映射里 → samples.<dataset>
       2. dataset 是顶层字段 → 直接取
       3. dataset 含点 → 当 dot-path 解
-      4. 都没命中 → (空列表, False)
+      4. 都没命中 → unresolved
     """
     if not node_id:
-        return [], False
+        return [], False, "未指定 node_id（且 depends_on 也没找到可回退的上游）"
     node_out = outputs.get(node_id)
     if not isinstance(node_out, dict):
-        return [], False
+        available = ", ".join(sorted(outputs.keys())) or "(无)"
+        return [], False, f"找不到节点 {node_id!r} 的输出（可用: {available}）"
     if not dataset:
         # 没指定 dataset → 整个 output 当一行 dict
-        return [node_out], True
+        return [node_out], True, ""
 
     # 计算 dot-path
     if dataset in _COMPARE_DATASET_PATHS and isinstance(node_out.get("samples"), dict):
@@ -433,20 +448,24 @@ def _resolve_sheet_source(
     elif "." in dataset:
         path = dataset
     else:
-        return [], False
+        keys = ", ".join(sorted(node_out.keys())) or "(无)"
+        return [], False, f"节点 {node_id} 的输出里没有 {dataset!r} 字段（顶层键: {keys}）"
 
     cursor: Any = node_out
+    walked: list[str] = []
     for part in path.split("."):
         if isinstance(cursor, dict) and part in cursor:
             cursor = cursor[part]
+            walked.append(part)
         else:
-            return [], False
+            walked_str = ".".join(walked) or "(根)"
+            return [], False, f"路径 {path!r} 在 {walked_str} 后缺少 {part!r}"
 
     if isinstance(cursor, list):
-        return [item if isinstance(item, dict) else {"value": item} for item in cursor], True
+        return [item if isinstance(item, dict) else {"value": item} for item in cursor], True, ""
     if isinstance(cursor, dict):
-        return [cursor], True
-    return [{"value": cursor}], True
+        return [cursor], True, ""
+    return [{"value": cursor}], True, ""
 
 
 def _write_rows_to_sheet(target, rows: list[dict[str, Any]]) -> int:

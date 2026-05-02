@@ -228,16 +228,33 @@ def test_excel_export_explicit_node_id_overrides_default(tmp_path, monkeypatch):
 
 
 def test_excel_export_unresolved_source_writes_empty_sheet(tmp_path, monkeypatch):
-    """node_id 不存在 → 空 sheet + source_resolved=False，整个 export 不 FAILED。"""
+    """node_id 不存在 → 空 sheet + source_resolved=False + 明确 unresolved_reason。"""
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     out = run_excel_export_node({
         "sheets": [
             {"id": "missing", "enabled": True, "sheet_name": "Missing",
              "node_id": "no_such_node", "dataset": "x"},
         ],
-    }, {}, outputs={}, run_id="r1")
+    }, {}, outputs={"existing_node": {}}, run_id="r1")
     assert out["sheets"][0]["source_resolved"] is False
     assert out["sheets"][0]["rows_written"] == 0
+    reason = out["sheets"][0]["unresolved_reason"]
+    assert "no_such_node" in reason
+    assert "existing_node" in reason   # 把可用节点列出来给用户参考
+
+
+def test_excel_export_unresolved_dataset_explains_available_keys(tmp_path, monkeypatch):
+    """dataset 字段名错时 unresolved_reason 列出该节点的顶层 key。"""
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "wrong", "enabled": True, "sheet_name": "X",
+             "node_id": "n1", "dataset": "no_such_field"},
+        ],
+    }, {}, outputs={"n1": {"foo": 1, "bar": [{"a": 1}]}}, run_id="r1")
+    reason = out["sheets"][0]["unresolved_reason"]
+    assert "no_such_field" in reason
+    assert "foo" in reason and "bar" in reason
 
 
 def test_excel_export_legacy_field_names_still_work(tmp_path, monkeypatch):
@@ -282,7 +299,7 @@ def test_excel_export_history_run_mode_reads_past_run(tmp_path, monkeypatch):
 
 
 def test_excel_export_history_run_missing_returns_empty_sheet(tmp_path, monkeypatch):
-    """指向的 history run 不存在 → 空 sheet，不 FAILED。"""
+    """指向的 history run 不存在 → 空 sheet + 明确解释。"""
     monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
     monkeypatch.setattr("app.services.workflow_history.get_workflow_run", lambda _: None)
     out = run_excel_export_node({
@@ -294,6 +311,7 @@ def test_excel_export_history_run_missing_returns_empty_sheet(tmp_path, monkeypa
     }, {}, outputs={}, run_id="r")
     assert out["sheets"][0]["source_resolved"] is False
     assert out["sheets"][0]["rows_written"] == 0
+    assert "ghost" in out["sheets"][0]["unresolved_reason"]
 
 
 def test_excel_export_rejects_non_list_sheets():
