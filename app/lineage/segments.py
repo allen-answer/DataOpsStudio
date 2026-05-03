@@ -146,6 +146,52 @@ _RE_BODY_DML = re.compile(
     r"\b(WITH|SELECT|INSERT|REPLACE\s+INTO|UPDATE|DELETE|MERGE|CREATE\s+(?:OR\s+REPLACE\s+)?(?:GLOBAL\s+TEMPORARY\s+|TEMPORARY\s+|TEMP\s+)?TABLE|TRUNCATE)\b",
     flags=re.IGNORECASE,
 )
+
+# Cursor FOR loop 头部：`FOR rec IN (SELECT ... ) LOOP <body>` —— LOOP 之前的部分
+# 整体是控制流壳子，里面的 SELECT 是 cursor 子查询，不应被当成顶层 DML。要从 LOOP
+# 关键字之后才开始找真正的 DML。`_strip_cursor_for_prefix` 把段里的 LOOP 之前
+# 部分剥掉（保留括号配平）。
+_RE_CURSOR_FOR_LOOP_HEAD = re.compile(
+    r"^\s*FOR\s+[\w$#]+\s+IN\b",
+    flags=re.IGNORECASE,
+)
+_RE_LOOP_KEYWORD = re.compile(r"\bLOOP\b", flags=re.IGNORECASE)
+
+
+def _strip_cursor_for_prefix(seg_text: str) -> str:
+    """如果 seg 以 `FOR x IN (...) LOOP` 开头，把头部剥掉，返回 LOOP 后的内容。
+    其他情况原样返回。剥掉时同步括号配平 —— cursor 子查询里可能含括号。"""
+    if not _RE_CURSOR_FOR_LOOP_HEAD.match(seg_text):
+        return seg_text
+    # 找首个出现在括号外的 LOOP 关键字
+    depth = 0
+    pos = 0
+    length = len(seg_text)
+    while pos < length:
+        ch = seg_text[pos]
+        if ch in "'\"":
+            quote = ch
+            pos += 1
+            while pos < length:
+                if seg_text[pos] == quote and (pos + 1 >= length or seg_text[pos + 1] != quote):
+                    pos += 1
+                    break
+                pos += 1
+            continue
+        if ch == "(":
+            depth += 1
+            pos += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            pos += 1
+            continue
+        if depth == 0 and ch.isalpha():
+            m = _RE_LOOP_KEYWORD.match(seg_text, pos)
+            if m and (m.end() >= length or not seg_text[m.end()].isalnum()):
+                return seg_text[m.end():].lstrip()
+        pos += 1
+    return seg_text
 # 纯空白 + 行注释（`--`） + 块注释（`/* */`）的组合。fullmatch 这个表示 DML 前面
 # 没有控制流壳子（IF/THEN、CASE 等），可以原样保留——业务标题就在前缀注释里。
 _RE_PURE_COMMENT_PREFIX = re.compile(r"(?:\s|--[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*")
@@ -296,33 +342,33 @@ def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
     for raw_text, raw_start, raw_end in raw_segments:
         # raw_start 指向缓冲起点（可能含前导空白）；找到首个非空白字符作为段起点
         leading_ws = len(raw_text) - len(raw_text.lstrip())
-        seg_text = raw_text.strip()
-        if not seg_text:
+        seg_text_orig = raw_text.strip()
+        if not seg_text_orig:
             continue
         # The segment may start with control-flow shells (IF ... THEN, ELSIF ... THEN, FOR ... LOOP).
         # Find the first DML keyword and analyze from there.
+        # 特殊处理：`FOR rec IN (SELECT ...) LOOP <DML>` —— cursor 子查询里的 SELECT
+        # 不是顶层 DML，剥掉 cursor 头部，从 LOOP 后开始找。
+        seg_text = _strip_cursor_for_prefix(seg_text_orig)
+        cursor_strip = len(seg_text_orig) - len(seg_text)
         match = _RE_BODY_DML.search(seg_text)
         if not match:
             continue
         prefix = seg_text[:match.start()]
         # 如果 DML 前面只有空白和 line/block 注释（业务标题 `-- 集中交易`），保留 ——
         # sqlglot 会把它挂到 statement.comments 上做 statement_title。
-        # 反之（IF/THEN、CASE 之类的控制流壳子），仍然剥掉。
+        # 反之（IF/THEN、CASE 之类的控制流壳子 / cursor LOOP），仍然剥掉。
         if _RE_PURE_COMMENT_PREFIX.fullmatch(prefix):
             kept_text = seg_text
             preceding_comment = _strip_comment_prefix(prefix)
         else:
             kept_text = seg_text[match.start():]
             preceding_comment = ""
-        # body 内偏移：raw_start + 前导空白 + kept_text 在 seg_text 中的起点
-        # kept_text 是 seg_text 的尾部 → 起点 = len(seg_text) - len(kept_text)
+        # body 内偏移：raw_start + 前导空白 + cursor 头部长度 + kept_text 在剥后 seg_text 中的起点
         kept_offset_in_seg = len(seg_text) - len(kept_text)
-        body_kept_start = raw_start + leading_ws + kept_offset_in_seg
-        # DML 关键字在 body 中的位置（用于 line_start —— 业务标题前缀不算）
+        body_kept_start = raw_start + leading_ws + cursor_strip + kept_offset_in_seg
         if preceding_comment:
-            # match.start() 是 DML 在 seg_text 中的位置；kept_text 包含完整 seg_text，
-            # 所以 DML 在 body 中的偏移直接是 raw_start + leading_ws + match.start()
-            dml_offset = raw_start + leading_ws + match.start()
+            dml_offset = raw_start + leading_ws + cursor_strip + match.start()
         else:
             dml_offset = body_kept_start
         cleaned.append(_BodySegment(
@@ -400,11 +446,22 @@ def extract_dynamic_sql_segments(sql: str) -> list[dict[str, str]]:
         r"\bEXECUTE\s+IMMEDIATE\s+([\w$#]+)\s*[;\n]",
         flags=re.IGNORECASE,
     )
+    unresolved_seen: set[str] = set()
     for match in immediate_var_pattern.finditer(sql):
         var_name = match.group(1).lower()
         if var_name in plsql_vars:
             for assignment in plsql_vars[var_name]:
                 add(assignment["sql"], "var_concat", assignment["confidence"])
+        elif var_name not in unresolved_seen:
+            # 变量来自过程参数 / 包变量 / cursor / 外部传入，脚本里没赋值——
+            # 静态分析无法推断 SQL 内容。出占位段触发 dynamic_sql warning，
+            # confidence='unresolved'。下游 sqlglot 会忽略 (ignore_errors=True)。
+            unresolved_seen.add(var_name)
+            result.append({
+                "sql": f"-- unresolved EXECUTE IMMEDIATE variable: {match.group(1)}",
+                "source": "execute_var_unresolved",
+                "confidence": "unresolved",
+            })
 
     # 之前还有一条 `string_pattern` 兜底——任何 20+ 字符的字符串字面量都被
     # 当成动态 SQL 候选。在大型存储过程里这会产生海量误报（中文注释片段、

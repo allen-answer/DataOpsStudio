@@ -226,7 +226,14 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
    `SELECT INTO` / `EXECUTE IMMEDIATE` 风险提示属于第 3 项 Oracle 方言增强范围，未做。
 2. **DML 聚合** ✅ —— `app/lineage/aggregation.py`：按目标表聚合 INSERT/UPDATE/MERGE/DELETE/TRUNCATE 计数，识别 `truncate_insert` / `delete_insert`（DELETE 无 WHERE）/ `delete_insert_partial` / `merge` / `update` / `append` / `mixed` 等 `refresh_mode`。输出在 `analyze_sql_lineage()` 顶层 `target_summary` 字段，包含 `target_table` / `insert_count` / `update_count` / `merge_count` / `delete_count` / `truncate_count` / `delete_before_insert` / `truncate_before_insert` / `refresh_mode`。
-3. **Oracle 方言增强**——正确处理 `/*+ parallel(...) */` hint、`table@dblink` DB Link、`SELECT ... INTO variable`、包/过程/变量赋值/游标/动态 SQL 片段；对无法静态解析的 `EXECUTE IMMEDIATE` 输出风险提示。
+3. **Oracle 方言增强** ✅ —— 已落地：
+   - `/*+ parallel|use_hash|leading|... */` hint 不会被误识别成业务标题（`_looks_like_oracle_hint` 70+ 关键字白名单 + ASCII 头部正则）
+   - `table@dblink` DB Link 表保留 `@后缀` 进 graph_edges + `role=remote_dblink`
+   - `SELECT col INTO v_x FROM t` 让 sqlglot 报 unsupported syntax 时仍能在 procedure 段切分阶段抓到 SELECT 的源表
+   - `PACKAGE BODY` 含 `CONSTANT := SYSDATE` 类常量赋值不影响 INSERT 抽取
+   - `FOR rec IN (SELECT ...) LOOP <DML>` cursor 头部被 `_strip_cursor_for_prefix` 剥掉，避免 cursor 子查询的 SELECT 被误认作顶层 DML 而吞掉真正的 INSERT
+   - `EXECUTE IMMEDIATE p_var` 但 `p_var` 来自参数 / 包变量 / cursor 静态无法推断时，输出 `confidence='unresolved'` 占位段触发"动态 SQL"warning（不再默默吞掉）
+   - 测试：`tests/test_oracle_dialect.py` 8 个回归 case
 4. **表角色识别** ✅ —— `app/lineage/roles.py`：结构角色（`target` / `intermediate` / `source_fact` / `remote_dblink`）+ 命名角色（`config` / `reference` / `dimension` / `filter`）。schema 段（`dim.cust` / `ref.code` / `config.t_config` / `filter.exclude_*`）和 basename（`dim_user` / `code_status` / `t_config` / `exclude_cust`）都会扫一遍，多 role 共存时 `primary_role` 按 `remote_dblink > intermediate > target > config > reference > dimension > filter > source_fact` 取一个。Oracle DB Link 表（`tab@dblink`）单独识别。输出在 `analyze_sql_lineage()` 顶层 `table_roles` 字段。
 5. **业务分组规则** ✅ —— `app/lineage/grouping.py` + `config/lineage_group_rules.yml`（拷 `lineage_group_rules.example.yml` 改造，文件不存在静默降级为不分组，文件坏掉只 log 不拖崩主流程）。每个 group 挂多个 matcher，命中任一即归组，一张表可同时归多组。支持的 matcher：`schema_prefix/exact/contains` / `basename_prefix/suffix/exact/contains/regex` / `title_keyword`（匹配 target_summary[*].titles）。Oracle DB Link `tab@dblink` 在拆 schema/basename 时先剥掉 `@dblink`。规则按 mtime 缓存避免每次重新解析。输出在 `semantic_lineage.business_groups`（含 name / description / tables / table_count / target_count）和 `grouped_edges`（跨分组依赖，同组内边 / 任一端未分组的边都跳过；表归多组时一条边按组数横向展开）。pyyaml 是新增依赖；JSON 格式（`lineage_group_rules.json`）作为不装 pyyaml 时的回退。
 6. **注释利用** ✅ —— `aggregation.extract_statement_title()` 从 sqlglot 节点的 `.comments` 列表里取第一段非空文本作为业务标题（截断 200 字符）。`result["statements"][i].title` 是单语句标题；`target_summary[i].titles` 是这张目标表所有写操作的标题（去重保序）。TRUNCATE 也覆盖（虽然不进 `analyses` 列表，但走 `collect_target_operations` 直扫拿 title）。后续业务分组（第 5 项）可以基于 titles 关键词匹配。
