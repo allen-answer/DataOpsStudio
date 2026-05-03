@@ -1,9 +1,53 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import LineageFilterBar from './lineage/LineageFilterBar.vue'
 
 const props = defineProps({
   semantic: { type: Object, default: () => ({}) },
 })
+
+// ---------------- 目标表 / 存储过程的筛选 ----------------
+const targetSearch = ref('')
+const targetRoleFilter = ref('all')
+const procSearch = ref('')
+const procOnlyUnsupported = ref(false)
+
+const targetRoleOptions = computed(() => {
+  const s = new Set()
+  for (const t of props.semantic.targets || []) {
+    for (const r of (t.roles || [])) s.add(r)
+  }
+  return Array.from(s).sort()
+})
+
+const filteredTargets = computed(() => {
+  const kw = targetSearch.value.trim().toLowerCase()
+  return (props.semantic.targets || []).filter(t => {
+    if (kw) {
+      const titles = (t.titles || []).join(' ')
+      const hay = `${t.table || ''} ${titles}`.toLowerCase()
+      if (!hay.includes(kw)) return false
+    }
+    if (targetRoleFilter.value !== 'all') {
+      if (!(t.roles || []).includes(targetRoleFilter.value)) return false
+    }
+    return true
+  })
+})
+
+const filteredProcedures = computed(() => {
+  const kw = procSearch.value.trim().toLowerCase()
+  return (props.semantic.procedures || []).filter(p => {
+    if (kw && !(p.name || '').toLowerCase().includes(kw)) return false
+    if (procOnlyUnsupported.value && !p.unsupported_count) return false
+    return true
+  })
+})
+
+const targetFilterActive = computed(() => !!targetSearch.value || targetRoleFilter.value !== 'all')
+const procFilterActive = computed(() => !!procSearch.value || procOnlyUnsupported.value)
+const resetTargetFilters = () => { targetSearch.value = ''; targetRoleFilter.value = 'all' }
+const resetProcFilters = () => { procSearch.value = ''; procOnlyUnsupported.value = false }
 
 const hasContent = computed(() =>
   (props.semantic.targets?.length || 0)
@@ -193,7 +237,26 @@ const PARSE_STATUS_LABEL = {
       <h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
         目标表 ({{ semantic.targets.length }})
       </h3>
-      <div class="overflow-x-auto">
+      <LineageFilterBar
+        v-model:search="targetSearch"
+        search-placeholder="目标表 / 业务标题搜索"
+        :total="semantic.targets.length"
+        :visible="filteredTargets.length"
+        :active="targetFilterActive"
+        @clear="resetTargetFilters"
+        class="mb-2"
+      >
+        <template #filters>
+          <select v-if="targetRoleOptions.length > 1" v-model="targetRoleFilter" class="filter-select">
+            <option value="all">全部角色</option>
+            <option v-for="r in targetRoleOptions" :key="r" :value="r">{{ r }}</option>
+          </select>
+        </template>
+      </LineageFilterBar>
+      <div v-if="!filteredTargets.length" class="rounded-lg border border-dashed border-slate-200 py-6 text-center text-slate-400">
+        <p class="text-sm">没有命中的目标表</p>
+      </div>
+      <div v-else class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -205,7 +268,7 @@ const PARSE_STATUS_LABEL = {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in semantic.targets" :key="t.table" class="border-b border-slate-100 align-top">
+            <tr v-for="t in filteredTargets" :key="t.table" class="border-b border-slate-100 align-top">
               <td class="whitespace-nowrap py-3 pr-4 font-medium sql-font text-slate-800">{{ t.table }}</td>
               <td class="py-3 pr-4">
                 <div class="flex flex-wrap gap-1">
@@ -246,9 +309,28 @@ const PARSE_STATUS_LABEL = {
 
     <div v-if="semantic.procedures?.length">
       <h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">存储过程</h3>
-      <div class="space-y-2">
+      <LineageFilterBar
+        v-model:search="procSearch"
+        search-placeholder="存储过程名搜索"
+        :total="semantic.procedures.length"
+        :visible="filteredProcedures.length"
+        :active="procFilterActive"
+        @clear="resetProcFilters"
+        class="mb-2"
+      >
+        <template #filters>
+          <label class="inline-flex items-center gap-1 text-[11px] text-slate-600">
+            <input v-model="procOnlyUnsupported" type="checkbox" class="h-3.5 w-3.5" />
+            仅看含未解析段
+          </label>
+        </template>
+      </LineageFilterBar>
+      <div v-if="!filteredProcedures.length" class="rounded-lg border border-dashed border-slate-200 py-6 text-center text-slate-400">
+        <p class="text-sm">没有命中的存储过程</p>
+      </div>
+      <div v-else class="space-y-2">
         <details
-          v-for="proc in semantic.procedures"
+          v-for="proc in filteredProcedures"
           :key="proc.name"
           class="rounded-lg border border-slate-200 bg-slate-50"
         >

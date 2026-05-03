@@ -79,6 +79,41 @@ const allGraphData = computed(() => {
 
 const schemas = computed(() => unique(allGraphData.value.nodes.map((node) => node.data.schema)))
 const scripts = computed(() => unique(props.edges.map((edge) => edge.file_name)))
+
+// 聚合控件：每个 schema/脚本下挂多少节点 / 多少条边，用来给标签显示数量
+const schemaCounts = computed(() => {
+  const map = new Map()
+  for (const node of allGraphData.value.nodes) {
+    const s = node.data.schema
+    map.set(s, (map.get(s) || 0) + 1)
+  }
+  return map
+})
+const scriptCounts = computed(() => {
+  const map = new Map()
+  for (const edge of props.edges) {
+    if (!edge.file_name) continue
+    map.set(edge.file_name, (map.get(edge.file_name) || 0) + 1)
+  }
+  return map
+})
+
+// 文件名只显 basename + tooltip 完整路径
+const basename = (path) => {
+  if (!path) return ''
+  const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return i >= 0 ? path.slice(i + 1) : path
+}
+
+// 脚本过多时收进搜索下拉
+const scriptSearch = ref('')
+const scriptListOpen = ref(false)
+const filteredScriptList = computed(() => {
+  const kw = scriptSearch.value.trim().toLowerCase()
+  const list = [...scripts.value].sort((a, b) => (scriptCounts.value.get(b) || 0) - (scriptCounts.value.get(a) || 0))
+  if (!kw) return list
+  return list.filter((f) => f.toLowerCase().includes(kw))
+})
 const edgeTypes = computed(() => unique(props.edges.map((edge) => edge.edge_type)))
 const confidences = computed(() => unique(props.edges.map((edge) => edge.confidence)))
 const searchMatches = computed(() => {
@@ -517,17 +552,81 @@ onBeforeUnmount(() => graph?.destroy())
         <select v-model="roleFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部节点</option><option value="source">来源表</option><option value="target">目标表</option><option value="dependency">条件依赖</option></select>
         <select v-model="edgeTypeFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部边类型</option><option v-for="item in edgeTypes" :key="item" :value="item">{{ item }}</option></select>
         <select v-model="confidenceFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部可信度</option><option v-for="item in confidences" :key="item" :value="item">{{ item }}</option></select>
-        <select v-model="scriptFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="">全部脚本</option><option v-for="item in scripts" :key="item" :value="item">{{ item }}</option></select>
+        <select v-model="scriptFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm" :title="scriptFilter || ''"><option value="">全部脚本</option><option v-for="item in scripts" :key="item" :value="item">{{ basename(item) }}</option></select>
         <select v-model="schemaFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部 schema</option><option v-for="item in schemas" :key="item" :value="item">{{ item }}</option></select>
       </div>
-      <div v-if="schemas.length || scripts.length" class="grid gap-2 text-xs text-slate-600 lg:grid-cols-2">
-        <div v-if="schemas.length" class="flex flex-wrap gap-2">
-          <span class="font-bold">折叠 schema</span>
-          <button v-for="item in schemas" :key="item" class="rounded-full px-2 py-1" :class="collapsedSchemas.has(item) ? 'bg-slate-700 text-white' : 'bg-slate-100'" @click="toggleSet(collapsedSchemas, item)">{{ item }}</button>
+      <div v-if="schemas.length || scripts.length" class="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-600">
+        <p class="muted text-[11px]">
+          聚合：把同一 schema / 同一脚本的节点合并展示，减少噪音；点击高亮的标签可恢复展开
+        </p>
+
+        <!-- 按 schema 聚合 —— 显示 schema 名称 + 该 schema 下的表数 -->
+        <div v-if="schemas.length" class="flex flex-wrap items-center gap-1.5">
+          <span class="font-semibold text-slate-700">按 schema 聚合</span>
+          <button
+            v-for="item in schemas" :key="item"
+            class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 transition"
+            :class="collapsedSchemas.has(item)
+              ? 'border-primary bg-primary text-white'
+              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'"
+            @click="toggleSet(collapsedSchemas, item)"
+          >
+            <span>{{ item }}</span>
+            <span class="text-[10px]" :class="collapsedSchemas.has(item) ? 'text-white/80' : 'text-slate-400'">{{ schemaCounts.get(item) || 0 }}</span>
+          </button>
         </div>
-        <div v-if="scripts.length" class="flex flex-wrap gap-2">
-          <span class="font-bold">折叠脚本</span>
-          <button v-for="item in scripts" :key="item" class="rounded-full px-2 py-1" :class="collapsedScripts.has(item) ? 'bg-slate-700 text-white' : 'bg-slate-100'" @click="toggleSet(collapsedScripts, item)">{{ item }}</button>
+
+        <!-- 脚本过滤 —— 多脚本时改为搜索下拉，避免一行铺满 -->
+        <div v-if="scripts.length" class="relative">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="font-semibold text-slate-700">脚本过滤</span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+              @click="scriptListOpen = !scriptListOpen"
+            >
+              <span>{{ scripts.length }} 个脚本</span>
+              <span v-if="collapsedScripts.size" class="rounded bg-primary-light px-1 text-primary">已隐藏 {{ collapsedScripts.size }}</span>
+              <span class="text-slate-400">{{ scriptListOpen ? '收起' : '展开' }}</span>
+            </button>
+            <button
+              v-if="collapsedScripts.size"
+              type="button"
+              class="text-[11px] text-slate-500 underline hover:text-slate-700"
+              @click="collapsedScripts = new Set()"
+            >全部恢复</button>
+          </div>
+          <div
+            v-if="scriptListOpen"
+            class="absolute left-0 right-0 top-full z-10 mt-1 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg"
+          >
+            <input
+              v-model="scriptSearch"
+              type="text"
+              placeholder="搜索脚本名"
+              class="mb-2 w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
+            />
+            <ul class="space-y-0.5">
+              <li v-for="f in filteredScriptList" :key="f">
+                <label
+                  class="flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1 hover:bg-slate-50"
+                  :title="f"
+                >
+                  <span class="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      :checked="!collapsedScripts.has(f)"
+                      class="h-3.5 w-3.5"
+                      @change="toggleSet(collapsedScripts, f)"
+                    />
+                    <span class="sql-font text-[11px] text-slate-700">{{ basename(f) }}</span>
+                  </span>
+                  <span class="muted text-[10px]">{{ scriptCounts.get(f) || 0 }} 边</span>
+                </label>
+              </li>
+              <li v-if="!filteredScriptList.length" class="muted px-2 py-2 text-center text-[11px]">无匹配脚本</li>
+            </ul>
+          </div>
         </div>
       </div>
       <div v-if="effectiveFocalId && focusMode !== 'all'" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800">

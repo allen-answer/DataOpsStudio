@@ -130,4 +130,11 @@
   .sql-font {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   }
+
+  /* 紧凑筛选 select —— 默认 select 是 w-full + py-2，太占地方，
+     筛选栏里走这个 class */
+  .filter-select {
+    @apply w-auto rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700
+           focus:border-primary focus:ring-1 focus:ring-primary/30;
+  }
 }
