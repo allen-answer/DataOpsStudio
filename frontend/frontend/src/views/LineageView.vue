@@ -2,6 +2,7 @@
 import { defineAsyncComponent, inject } from 'vue'
 import LineageMappings from '../components/LineageMappings.vue'
 import SchemaPanel from '../components/SchemaPanel.vue'
+import SemanticLineagePanel from '../components/SemanticLineagePanel.vue'
 import WarningsPanel from '../components/WarningsPanel.vue'
 
 const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
@@ -34,6 +35,7 @@ const { lineage, analyzeLineage } = inject('app')
         :dynamic-sql-segments="lineage.result.dynamic_sql_segments || []"
         :parse-errors="lineage.result.parse_errors || []"
       />
+      <SemanticLineagePanel :semantic="lineage.result.semantic_lineage || {}" />
       <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 class="mb-4 text-xl font-bold text-slate-800">表级拓扑图</h2>
         <LineageGraph :groups="lineage.result.graph_groups" :edges="lineage.result.graph_edges" />

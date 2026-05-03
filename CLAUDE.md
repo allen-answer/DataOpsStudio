@@ -54,9 +54,9 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 应用访问地址：**http://localhost:8010**。MySQL 8 暴露在 **localhost:3307**（容器名 `mysql8`，内部端口 3306）。
 
-`docker-compose.yml` 只 bind-mount `config/results/logs/static`，**app 源码（`main.py`、`app/`、`tests/`）打入镜像**。所以：
-- **前端**：构建产物落到 `./static/spa/`，restart app 即可生效（静态文件走 volume）。
-- **后端**：改 Python 代码必须 `docker compose up -d --build`，仅 restart 会继续跑老代码，且容器里也不会有新增的测试文件。
+`docker-compose.yml` 只 bind-mount `config/results/logs`，**app 源码（`main.py`、`app/`、`tests/`）和前端构建产物（`static/spa/`）都打入镜像**。所以：
+- **前端**：构建产物 `static/spa/index.html` + `assets/` 由 Dockerfile 多阶段构建生成，**改前端代码必须 `docker compose up -d --build`**，仅 restart 不够。本地 dev 模式：`cd frontend/frontend && npm run dev`，vite proxy 到 `app:8000`。
+- **后端**：改 Python 代码也必须 `docker compose up -d --build`，仅 restart 会继续跑老代码，且容器里也不会有新增的测试文件。
 
 ## 架构说明
 
@@ -115,6 +115,10 @@ Vue 3 单页应用。`App.vue` 持有所有共享状态和后端调用，子视�
 - **WorkflowSettingsPanel**（DetailView 右侧元数据 sidebar）：参数预览 + 描述/项目/状态/owner/cron/tags + 输入/输出资产编辑器。
 - **WorkflowHistoryPanel**（DetailView 运行历史 tab）：行展开 + mini gantt + 状态徽章 + 复用变量重跑。
 - **WorkflowRunNodeDetail**（RunView 右侧节点详情面板）：节点头 + 错误块 + artifact 下载 + 5 种 type 输出（compare/excel_export/params/http/lineage）+ 折叠原始 JSON + 事件流。emits: rerun-from-node / rerun-defaults。
+
+LineageView 在 G6 拓扑图之外另挂 **`SemanticLineagePanel`**：消费后端 `result.semantic_lineage` 字段，渲染 observations（bullet）/ risks（高/中/低着色）/ targets 表（多 role pill + refresh_mode pill + 操作计数 + titles）/ procedures（卡片）。规则分析驱动，不依赖 AI。
+
+前端独有的 Figma → Vue 设计系统规则在 `frontend/frontend/CLAUDE.md`（Figma MCP 输出 React+Tailwind 参考代码 → 适配本仓库 Vue 3 SFC + 现有 `.btn`/`.card`/`.pill` 短类）。
 
 构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 路径下提供服务。`static/spa/index.html` 和 `static/spa/assets/` 已 gitignore，由 CI / Docker / release 脚本生成；手写资源 `static/spa/favicon.svg` 等仍跟踪。`/spa` endpoint 加 `Cache-Control: no-cache`，避免 index.html 被浏览器缓存住引用旧 hash 的 bundle。
 
@@ -210,7 +214,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 5. **业务分组规则**——可配置规则文件 `lineage_group_rules.yml`，按表名 / schema / 注释关键词分组。示例：`a_ks_jg_*` → 机构、`a_ks_r_*` → 融资融券、`a_ks_qq_*` → 期权、`*_stock` → 持仓/市值、`t_config` / `bbq` → 配置、`pcyyyb` / `cust_base_info` → 过滤/排除。
 6. **注释利用** ✅ —— `aggregation.extract_statement_title()` 从 sqlglot 节点的 `.comments` 列表里取第一段非空文本作为业务标题（截断 200 字符）。`result["statements"][i].title` 是单语句标题；`target_summary[i].titles` 是这张目标表所有写操作的标题（去重保序）。TRUNCATE 也覆盖（虽然不进 `analyses` 列表，但走 `collect_target_operations` 直扫拿 title）。后续业务分组（第 5 项）可以基于 titles 关键词匹配。
 7. **语义血缘结构** `semantic_lineage` ✅ —— `app/lineage/semantic.py` 把第 2/4/6 项的产出 + procedure_segments + parse_errors + dynamic_sql_segments 一次性聚合到 `result["semantic_lineage"]`，前端 / 第三方一处获取语义视图。`procedures`（按 name 折叠 segment_count）/ `targets`（合并 role + refresh + titles + counts）/ `business_groups`（占位等第 5 项）/ `grouped_edges`（占位）/ `observations`（"X 张目标表，其中 Y 张全量重刷……"）/ `risks`（parse_error → high；动态 SQL var_concat → medium；动态 SQL string_literal → low）。
-8. **前端两个视图**——原始血缘图（详细表/字段关系） + 语义血缘图（业务分组 → 目标中间表 → 下游消费）。AI 开启时展示 AI 增强标签；AI 关闭时展示规则分析标签。
+8. **前端两个视图**——原始血缘图（详细表/字段关系，已存在）+ 语义血缘图（业务分组 → 目标中间表 → 下游消费）。AI 开启时展示 AI 增强标签；AI 关闭时展示规则分析标签。**当前进度**：已挂 `SemanticLineagePanel.vue`（observations / risks / targets 表 / procedures 卡片），消费 `semantic_lineage` 字段；完整的"语义血缘图"（业务分组级 DAG 视图）等第 5 项 YAML 配置上线后再做，目前面板已经能让用户一眼看清"脚本干啥的"。
 
 ### 还可以做（未排期）
 
