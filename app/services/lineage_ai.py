@@ -19,6 +19,11 @@ class LineageAIConfig:
     base_url: str = ""
     api_key: str = ""
     timeout_seconds: float = 20.0
+    # 采样温度。Kimi K2.6 等模型不接受 0（会 400），必须 > 0。默认 0.2 兼顾稳定 + 兼容
+    temperature: float = 0.2
+    # 关闭 thinking（仅 Kimi K2.6 等支持 thinking 的模型有用）。默认 True 避免
+    # reasoning_content 吃掉输出 token 让 content 长时间为空。
+    disable_thinking: bool = True
 
 
 class LineageAIProvider(Protocol):
@@ -112,9 +117,10 @@ class OpenAICompatibleLineageAIProvider:
         if not config.model:
             raise ValueError("DATAOPS_LINEAGE_AI_MODEL is required")
         base_url = config.base_url.rstrip("/") or "https://api.openai.com/v1"
-        body = {
+        body: dict[str, Any] = {
             "model": config.model,
-            "temperature": 0,
+            # Kimi K2.6 不接受 temperature=0（直接 400）。默认 0.2 兼容；可由 env 覆盖
+            "temperature": max(config.temperature, 0.01),
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -128,13 +134,21 @@ class OpenAICompatibleLineageAIProvider:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
+        # Kimi K2.6 / 月之暗面默认开启 thinking，reasoning_content 会先吃掉输出 token
+        # → content 长时间为空。显式 enable_thinking=false 让它直接吐 content。
+        # 不支持该字段的服务（OpenAI / 其它兼容 API）忽略未知字段，对它们无副作用。
+        if config.disable_thinking:
+            body["enable_thinking"] = False
         data = _post_json(
             f"{base_url}/chat/completions",
             body,
             headers={"Authorization": f"Bearer {config.api_key}"},
             timeout=config.timeout_seconds,
         )
-        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        # content 优先；空时 fallback 到 reasoning_content（thinking 模式下模型把 JSON 写在
+        # reasoning 而不是 content；某些 Kimi 配置下也会出现）
+        content = message.get("content") or message.get("reasoning_content") or "{}"
         return _loads_json_object(content)
 
 
@@ -161,12 +175,15 @@ class OllamaLineageAIProvider:
 
 def _config() -> LineageAIConfig:
     provider = os.getenv("DATAOPS_LINEAGE_AI_PROVIDER", "off").strip().lower() or "off"
+    disable_thinking = os.getenv("DATAOPS_LINEAGE_AI_DISABLE_THINKING", "true").strip().lower() not in {"0", "false", "no"}
     return LineageAIConfig(
         provider=provider,
         model=os.getenv("DATAOPS_LINEAGE_AI_MODEL", "").strip(),
         base_url=os.getenv("DATAOPS_LINEAGE_AI_BASE_URL", "").strip(),
         api_key=os.getenv("DATAOPS_LINEAGE_AI_API_KEY", "").strip(),
         timeout_seconds=float(os.getenv("DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS", "20")),
+        temperature=float(os.getenv("DATAOPS_LINEAGE_AI_TEMPERATURE", "0.2")),
+        disable_thinking=disable_thinking,
     )
 
 
