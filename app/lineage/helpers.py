@@ -79,7 +79,7 @@ def analysis_statements(statement: Any) -> list[Any]:
             return nested
         if isinstance(statement.args.get("expression"), (e.Select, e.Union)):
             return [statement]
-    if isinstance(statement, (e.Insert, e.Select, e.Union, e.Update, e.Merge)):
+    if isinstance(statement, (e.Insert, e.Select, e.Union, e.Update, e.Merge, e.Delete)):
         return [statement]
     return []
 

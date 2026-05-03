@@ -158,4 +158,7 @@ def target_table_names(statement: Any) -> set[str]:
     for merge in statement.find_all(e.Merge):
         if isinstance(merge.this, e.Table):
             targets.add(table_name(merge.this))
+    for delete in statement.find_all(e.Delete):
+        if isinstance(delete.this, e.Table):
+            targets.add(table_name(delete.this))
     return targets

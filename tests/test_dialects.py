@@ -19,7 +19,10 @@ from app.lineage.dialects import resolve_dialect
         ("oracle", "oracle"),
         # DM aliases → oracle (DM 的语法绝大部分继承自 Oracle)
         ("dm", "oracle"),
+        ("dm8", "oracle"),
+        ("dm_oracle", "oracle"),
         ("dameng", "oracle"),
+        ("dameng8", "oracle"),
         # OceanBase 区分 mysql / oracle 两种兼容模式
         ("ob_mysql", "mysql"),
         ("oceanbase", "mysql"),

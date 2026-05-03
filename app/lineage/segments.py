@@ -98,7 +98,7 @@ def extract_analyzable_segments(sql: str) -> list[str]:
             continue
         segment = re.sub(r"^(begin|then|else)\b", "", segment, flags=re.IGNORECASE).strip()
         segment = re.sub(r"\bend\s*$", "", segment, flags=re.IGNORECASE).strip()
-        if re.match(r"^(with|select|insert|replace\s+into|create\s+(or\s+replace\s+)?procedure|create\s+(or\s+replace\s+)?function|create\s+(or\s+replace\s+)?(temporary\s+|temp\s+)?table)\b", segment, re.IGNORECASE):
+        if re.match(r"^(with|select|insert|replace\s+into|update|delete|merge|truncate|create\s+(or\s+replace\s+)?procedure|create\s+(or\s+replace\s+)?function|create\s+(or\s+replace\s+)?(temporary\s+|temp\s+)?table)\b", segment, re.IGNORECASE):
             segments.append(segment)
     return segments
 

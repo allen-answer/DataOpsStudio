@@ -163,6 +163,41 @@ def merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
     ]
 
 
+def delete_table_mappings(statement: Any) -> list[dict[str, Any]]:
+    """DELETE keeps table-level dependencies when its predicate reads other tables."""
+    e = exp()
+    target_table = table_name(statement.this) if isinstance(statement.this, e.Table) else sql(statement.this)
+    target_key = _normalize_table_name(target_table)
+
+    source_tables: list[str] = []
+    for table in statement.find_all(e.Table):
+        name = table_name(table)
+        if not name or _normalize_table_name(name) == target_key:
+            continue
+        source_tables.append(name)
+
+    source_tables = _unique_strings(source_tables)
+    where_expr = statement.args.get("where")
+    return [
+        {
+            "position": i + 1,
+            "target_table": target_table,
+            "target_column": "",
+            "target": target_table,
+            "select_output_column": "",
+            "expression": sql(where_expr) if where_expr is not None else "",
+            "source_columns": [],
+            "source_tables": [src],
+            "variables": variables_in_expression(where_expr, []) if where_expr is not None else [],
+            "transform": "DELETE",
+            "dml_type": "DELETE",
+            "confidence": "medium",
+            "warnings": [],
+        }
+        for i, src in enumerate(source_tables)
+    ]
+
+
 def insert_mappings(
     statement: Any,
     alias_map: dict[str, str],
@@ -176,6 +211,8 @@ def insert_mappings(
         return update_table_mappings(statement)
     if isinstance(statement, e.Merge):
         return merge_table_mappings(statement)
+    if isinstance(statement, e.Delete):
+        return delete_table_mappings(statement)
     if isinstance(statement, e.Create):
         return create_table_mappings(statement, alias_map, subquery_map, subquery_tables, script_variables, schema)
     if not isinstance(statement, e.Insert):

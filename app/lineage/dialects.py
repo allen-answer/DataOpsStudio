@@ -5,7 +5,10 @@ from __future__ import annotations
 # DM 默认走 oracle 语法兼容；OB 区分 mysql / oracle 模式。
 _DIALECT_ALIASES = {
     "dm": "oracle",
+    "dm8": "oracle",
+    "dm_oracle": "oracle",
     "dameng": "oracle",
+    "dameng8": "oracle",
     "ob": "mysql",
     "ob_mysql": "mysql",
     "obmysql": "mysql",
