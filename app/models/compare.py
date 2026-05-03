@@ -28,6 +28,12 @@ class RunLimits(BaseModel):
     stream_compare: bool = False
 
 
+# 字段惯例：
+# - SQL 端：source_id + source_sql / target_id + target_sql
+# - Excel 端：source_excel_path + source_sheet + source_header_row（Excel 特有 sheet）
+# - CSV / Parquet 端：source_file_path（通用文件路径）
+#   * CSV 还用 source_file_encoding + source_csv_delimiter + source_header_row
+#   * Parquet 不用 encoding/delimiter/header_row（自描述）
 class CompareTask(BaseModel):
     id: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
@@ -44,6 +50,13 @@ class CompareTask(BaseModel):
     target_excel_path: str = ""
     target_sheet: str = ""
     target_header_row: int = 1
+    # CSV / Parquet 通用文件路径 + CSV 特有 encoding/delimiter
+    source_file_path: str = ""
+    source_file_encoding: str = "utf-8-sig"
+    source_csv_delimiter: str = ","
+    target_file_path: str = ""
+    target_file_encoding: str = "utf-8-sig"
+    target_csv_delimiter: str = ","
     key_columns: list[str] = Field(default_factory=list)
     rules: CompareRules = Field(default_factory=CompareRules)
     limits: RunLimits = Field(default_factory=RunLimits)
@@ -72,6 +85,12 @@ class CompareTaskCreate(BaseModel):
     target_excel_path: str = ""
     target_sheet: str = ""
     target_header_row: int = 1
+    source_file_path: str = ""
+    source_file_encoding: str = "utf-8-sig"
+    source_csv_delimiter: str = ","
+    target_file_path: str = ""
+    target_file_encoding: str = "utf-8-sig"
+    target_csv_delimiter: str = ","
     key_columns: list[str] = Field(default_factory=list)
     rules: CompareRules = Field(default_factory=CompareRules)
     limits: RunLimits = Field(default_factory=RunLimits)
@@ -82,16 +101,18 @@ class CompareTaskCreate(BaseModel):
         return self
 
 
+# 文件型 source kind —— 跟 SQL 互斥时统一引用
+_FILE_KINDS = frozenset({SourceKind.EXCEL, SourceKind.CSV, SourceKind.PARQUET})
+
+
 def _validate_compare_inputs(task: Any, *, strict: bool = True) -> None:
     """Per-side input validation. SQL kind requires datasource + SQL;
     Excel kind requires an uploaded file path. key_columns always required.
 
     `strict=True` adds 2 cross-field rules used only on create/update:
     - single SQL mode requires both sides to be SQL (the same SELECT runs on
-      both datasources). Mixing Excel into single-mode makes no sense.
-    - stream_compare requires both sides to be ordered SQL streams. Excel
-      readers don't guarantee key ordering, so disable stream_compare when
-      either side is Excel.
+      both datasources). Mixing file sources into single-mode makes no sense.
+    - stream_compare requires both sides to be ordered SQL streams.
 
     `strict=False` is used by `CompareTask` (the persisted shape) so that
     legacy task JSON on disk that violates the new cross-field rules still
@@ -106,6 +127,9 @@ def _validate_compare_inputs(task: Any, *, strict: bool = True) -> None:
     elif task.source_kind == SourceKind.EXCEL:
         if not task.source_excel_path.strip():
             raise ValueError("source_excel_path is required for Excel source")
+    elif task.source_kind in (SourceKind.CSV, SourceKind.PARQUET):
+        if not task.source_file_path.strip():
+            raise ValueError(f"source_file_path is required for {task.source_kind.value} source")
 
     if task.target_kind == SourceKind.SQL:
         # In single SQL mode the source SQL is reused on target side, so target_id alone is enough.
@@ -116,24 +140,27 @@ def _validate_compare_inputs(task: Any, *, strict: bool = True) -> None:
     elif task.target_kind == SourceKind.EXCEL:
         if not task.target_excel_path.strip():
             raise ValueError("target_excel_path is required for Excel target")
+    elif task.target_kind in (SourceKind.CSV, SourceKind.PARQUET):
+        if not task.target_file_path.strip():
+            raise ValueError(f"target_file_path is required for {task.target_kind.value} target")
 
     if strict:
-        # single SQL mode + Excel side is contradictory: there's no shared SELECT
-        # to reuse on the Excel reader. Force the user to pick double mode.
+        # single SQL mode + 任一侧是文件源（Excel / CSV / Parquet）：互斥 ——
+        # 单 SQL 是"同一段 SELECT 在源/目标都跑一遍"，文件没法跑 SQL。
         if task.sql_mode == SqlMode.SINGLE and (
-            task.source_kind == SourceKind.EXCEL or task.target_kind == SourceKind.EXCEL
+            task.source_kind in _FILE_KINDS or task.target_kind in _FILE_KINDS
         ):
             raise ValueError(
-                "single SQL mode does not support Excel inputs; switch to double SQL mode"
+                "single SQL mode does not support file inputs (Excel/CSV/Parquet); "
+                "switch to double SQL mode"
             )
 
-        # stream_compare requires both sides to be SQL ordered by primary key.
-        # Excel readers buffer the whole sheet and don't preserve key ordering.
+        # stream_compare 要求两边都是 SQL 按主键有序流；文件 reader 都不保证。
         if task.limits.stream_compare and (
-            task.source_kind == SourceKind.EXCEL or task.target_kind == SourceKind.EXCEL
+            task.source_kind in _FILE_KINDS or task.target_kind in _FILE_KINDS
         ):
             raise ValueError(
-                "stream_compare requires SQL on both sides; Excel inputs cannot be streamed"
+                "stream_compare requires SQL on both sides; file inputs cannot be streamed"
             )
 
     if not task.key_columns:

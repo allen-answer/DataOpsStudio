@@ -65,14 +65,35 @@ def save_uploaded_excel(file: UploadFile) -> dict[str, Any]:
     }
 
 
-def resolve_excel_path(stored_path: str) -> Path:
-    """Resolve a task-stored relative Excel path back to an absolute path,
-    verifying it stays inside the uploads directory."""
+def resolve_uploaded_path(
+    stored_path: str,
+    *,
+    allowed_suffixes: set[str] | None = None,
+    label: str = "uploaded file",
+) -> Path:
+    """Resolve a task-stored upload path back to an absolute path.
+
+    Upload paths are stored relative to the repo root, but execution can happen
+    from dev, tests, or a rebuilt container. Keep the path inside UPLOADS_DIR
+    and optionally constrain the extension for the reader that will consume it.
+    """
     if not stored_path.strip():
-        raise HTTPException(status_code=400, detail="Excel path is empty")
+        raise HTTPException(status_code=400, detail=f"{label} path is empty")
     candidate = (RESULTS_DIR.parent / stored_path).resolve()
     if UPLOADS_DIR.resolve() not in candidate.parents:
-        raise HTTPException(status_code=400, detail="Excel path is outside the uploads directory")
+        raise HTTPException(status_code=400, detail=f"{label} path is outside the uploads directory")
     if not candidate.exists():
-        raise HTTPException(status_code=400, detail=f"Excel file not found: {stored_path}")
+        raise HTTPException(status_code=400, detail=f"{label} not found: {stored_path}")
+    if allowed_suffixes and candidate.suffix.lower() not in allowed_suffixes:
+        suffixes = ", ".join(sorted(allowed_suffixes))
+        raise HTTPException(status_code=400, detail=f"{label} must use one of: {suffixes}")
     return candidate
+
+
+def resolve_excel_path(stored_path: str) -> Path:
+    """Resolve a task-stored relative Excel path back to an absolute path."""
+    return resolve_uploaded_path(
+        stored_path,
+        allowed_suffixes={".xlsx", ".xlsm"},
+        label="Excel file",
+    )

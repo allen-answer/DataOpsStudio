@@ -71,7 +71,7 @@ def test_single_mode_with_excel_source_rejected():
             source_id="", source_sql="",
             sql_mode="single",
         )
-    assert "single SQL mode does not support Excel" in str(exc.value)
+    assert "single SQL mode does not support file inputs" in str(exc.value)
 
 
 def test_single_mode_with_excel_target_rejected():
@@ -82,7 +82,7 @@ def test_single_mode_with_excel_target_rejected():
             target_id="",
             sql_mode="single",
         )
-    assert "single SQL mode does not support Excel" in str(exc.value)
+    assert "single SQL mode does not support file inputs" in str(exc.value)
 
 
 def test_single_mode_with_excel_on_both_sides_rejected():
@@ -93,7 +93,7 @@ def test_single_mode_with_excel_on_both_sides_rejected():
             source_id="", target_id="", source_sql="",
             sql_mode="single",
         )
-    assert "single SQL mode does not support Excel" in str(exc.value)
+    assert "single SQL mode does not support file inputs" in str(exc.value)
 
 
 # ─── 新加的混合校验：stream_compare + Excel 互斥 ──────────────────────────────

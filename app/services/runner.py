@@ -9,8 +9,8 @@ from typing import Any
 
 from app.compare.engine import compare_rows, compare_sorted_row_iterators
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
-from app.readers import ExcelReader, RowReader, SqlReader
-from app.services.excel_uploads import resolve_excel_path
+from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
+from app.services.excel_uploads import resolve_excel_path, resolve_uploaded_path
 from app.services.exporter import write_excel, write_result_json
 from app.services.repositories import datasource_store, task_store
 from app.utils.sql_guard import validate_readonly_sql
@@ -165,6 +165,28 @@ def _build_reader(task: CompareTask, side: str) -> RowReader:
             file_path=resolve_excel_path(task.target_excel_path),
             sheet=task.target_sheet,
             header_row=task.target_header_row,
+        )
+
+    _CSV_SUFFIXES = {".csv", ".tsv", ".txt"}
+    _PARQUET_SUFFIXES = {".parquet", ".pq"}
+
+    if kind == SourceKind.CSV:
+        # 复用 excel uploads 目录 + 通用 path resolve（限 csv/tsv/txt suffix）
+        path_field = task.source_file_path if side == "source" else task.target_file_path
+        encoding = (task.source_file_encoding if side == "source" else task.target_file_encoding) or "utf-8-sig"
+        delimiter = (task.source_csv_delimiter if side == "source" else task.target_csv_delimiter) or ","
+        header_row = task.source_header_row if side == "source" else task.target_header_row
+        return CsvReader(
+            file_path=resolve_uploaded_path(path_field, allowed_suffixes=_CSV_SUFFIXES, label="CSV file"),
+            encoding=encoding,
+            delimiter=delimiter,
+            header_row=header_row,
+        )
+
+    if kind == SourceKind.PARQUET:
+        path_field = task.source_file_path if side == "source" else task.target_file_path
+        return ParquetReader(
+            file_path=resolve_uploaded_path(path_field, allowed_suffixes=_PARQUET_SUFFIXES, label="Parquet file"),
         )
 
     raise ValueError(f"unsupported source kind: {kind}")

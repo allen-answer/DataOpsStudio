@@ -192,3 +192,119 @@ def test_mismatched_columns_with_intersection_ignore():
     assert {row["key"][0] for row in buckets["only_target"]} == {7}
     assert {row["key"][0] for row in buckets["diff"]} == {2, 3}
     assert {row["key"][0] for row in buckets["same"]} == {1, 5, 6}
+
+
+# ─── CsvReader ────────────────────────────────────────────────────────────────
+
+
+from app.readers.csv_reader import CsvReader, list_columns as csv_list_columns
+
+
+def test_csv_reads_utf8_with_bom(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_bytes("﻿id,name,amount\r\n1,张三,100\r\n2,李四,200\r\n".encode("utf-8"))
+    reader = CsvReader(file_path=path)
+    rows = reader.fetch_all()
+    assert rows == [
+        {"id": "1", "name": "张三", "amount": "100"},
+        {"id": "2", "name": "李四", "amount": "200"},
+    ]
+
+
+def test_csv_reads_gbk_encoding(tmp_path):
+    """国内 ETL 老文件常 GBK 编码——需要显式指定 encoding。"""
+    path = tmp_path / "data.csv"
+    path.write_bytes("id,name\n1,张三\n2,李四\n".encode("gbk"))
+    reader = CsvReader(file_path=path, encoding="gbk")
+    assert reader.fetch_all() == [{"id": "1", "name": "张三"}, {"id": "2", "name": "李四"}]
+
+
+def test_csv_tsv_delimiter(tmp_path):
+    path = tmp_path / "data.tsv"
+    path.write_text("id\tname\n1\tAlice\n2\tBob\n", encoding="utf-8")
+    reader = CsvReader(file_path=path, delimiter="\t")
+    assert reader.fetch_all() == [{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}]
+
+
+def test_csv_skips_blank_rows_and_unnamed_cols(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("id,name,\n1,Alice,junk\n,,\n2,Bob,more\n", encoding="utf-8")
+    reader = CsvReader(file_path=path)
+    # 第三列没 header，整列丢弃
+    rows = reader.fetch_all()
+    assert rows == [{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}]
+
+
+def test_csv_max_rows_enforced(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("id\n1\n2\n3\n4\n5\n6\n", encoding="utf-8")
+    reader = CsvReader(file_path=path)
+    with pytest.raises(RuntimeError, match="max_rows"):
+        reader.fetch_all(max_rows=3)
+
+
+def test_csv_list_columns(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("id,name,amount\n1,Alice,100\n", encoding="utf-8")
+    assert csv_list_columns(path) == ["id", "name", "amount"]
+
+
+def test_csv_header_row_skips_metadata(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("# 报表标题\n# 生成时间\nid,name\n1,Alice\n", encoding="utf-8")
+    reader = CsvReader(file_path=path, header_row=3)
+    assert reader.fetch_all() == [{"id": "1", "name": "Alice"}]
+
+
+# ─── ParquetReader ────────────────────────────────────────────────────────────
+
+# 仅在 pyarrow 可用时跑（CI 容器装了；本地无 pyarrow 时 skip）
+pyarrow = pytest.importorskip("pyarrow")
+from app.readers.parquet_reader import ParquetReader, list_columns as parquet_list_columns
+
+
+def _write_parquet(path: Path, columns: dict[str, list]) -> Path:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.table(columns)
+    pq.write_table(table, path)
+    return path
+
+
+def test_parquet_reads_simple_table(tmp_path):
+    path = _write_parquet(tmp_path / "data.parquet", {
+        "id": [1, 2, 3],
+        "name": ["Alice", "Bob", "Carol"],
+        "amount": [100.5, 200.5, 300.5],
+    })
+    reader = ParquetReader(file_path=path)
+    rows = reader.fetch_all()
+    assert rows == [
+        {"id": 1, "name": "Alice", "amount": 100.5},
+        {"id": 2, "name": "Bob", "amount": 200.5},
+        {"id": 3, "name": "Carol", "amount": 300.5},
+    ]
+
+
+def test_parquet_max_rows_enforced(tmp_path):
+    path = _write_parquet(tmp_path / "data.parquet", {"id": list(range(10))})
+    reader = ParquetReader(file_path=path)
+    with pytest.raises(RuntimeError, match="max_rows"):
+        reader.fetch_all(max_rows=5)
+
+
+def test_parquet_list_columns(tmp_path):
+    path = _write_parquet(tmp_path / "data.parquet", {
+        "id": [1], "name": ["x"], "amount": [1.0],
+    })
+    assert parquet_list_columns(path) == ["id", "name", "amount"]
+
+
+def test_parquet_subset_columns(tmp_path):
+    path = _write_parquet(tmp_path / "data.parquet", {
+        "id": [1, 2], "name": ["A", "B"], "secret": ["x", "y"],
+    })
+    reader = ParquetReader(file_path=path, columns=["id", "name"])
+    rows = reader.fetch_all()
+    assert rows == [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]

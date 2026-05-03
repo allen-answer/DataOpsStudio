@@ -13,8 +13,10 @@ from app.models import (
     PreviewColumnsResponse,
     SqlAssistResponse,
 )
+from app.readers.csv_reader import list_columns as read_csv_columns
 from app.readers.excel_reader import list_columns as read_excel_columns
-from app.services import excel_uploads
+from app.readers.parquet_reader import list_columns as read_parquet_columns
+from app.services import excel_uploads, file_uploads
 from app.services.repositories import datasource_store
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
@@ -53,6 +55,42 @@ def preview_columns_api(payload: dict[str, object] = Body(...)):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"columns": columns}
+    if kind == "csv":
+        file_path = str(payload.get("file_path") or "")
+        encoding = str(payload.get("encoding") or "utf-8-sig")
+        delimiter = str(payload.get("delimiter") or ",")
+        header_row = int(payload.get("header_row") or 1)
+        try:
+            absolute_path = excel_uploads.resolve_uploaded_path(
+                file_path,
+                allowed_suffixes={".csv", ".tsv", ".txt"},
+                label="CSV file",
+            )
+            columns = read_csv_columns(
+                absolute_path,
+                encoding=encoding,
+                delimiter=delimiter,
+                header_row=header_row,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"columns": columns}
+    if kind == "parquet":
+        file_path = str(payload.get("file_path") or "")
+        try:
+            absolute_path = excel_uploads.resolve_uploaded_path(
+                file_path,
+                allowed_suffixes={".parquet", ".pq"},
+                label="Parquet file",
+            )
+            columns = read_parquet_columns(absolute_path)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"columns": columns}
     raise HTTPException(status_code=400, detail=f"Unknown kind: {kind}")
 
 
@@ -67,3 +105,13 @@ def sql_assist_api(payload: dict[str, str] = Body(...)):
 @router.post("/api/uploads/excel", response_model=ExcelUploadResponse)
 def upload_excel_api(file: UploadFile = File(...)):
     return excel_uploads.save_uploaded_excel(file)
+
+
+@router.post("/api/uploads/csv")
+def upload_csv_api(file: UploadFile = File(...)):
+    return file_uploads.save_uploaded_csv(file)
+
+
+@router.post("/api/uploads/parquet")
+def upload_parquet_api(file: UploadFile = File(...)):
+    return file_uploads.save_uploaded_parquet(file)

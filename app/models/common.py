@@ -19,3 +19,5 @@ class SqlMode(str, Enum):
 class SourceKind(str, Enum):
     SQL = "sql"
     EXCEL = "excel"
+    CSV = "csv"
+    PARQUET = "parquet"

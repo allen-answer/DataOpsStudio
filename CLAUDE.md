@@ -274,7 +274,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - 调度器（cron/sensor）+ 通知（企业微信 / 邮件 / Webhook）
 - 多项目空间 + 用户权限 + 审计日志
 - 数据源连接池
-- CSV / Parquet 数据对比
+- ~~CSV / Parquet 数据对比~~ ✅ —— `app/readers/csv_reader.py`（stdlib csv，UTF-8/GBK 编码 + 自定义 delimiter + header_row 跳元数据）+ `app/readers/parquet_reader.py`（pyarrow 后端，支持 columns subset）。`SourceKind` 加 `csv / parquet`，`CompareTask` 加 `source_file_path / source_file_encoding / source_csv_delimiter`（CSV 用）通用文件路径字段，Parquet 复用 file_path。`/api/uploads/csv` + `/api/uploads/parquet` 两个 endpoint，`/api/preview/columns` 同步加 csv / parquet kind。`stream_compare` 互斥规则扩展到所有文件源（Excel / CSV / Parquet）。`pyarrow>=14.0` 加进 requirements。23 个 reader 测试（含 11 新增）全过。
 - 字段级血缘（column-level lineage，独立于 Phase 7 双轨之外）
 - workflow 模板能力 + 端到端测试 + 乱码清理
 

@@ -5,6 +5,7 @@ python-multipart>=0.0.9
 pydantic>=2.6
 pandas>=2.2
 openpyxl>=3.1
+pyarrow>=14.0  # ParquetReader 后端；pandas DataFrame 的 parquet IO 也走它
 sqlglot>=26.0
 pyyaml>=6.0  # config/lineage_group_rules.yml 解析；JSON 格式仍可用，YAML 仅在文件后缀是 .yml/.yaml 时需要
 pytest>=8.0
