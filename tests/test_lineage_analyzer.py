@@ -279,9 +279,19 @@ def test_dynamic_sql_execute_immediate():
 
 
 def test_dynamic_sql_string_literal():
-    sql = "DECLARE @q NVARCHAR(MAX) = 'INSERT INTO t SELECT id FROM src'; EXEC sp_executesql @q"
+    # `EXEC sp_executesql N'<literal>'` 走精确 keyword 路径，应该被识别为动态 SQL。
+    sql = "EXEC sp_executesql N'INSERT INTO t SELECT id FROM src'"
     result = analyze_sql_lineage(sql)
     assert result["dynamic_sql_count"] >= 1
+
+
+def test_select_with_long_string_literal_not_treated_as_dynamic_sql():
+    # 普通 SELECT 里出现的 SQL-shaped 字符串字面量不应该被报为动态 SQL —— 这是
+    # 之前 string_literal 兜底匹配产生海量假阳的根源（参见 a_cispnew_f3045.sql 的
+    # 324 段误报）。删掉兜底后预期 dynamic_sql_count == 0。
+    sql = "SELECT 'INSERT INTO dw.f SELECT * FROM ods.a' AS dummy_sql FROM dual"
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert result["dynamic_sql_count"] == 0
 
 
 def test_dynamic_sql_segment_has_sql_field():
@@ -1070,16 +1080,23 @@ def test_semantic_lineage_observations_dynamic_sql():
 
 
 def test_semantic_lineage_risks_low_confidence_dynamic_sql():
-    # 字符串字面量识别 (medium confidence) → 落 risks，level=low
+    # PL/SQL 变量拼接（`v_sql := 'INSERT ' || p_t || ' SELECT...'; EXECUTE IMMEDIATE v_sql;`）
+    # 走 `var_concat` 路径，confidence=low → risks level=medium。
     sql = """
-    SELECT 'INSERT INTO dw.f SELECT * FROM ods.a' AS dummy_sql FROM dual;
+    DECLARE
+      v_sql VARCHAR2(2000);
+      p_table VARCHAR2(50) := 'targets';
+    BEGIN
+      v_sql := 'INSERT INTO ' || p_table || ' SELECT * FROM stg.src';
+      EXECUTE IMMEDIATE v_sql;
+    END;
     """
     result = analyze_sql_lineage(sql, dialect="oracle")
     risks = result["semantic_lineage"]["risks"]
     types = {r["type"] for r in risks}
     assert "dynamic_sql_low_confidence" in types
     levels = {r["level"] for r in risks if r["type"] == "dynamic_sql_low_confidence"}
-    assert "low" in levels  # medium confidence → low risk level
+    assert "medium" in levels  # var_concat low confidence → medium risk level
 
 
 def test_semantic_lineage_procedures_grouped_by_name():
@@ -1107,3 +1124,165 @@ def test_semantic_lineage_empty_for_select_only():
     assert sem["risks"] == []
     # observations 也应该没东西（没目标表也没存储过程也没动态 SQL）
     assert sem["observations"] == []
+
+
+# ─── Oracle 大型存储过程回归测试（合成 fixture，复刻 a_cispnew_f3045.sql 的所有 bug）─
+
+_ORACLE_PROC_FIXTURE = """\
+create or replace procedure cispnew.sync_full_refresh(
+  p_out_flag  out varchar2,
+  p_out_msg   out varchar2
+)
+is
+  v_us number(14,5);
+begin
+  p_out_flag := '1';
+  p_out_msg  := 'OK';
+
+  /*集中交易*/
+  delete from cispnew.t_etl_jy;
+  commit;
+
+  --A股主板股票
+  insert into /*+ parallel(cispnew.t_etl_jy,4) */ cispnew.t_etl_jy
+        (yyb,--营业部
+         khlx,--0-个人 1-机构
+         zqlx,--1-A股主板 2-创业板 3-科创板 4-深B 5-沪B 6-新三板
+         je
+        )
+  select /*+ parallel(t1,4)(a,4) */
+         trim(t1.branch_code),
+         substr(a.attribute, 1, 1),
+         '1',
+         sum(t1.amt * v_us)
+  from kods.a_ks_his_done t1
+  inner join kods.a_ks_cust_base_info a on t1.cust_no = a.cust_no
+  where t1.market_code = '1'
+    and t1.sec_type = '01'
+    and not exists (select c.cust_no from cisp.cust_base_info c where c.cust_no = trim(a.cust_no))
+  group by substr(a.attribute, 1, 1), trim(t1.branch_code);
+  commit;
+
+  --优先股
+  insert into /*+ parallel(cispnew.t_etl_jy,4) */ cispnew.t_etl_jy
+        (yyb, khlx, zqlx, je)
+  select trim(t1.branch_code),
+         substr(a.attribute, 1, 1),
+         '2',
+         sum(case when t1.market_code = '1' then t1.amt else 0 end)
+  from kods.a_ks_his_done t1
+  inner join kods.a_ks_cust_base_info a on t1.cust_no = a.cust_no
+  where t1.sec_type = '02';
+  commit;
+
+  --A股创业板
+  insert into /*+ parallel(cispnew.t_etl_jy,4) */ cispnew.t_etl_jy
+        (yyb, khlx, zqlx, je)
+  select trim(t1.branch_code),
+         substr(a.attribute, 1, 1),
+         '3',
+         sum(t1.amt)
+  from kods.a_ks_his_done t1
+  inner join kods.a_ks_cust_base_info a on t1.cust_no = a.cust_no
+  where t1.sec_type = '03';
+  commit;
+
+  /*集中交易托管市值*/
+  delete from cispnew.t_etl_zqsz;
+  commit;
+
+  --A股主板
+  insert into cispnew.t_etl_zqsz
+        (yyb,--营业部
+         khlx,
+         zqlx,-- 1-A股主板 2-创业板
+         zqsz
+        )
+  select trim(a.branch_code),
+         substr(a.attribute, 1, 1),
+         '1',
+         sum(case when t.market_code = '1' then t.total_asset else 0 end)
+  from kods.a_ks_stock t
+  inner join kods.a_ks_cust_base_info a on t.cust_no = a.cust_no
+  where t.market_code = '1'
+  group by substr(a.attribute, 1, 1), trim(a.branch_code);
+  commit;
+
+  --优先股
+  insert into cispnew.t_etl_zqsz (yyb, khlx, zqlx, zqsz)
+  select trim(a.branch_code),
+         substr(a.attribute, 1, 1),
+         '2',
+         sum(t.total_asset)
+  from kods.a_ks_stock t
+  inner join kods.a_ks_cust_base_info a on t.cust_no = a.cust_no
+  where t.sec_type = '02';
+  commit;
+
+end sync_full_refresh;
+/
+"""
+
+
+def _summary_by_lower(target_summary, table):
+    matches = [s for s in target_summary if s["target_table"].lower() == table.lower()]
+    assert matches, f"未在 target_summary 找到 {table}"
+    return matches[0]
+
+
+def test_oracle_proc_fixture_target_counts():
+    """大型 Oracle 存储过程：DELETE+多 INSERT 全量重刷（来自 a_cispnew_f3045.sql 的回归）。
+
+    这个 fixture 复刻真实文件里把 88 INSERT 折成 1 的全部 bug：CASE...END 把外层
+    BEGIN/END token 计数搞乱、`/*+ parallel(...) */` hint 误为业务标题、`-- 行注释`
+    在多列 INSERT 列表里、324 段假动态 SQL（任何 20+ 字符字符串字面量都中招）。
+    """
+    result = analyze_sql_lineage(_ORACLE_PROC_FIXTURE, dialect="oracle")
+
+    # 三段 INSERT INTO t_etl_jy + 一条 DELETE
+    jy = _summary_by_lower(result["target_summary"], "cispnew.t_etl_jy")
+    assert jy["insert_count"] == 3, f"jy.insert_count={jy['insert_count']} 期望 3"
+    assert jy["delete_count"] == 1
+    assert jy["refresh_mode"] == "delete_insert"
+
+    # 两段 INSERT INTO t_etl_zqsz + 一条 DELETE
+    zqsz = _summary_by_lower(result["target_summary"], "cispnew.t_etl_zqsz")
+    assert zqsz["insert_count"] == 2, f"zqsz.insert_count={zqsz['insert_count']} 期望 2"
+    assert zqsz["delete_count"] == 1
+    assert zqsz["refresh_mode"] == "delete_insert"
+
+
+def test_oracle_proc_fixture_titles_skip_hints():
+    """业务标题应该是 INSERT 前的中文注释，不是 Oracle hint。"""
+    result = analyze_sql_lineage(_ORACLE_PROC_FIXTURE, dialect="oracle")
+
+    jy = _summary_by_lower(result["target_summary"], "cispnew.t_etl_jy")
+    titles = jy.get("titles", [])
+    # 真业务标题
+    assert "A股主板股票" in titles
+    assert "优先股" in titles
+    assert "A股创业板" in titles
+    # hint 不应在
+    assert not any("parallel(" in t for t in titles), f"hint 漏到 titles: {titles}"
+
+    zqsz = _summary_by_lower(result["target_summary"], "cispnew.t_etl_zqsz")
+    z_titles = zqsz.get("titles", [])
+    assert "集中交易托管市值" in z_titles or "A股主板" in z_titles
+
+
+def test_oracle_proc_fixture_no_false_positive_dynamic_sql():
+    """没真正的 EXECUTE IMMEDIATE / sp_executesql / PREPARE → dynamic_sql_count 应为 0。
+
+    a_cispnew_f3045.sql 报 324 段，全部是字符串字面量误报。"""
+    result = analyze_sql_lineage(_ORACLE_PROC_FIXTURE, dialect="oracle")
+    assert result["dynamic_sql_count"] == 0
+
+
+def test_oracle_proc_fixture_procedure_segments():
+    """过程体段切分：CASE...END 不能让外层 BEGIN/END 计数错乱。"""
+    result = analyze_sql_lineage(_ORACLE_PROC_FIXTURE, dialect="oracle")
+    procs = result["semantic_lineage"]["procedures"]
+    assert len(procs) == 1
+    assert procs[0]["name"] == "cispnew.sync_full_refresh"
+    # 至少 2 DELETE + 5 INSERT = 7 段（具体数因为 dedupe 可能略低）
+    assert procs[0]["segment_count"] >= 5

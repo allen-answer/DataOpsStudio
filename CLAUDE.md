@@ -216,6 +216,29 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 7. **语义血缘结构** `semantic_lineage` ✅ —— `app/lineage/semantic.py` 把第 2/4/6 项的产出 + procedure_segments + parse_errors + dynamic_sql_segments 一次性聚合到 `result["semantic_lineage"]`，前端 / 第三方一处获取语义视图。`procedures`（按 name 折叠 segment_count）/ `targets`（合并 role + refresh + titles + counts）/ `business_groups`（占位等第 5 项）/ `grouped_edges`（占位）/ `observations`（"X 张目标表，其中 Y 张全量重刷……"）/ `risks`（parse_error → high；动态 SQL var_concat → medium；动态 SQL string_literal → low）。
 8. **前端两个视图**——原始血缘图（详细表/字段关系，已存在）+ 语义血缘图（业务分组 → 目标中间表 → 下游消费）。AI 开启时展示 AI 增强标签；AI 关闭时展示规则分析标签。**当前进度**：已挂 `SemanticLineagePanel.vue`（observations / risks / targets 表 / procedures 卡片），消费 `semantic_lineage` 字段；完整的"语义血缘图"（业务分组级 DAG 视图）等第 5 项 YAML 配置上线后再做，目前面板已经能让用户一眼看清"脚本干啥的"。
 
+#### Phase 7 真实 Oracle 文件回归（已修关键 bug）
+
+测试用大型 Oracle 存储过程 `a_cispnew_f3045.sql`（GBK，4421 行，88 INSERT t_etl_jy + 39 INSERT t_etl_zqsz + 各 1 DELETE）暴露并修掉的 bug：
+1. **过程体段切分把换行压扁**：`clean_dynamic_segment` 用于 procedure 段时把所有空白压成单个空格，`-- 行注释` 没换行终止，吞掉后面所有列名 → sqlglot 括号失配 → 88 INSERT 折成 1。修：新增 `clean_procedure_segment` 保留换行，dedupe key 用空白规范化版本。
+2. **CASE...END 让外层 BEGIN/END 计数错乱**：`_RE_BLOCK_TOKEN` 把 `case ... end` 的 end 也算 block 结束，外层 procedure body 提前在 t_etl_zqsz 区域被截断 → 漏 32 段 INSERT。修：新增 `_is_block_end()` 仅匹配 `END;` / `END identifier;`（identifier 不属于 IF/LOOP/CASE/RECORD/FOR/WHILE/XMLELEMENT），外层和内层 token 计数都用它。
+3. **324 段假动态 SQL**：`extract_dynamic_sql_segments` 的 `string_literal` 兜底匹配任何 20+ 字符字面量，中文注释片段、错误信息、报表 header 等全中招。修：删除兜底，动态 SQL 只走 EXECUTE / PREPARE / EXECUTE IMMEDIATE 变量拼接三条精确路径。
+4. **Oracle hint 误为业务标题**：sqlglot 把 `/*+ parallel(...) */` 也塞进 `.comments`（去掉 `+`），看起来跟普通注释一样。修：`aggregation._looks_like_oracle_hint()` 用 Oracle hint 关键字白名单（parallel/leading/index/use_hash 等 70+ 个）跳过。
+5. **过程体段把前置注释剥掉**：`_iter_procedure_body_segments` 用 `_RE_BODY_DML.search(seg)` 后取 `seg[match.start():]`，把 `-- 集中交易` 一类业务标题前缀丢了。修：仅当前缀是纯空白+注释时保留整段（让 sqlglot 把注释挂到节点 `.comments`）。
+
+回归 fixture 在 `tests/test_lineage_analyzer.py::test_oracle_proc_fixture_*` —— 不上传真实业务文件（避免泄露内部表名），改用合成 Oracle 过程，复刻所有上述模式。
+
+### Phase 7 长期参考的设计方向
+
+按用户调研，以下五个项目代表了 SQL 血缘 / 数据治理的成熟思路。本仓库已在 Track B 走 Dataedo 方向（过程分 step，不支持的明确标记不误报），后续如果要深做，再分别参考：
+
+- **Dataedo**（PL/SQL 拆 step + step-level lineage + 不支持的 step 标 `parse_status=unsupported`）—— 我们已经在 procedure_segments 里记 `procedure_name` / `segment_index`，下一步加 `line_start` / `line_end` / `parse_status` / `preceding_comment` 让 step 模型完整。
+- **Gudu SQLFlow**（先产中间血缘模型再画图：`objects` / `columns` / `relations` / `process_steps` / `target_summary`）—— 我们的 `semantic_lineage` 走的是这个方向。前端不应该直接从 SQL 画图，先消费中间模型。
+- **sqlglot**（AST + 方言适配 + column-level lineage API）—— 已经在用，继续做底座。Oracle hint / DBLink / SELECT INTO / 包变量 / 动态 SQL 各自加一层处理（不要塞 sqlglot 自己改）。
+- **DataHub**（schema-aware 字段级血缘 / 解析失败时降级）—— 字段级血缘必须 schema-aware，无 schema 时表级 high / 字段级 medium-low；未限定字段和 SELECT * 必须有风险标记，不能装作 100% 准确。
+- **OpenLineage**（job / run / dataset / facet 四元模型）—— 长期把 workflow run 输出成 OpenLineage event，和现有作业流模块对接。
+
+**DM 达梦**：没有直接可参考的开源血缘项目，路线是 `dialect=dm` 内部继承 oracle，再补 DM 特有语法、函数、系统表、分页写法。第一阶段目标：DM 的表级血缘 + DML 聚合 + DELETE+INSERT 识别准确，字段级精细血缘留到第二阶段。**别追求一步到位字段级 100% 准确**——先把 step 拆分、DML 计数、refresh 模式、动态 SQL 误报修准，可信度立刻上一个台阶。
+
 ### 还可以做（未排期）
 
 - 前端状态管理（视情况引入 Pinia）

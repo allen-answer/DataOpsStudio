@@ -33,16 +33,57 @@ def extract_statement_title(statement: Any) -> str:
 
     sqlglot 把语句先行注释（行内 `--` 和 块 `/* */`）自动挂到节点的
     `comments` 属性上；这个 helper 取第一条注释里第一行非空文本，截断
-    到 200 字符内（标题再长就不是标题了）。"""
+    到 200 字符内（标题再长就不是标题了）。
+
+    Oracle hint（`/*+ parallel(...) */` / `/*+ leading(...) */` 等）也会被
+    sqlglot 同样塞进 `.comments`（`+` 已被剥掉），如果不过滤会误把 hint 当
+    业务标题。这里通过 `_looks_like_oracle_hint` 跳过 hint。
+    """
     comments = getattr(statement, "comments", None) or []
     for raw in comments:
         if raw is None:
             continue
         for line in str(raw).splitlines():
             stripped = line.strip()
-            if stripped:
-                return stripped[:200]
+            if not stripped:
+                continue
+            if _looks_like_oracle_hint(stripped):
+                continue
+            return stripped[:200]
     return ""
+
+
+# Oracle hint 词汇表常见项。匹配上首词（裸关键字 / 函数式调用都覆盖）就视为 hint，
+# 不当业务标题。漏一个不致命——还有"必须含中文 / 或不含 ASCII 括号-开头"等弱过滤
+# 兜底。常见 hint 关键字参考 Oracle Database SQL Tuning Guide。
+_ORACLE_HINT_KEYWORDS = frozenset({
+    "parallel", "noparallel", "parallel_index", "no_parallel_index",
+    "leading", "ordered", "use_hash", "use_nl", "use_merge", "use_nl_with_index",
+    "no_use_hash", "no_use_nl", "no_use_merge",
+    "index", "no_index", "index_asc", "index_desc", "index_combine", "index_join",
+    "index_ffs", "no_index_ffs", "index_ss", "no_index_ss",
+    "full", "rowid", "cluster", "hash",
+    "first_rows", "all_rows", "choose", "rule",
+    "append", "noappend", "append_values",
+    "cache", "nocache",
+    "merge", "no_merge", "unnest", "no_unnest", "push_pred", "no_push_pred",
+    "push_subq", "no_push_subq", "expand_gset_to_union", "rewrite", "no_rewrite",
+    "qb_name", "materialize", "inline", "with_plsql", "opt_param",
+    "driving_site", "dynamic_sampling", "cardinality", "selectivity",
+    "gather_plan_statistics", "monitor", "no_monitor",
+    "result_cache", "no_result_cache",
+})
+
+import re as _re
+
+_RE_HINT_HEAD = _re.compile(r"^([A-Za-z_][\w]*)", flags=_re.ASCII)
+
+
+def _looks_like_oracle_hint(text: str) -> bool:
+    match = _RE_HINT_HEAD.match(text.strip())
+    if not match:
+        return False
+    return match.group(1).lower() in _ORACLE_HINT_KEYWORDS
 
 
 def collect_target_operations(statements: list[Any]) -> list[dict[str, Any]]:

@@ -92,16 +92,55 @@ _RE_PROC_HEADER = re.compile(
 )
 _RE_BEGIN = re.compile(r"\bBEGIN\b", flags=re.IGNORECASE)
 _RE_BLOCK_TOKEN = re.compile(r"\bBEGIN\b|\bEND\b", flags=re.IGNORECASE)
+
+# 块级 END 必须是 `END;`、`END proc_name;`、`END$` 或行末。`END IF;` / `END LOOP;`
+# / `END CASE;` 和裸 case 表达式里的 `end` 是 PL/SQL 控制流，不算 block 结束。
+# 这一组关键字出现在 END 后面、`;` 之前的标识符位置时，整段视为控制流 END，
+# 不参与 block-level 计数。
+_CONTROL_END_KEYWORDS = frozenset({
+    "IF", "LOOP", "CASE", "RECORD", "FOR", "WHILE", "XMLELEMENT",
+})
+
+
+def _is_block_end(body: str, pos: int) -> bool:
+    """从 `END` 关键字后面的位置判断是不是 block-level 结束。
+
+    block-level：`END;`、`END identifier;`（identifier 不属于控制流关键字）。
+    控制流：`END IF;` / `END LOOP;` / `END CASE;` / 裸 `case when ... end` 等。
+    """
+    while pos < len(body) and body[pos].isspace():
+        pos += 1
+    if pos >= len(body):
+        return True  # 文件末尾的裸 END 也当 block 结束（一般没分号）
+    if body[pos] == ";":
+        return True
+    if not (body[pos].isalpha() or body[pos] == "_"):
+        return False
+    start = pos
+    while pos < len(body) and (body[pos].isalnum() or body[pos] == "_"):
+        pos += 1
+    ident = body[start:pos].upper()
+    if ident in _CONTROL_END_KEYWORDS:
+        return False
+    while pos < len(body) and body[pos].isspace():
+        pos += 1
+    return pos < len(body) and body[pos] == ";"
 _RE_BODY_DML = re.compile(
     r"\b(WITH|SELECT|INSERT|REPLACE\s+INTO|UPDATE|DELETE|MERGE|CREATE\s+(?:OR\s+REPLACE\s+)?(?:GLOBAL\s+TEMPORARY\s+|TEMPORARY\s+|TEMP\s+)?TABLE|TRUNCATE)\b",
     flags=re.IGNORECASE,
 )
+# 纯空白 + 行注释（`--`） + 块注释（`/* */`）的组合。fullmatch 这个表示 DML 前面
+# 没有控制流壳子（IF/THEN、CASE 等），可以原样保留——业务标题就在前缀注释里。
+_RE_PURE_COMMENT_PREFIX = re.compile(r"(?:\s|--[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*")
 
 
 def extract_procedure_segments(sql: str) -> list[dict[str, str]]:
     """Extract DML statements nested inside CREATE PROCEDURE/FUNCTION/PACKAGE BODY/TRIGGER blocks.
 
     Skips control-flow shells (IF/LOOP/EXCEPTION) and nested BEGIN/END blocks via token-balanced scan.
+
+    Important: 段落保留原始换行——`-- 行注释` 必须靠换行终止才不会把后面的列名一起吞掉。
+    用规范化文本（空白压平）做 dedupe key，原始格式喂给 sqlglot 解析。
     """
     seen: set[str] = set()
     result: list[dict[str, str]] = []
@@ -119,26 +158,44 @@ def extract_procedure_segments(sql: str) -> list[dict[str, str]]:
             if tok == "BEGIN":
                 depth += 1
             else:
+                # END 必须是 block-level（`END;` / `END name;`）才算；`END IF;`、
+                # 裸 `case ... end`、`END LOOP;` 是控制流 END，跳过。这是过去
+                # `t_etl_zqsz` 区域 INSERT 被误吞的根因。
+                if not _is_block_end(sql, tok_match.end()):
+                    continue
                 depth -= 1
                 if depth == 0:
                     body_end = tok_match.start()
                     break
         body = sql[body_start.end():body_end]
         for index, segment in enumerate(_iter_procedure_body_segments(body), start=1):
-            cleaned = clean_dynamic_segment(segment)
-            if cleaned in seen:
+            preserved = clean_procedure_segment(segment)
+            if not preserved:
                 continue
-            seen.add(cleaned)
+            dedupe_key = " ".join(preserved.split())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             result.append(
                 {
                     "procedure_name": name,
                     "procedure_kind": kind,
                     "segment_index": str(index),
-                    "sql": cleaned,
+                    "sql": preserved,
                     "confidence": "high",
                 }
             )
     return result
+
+
+def clean_procedure_segment(segment: str) -> str:
+    """Strip leading/trailing whitespace and the trailing `;`, but **keep** newlines.
+
+    `-- line comments` 必须靠换行终止；如果把所有空白压成单空格，注释会一直吞到行末，
+    导致 sqlglot 把列名 / 表达式都识别成注释、括号失配。所以过程体段不能用
+    `clean_dynamic_segment`（它是给单行字符串字面量用的）。
+    """
+    return segment.strip().rstrip(";").strip()
 
 
 def _iter_procedure_body_segments(body: str) -> list[str]:
@@ -175,7 +232,10 @@ def _iter_procedure_body_segments(body: str) -> list[str]:
                 pos += 5
                 continue
             if tail.startswith("END") and (pos + 3 >= length or not body[pos + 3].isalnum()):
-                if depth > 0:
+                # 同 _is_block_end 逻辑：仅 block-level END 参与 depth 计数。
+                # 不然 `case when ... end` / `end if;` / `end loop;` 会让 depth 错位
+                # 进而漏切后续 INSERT。
+                if _is_block_end(body, pos + 3) and depth > 0:
                     depth -= 1
                 buffer.append(body[pos:pos + 3])
                 pos += 3
@@ -195,7 +255,15 @@ def _iter_procedure_body_segments(body: str) -> list[str]:
         # The segment may start with control-flow shells (IF ... THEN, ELSIF ... THEN, FOR ... LOOP).
         # Find the first DML keyword and analyze from there.
         match = _RE_BODY_DML.search(seg)
-        if match:
+        if not match:
+            continue
+        prefix = seg[:match.start()]
+        # 如果 DML 前面只有空白和 line/block 注释（业务标题 `-- 集中交易`），保留 ——
+        # sqlglot 会把它挂到 statement.comments 上做 statement_title。
+        # 反之（IF/THEN、CASE 之类的控制流壳子），仍然剥掉。
+        if _RE_PURE_COMMENT_PREFIX.fullmatch(prefix):
+            cleaned.append(seg.strip())
+        else:
             cleaned.append(seg[match.start():].strip())
     return cleaned
 
@@ -244,9 +312,12 @@ def extract_dynamic_sql_segments(sql: str) -> list[dict[str, str]]:
             for assignment in plsql_vars[var_name]:
                 add(assignment["sql"], "var_concat", assignment["confidence"])
 
-    string_pattern = re.compile(r"(?:N)?'((?:''|[^']){20,})'", flags=re.IGNORECASE | re.DOTALL)
-    for match in string_pattern.finditer(sql):
-        add(_unescape_sql_string(match.group(1)), "string_literal", "medium")
+    # 之前还有一条 `string_pattern` 兜底——任何 20+ 字符的字符串字面量都被
+    # 当成动态 SQL 候选。在大型存储过程里这会产生海量误报（中文注释片段、
+    # 错误信息字面量、报表 header 等都被命中），且已通过的 EXECUTE / PREPARE
+    # / 变量赋值三条精确路径覆盖了真正的动态 SQL 场景。所以这里不再做字面量
+    # 兜底——宁可漏识别一条，也不报 324 段假动态 SQL。如果未来要救回这条
+    # 兜底，必须强约束字面量本身以 SELECT/INSERT/UPDATE/MERGE/DELETE/WITH 开头。
 
     return result
 
