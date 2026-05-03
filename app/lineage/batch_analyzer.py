@@ -10,6 +10,7 @@ from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
 from app.lineage._common import weaker_confidence as _weaker_confidence
 from app.lineage.analyzer import analyze_sql_lineage
+from app.lineage.report import to_lineage_report as _to_lineage_report
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ def analyze_lineage_batch(
     warnings.extend(_global_warnings(files, dag["write_conflicts"]))
     warnings.extend(_dag_warnings(dag))
 
-    return {
+    base_result = {
         "file_count": len(scripts),
         "files": files,
         "table_edges": table_edges,
@@ -150,6 +151,9 @@ def analyze_lineage_batch(
             "warnings": len(warnings),
         },
     }
+    # Phase 3：附加统一展示模型 LineageAnalysisReport（与单脚本同结构）
+    base_result["report"] = _to_lineage_report(base_result, scope="batch")
+    return base_result
 
 
 def _impact_analysis(table_edges: list[dict[str, Any]]) -> dict[str, list[str]]:

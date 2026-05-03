@@ -119,6 +119,8 @@ class LineageAnalyzeResult(BaseModel):
     warnings: list[Any] = Field(default_factory=list)
     statements: list[dict[str, Any]] = Field(default_factory=list)
     semantic_lineage: dict[str, Any] = Field(default_factory=dict)
+    # Phase 3：统一展示模型 LineageAnalysisReport（前端 LineageReportView 消费）
+    report: dict[str, Any] = Field(default_factory=dict)
 
 
 class LineageBatchSummary(BaseModel):
@@ -147,6 +149,8 @@ class LineageBatchResult(BaseModel):
     dag: dict[str, Any] = Field(default_factory=dict)
     warnings: list[Any] = Field(default_factory=list)
     summary: LineageBatchSummary = Field(default_factory=LineageBatchSummary)
+    # Phase 3：统一展示模型 LineageAnalysisReport（与单脚本同结构）
+    report: dict[str, Any] = Field(default_factory=dict)
 
 
 class LineageBatchExports(BaseModel):

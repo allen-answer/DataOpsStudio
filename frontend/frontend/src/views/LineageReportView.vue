@@ -1,0 +1,136 @@
+<script setup>
+import { ref, computed } from 'vue'
+import {
+  LayoutDashboard, Inbox, Upload, Workflow,
+  Network, Layers, Sparkles, GitBranch, AlertTriangle,
+} from 'lucide-vue-next'
+import LineageSummaryPanel from '../components/lineage/LineageSummaryPanel.vue'
+import LineageAssetPanel from '../components/lineage/LineageAssetPanel.vue'
+import LineageStepsPanel from '../components/lineage/LineageStepsPanel.vue'
+import LineageGraphPanel from '../components/lineage/LineageGraphPanel.vue'
+import LineageSemanticPanel from '../components/lineage/LineageSemanticPanel.vue'
+import LineageImpactPanel from '../components/lineage/LineageImpactPanel.vue'
+import LineageRiskPanel from '../components/lineage/LineageRiskPanel.vue'
+import LineageMappings from '../components/LineageMappings.vue'
+
+// 9-tab 统一血缘报告视图。
+// 单脚本 / 多脚本都接它：
+// - report —— LineageAnalysisReport（result.report）
+// - graphGroups / graphEdges —— 给 LineageGraphPanel 转发到 G6
+// - columns / insertMappings —— 给 LineageMappings 字段血缘表
+const props = defineProps({
+  report: { type: Object, required: true },
+  graphGroups: { type: Array, default: () => [] },
+  graphEdges:  { type: Array, default: () => [] },
+  columns: { type: Array, default: () => [] },
+  insertMappings: { type: Array, default: () => [] },
+})
+
+const TABS = [
+  { id: 'summary', label: '总览',     icon: LayoutDashboard },
+  { id: 'inputs',  label: '输入资产', icon: Inbox },
+  { id: 'outputs', label: '输出资产', icon: Upload },
+  { id: 'process', label: '处理过程', icon: Workflow },
+  { id: 'table',   label: '表级血缘', icon: Network },
+  { id: 'column',  label: '字段血缘', icon: Layers },
+  { id: 'semantic',label: '语义血缘', icon: Sparkles },
+  { id: 'impact',  label: '影响分析', icon: GitBranch },
+  { id: 'risks',   label: '风险',     icon: AlertTriangle },
+]
+
+const activeTab = ref('summary')
+
+const tabBadgeCount = computed(() => ({
+  inputs:  props.report.inputs?.length || 0,
+  outputs: props.report.outputs?.length || 0,
+  process: props.report.process_steps?.length || 0,
+  table:   props.report.table_edges?.length || 0,
+  column:  props.report.column_edges?.length || 0,
+  impact:  Object.keys(props.report.impact_analysis?.downstream || {}).length,
+  risks:   props.report.risks?.length || 0,
+}))
+</script>
+
+<template>
+  <div class="space-y-4">
+    <!-- Tab bar -->
+    <div class="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-soft">
+      <button
+        v-for="tab in TABS" :key="tab.id"
+        type="button"
+        class="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition"
+        :class="activeTab === tab.id
+          ? 'bg-primary text-white shadow-sm'
+          : 'text-slate-600 hover:bg-slate-100'"
+        @click="activeTab = tab.id"
+      >
+        <component :is="tab.icon" class="h-3.5 w-3.5" />
+        <span>{{ tab.label }}</span>
+        <span
+          v-if="tabBadgeCount[tab.id]"
+          class="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
+          :class="activeTab === tab.id ? 'bg-white/30' : 'bg-slate-100 text-slate-600'"
+        >{{ tabBadgeCount[tab.id] }}</span>
+      </button>
+    </div>
+
+    <!-- Tab panels -->
+    <div v-if="activeTab === 'summary'">
+      <LineageSummaryPanel :report="report" />
+    </div>
+
+    <LineageAssetPanel
+      v-else-if="activeTab === 'inputs'"
+      kind="inputs"
+      :assets="report.inputs"
+    />
+
+    <LineageAssetPanel
+      v-else-if="activeTab === 'outputs'"
+      kind="outputs"
+      :assets="report.outputs"
+    />
+
+    <LineageStepsPanel
+      v-else-if="activeTab === 'process'"
+      :steps="report.process_steps"
+    />
+
+    <div v-else-if="activeTab === 'table'">
+      <LineageGraphPanel
+        v-if="graphEdges.length || graphGroups.length"
+        :groups="graphGroups"
+        :edges="graphEdges"
+      />
+      <div v-else class="card border-dashed py-10 text-center text-slate-400">
+        <Network class="mx-auto mb-2 h-8 w-8 text-slate-300" />
+        <p class="text-sm">无表级图谱数据</p>
+        <p class="muted text-xs">SELECT * 不会产生图边；用具名列重试</p>
+      </div>
+    </div>
+
+    <section v-else-if="activeTab === 'column'" class="card">
+      <h3 class="mb-3 text-base font-semibold text-slate-800">字段血缘</h3>
+      <LineageMappings :columns="columns" :insert-mappings="insertMappings" />
+    </section>
+
+    <LineageSemanticPanel
+      v-else-if="activeTab === 'semantic' && report.semantic_lineage"
+      :semantic="report.semantic_lineage"
+    />
+    <div v-else-if="activeTab === 'semantic'" class="card border-dashed py-10 text-center text-slate-400">
+      <Sparkles class="mx-auto mb-2 h-8 w-8 text-slate-300" />
+      <p class="text-sm">无语义血缘数据（多脚本暂未做语义聚合）</p>
+    </div>
+
+    <LineageImpactPanel
+      v-else-if="activeTab === 'impact'"
+      :impact="report.impact_analysis"
+    />
+
+    <LineageRiskPanel
+      v-else-if="activeTab === 'risks'"
+      :risks="report.risks"
+    />
+  </div>
+</template>

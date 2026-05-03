@@ -32,6 +32,7 @@ from app.lineage.dml import insert_mappings
 from app.lineage.graph import graph_edges as _graph_edges
 from app.lineage.graph import graph_groups as _graph_groups
 from app.lineage.preprocess import normalize_for_parsing as _normalize_for_parsing
+from app.lineage.report import to_lineage_report as _to_lineage_report
 from app.lineage.helpers import (
     analysis_statements, exp, normalize_schema, sql, statement_indexed_items,
     unique_analysis_statements, unique_items, unique_parsed_statements,
@@ -134,6 +135,9 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
         "statements": analyses,
     }
     base_result["semantic_lineage"] = _build_semantic_lineage(base_result)
+    # Phase 3：附加统一展示模型 LineageAnalysisReport（不修改原字段，前端 / 第三方
+    # 可选消费 result.report 渲染同一组组件）
+    base_result["report"] = _to_lineage_report(base_result, scope="single")
     return base_result
 
 
