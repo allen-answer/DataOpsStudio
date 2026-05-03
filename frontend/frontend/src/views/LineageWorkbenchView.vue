@@ -105,6 +105,21 @@ function onZipChange(e) {
         </button>
       </div>
 
+      <div v-if="progressVisible" class="mb-4 rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-violet-800">{{ progressLabel }}</p>
+            <p class="mt-1 text-xs text-violet-600">{{ progressHint }}</p>
+          </div>
+          <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-700 ring-1 ring-violet-200">
+            {{ isAnalyzing ? '解析' : 'AI' }}
+          </span>
+        </div>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-white">
+          <div class="h-full w-1/2 rounded-full bg-violet-600 motion-safe:animate-pulse"></div>
+        </div>
+      </div>
+
       <!-- 4 模式 tab -->
       <div class="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
         <button

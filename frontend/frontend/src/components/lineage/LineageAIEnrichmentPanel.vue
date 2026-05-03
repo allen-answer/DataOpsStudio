@@ -71,7 +71,7 @@ const list = (value) => Array.isArray(value) ? value : []
           <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">建议 ({{ list(enrichment.suggestions).length }})</p>
           <ul class="mt-2 space-y-2 text-sm text-slate-700">
             <li v-for="(item, i) in list(enrichment.suggestions)" :key="i" class="rounded-lg bg-slate-50 px-3 py-2">
-              {{ item.message || item.summary || JSON.stringify(item) }}
+              {{ item.message || item.text || item.summary || JSON.stringify(item) }}
             </li>
             <li v-if="!list(enrichment.suggestions).length" class="text-xs text-slate-400">暂无建议</li>
           </ul>
@@ -80,7 +80,7 @@ const list = (value) => Array.isArray(value) ? value : []
           <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">风险 ({{ list(enrichment.risks).length }})</p>
           <ul class="mt-2 space-y-2 text-sm text-slate-700">
             <li v-for="(item, i) in list(enrichment.risks)" :key="i" class="rounded-lg bg-amber-50 px-3 py-2 text-amber-900">
-              {{ item.message || item.summary || JSON.stringify(item) }}
+              {{ item.message || item.text || item.summary || JSON.stringify(item) }}
             </li>
             <li v-if="!list(enrichment.risks).length" class="text-xs text-slate-400">暂无风险补充</li>
           </ul>
@@ -89,7 +89,7 @@ const list = (value) => Array.isArray(value) ? value : []
           <p class="text-[11px] font-bold uppercase tracking-wider text-slate-500">字段提示 ({{ list(enrichment.column_hints).length }})</p>
           <ul class="mt-2 space-y-2 text-sm text-slate-700">
             <li v-for="(item, i) in list(enrichment.column_hints)" :key="i" class="rounded-lg bg-blue-50 px-3 py-2 text-blue-900">
-              {{ item.message || item.column || JSON.stringify(item) }}
+              {{ item.message || item.text || item.column || JSON.stringify(item) }}
             </li>
             <li v-if="!list(enrichment.column_hints).length" class="text-xs text-slate-400">暂无字段提示</li>
           </ul>

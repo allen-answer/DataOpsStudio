@@ -79,7 +79,7 @@ def test_lineage_ai_connection(override: dict[str, Any] | None = None) -> dict[s
             "warnings": [],
             "parse_errors": [],
             "risks": [],
-        })
+        }, config=config)
         logger.info(
             "lineage AI connection test provider=%s model=%s payload_chars=%s timeout=%ss",
             config.provider,
@@ -144,7 +144,7 @@ def enrich_lineage_result(
         return result
 
     payload = _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
-    payload = _compact_payload_for_provider(payload)
+    payload = _compact_payload_for_provider(payload, config=config)
     started = time.perf_counter()
     try:
         payload_chars = len(json.dumps(payload, ensure_ascii=False))
@@ -203,7 +203,8 @@ def enqueue_lineage_ai_enrichment(
         return result
 
     payload = _compact_payload_for_provider(
-        _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
+        _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or []),
+        config=config,
     )
     job_id = uuid.uuid4().hex
     pending = {
@@ -583,43 +584,74 @@ def _build_payload(
     }
 
 
-def _compact_payload_for_provider(payload: dict[str, Any]) -> dict[str, Any]:
+def _compact_payload_for_provider(payload: dict[str, Any], *, config: LineageAIConfig | None = None) -> dict[str, Any]:
+    limits = _payload_limits(config)
     compact = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
-    compact["sql_excerpt"] = _truncate(str(compact.get("sql_excerpt") or ""), 1500)
+    compact["sql_excerpt"] = _truncate(str(compact.get("sql_excerpt") or ""), limits["sql_excerpt"])
     compact["scripts"] = [
         {
             "file_name": item.get("file_name", ""),
-            "sql_excerpt": _truncate(str(item.get("sql_excerpt") or ""), 600),
+            "sql_excerpt": _truncate(str(item.get("sql_excerpt") or ""), limits["script_excerpt"]),
         }
-        for item in _limit_list(compact.get("scripts"), 8)
+        for item in _limit_list(compact.get("scripts"), limits["scripts"])
         if isinstance(item, dict)
     ]
-    compact["inputs"] = _compact_items(compact.get("inputs"), 20)
-    compact["outputs"] = _compact_items(compact.get("outputs"), 20)
-    compact["table_edges"] = _compact_items(compact.get("table_edges"), 25)
-    compact["column_edges"] = _compact_items(compact.get("column_edges"), 30)
-    compact["warnings"] = _compact_items(compact.get("warnings"), 15)
-    compact["parse_errors"] = _compact_items(compact.get("parse_errors"), 10)
-    compact["risks"] = _compact_items(compact.get("risks"), 15)
+    compact["inputs"] = _compact_items(compact.get("inputs"), limits["inputs"], string_limit=limits["item_string"])
+    compact["outputs"] = _compact_items(compact.get("outputs"), limits["outputs"], string_limit=limits["item_string"])
+    compact["table_edges"] = _compact_items(compact.get("table_edges"), limits["table_edges"], string_limit=limits["item_string"])
+    compact["column_edges"] = _compact_items(compact.get("column_edges"), limits["column_edges"], string_limit=limits["item_string"])
+    compact["warnings"] = _compact_items(compact.get("warnings"), limits["warnings"], string_limit=limits["item_string"])
+    compact["parse_errors"] = _compact_items(compact.get("parse_errors"), limits["parse_errors"], string_limit=limits["item_string"])
+    compact["risks"] = _compact_items(compact.get("risks"), limits["risks"], string_limit=limits["item_string"])
     return compact
 
 
-def _compact_items(value: Any, limit: int) -> list[Any]:
+def _payload_limits(config: LineageAIConfig | None) -> dict[str, int]:
+    if config and (_should_disable_kimi_thinking(config) or _is_deepseek_reasoning_model(config)):
+        return {
+            "sql_excerpt": 900,
+            "script_excerpt": 360,
+            "scripts": 4,
+            "inputs": 12,
+            "outputs": 12,
+            "table_edges": 14,
+            "column_edges": 18,
+            "warnings": 8,
+            "parse_errors": 6,
+            "risks": 8,
+            "item_string": 160,
+        }
+    return {
+        "sql_excerpt": 1500,
+        "script_excerpt": 600,
+        "scripts": 8,
+        "inputs": 20,
+        "outputs": 20,
+        "table_edges": 25,
+        "column_edges": 30,
+        "warnings": 15,
+        "parse_errors": 10,
+        "risks": 15,
+        "item_string": 240,
+    }
+
+
+def _compact_items(value: Any, limit: int, *, string_limit: int = 240) -> list[Any]:
     items = _limit_list(value, limit)
-    return [_compact_value(item, depth=0) for item in items]
+    return [_compact_value(item, depth=0, string_limit=string_limit) for item in items]
 
 
-def _compact_value(value: Any, *, depth: int) -> Any:
+def _compact_value(value: Any, *, depth: int, string_limit: int = 240) -> Any:
     if isinstance(value, str):
-        return _truncate(value, 240)
+        return _truncate(value, string_limit)
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     if isinstance(value, list):
-        return [_compact_value(item, depth=depth + 1) for item in value[:8]]
+        return [_compact_value(item, depth=depth + 1, string_limit=string_limit) for item in value[:8]]
     if isinstance(value, dict):
         if depth >= 2:
-            return {str(k): _truncate(str(v), 120) for k, v in list(value.items())[:10]}
-        return {str(k): _compact_value(v, depth=depth + 1) for k, v in list(value.items())[:16]}
+            return {str(k): _truncate(str(v), max(80, string_limit // 2)) for k, v in list(value.items())[:10]}
+        return {str(k): _compact_value(v, depth=depth + 1, string_limit=string_limit) for k, v in list(value.items())[:16]}
     return _truncate(str(value), 160)
 
 
@@ -630,16 +662,27 @@ def _normalize_enrichment(
     model: str,
     elapsed_seconds: float,
 ) -> dict[str, Any]:
+    suggestions = _list_of_dicts(value.get("suggestions"))
+    risks = _list_of_dicts(value.get("risks"))
+    column_hints = _list_of_dicts(value.get("column_hints"))
+    summary = str(value.get("summary") or "").strip()
+    if not summary and not suggestions and not risks and not column_hints:
+        return _error_enrichment(
+            provider=provider,
+            model=model,
+            error="provider returned empty AI enrichment",
+            elapsed_seconds=elapsed_seconds,
+        )
     return {
         "enabled": True,
         "status": "success",
         "provider": provider,
         "model": model,
         "elapsed_seconds": elapsed_seconds,
-        "summary": str(value.get("summary") or ""),
-        "suggestions": _list_of_dicts(value.get("suggestions")),
-        "risks": _list_of_dicts(value.get("risks")),
-        "column_hints": _list_of_dicts(value.get("column_hints")),
+        "summary": summary,
+        "suggestions": suggestions,
+        "risks": risks,
+        "column_hints": column_hints,
         "raw": value if _include_raw_enabled() else {},
     }
 
@@ -743,7 +786,13 @@ def _limit_list(value: Any, limit: int) -> list[Any]:
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [dict(item) for item in value if isinstance(item, dict)]
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+        elif isinstance(item, str) and item.strip():
+            normalized.append({"message": item.strip()})
+    return normalized
 
 
 def _truncate(value: str, limit: int) -> str:

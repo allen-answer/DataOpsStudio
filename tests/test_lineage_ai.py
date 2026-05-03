@@ -438,6 +438,59 @@ def test_lineage_ai_compacts_large_payload_before_provider(monkeypatch):
     assert captured["chars"] < 50000
 
 
+def test_lineage_ai_compacts_kimi_payload_more_aggressively(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        name = "fake"
+
+        def enrich(self, payload, config):
+            captured["payload"] = payload
+            captured["chars"] = len(json.dumps(payload, ensure_ascii=False))
+            return {"summary": "compact kimi ok"}
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", "https://api.moonshot.cn/v1")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "kimi-k2.6")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai, "_provider_for", lambda _: FakeProvider())
+    result = {
+        "graph_edges": [],
+        "report": {
+            "summary": {},
+            "inputs": [{"name": f"input_{i}", "desc": "x" * 1000} for i in range(80)],
+            "outputs": [{"name": f"output_{i}", "desc": "y" * 1000} for i in range(80)],
+            "table_edges": [{"source": f"s{i}", "target": f"t{i}", "reason": "z" * 1000} for i in range(90)],
+            "column_edges": [{"source": f"s.c{i}", "target": f"t.c{i}", "transform": "w" * 1000} for i in range(150)],
+        },
+        "warnings": [{"message": "warn" * 500} for _ in range(60)],
+        "parse_errors": [{"message": "err" * 500} for _ in range(60)],
+    }
+
+    enriched = lineage_ai.enrich_lineage_result(result, sql_text="select " + "a" * 10000, enabled=True)
+
+    payload = captured["payload"]
+    assert enriched["ai_enrichment"]["summary"] == "compact kimi ok"
+    assert len(payload["inputs"]) == 12
+    assert len(payload["outputs"]) == 12
+    assert len(payload["table_edges"]) == 14
+    assert len(payload["column_edges"]) == 18
+    assert captured["chars"] < 20000
+
+
+def test_lineage_ai_normalizes_string_items_and_rejects_empty_enrichment(monkeypatch):
+    assert lineage_ai._normalize_enrichment(
+        {"suggestions": ["review this"], "risks": ["risk one"], "column_hints": ["hint one"]},
+        provider="mock",
+        model="m",
+        elapsed_seconds=1,
+    )["suggestions"] == [{"message": "review this"}]
+
+    empty = lineage_ai._normalize_enrichment({}, provider="mock", model="m", elapsed_seconds=1)
+    assert empty["status"] == "error"
+    assert "empty AI enrichment" in empty["error"]
+
+
 def test_lineage_service_attaches_ai_enrichment_disabled(monkeypatch):
     monkeypatch.delenv("DATAOPS_LINEAGE_AI_PROVIDER", raising=False)
 
