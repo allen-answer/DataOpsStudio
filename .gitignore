@@ -57,9 +57,21 @@ config/workflows.json
 config/lineage_group_rules.yml
 config/lineage_group_rules.json
 frontend.zip
-wsl_setup_openclaw.sh
 *.tmp
 *.bak
+
+# Playwright MCP working dirs（工具产物，含截图缓存与 yaml snapshot）
+.playwright-mcp/
+
+# 临时验收/调试截图：归档请放 docs/screenshots/，否则不入库
+/*.png
+
+# 本地 openclaw / wsl 启动脚本（每个机器自己一份，不入库）
+wsl_setup_openclaw.sh
+scripts/*openclaw*
+scripts/start-openclaw-*
+scripts/install-openclaw-*
+scripts/uninstall-openclaw-*
 
 # Local skill / spec drafts — not for upstream
 JOB.md

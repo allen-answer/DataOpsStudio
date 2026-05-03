@@ -33,6 +33,17 @@ npm run dev
 npm run build
 ```
 
+**主要验收以 Docker / WSL 构建为准。** Windows PowerShell 直接跑 `npm run build` 偶发
+`Vite/Rolldown spawn EPERM`（Rolldown 的子进程启动被 Windows Defender / 文件锁拦），
+属环境问题；遇到时切换到 WSL 跑构建：
+
+```bash
+wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio/frontend/frontend && npm run build"
+```
+
+Docker 镜像构建链路在 `Dockerfile` 的 `frontend` 阶段（`node:20-alpine`），不受
+Windows EPERM 影响。CI 也走 Linux runner。
+
 ### Docker（主要开发方式）
 
 ```bash

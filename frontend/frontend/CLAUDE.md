@@ -207,7 +207,7 @@ If a Figma design touches the workflow editor, follow the existing split documen
 | Graph viz       | `@antv/g6` 5 — lineage only                                           |
 | Code editor     | `@codemirror/*` 6 — SQL editor                                        |
 | Utilities       | `@vueuse/core` (clipboard etc.); `@tanstack/vue-virtual` for big lists |
-| Icons           | `lucide-vue-next` — receptive use only. See §5.                       |
+| Icons           | `lucide-vue-next` — controlled use only. See §5.                      |
 | Routing         | `vue-router` 4 (hash mode). Top-level routes in `src/router/index.js` |
 | State mgmt      | provide/inject. Pinia installed but unused — don't add stores         |
 | Testing         | None on the frontend (e2e Playwright lives in repo `tests/e2e/`)     |
@@ -268,8 +268,8 @@ frontend/frontend/
 
 ## 5. Icon system
 
-**Allowed library: `lucide-vue-next`** — receptive use only. Phase 1+ (DataOps 控制台改造)
-放开了"无图标库"红线 —— 现代科技控制台需要导航/动作/状态层面的图标语义。
+**Allowed library: `lucide-vue-next`** — controlled use only. Phase 1+ (DataOps 控制台改造)
+放开了原来"无图标库"的限制 —— 现代科技控制台需要导航/动作/状态层面的图标语义。
 但要避免滥用：图标按钮必须有 `title` / 文本 label，不要靠图标本身传业务含义。
 
 ### When to use lucide
@@ -322,7 +322,7 @@ import { Database, Workflow, GitBranch, Play } from 'lucide-vue-next'
 - Global resets and element defaults live in `@layer base` (`src/style.css`) — including styled `input`, `select`, `textarea`, `table`, `th`, `td`, `code`. So a bare `<input>` already looks right; don't re-style every form field.
 - Reusable patterns go in `@layer components` (the `.btn`/`.card`/`.pill`/etc. shortcuts).
 - Responsive: Tailwind breakpoints (`md:`, `lg:`, `xl:`). The shell uses fixed-width sidebar (`w-64`) + flexible main; most card grids are `grid-cols-1 md:grid-cols-2 xl:grid-cols-3`.
-- Dark mode: not implemented. The dark sidebar (`bg-slate-900`) is intentional contrast, not a theme switch.
+- Dark mode: not implemented. The dark sidebar (`bg-sidebar` = `#1a1d2e`) is intentional contrast, not a theme switch.
 - Animation: keep to Tailwind utilities (`transition`, `animate-pulse`). No Motion / GSAP.
 - Arbitrary values are fine when occasional (`text-[11px]`, `rounded-[10px]`) — don't add tokens for one-offs.
 
