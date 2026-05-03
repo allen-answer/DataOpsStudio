@@ -39,8 +39,8 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
 
     try:
         _notify(status_callback, "validating", "校验输入")
-        source_reader = _build_reader(task, "source")
-        target_reader = _build_reader(task, "target")
+        source_reader = build_reader(task, "source")
+        target_reader = build_reader(task, "target")
 
         progress = lambda side: lambda count: _notify(status_callback, f"querying_{side}", f"读取{('源' if side == 'source' else '目标')}数据：已 {count} 行")
 
@@ -132,7 +132,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     )
 
 
-def _build_reader(task: CompareTask, side: str) -> RowReader:
+def build_reader(task: CompareTask, side: str) -> RowReader:
     """Pick a SqlReader or ExcelReader for the given side based on task.{side}_kind.
 
     For SQL single mode, target reuses source SQL — preserves existing behavior.

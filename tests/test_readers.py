@@ -11,7 +11,9 @@ import pytest
 from openpyxl import Workbook
 
 from app.compare.engine import compare_rows
+from app.readers.csv_reader import CsvReader, list_columns as list_csv_columns
 from app.readers.excel_reader import ExcelReader, list_columns, list_sheets
+from app.readers.parquet_reader import ParquetReader, list_columns as list_parquet_columns
 
 
 def _write_xlsx(path: Path, sheets: dict[str, list[list]]) -> Path:
@@ -159,6 +161,51 @@ def test_excel_vs_excel_compare(tmp_path):
     assert {row["key"][0] for row in buckets["only_target"]} == {4}
     assert {row["key"][0] for row in buckets["diff"]} == {2}
     assert {row["key"][0] for row in buckets["same"]} == {1}
+
+
+def test_csv_reader_reads_simple_file(tmp_path):
+    path = tmp_path / "users.csv"
+    path.write_text("id,name,amount\n1,Alice,100\n2,Bob,200\n", encoding="utf-8")
+
+    reader = CsvReader(file_path=path)
+
+    assert reader.fetch_all() == [
+        {"id": "1", "name": "Alice", "amount": "100"},
+        {"id": "2", "name": "Bob", "amount": "200"},
+    ]
+    assert list_csv_columns(path) == ["id", "name", "amount"]
+
+
+def test_csv_reader_respects_delimiter_header_and_limit(tmp_path):
+    path = tmp_path / "users.tsv"
+    path.write_text("ignored\nid\tname\n1\tAlice\n2\tBob\n", encoding="utf-8")
+
+    reader = CsvReader(file_path=path, delimiter="\t", header_row=2)
+    assert reader.fetch_all(max_rows=2) == [
+        {"id": "1", "name": "Alice"},
+        {"id": "2", "name": "Bob"},
+    ]
+
+    with pytest.raises(RuntimeError, match="max_rows"):
+        reader.fetch_all(max_rows=1)
+
+
+def test_parquet_reader_reads_file_when_pyarrow_available(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    path = tmp_path / "users.parquet"
+    pq.write_table(
+        pa.table({"id": [1, 2], "name": ["Alice", "Bob"], "amount": [100, 200]}),
+        path,
+    )
+
+    reader = ParquetReader(file_path=path)
+
+    assert reader.fetch_all() == [
+        {"id": 1, "name": "Alice", "amount": 100},
+        {"id": 2, "name": "Bob", "amount": 200},
+    ]
+    assert list_parquet_columns(path) == ["id", "name", "amount"]
 
 
 # Field-picker scenario: real sample files with deliberately mismatched

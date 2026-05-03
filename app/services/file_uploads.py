@@ -13,8 +13,7 @@ from fastapi import HTTPException, UploadFile
 
 from app.readers.csv_reader import list_columns as read_csv_columns
 from app.readers.parquet_reader import list_columns as read_parquet_columns
-from app.services.excel_uploads import MAX_UPLOAD_BYTES, UPLOADS_DIR
-from app.utils.paths import RESULTS_DIR
+from app.services import excel_uploads
 
 
 _CSV_SUFFIXES = {".csv", ".tsv", ".txt"}
@@ -61,7 +60,7 @@ def save_uploaded_csv(file: UploadFile) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Invalid CSV file: {exc}") from exc
 
     return {
-        "path": str(saved_path.relative_to(RESULTS_DIR.parent)),
+        "path": str(saved_path.relative_to(excel_uploads.RESULTS_DIR.parent)),
         "filename": Path(file.filename).name,
         "columns": columns,
         "encoding": encoding,
@@ -84,7 +83,7 @@ def save_uploaded_parquet(file: UploadFile) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Invalid Parquet file: {exc}") from exc
 
     return {
-        "path": str(saved_path.relative_to(RESULTS_DIR.parent)),
+        "path": str(saved_path.relative_to(excel_uploads.RESULTS_DIR.parent)),
         "filename": Path(file.filename).name,
         "columns": columns,
     }
@@ -92,8 +91,8 @@ def save_uploaded_parquet(file: UploadFile) -> dict[str, Any]:
 
 def _save_upload_streaming(file: UploadFile, suffix: str) -> Path:
     """流式落盘 + size 上限保护，跟 save_uploaded_excel 共享 MAX_UPLOAD_BYTES。"""
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    saved_path = UPLOADS_DIR / f"{uuid.uuid4().hex}{suffix}"
+    excel_uploads.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    saved_path = excel_uploads.UPLOADS_DIR / f"{uuid.uuid4().hex}{suffix}"
     try:
         bytes_written = 0
         with saved_path.open("wb") as out:
@@ -102,12 +101,12 @@ def _save_upload_streaming(file: UploadFile, suffix: str) -> Path:
                 if not chunk:
                     break
                 bytes_written += len(chunk)
-                if bytes_written > MAX_UPLOAD_BYTES:
+                if bytes_written > excel_uploads.MAX_UPLOAD_BYTES:
                     out.close()
                     saved_path.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"上传文件过大（>{MAX_UPLOAD_BYTES // 1024 // 1024} MB）。"
+                        detail=f"上传文件过大（>{excel_uploads.MAX_UPLOAD_BYTES // 1024 // 1024} MB）。"
                                "请先拆分，或改用 SQL 模式直连源数据。",
                     )
                 out.write(chunk)

@@ -60,6 +60,32 @@ def test_sql_vs_excel_double_mode_ok():
     assert task.target_kind.value == "excel"
 
 
+def test_csv_vs_csv_double_mode_ok():
+    task = _make_create(
+        source_kind="csv", target_kind="csv",
+        source_file_path="results/uploads/a.csv",
+        target_file_path="results/uploads/b.csv",
+        source_file_encoding="gbk",
+        source_csv_delimiter="|",
+        target_csv_delimiter="|",
+        sql_mode="double",
+        source_id="", target_id="", source_sql="",
+    )
+    assert task.source_kind.value == "csv"
+    assert task.source_file_encoding == "gbk"
+
+
+def test_parquet_vs_sql_double_mode_ok():
+    task = _make_create(
+        source_kind="parquet",
+        source_file_path="results/uploads/a.parquet",
+        source_id="", source_sql="",
+        sql_mode="double",
+        target_sql="select 1",
+    )
+    assert task.source_kind.value == "parquet"
+
+
 # ─── 新加的混合校验：single + Excel 互斥 ──────────────────────────────────────
 
 
@@ -91,6 +117,17 @@ def test_single_mode_with_excel_on_both_sides_rejected():
             source_kind="excel", target_kind="excel",
             source_excel_path="/tmp/a.xlsx", target_excel_path="/tmp/b.xlsx",
             source_id="", target_id="", source_sql="",
+            sql_mode="single",
+        )
+    assert "single SQL mode does not support file inputs" in str(exc.value)
+
+
+def test_single_mode_with_csv_source_rejected():
+    with pytest.raises(ValidationError) as exc:
+        _make_create(
+            source_kind="csv",
+            source_file_path="results/uploads/a.csv",
+            source_id="", source_sql="",
             sql_mode="single",
         )
     assert "single SQL mode does not support file inputs" in str(exc.value)
@@ -131,6 +168,18 @@ def test_stream_compare_with_excel_target_rejected():
     assert "stream_compare requires SQL on both sides" in str(exc.value)
 
 
+def test_stream_compare_with_parquet_source_rejected():
+    with pytest.raises(ValidationError) as exc:
+        _make_create(
+            source_kind="parquet",
+            source_file_path="results/uploads/a.parquet",
+            source_id="", source_sql="",
+            sql_mode="double", target_sql="select 1",
+            limits=RunLimits(stream_compare=True),
+        )
+    assert "stream_compare requires SQL on both sides" in str(exc.value)
+
+
 # ─── 既有规则的回归（确保新校验没破坏） ──────────────────────────────────────
 
 
@@ -155,3 +204,13 @@ def test_excel_source_requires_path():
             sql_mode="double", target_sql="select 1",
         )
     assert "source_excel_path is required" in str(exc.value)
+
+
+def test_csv_source_requires_file_path():
+    with pytest.raises(ValidationError) as exc:
+        _make_create(
+            source_kind="csv", source_file_path="",
+            source_id="", source_sql="",
+            sql_mode="double", target_sql="select 1",
+        )
+    assert "source_file_path is required for csv source" in str(exc.value)
