@@ -22,5 +22,19 @@ export default defineConfig({
   build: {
     outDir: '../../static/spa',
     emptyOutDir: true,
+    // 把大的图/编辑器 vendor 拆出独立 chunk —— LineageGraph / LineageGraphCytoscape /
+    // SqlEditor 自己只剩薄壳，G6 / Cytoscape / CodeMirror 第一次访问时各自下载，
+    // 之后浏览器缓存命中。
+    rolldownOptions: {
+      output: {
+        advancedChunks: {
+          groups: [
+            { name: 'g6-vendor',         test: /[\\/]node_modules[\\/]@antv[\\/]/ },
+            { name: 'cytoscape-vendor',  test: /[\\/]node_modules[\\/]cytoscape/ },
+            { name: 'codemirror-vendor', test: /[\\/]node_modules[\\/]@?codemirror[\\/]/ },
+          ],
+        },
+      },
+    },
   },
 })

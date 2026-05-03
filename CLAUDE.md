@@ -272,7 +272,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 `feat/product-ui-phase1` 分支已验收通过作为本轮产品打磨基线。下面是验收时记录的 5 项非阻塞收尾项，下一轮可挑做：
 
-1. **LineageGraph chunk 拆包** —— 当前 `LineageGraph-*.js` 1.4 MB / gzip 409 KB（`@antv/g6` 主体）。已用 `defineAsyncComponent` 懒加载，但仍是单个大 chunk。考虑 G6 按需 import（不要全量拉 `@antv/g6`），或拆 worker。
+1. ~~**LineageGraph chunk 拆包**~~ ✅ —— `vite.config.js` 加 `rolldownOptions.output.advancedChunks` 把 `@antv/g6` / `cytoscape*` / `@codemirror/*` 各拆独立 vendor chunk。应用层 `LineageGraph` / `LineageGraphCytoscape` / `SqlEditor` 各自 <17KB 薄壳，重构应用代码不污染 vendor chunk hash → 浏览器长期缓存命中 vendor。引擎切换时也只下增量 vendor。
 2. ~~**TopBar 搜索 / 通知占位按钮**~~ ✅ —— 选 (c) 补真实功能：搜索→`components/CommandPalette.vue` 命令面板，Ctrl/Cmd+K 全局触发，搜索导航 / 数据源 / 任务，键盘 ↑↓+Enter 跳转；通知→`components/NotificationPopover.vue`，挂当前 `asyncJob/asyncStatus`，运行中显示绿点 + cancel 按钮，无任务显示空态。
 3. ~~**多脚本 report.process_steps 当前为空**~~ ✅ —— `batch_analyzer` 在每个文件 file 子结果里保留 `procedure_segments`（注入 `file_name`）+ `statements`（精简版：type/title/statement_index）。`report._build_batch_report` 优先消费 procedure_segments（有行号），否则从 statements 兜底，让顶层 INSERT/UPDATE 也出 step。`summary.process_step_count` 与 list 长度同步。
 4. ~~**DataCompare 预览样例 mojibake**~~ ✅ —— mysql 8 docker image 默认 client/results=latin1，UTF-8 init script 被当 latin1 读 → utf8mb4 列里写 mojibake。修：`init_db/01_init.sql` 顶部加 `SET NAMES utf8mb4` + 各 `CREATE TABLE` 加 `DEFAULT CHARSET=utf8mb4`；`docker-compose.yml` 给 mysql8 加 `--character-set-server=utf8mb4 --skip-character-set-client-handshake` 防止下次起容器又踩同坑。**升级时需要 `docker compose down -v` 清掉旧 volume 重新初始化**（bind mount 不影响）。pymysql 端早就默认 `charset=utf8mb4`。
