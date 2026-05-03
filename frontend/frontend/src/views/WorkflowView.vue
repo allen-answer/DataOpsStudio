@@ -3,6 +3,7 @@ import { inject, ref } from 'vue'
 import WorkflowListView from './workflow/WorkflowListView.vue'
 import WorkflowDetailView from './workflow/WorkflowDetailView.vue'
 import WorkflowRunView from './workflow/WorkflowRunView.vue'
+import WorkflowTemplateView from './workflow/WorkflowTemplateView.vue'
 
 const { state, selectedWorkflowId, workflowResult, selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync, setNotice } = inject('app')
 
@@ -49,6 +50,7 @@ const goSubPage = (id) => {
 
 const subnav = [
   { id: 'list',   label: '作业流总览', hint: '健康度 / 调度 / 影响' },
+  { id: 'templates', label: '作业流模板', hint: '复用 / 创建' },
   { id: 'detail', label: '作业流详情', hint: 'DAG / 配置 / 历史' },
   { id: 'run',    label: '运行详情',   hint: '时间线 / 节点日志' },
 ]
@@ -71,6 +73,7 @@ const subnav = [
     </nav>
 
     <WorkflowListView v-if="subPage === 'list'" @open-detail="goDetail" @run="runFromList" />
+    <WorkflowTemplateView v-else-if="subPage === 'templates'" @open-detail="goDetail" />
     <WorkflowDetailView v-else-if="subPage === 'detail'" @back="goList" @open-run="goRun" />
     <WorkflowRunView v-else-if="subPage === 'run'" @back="subPage = 'detail'" @open-detail="goDetailFromRun" />
   </section>

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.models.compare import CompareTask
 from app.models.datasource import DataSource
-from app.models.workflow import Workflow
+from app.models.workflow import Workflow, WorkflowTemplate
 
 
 class DriverInfo(BaseModel):
@@ -30,6 +30,7 @@ class BootstrapResponse(BaseModel):
     datasources: list[DataSource] = Field(default_factory=list)
     tasks: list[CompareTask] = Field(default_factory=list)
     workflows: list[Workflow] = Field(default_factory=list)
+    workflow_templates: list[WorkflowTemplate] = Field(default_factory=list)
     drivers: dict[str, DriverInfo] = Field(default_factory=dict)
     db_types: list[str] = Field(default_factory=list)
     sql_modes: list[str] = Field(default_factory=list)

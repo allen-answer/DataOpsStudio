@@ -11,7 +11,7 @@ from app.dbclients.drivers import detect_drivers
 from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode
 from app.services.history import list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS
-from app.services.repositories import datasource_store, task_store, workflow_store
+from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
 from app.utils.paths import BASE_DIR, RESULTS_DIR
 
 
@@ -60,6 +60,7 @@ def bootstrap():
         "datasources": redacted_datasources,
         "tasks": task_store.list(),
         "workflows": workflow_store.list(),
+        "workflow_templates": workflow_template_store.list(),
         "drivers": detect_drivers(),
         "db_types": [item.value for item in DatabaseType],
         "sql_modes": [item.value for item in SqlMode],

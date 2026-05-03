@@ -23,6 +23,7 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     datasources: [],
     tasks: [],
     workflows: [],
+    workflowTemplates: [],
     drivers: {},
     dbTypes: [],
     history: [],
@@ -34,6 +35,7 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     state.datasources = data.datasources || []
     state.tasks = data.tasks || []
     state.workflows = data.workflows || []
+    state.workflowTemplates = data.workflow_templates || []
     state.drivers = data.drivers || {}
     state.dbTypes = data.db_types || []
     state.history = data.history || []

@@ -11,6 +11,7 @@ DATASOURCES_FILE = CONFIG_DIR / "datasources.json"
 TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 WORKFLOWS_FILE = CONFIG_DIR / "workflows.json"
+WORKFLOW_TEMPLATES_FILE = CONFIG_DIR / "workflow_templates.json"
 WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
 LINEAGE_GROUP_RULES_YAML = CONFIG_DIR / "lineage_group_rules.yml"
 LINEAGE_GROUP_RULES_JSON = CONFIG_DIR / "lineage_group_rules.json"
@@ -26,3 +27,5 @@ def ensure_dirs() -> None:
         TASKS_FILE.write_text("[]", encoding="utf-8")
     if not WORKFLOWS_FILE.exists():
         WORKFLOWS_FILE.write_text("[]", encoding="utf-8")
+    if not WORKFLOW_TEMPLATES_FILE.exists():
+        WORKFLOW_TEMPLATES_FILE.write_text("[]", encoding="utf-8")

@@ -20,7 +20,7 @@ const {
   state, workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
   allWorkflowRuns, loadAllWorkflowRuns,
-  saveWorkflow, deleteWorkflow,
+  saveWorkflow, deleteWorkflow, saveWorkflowAsTemplate,
   runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   loadWorkflowRunDetail,
@@ -189,6 +189,9 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
           </button>
           <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50" @click="saveWorkflow">
             保存
+          </button>
+          <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 text-xs font-semibold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" title="将当前作业流定义保存为可复用模板" @click="saveWorkflowAsTemplate">
+            保存为模板
           </button>
           <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-rose-700 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" @click="deleteWorkflow">
             删除

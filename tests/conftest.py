@@ -33,14 +33,16 @@ def isolated_storage(tmp_path, monkeypatch):
     uploads.mkdir()
 
     # 1. JsonStore 单例：直接改 path + invalidate cache
-    from app.services.repositories import datasource_store, task_store, workflow_store
+    from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
 
     monkeypatch.setattr(datasource_store, "path", cfg / "datasources.json")
     monkeypatch.setattr(task_store, "path", cfg / "tasks.json")
     monkeypatch.setattr(workflow_store, "path", cfg / "workflows.json")
+    monkeypatch.setattr(workflow_template_store, "path", cfg / "workflow_templates.json")
     datasource_store.invalidate_cache()
     task_store.invalidate_cache()
     workflow_store.invalidate_cache()
+    workflow_template_store.invalidate_cache()
 
     # 2. paths.py 模块属性（function-level import 的拿到的会是这些 patched 值）
     from app.utils import paths as paths_module
@@ -49,6 +51,7 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(paths_module, "DATASOURCES_FILE", cfg / "datasources.json")
     monkeypatch.setattr(paths_module, "TASKS_FILE", cfg / "tasks.json")
     monkeypatch.setattr(paths_module, "WORKFLOWS_FILE", cfg / "workflows.json")
+    monkeypatch.setattr(paths_module, "WORKFLOW_TEMPLATES_FILE", cfg / "workflow_templates.json")
     monkeypatch.setattr(paths_module, "JOBS_FILE", cfg / "jobs.json")
 
     # 3. 已经在 import 顶层绑住 path 的模块 —— 必须各自 patch

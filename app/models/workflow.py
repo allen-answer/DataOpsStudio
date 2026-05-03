@@ -96,6 +96,34 @@ class WorkflowCreate(BaseModel):
 
 # --- 运行状态 ---
 
+class WorkflowTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    workflow: WorkflowCreate
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class WorkflowTemplate(BaseModel):
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    workflow: WorkflowCreate
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class WorkflowTemplateInstantiate(BaseModel):
+    name: str = ""
+    project: str = ""
+    owner: str = ""
+    status: WorkflowStatus = WorkflowStatus.DRAFT
+
+
 class NodeRunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"

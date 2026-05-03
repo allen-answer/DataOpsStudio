@@ -50,6 +50,9 @@ from app.models.workflow import (
     WorkflowRunStatus,
     WorkflowRunSummary,
     WorkflowStatus,
+    WorkflowTemplate,
+    WorkflowTemplateCreate,
+    WorkflowTemplateInstantiate,
 )
 
 # --- API 响应 schema ---
@@ -82,7 +85,8 @@ __all__ = [
     "Artifact", "ArtifactType", "AssetKind", "AssetRef", "JobInfo",
     "NodeRunStatus", "Workflow", "WorkflowCreate", "WorkflowNode",
     "WorkflowNodeRun", "WorkflowNodeType", "WorkflowRun", "WorkflowRunStatus",
-    "WorkflowRunSummary", "WorkflowStatus",
+    "WorkflowRunSummary", "WorkflowStatus", "WorkflowTemplate",
+    "WorkflowTemplateCreate", "WorkflowTemplateInstantiate",
     # responses
     "BootstrapResponse", "ConnectionTestResult", "DriverInfo",
     "ExcelUploadResponse", "LineageAnalyzeResult",
