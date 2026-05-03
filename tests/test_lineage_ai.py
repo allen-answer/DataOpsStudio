@@ -177,6 +177,124 @@ def test_lineage_ai_accepts_full_or_bare_openai_compatible_urls(monkeypatch):
     ]
 
 
+def test_lineage_ai_anthropic_compatible_provider(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "summary": "anthropic ok",
+                        "suggestions": [{"message": "review joins"}],
+                    }),
+                }]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["headers"] = {key.lower(): value for key, value in request.headers.items()}
+        return FakeResponse()
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "anthropic-compatible")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", fake_urlopen)
+
+    result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+
+    assert captured["url"] == "https://api.deepseek.com/anthropic/v1/messages"
+    assert captured["headers"]["x-api-key"] == "secret"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert captured["payload"]["model"] == "deepseek-chat"
+    assert captured["payload"]["messages"][0]["content"][0]["type"] == "text"
+    assert result["ai_enrichment"]["provider"] == "anthropic"
+    assert result["ai_enrichment"]["summary"] == "anthropic ok"
+    assert result["ai_enrichment"]["suggestions"] == [{"message": "review joins"}]
+
+
+def test_lineage_ai_accepts_anthropic_base_or_full_message_urls(monkeypatch):
+    captured_urls: list[str] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"type": "text", "text": json.dumps({"summary": "ok"})}]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "claude-test")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", fake_urlopen)
+
+    for base_url in [
+        "https://api.anthropic.com",
+        "https://api.anthropic.com/v1",
+        "https://api.anthropic.com/v1/messages",
+        "https://api.deepseek.com/anthropic",
+        "https://api.deepseek.com/anthropic/v1",
+        "https://api.deepseek.com/anthropic/v1/messages",
+    ]:
+        monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", base_url)
+        result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+        assert result["ai_enrichment"]["summary"] == "ok"
+
+    assert captured_urls == [
+        "https://api.anthropic.com/v1/messages",
+        "https://api.anthropic.com/v1/messages",
+        "https://api.anthropic.com/v1/messages",
+        "https://api.deepseek.com/anthropic/v1/messages",
+        "https://api.deepseek.com/anthropic/v1/messages",
+        "https://api.deepseek.com/anthropic/v1/messages",
+    ]
+
+
+def test_lineage_ai_parses_anthropic_markdown_json(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{
+                    "type": "text",
+                    "text": "```json\n{\"summary\":\"fenced ok\"}\n```",
+                }]
+            }).encode("utf-8")
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "claude-test")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+
+    assert result["ai_enrichment"]["summary"] == "fenced ok"
+
+
 def test_lineage_service_attaches_ai_enrichment_disabled(monkeypatch):
     monkeypatch.delenv("DATAOPS_LINEAGE_AI_PROVIDER", raising=False)
 

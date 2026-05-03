@@ -210,6 +210,50 @@ class OpenAICompatibleLineageAIProvider:
         return _loads_json_object(content)
 
 
+class AnthropicCompatibleLineageAIProvider:
+    name = "anthropic"
+
+    def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
+        if not config.api_key:
+            raise ValueError("AI API key is required")
+        if not config.model:
+            raise ValueError("AI model is required")
+        base_url = config.base_url.rstrip("/") or "https://api.anthropic.com"
+        body = {
+            "model": config.model,
+            "max_tokens": 2048,
+            "system": (
+                "You are a SQL lineage reviewer. Return only a compact JSON object with keys "
+                "summary, suggestions, risks, column_hints. Do not invent tables or overwrite "
+                "deterministic lineage; cite evidence ids when possible."
+            ),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Review this static SQL lineage result and respond with JSON only:\n"
+                                + json.dumps(payload, ensure_ascii=False)
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        data = _post_json(
+            _anthropic_messages_url(base_url),
+            body,
+            headers={
+                "x-api-key": config.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=config.timeout_seconds,
+        )
+        return _loads_json_object(_anthropic_text_content(data))
+
+
 class OllamaLineageAIProvider:
     name = "ollama"
 
@@ -270,6 +314,8 @@ def _provider_for(name: str) -> LineageAIProvider | None:
         return MockLineageAIProvider()
     if normalized in {"openai", "azure", "http", "openai-compatible"}:
         return OpenAICompatibleLineageAIProvider()
+    if normalized in {"anthropic", "anthropic-compatible", "claude"}:
+        return AnthropicCompatibleLineageAIProvider()
     if normalized == "ollama":
         return OllamaLineageAIProvider()
     return None
@@ -293,6 +339,39 @@ def _chat_completions_url(base_url: str) -> str:
     else:
         path = f"{path}/chat/completions"
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _anthropic_messages_url(base_url: str) -> str:
+    """Accept Anthropic SDK base URLs and full Messages API endpoints."""
+    raw = (base_url or "").strip().rstrip("/") or "https://api.anthropic.com"
+    if raw.endswith("/messages"):
+        return raw
+
+    parts = urlsplit(raw)
+    path = parts.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = f"{path}/messages"
+    elif path in {"", "/"}:
+        path = "/v1/messages"
+    else:
+        path = f"{path}/v1/messages"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _anthropic_text_content(data: dict[str, Any]) -> str:
+    content = data.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                chunks.append(block["text"])
+        if chunks:
+            return "\n".join(chunks)
+    # Some proxies return OpenAI-like envelopes even for Anthropic-compatible
+    # routes; accepting this keeps the adapter useful behind gateways.
+    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
 
 
 def _build_payload(
@@ -407,7 +486,22 @@ def _post_json(
 
 
 def _loads_json_object(content: str) -> dict[str, Any]:
-    data = json.loads(content)
+    text = (content or "{}").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        data = json.loads(text[start:end + 1])
     if not isinstance(data, dict):
         raise ValueError("provider JSON response must be an object")
     return data

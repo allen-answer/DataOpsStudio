@@ -11,7 +11,8 @@ from app.utils.paths import LINEAGE_AI_CONFIG_FILE
 
 
 OPENAI_COMPATIBLE_PROVIDERS = {"openai", "azure", "http", "openai-compatible"}
-VALID_PROVIDERS = {"off", "mock", "ollama", *OPENAI_COMPATIBLE_PROVIDERS}
+ANTHROPIC_COMPATIBLE_PROVIDERS = {"anthropic", "anthropic-compatible", "claude"}
+VALID_PROVIDERS = {"off", "mock", "ollama", *OPENAI_COMPATIBLE_PROVIDERS, *ANTHROPIC_COMPATIBLE_PROVIDERS}
 
 
 def get_effective_lineage_ai_config() -> dict[str, Any]:
@@ -69,7 +70,7 @@ def lineage_ai_configured(config: dict[str, Any]) -> bool:
     provider = str(config.get("provider") or "off").lower()
     if provider == "mock":
         return True
-    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+    if provider in OPENAI_COMPATIBLE_PROVIDERS or provider in ANTHROPIC_COMPATIBLE_PROVIDERS:
         return bool(config.get("api_key") and config.get("model"))
     if provider == "ollama":
         return bool(config.get("model"))

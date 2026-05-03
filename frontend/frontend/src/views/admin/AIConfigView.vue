@@ -23,6 +23,8 @@ const draft = reactive({
 })
 
 const PROVIDERS = [
+  { value: 'anthropic', label: 'Anthropic / Claude', hint: 'Use /v1/messages protocol with x-api-key.' },
+  { value: 'anthropic-compatible', label: 'Anthropic-Compatible', hint: 'For DeepSeek Anthropic API and Claude-compatible gateways.' },
   { value: 'off', label: '关闭（离线规则分析）', hint: '默认模式，不调用外部模型。' },
   { value: 'mock', label: 'Mock（本地演示）', hint: '不需要密钥，用于验证前端和流程。' },
   { value: 'openai', label: 'OpenAI / 兼容接口', hint: '使用 /v1/chat/completions 兼容协议。' },
@@ -33,8 +35,27 @@ const PROVIDERS = [
 ]
 
 const selectedProvider = computed(() => PROVIDERS.find(item => item.value === draft.provider) || PROVIDERS[0])
-const requiresApiKey = computed(() => ['openai', 'openai-compatible', 'azure', 'http'].includes(draft.provider))
+const requiresApiKey = computed(() => ['openai', 'openai-compatible', 'azure', 'http', 'anthropic', 'anthropic-compatible'].includes(draft.provider))
 const requiresModel = computed(() => draft.provider !== 'off')
+const modelPlaceholder = computed(() => {
+  if (draft.provider === 'anthropic') return 'claude-sonnet-4-5-20250929'
+  if (draft.provider === 'anthropic-compatible') return 'DeepSeek: deepseek-chat'
+  if (draft.provider === 'ollama') return 'llama3.1 / qwen2.5'
+  return 'deepseek-chat / kimi-k2.5 / gpt-4.1-mini'
+})
+const baseUrlPlaceholder = computed(() => {
+  if (draft.provider === 'anthropic') return 'https://api.anthropic.com'
+  if (draft.provider === 'anthropic-compatible') return 'DeepSeek: https://api.deepseek.com/anthropic'
+  if (draft.provider === 'ollama') return 'http://localhost:11434'
+  return 'DeepSeek: https://api.deepseek.com/v1'
+})
+const baseUrlHelp = computed(() => {
+  if (['anthropic', 'anthropic-compatible'].includes(draft.provider)) {
+    return '可以填 Anthropic SDK Base URL，也可以填完整 /v1/messages 地址；系统会自动规整。'
+  }
+  if (draft.provider === 'ollama') return 'Ollama 默认会调用 /api/generate。'
+  return '可以填 SDK Base URL，也可以填完整 chat/completions 地址；系统会自动规整。'
+})
 const canSave = computed(() => {
   if (!draft.provider) return false
   if (requiresModel.value && !draft.model.trim()) return false
@@ -149,14 +170,14 @@ onMounted(() => {
 
           <label class="space-y-1.5">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Model</span>
-            <input v-model="draft.model" :disabled="draft.provider === 'off'" placeholder="gpt-4.1-mini / qwen2.5 / llama3.1" />
+            <input v-model="draft.model" :disabled="draft.provider === 'off'" :placeholder="modelPlaceholder" />
           </label>
 
           <label class="space-y-1.5 lg:col-span-2">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Base URL</span>
-            <input v-model="draft.base_url" placeholder="Kimi: https://api.moonshot.ai/v1" />
+            <input v-model="draft.base_url" :placeholder="baseUrlPlaceholder" />
             <p class="text-xs text-slate-500">
-              可以填 SDK Base URL，也可以填完整 chat/completions 地址；系统会自动规整。
+              {{ baseUrlHelp }}
             </p>
           </label>
 
