@@ -21,6 +21,7 @@ import UserManagementView from '../views/admin/UserManagementView.vue'
 import AuditLogView from '../views/admin/AuditLogView.vue'
 import ProjectManagementView from '../views/admin/ProjectManagementView.vue'
 import AIConfigView from '../views/admin/AIConfigView.vue'
+import SchedulerMonitorView from '../views/admin/SchedulerMonitorView.vue'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
@@ -41,7 +42,8 @@ const routes = [
   { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },
   { path: '/admin/audit',    name: 'admin-audit',    component: AuditLogView,           meta: { adminOnly: true } },
   { path: '/admin/projects', name: 'admin-projects', component: ProjectManagementView,  meta: { adminOnly: true } },
-  { path: '/admin/ai',       name: 'admin-ai',       component: AIConfigView,           meta: { adminOnly: true } },
+  { path: '/admin/ai',         name: 'admin-ai',         component: AIConfigView,          meta: { adminOnly: true } },
+  { path: '/admin/scheduler',  name: 'admin-scheduler',  component: SchedulerMonitorView,  meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]

@@ -52,6 +52,18 @@ def test_admin_projects_route_renders(page_with_error_capture, base_url):
     assert "新建项目" in body, "应渲染创建项目表单"
 
 
+def test_admin_scheduler_route_renders(page_with_error_capture, base_url):
+    """调度器监控页应该能渲染 + 显示 cron / sensor 表头。"""
+    page = page_with_error_capture
+    page.goto(f"{base_url}/spa/#/admin/scheduler")
+    page.wait_for_selector("#app", timeout=10000)
+    page.wait_for_timeout(500)
+    body = page.locator("body").inner_text()
+    assert "调度器监控" in body
+    assert "Cron 任务" in body
+    assert "Sensor 触发器" in body
+
+
 def test_project_switch_persists_to_localstorage(page_with_error_capture, base_url):
     """选择项目后 localStorage 应记录 dataops.project_id —— 持久化跨刷新。"""
     page = page_with_error_capture

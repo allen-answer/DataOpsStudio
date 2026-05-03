@@ -11,6 +11,7 @@ import {
   Users,
   ScrollText,
   Bot,
+  Activity,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -34,6 +35,7 @@ const ADMIN_NAV_ITEMS = [
   { id: 'users',     label: '用户管理',  icon: Users,        path: '/admin/users',     matchPaths: ['/admin/users'] },
   { id: 'audit',     label: '审计日志',  icon: ScrollText,   path: '/admin/audit',     matchPaths: ['/admin/audit'] },
   { id: 'projects',  label: '项目管理',  icon: FolderOpen,   path: '/admin/projects',  matchPaths: ['/admin/projects'] },
+  { id: 'scheduler', label: '调度器监控', icon: Activity,     path: '/admin/scheduler', matchPaths: ['/admin/scheduler'] },
 ]
 
 const route = useRoute()
