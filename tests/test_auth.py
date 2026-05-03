@@ -230,3 +230,73 @@ def test_audit_log_admin_only(client):
     bob_token = _login(client, "bob", "bob123")["access_token"]
     r = client.get("/api/audit-logs", headers=_auth(bob_token))
     assert r.status_code == 403
+
+
+# ─── 资源 project_id 关联（list 过滤） ────────────────────────────────────────
+
+
+def test_datasource_project_id_filter(client):
+    """datasource list ?project_id=X 仅返回该项目 + legacy（无 project_id）的资源。"""
+    admin_token = _login(client, "admin", "admin")["access_token"]
+    # 建两个数据源：一个挂 project_id="proj-a"，一个无 project_id
+    r1 = client.post("/api/datasources", headers=_auth(admin_token), json={
+        "name": "DS-A", "db_type": "MySQL", "host": "h1", "port": 3306,
+        "project_id": "proj-a",
+    })
+    assert r1.status_code == 200
+    r2 = client.post("/api/datasources", headers=_auth(admin_token), json={
+        "name": "DS-Legacy", "db_type": "MySQL", "host": "h2", "port": 3306,
+    })
+    assert r2.status_code == 200
+    r3 = client.post("/api/datasources", headers=_auth(admin_token), json={
+        "name": "DS-B", "db_type": "MySQL", "host": "h3", "port": 3306,
+        "project_id": "proj-b",
+    })
+    assert r3.status_code == 200
+
+    # 不带 project_id：全部
+    r = client.get("/api/datasources", headers=_auth(admin_token))
+    assert {d["name"] for d in r.json()} == {"DS-A", "DS-Legacy", "DS-B"}
+
+    # ?project_id=proj-a：A + Legacy（legacy 无项目，所有项目都可见）
+    r = client.get("/api/datasources?project_id=proj-a", headers=_auth(admin_token))
+    names = {d["name"] for d in r.json()}
+    assert names == {"DS-A", "DS-Legacy"}, names
+
+    # ?project_id=proj-b：B + Legacy
+    r = client.get("/api/datasources?project_id=proj-b", headers=_auth(admin_token))
+    names = {d["name"] for d in r.json()}
+    assert names == {"DS-B", "DS-Legacy"}, names
+
+
+def test_workflow_project_id_filter(client):
+    """workflow list ?project_id=X 同样按 project_id 筛选。"""
+    admin_token = _login(client, "admin", "admin")["access_token"]
+    client.post("/api/workflows", headers=_auth(admin_token), json={
+        "name": "WF-A", "project_id": "proj-a", "nodes": [],
+    })
+    client.post("/api/workflows", headers=_auth(admin_token), json={
+        "name": "WF-Legacy", "nodes": [],
+    })
+    r = client.get("/api/workflows?project_id=proj-a", headers=_auth(admin_token))
+    names = {w["name"] for w in r.json()}
+    assert names == {"WF-A", "WF-Legacy"}, names
+
+
+def test_bootstrap_project_id_filter(client):
+    """/api/bootstrap?project_id=X 把 datasources/tasks/workflows 一并筛选。"""
+    admin_token = _login(client, "admin", "admin")["access_token"]
+    client.post("/api/datasources", headers=_auth(admin_token), json={
+        "name": "DS-A", "db_type": "MySQL", "host": "h1", "port": 3306,
+        "project_id": "proj-a",
+    })
+    client.post("/api/datasources", headers=_auth(admin_token), json={
+        "name": "DS-B", "db_type": "MySQL", "host": "h2", "port": 3306,
+        "project_id": "proj-b",
+    })
+    r = client.get("/api/bootstrap?project_id=proj-a", headers=_auth(admin_token))
+    assert r.status_code == 200
+    body = r.json()
+    names = {d["name"] for d in body["datasources"]}
+    assert "DS-A" in names
+    assert "DS-B" not in names

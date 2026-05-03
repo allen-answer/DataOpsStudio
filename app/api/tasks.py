@@ -25,8 +25,11 @@ router = APIRouter()
 
 
 @router.get("/api/tasks", response_model=list[CompareTask])
-def list_tasks():
-    return task_store.list()
+def list_tasks(project_id: str = ""):
+    items = task_store.list()
+    if project_id:
+        items = [t for t in items if t.project_id == project_id or not t.project_id]
+    return items
 
 
 @router.post("/api/tasks", response_model=CompareTask)

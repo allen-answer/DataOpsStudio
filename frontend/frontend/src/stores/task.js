@@ -16,6 +16,7 @@ import { apiForm, apiGet, apiJson } from '../api'
 import { validateTaskDraft } from '../utils/taskValidation'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
+import { useProjectStore } from './project'
 
 function _toErrorMessage(error) {
   return error?.message || String(error || '未知错误')
@@ -67,6 +68,7 @@ const DEFAULT_DRAFT = () => ({
   export_max_rows: 50000,
   fetch_chunk_size: 5000,
   stream_compare: false,
+  project_id: '',
 })
 
 
@@ -196,6 +198,7 @@ export const useTaskStore = defineStore('task', () => {
       export_max_rows: task?.limits?.export_max_rows || 50000,
       fetch_chunk_size: task?.limits?.fetch_chunk_size || 5000,
       stream_compare: Boolean(task?.limits?.stream_compare),
+      project_id: task?.project_id || '',
     })
   }
 
@@ -236,6 +239,8 @@ export const useTaskStore = defineStore('task', () => {
         fetch_chunk_size: Number(taskDraft.fetch_chunk_size),
         stream_compare: taskDraft.stream_compare,
       },
+      // 当前项目（taskDraft 已有 project_id 时优先用 draft 值，编辑场景保留原值）
+      project_id: taskDraft.project_id ?? useProjectStore().currentProjectId ?? '',
     }
   }
 

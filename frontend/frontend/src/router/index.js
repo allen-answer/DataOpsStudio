@@ -17,6 +17,9 @@ import WorkflowView from '../views/WorkflowView.vue'
 import LineageWorkbenchView from '../views/LineageWorkbenchView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import LoginView from '../views/LoginView.vue'
+import UserManagementView from '../views/admin/UserManagementView.vue'
+import AuditLogView from '../views/admin/AuditLogView.vue'
+import ProjectManagementView from '../views/admin/ProjectManagementView.vue'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
@@ -32,6 +35,11 @@ const routes = [
   { path: '/lineage',       name: 'lineage',       component: LineageWorkbenchView },
   { path: '/batch-lineage', name: 'batch-lineage', component: LineageWorkbenchView },
   { path: '/history',       name: 'history',       component: HistoryView },
+
+  // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示
+  { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },
+  { path: '/admin/audit',    name: 'admin-audit',    component: AuditLogView,           meta: { adminOnly: true } },
+  { path: '/admin/projects', name: 'admin-projects', component: ProjectManagementView,  meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]
@@ -49,6 +57,17 @@ router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('dataops.token') || ''
   if (!token) {
     return next({ path: '/login', query: { redirect: to.fullPath } })
+  }
+  // adminOnly 守卫：非 admin 访问 admin 页面 → 跳数据源页（接口侧也会 403 兜底）
+  if (to.meta.adminOnly) {
+    let role = ''
+    try {
+      const raw = localStorage.getItem('dataops.user') || ''
+      role = raw ? JSON.parse(raw).role : ''
+    } catch {
+      role = ''
+    }
+    if (role !== 'admin') return next({ path: '/datasources' })
   }
   next()
 })

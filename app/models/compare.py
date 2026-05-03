@@ -60,6 +60,7 @@ class CompareTask(BaseModel):
     key_columns: list[str] = Field(default_factory=list)
     rules: CompareRules = Field(default_factory=CompareRules)
     limits: RunLimits = Field(default_factory=RunLimits)
+    project_id: str = ""
 
     @model_validator(mode="after")
     def validate_inputs(self) -> "CompareTask":
@@ -94,6 +95,7 @@ class CompareTaskCreate(BaseModel):
     key_columns: list[str] = Field(default_factory=list)
     rules: CompareRules = Field(default_factory=CompareRules)
     limits: RunLimits = Field(default_factory=RunLimits)
+    project_id: str = ""
 
     @model_validator(mode="after")
     def validate_inputs(self) -> "CompareTaskCreate":

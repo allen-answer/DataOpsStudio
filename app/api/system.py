@@ -50,16 +50,23 @@ def drivers():
 
 
 @router.get("/api/bootstrap", response_model=BootstrapResponse)
-def bootstrap():
+def bootstrap(project_id: str = ""):
     history = list_result_history()
     # bootstrap 是首屏拉取，datasources 走前端展示，password 必须脱敏
     redacted_datasources = [
         ds.model_copy(update={"password": ""}) for ds in datasource_store.list()
     ]
+    tasks = task_store.list()
+    workflows = workflow_store.list()
+    if project_id:
+        # 项目隔离：当前项目下的资源 + 历史遗留无 project_id 的全局资源
+        redacted_datasources = [d for d in redacted_datasources if d.project_id == project_id or not d.project_id]
+        tasks = [t for t in tasks if t.project_id == project_id or not t.project_id]
+        workflows = [w for w in workflows if w.project_id == project_id or not w.project_id]
     return {
         "datasources": redacted_datasources,
-        "tasks": task_store.list(),
-        "workflows": workflow_store.list(),
+        "tasks": tasks,
+        "workflows": workflows,
         "workflow_templates": workflow_template_store.list(),
         "drivers": detect_drivers(),
         "db_types": [item.value for item in DatabaseType],

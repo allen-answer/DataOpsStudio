@@ -16,6 +16,7 @@ import { defineStore } from 'pinia'
 import { apiGet, apiJson } from '../api'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
+import { useProjectStore } from './project'
 
 function _toErrorMessage(error) {
   return error?.message || String(error || '未知错误')
@@ -28,6 +29,7 @@ const DEFAULT_DRAFT = () => ({
   tags: [],
   schedule_cron: '',
   project: '',
+  project_id: '',            // 关联 Project.id（多项目空间）
   status: 'draft',           // draft | active | paused | archived
   input_assets: [],          // [{key, kind, description}]
   output_assets: [],
@@ -90,6 +92,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowDraft.tags = Array.isArray(wf?.tags) ? [...wf.tags] : []
     workflowDraft.schedule_cron = wf?.schedule_cron || ''
     workflowDraft.project = wf?.project || ''
+    workflowDraft.project_id = wf?.project_id || ''
     workflowDraft.status = wf?.status || 'draft'
     workflowDraft.input_assets = Array.isArray(wf?.input_assets)
       ? wf.input_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
@@ -193,6 +196,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags.filter(Boolean) : [],
       schedule_cron: workflowDraft.schedule_cron || '',
       project: workflowDraft.project || '',
+      project_id: workflowDraft.project_id || useProjectStore().currentProjectId || '',
       status: workflowDraft.status || 'draft',
       input_assets: (workflowDraft.input_assets || [])
         .filter((a) => a.key && a.key.trim())

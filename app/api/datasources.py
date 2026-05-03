@@ -23,8 +23,11 @@ def _redact(ds: DataSource) -> DataSource:
 
 
 @router.get("/api/datasources", response_model=list[DataSource])
-def list_datasources():
-    return [_redact(ds) for ds in datasource_store.list()]
+def list_datasources(project_id: str = ""):
+    items = datasource_store.list()
+    if project_id:
+        items = [ds for ds in items if ds.project_id == project_id or not ds.project_id]
+    return [_redact(ds) for ds in items]
 
 
 @router.post("/api/datasources", response_model=DataSource)
