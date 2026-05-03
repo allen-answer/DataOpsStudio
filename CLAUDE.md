@@ -269,7 +269,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 ### 还可以做（未排期）
 
-- ~~前端状态管理（视情况引入 Pinia）~~ 渐进引入中：`stores/notice.js`（notice + actionStatus）+ `stores/datasource.js`（datasourceDraft / editDraft）+ `stores/task.js`（taskDraft / 字段选择器 / asyncJob / 校验 / fillDraft / taskPayload）已上。`App.vue` 顶部 `useNoticeStore() / useDatasourceStore() / useTaskStore()` + `storeToRefs`，`provide('app')` 仍 backward compat 把 store 暴露的字段平铺给 inject('app')。后续轮次再抽 useWorkflowStore / useLineageStore / useBatchStore / useHistoryStore；handlers（saveTask / runTask / loadBootstrap）仍在 App.vue（依赖跨 store 协调）。
+- ~~前端状态管理（视情况引入 Pinia）~~ 渐进引入中：`stores/notice.js` + `stores/datasource.js` + `stores/task.js` + `stores/workflow.js` + `stores/lineage.js` + `stores/batch.js` 都已上。`App.vue` 顶部 `useXxxStore() + storeToRefs`，`provide('app')` 仍 backward compat 把 store 字段平铺给 inject('app')。后续可抽 useHistoryStore；handlers（saveTask / runTask / loadBootstrap / saveWorkflow 等）仍在 App.vue —— 它们依赖 state.tasks/workflows 列表 + loadBootstrap 跨 store 协调，列表还没迁。
 - 任务系统增强（job TTL、失败重试）
 - 调度器（cron/sensor）+ 通知（企业微信 / 邮件 / Webhook）
 - 多项目空间 + 用户权限 + 审计日志

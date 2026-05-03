@@ -9,6 +9,9 @@ import AppShell from './layouts/AppShell.vue'
 import { useNoticeStore } from './stores/notice'
 import { useDatasourceStore } from './stores/datasource'
 import { useTaskStore } from './stores/task'
+import { useWorkflowStore } from './stores/workflow'
+import { useLineageStore } from './stores/lineage'
+import { useBatchStore } from './stores/batch'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -25,6 +28,9 @@ import { useTaskStore } from './stores/task'
 const noticeStore = useNoticeStore()
 const datasourceStore = useDatasourceStore()
 const taskStore = useTaskStore()
+const workflowStore = useWorkflowStore()
+const lineageStore = useLineageStore()
+const batchStore = useBatchStore()
 const { notice } = storeToRefs(noticeStore)
 const { actionStatus, setNotice, setActionStatus } = noticeStore
 const { editingDatasourceId } = storeToRefs(datasourceStore)
@@ -45,16 +51,29 @@ const {
   resetSelectionState, stopAsyncPoll: storeStopAsyncPoll,
 } = taskStore
 
+// workflow store 解构：ref 字段经 storeToRefs，reactive (workflowDraft) 直接拿
+const {
+  selectedWorkflowId, workflowResult,
+  workflowAsyncJob, workflowAsyncStatus, workflowAsyncPollTimer,
+  workflowRunHistory, allWorkflowRuns,
+  isSavedWorkflow,
+} = storeToRefs(workflowStore)
+const { workflowDraft } = workflowStore
+const {
+  fillDraft: storeFillWorkflowDraft,
+  resetWorkflowState,
+  stopWorkflowAsyncPoll,
+} = workflowStore
+
+// lineage / batch store
+const { lineage } = lineageStore
+const { batchActiveTab, batchSelectedFileNames } = storeToRefs(batchStore)
+const { batch, batchTabs } = batchStore
+
 const route = useRoute()
 const loading = ref(false)
-const selectedWorkflowId = ref('new')
-const workflowResult = ref(null)
-const workflowAsyncJob = ref(null)
-const workflowAsyncStatus = ref(null)
-const workflowAsyncPollTimer = ref(null)
-const workflowRunHistory = ref([])    // list of run summaries for the selected workflow
-const allWorkflowRuns = ref([])       // all runs across workflows, used by the list overview
-const batchActiveTab = ref('overview')
+// selectedWorkflowId / workflowResult / workflow async job state / workflowRunHistory /
+// allWorkflowRuns 已迁到 useWorkflowStore；batchActiveTab 已迁到 useBatchStore
 const selectedHistoryTaskId = ref('')
 const historyActiveTab = ref('compare')
 
@@ -73,54 +92,14 @@ const state = reactive({
 // datasourceDraft / editDraft / editingDatasourceId 已迁移到 useDatasourceStore
 // （顶部 storeToRefs 暴露），下面的 startEdit/cancelEdit 也走 store。
 
-const workflowDraft = reactive({
-  name: '',
-  description: '',
-  owner: '',
-  tags: [],
-  schedule_cron: '',
-  project: '',
-  status: 'draft',           // draft | active | paused | archived
-  input_assets: [],          // [{key, kind, description}]
-  output_assets: [],
-  default_variables: '',
-  runtime_variables: '',
-  nodes: [],
-})
-
-const lineage = reactive({
-  sql: '',
-  dialect: '',
-  schemaDatasourceId: '',
-  schemaName: '',
-  schemaTableFilter: '',
-  schemaOnlySqlTables: true,
-  schemaDialect: '',
-  schemaFiles: [],
-  sqlFile: null,
-  result: null,
-  error: '',
-})
-
-const batch = reactive({
-  dialect: '',
-  schemaDatasourceId: '',
-  schemaName: '',
-  schemaTableFilter: '',
-  schemaOnlySqlTables: true,
-  schemaDialect: '',
-  schemaFiles: [],
-  files: [],
-  result: null,
-  exports: null,
-  error: '',
-})
+// workflowDraft / lineage / batch reactive 已迁到对应 store（顶部解构）
 
 // currentTask 仍依赖 state.tasks（list 还在 App.vue），留在这里 join；
 // isSavedTask / taskValidation / taskValidationIssues / canSaveTask 已迁到 useTaskStore。
+// currentTask / currentWorkflow 仍在 App.vue —— 依赖 state.tasks/workflows 列表，
+// list 还没迁；isSavedWorkflow 已在 useWorkflowStore。
 const currentTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value))
 const currentWorkflow = computed(() => state.workflows.find((wf) => wf.id === selectedWorkflowId.value))
-const isSavedWorkflow = computed(() => selectedWorkflowId.value !== 'new')
 const selectedHistory = ref(new Set())
 const selectedSheets = ref(new Set(['汇总对照']))
 const historyTaskOptions = computed(() => {
@@ -148,16 +127,7 @@ const compareHistoryCount = computed(() => state.history.filter((item) => item.t
 const lineageHistoryCount = computed(() => state.history.filter((item) => item.type === 'lineage').length)
 
 const driverItems = computed(() => Object.entries(state.drivers || {}))
-const batchSelectedFileNames = computed(() => batch.files.map((file) => file.name))
-const batchTabs = [
-  { id: 'overview', label: '流程总览' },
-  { id: 'graph', label: '数据流图' },
-  { id: 'files', label: '脚本清单' },
-  { id: 'edges', label: '表级流转' },
-  { id: 'deps', label: '跨脚本依赖' },
-  { id: 'dag', label: 'DAG 分析' },
-  { id: 'warnings', label: '风险提示' },
-]
+// batchSelectedFileNames / batchTabs 已迁到 useBatchStore
 const compareBuckets = [
   { id: 'only_source', label: '只在源端' },
   { id: 'only_target', label: '只在目标端' },
@@ -677,12 +647,7 @@ const workflowPayload = () => ({
   })),
 })
 
-const stopWorkflowAsyncPoll = () => {
-  if (workflowAsyncPollTimer.value) {
-    clearInterval(workflowAsyncPollTimer.value)
-    workflowAsyncPollTimer.value = null
-  }
-}
+// stopWorkflowAsyncPoll 已迁到 useWorkflowStore（顶部解构）
 
 const selectWorkflow = (id) => {
   stopWorkflowAsyncPoll()
