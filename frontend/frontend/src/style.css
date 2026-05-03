@@ -63,12 +63,23 @@
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-transparent px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50;
   }
 
+  /* 主操作：紫主色（Phase 1 切换；旧 .btn-primary 调用方逐步迁） */
   .btn-primary {
+    @apply bg-primary text-white hover:bg-primary-hover;
+  }
+
+  /* 旧蓝按钮，保留给暂未迁移的 view */
+  .btn-primary-blue {
     @apply bg-blue-600 text-white hover:bg-blue-700;
   }
 
   .btn-outline {
     @apply border-slate-200 bg-white text-slate-800 hover:bg-slate-50;
+  }
+
+  /* 透明态：仅在 hover/active 上色，TopBar 工具栏图标按钮用 */
+  .btn-ghost {
+    @apply text-slate-600 hover:bg-slate-100 hover:text-slate-900;
   }
 
   .btn-danger {
@@ -77,6 +88,11 @@
 
   .card {
     @apply rounded-[10px] border border-line bg-white p-4 shadow-soft;
+  }
+
+  /* 数据指标卡：顶部上浮的"成功率 / 平均耗时"等 */
+  .metric-card {
+    @apply rounded-xl border border-slate-200 bg-white p-5 shadow-soft;
   }
 
   .section-title {
@@ -90,6 +106,26 @@
   .pill {
     @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold;
   }
+
+  /* 状态徽章 6 态 —— 用法：<span class="status-badge status-success">运行中</span> */
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-semibold;
+  }
+  .status-success { @apply bg-status-success-bg text-status-success; }
+  .status-warning { @apply bg-status-warning-bg text-status-warning; }
+  .status-error   { @apply bg-status-error-bg text-status-error; }
+  .status-info    { @apply bg-status-info-bg text-status-info; }
+  .status-running { @apply bg-status-running-bg text-status-running; }
+  .status-pending { @apply bg-status-pending-bg text-status-pending; }
+
+  /* 血缘表角色 tag 4 类 */
+  .tag-base {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider;
+  }
+  .tag-source       { @apply bg-tag-source-bg text-tag-source; }
+  .tag-target       { @apply bg-tag-target-bg text-tag-target; }
+  .tag-intermediate { @apply bg-tag-intermediate-bg text-tag-intermediate; }
+  .tag-reference    { @apply bg-tag-reference-bg text-tag-reference; }
 
   .sql-font {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;

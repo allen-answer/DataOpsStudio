@@ -1,23 +1,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useClipboard } from '@vueuse/core'
 import { apiForm, apiGet, apiJson } from './api'
-import BatchView from './views/BatchView.vue'
-import DatasourceView from './views/DatasourceView.vue'
-import HistoryView from './views/HistoryView.vue'
-import LineageView from './views/LineageView.vue'
-import WorkbenchView from './views/WorkbenchView.vue'
-import WorkflowView from './views/WorkflowView.vue'
-const views = [
-  { id: 'datasource', label: '数据源管理' },
-  { id: 'workbench', label: '数据对比任务工作台' },
-  { id: 'workflow', label: '作业流' },
-  { id: 'lineage', label: '单脚本血缘' },
-  { id: 'batch', label: '多脚本分析' },
-  { id: 'history', label: '执行历史' },
-]
+import AppShell from './layouts/AppShell.vue'
 
-const activeView = ref('datasource')
+// View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
+// AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
+
+const route = useRoute()
 const loading = ref(false)
 const notice = ref('')
 const noticeTimer = ref(null)
@@ -179,7 +170,6 @@ const compareHistoryCount = computed(() => state.history.filter((item) => item.t
 const lineageHistoryCount = computed(() => state.history.filter((item) => item.type === 'lineage').length)
 
 const driverItems = computed(() => Object.entries(state.drivers || {}))
-const activeViewLabel = computed(() => views.find((view) => view.id === activeView.value)?.label || '数据源管理')
 const batchSelectedFileNames = computed(() => batch.files.map((file) => file.name))
 const batchTabs = [
   { id: 'overview', label: '流程总览' },
@@ -1236,15 +1226,16 @@ const exportHistory = async () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-watch(activeView, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
+// 切路由时停掉所有轮询定时器，避免离开页面后还在打 API
+watch(() => route.path, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
 onMounted(loadBootstrap)
 onUnmounted(() => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
 
 // Shared context for view components. Reactive objects (state, lineage, batch, ...)
 // preserve reactivity through inject; refs auto-unwrap in templates.
 provide('app', {
-  // navigation / shell state
-  views, activeView, activeViewLabel, loading, notice,
+  // navigation / shell state（views/activeView/activeViewLabel 由 vue-router 接管）
+  loading, notice,
   // domain state
   state, taskDraft, datasourceDraft, editDraft, editingDatasourceId,
   selectedTaskId, currentTask, isSavedTask,
@@ -1285,80 +1276,9 @@ provide('app', {
 </script>
 
 <template>
-  <div class="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
-    <aside class="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900 text-slate-300">
-      <div class="flex items-center gap-3 border-b border-slate-800 p-6">
-        <div class="grid h-10 w-10 place-items-center rounded-lg bg-blue-600 text-sm font-black text-white">DB</div>
-        <div>
-          <h1 class="text-xl font-bold tracking-tight text-white">DataOps Studio</h1>
-          <p class="text-[11px] text-slate-500">比对 · 血缘 · ETL · 元数据</p>
-        </div>
-      </div>
-
-      <nav class="flex-1 space-y-1 py-6">
-        <button
-          v-for="view in views"
-          :key="view.id"
-          class="group flex w-full items-center px-6 py-3 text-left text-sm font-semibold transition-all hover:bg-slate-800/50 hover:text-white"
-          :class="activeView === view.id ? 'border-l-4 border-blue-500 bg-blue-500/10 text-blue-400' : 'border-l-4 border-transparent text-slate-400'"
-          @click="activeView = view.id"
-        >
-          <span class="grid h-7 w-7 place-items-center rounded-lg bg-slate-800 text-[11px] font-black text-slate-300 transition group-hover:bg-slate-700">{{ view.label.slice(0, 1) }}</span>
-          <span class="ml-4">{{ view.label }}</span>
-        </button>
-      </nav>
-
-      <div class="m-4 rounded-xl border border-slate-700/60 bg-slate-800/50 p-4">
-        <div class="mb-3 flex items-center justify-between">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500">数据库驱动检测</span>
-          <button class="text-[10px] font-bold text-slate-500 transition hover:text-white" @click="loadBootstrap">刷新</button>
-        </div>
-        <div class="grid grid-cols-2 gap-2 text-[11px]">
-          <div v-for="[name, info] in driverItems" :key="name" class="flex items-center truncate">
-            <span class="mr-2 h-2 w-2 shrink-0 rounded-full" :class="info.available ? 'bg-green-500' : 'bg-slate-600'"></span>
-            <span :class="info.available ? 'text-slate-300' : 'text-slate-500'">{{ name }}</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <main class="flex min-w-0 flex-1 flex-col">
-      <header class="z-10 flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-8 shadow-sm">
-        <div class="flex items-center gap-2">
-          <span class="text-slate-400">/</span>
-          <h2 class="text-sm font-bold uppercase tracking-wide text-slate-700">{{ activeViewLabel }}</h2>
-          <span v-if="loading" class="ml-3 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600">加载中</span>
-        </div>
-        <div class="flex items-center gap-3">
-          <a class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600"
-             href="/config/export" title="导出数据源 + 任务配置（密码已脱敏，可放心分享）">
-            配置文件导出
-          </a>
-          <a class="rounded-full border border-rose-100 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-100"
-             href="/config/export?include_passwords=true"
-             title="导出文件包含明文密码 —— 仅自己备份用，不要分享给他人 / 提交到代码仓库"
-             @click="confirmIncludePasswords">
-            含密码导出
-          </a>
-        </div>
-      </header>
-
-      <div class="min-h-0 flex-1 overflow-y-auto bg-slate-50/70 p-8">
-        <div v-if="notice" class="mb-5 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">{{ notice }}</div>
-
-        <DatasourceView v-if="activeView === 'datasource'" />
-
-        <WorkbenchView v-if="activeView === 'workbench'" />
-
-        <WorkflowView v-if="activeView === 'workflow'" />
-
-        <LineageView v-if="activeView === 'lineage'" />
-
-        <BatchView v-if="activeView === 'batch'" />
-
-        <HistoryView v-if="activeView === 'history'" />
-      </div>
-    </main>
-
-  </div>
+  <AppShell :loading="loading" @confirm-include-passwords="confirmIncludePasswords">
+    <div class="px-6 py-6">
+      <router-view />
+    </div>
+  </AppShell>
 </template>

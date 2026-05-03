@@ -13,37 +13,67 @@ All design tokens live in **`tailwind.config.js`** (`theme.extend`) and the `@la
 ### Project-specific palette (extend tokens)
 
 ```js
-// tailwind.config.js
+// tailwind.config.js — Phase 1+ token 表（详注释见文件本身）
 colors: {
-  ink:    '#1e293b',  // primary text — same as slate-800
-  muted:  '#64748b',  // secondary text — same as slate-500
-  line:   '#e5e7ec',  // borders / dividers
-  panel:  '#ffffff',  // surfaces
-  canvas: '#f8f9fb',  // page background
-  brand:  '#2563eb',  // primary action — same as blue-600
+  // 旧 alias，保留向后兼容（旧 view 内仍在用）
+  ink: '#1e293b', muted: '#64748b', line: '#e5e7ec',
+  panel: '#ffffff', canvas: '#f8f9fb',
+  brand: '#2563eb',  // 旧蓝主色，新组件用 primary
+
+  // 新主色：紫蓝
+  primary: { DEFAULT: '#7c3aed', hover: '#6d28d9', light: '#f5f3ff', fg: '#ffffff' },
+
+  // 状态色 6 类（每类 base + bg）
+  status: {
+    success: '#10b981', 'success-bg': '#d1fae5',
+    warning: '#f59e0b', 'warning-bg': '#fef3c7',
+    error:   '#ef4444', 'error-bg':   '#fee2e2',
+    info:    '#3b82f6', 'info-bg':    '#dbeafe',
+    running: '#8b5cf6', 'running-bg': '#ede9fe',
+    pending: '#6b7280', 'pending-bg': '#f3f4f6',
+  },
+
+  // 血缘表角色 tag 4 类
+  tag: {
+    source: '#1e40af', 'source-bg': '#dbeafe',
+    target: '#065f46', 'target-bg': '#d1fae5',
+    intermediate: '#92400e', 'intermediate-bg': '#fef3c7',
+    reference:    '#3730a3', 'reference-bg':    '#e0e7ff',
+  },
+
+  // 深色 sidebar 配色
+  sidebar: {
+    DEFAULT: '#1a1d2e', fg: '#e5e7eb',
+    accent: '#2d3142', 'accent-fg': '#ffffff', border: '#2d3142',
+  },
 }
 boxShadow: {
   soft: '0 4px 12px rgba(15, 23, 42, 0.04)',
+  ring: '0 0 0 3px rgba(124, 58, 237, 0.18)',  // 紫主色 focus ring
 }
 ```
 
-### Standard Tailwind palette (no custom alias)
+### Token mapping（Figma → Tailwind utility）
 
-The codebase uses raw Tailwind utility colors directly. Map Figma colors to these — do not invent new color names in the config.
-
-| Figma intent       | Use these classes                                      |
-| ------------------ | ------------------------------------------------------ |
-| Primary text       | `text-slate-800` / `text-ink`                          |
-| Secondary text     | `text-slate-500` / `text-muted`                        |
-| Borders / dividers | `border-slate-200` / `border-slate-100` / `border-line` |
-| Page background    | `bg-slate-50` / `bg-canvas`                            |
-| Panel / card       | `bg-white` / `bg-panel`                                |
-| Primary action     | `bg-blue-600 hover:bg-blue-700` / `bg-brand`           |
-| Success            | `text-emerald-600` `bg-green-100 text-green-700`       |
-| Warning            | `text-amber-600` `bg-amber-50 border-amber-300`        |
-| Danger             | `bg-red-600 hover:bg-red-700` / `text-rose-500`        |
-| Info / running     | `bg-blue-50 text-blue-600`                             |
-| Sidebar (dark)     | `bg-slate-900 text-slate-300 border-slate-800`         |
+| Figma intent       | Use these classes                                            |
+| ------------------ | ------------------------------------------------------------ |
+| Primary text       | `text-slate-800` / `text-ink`                                |
+| Secondary text     | `text-slate-500` / `text-muted`                              |
+| Borders / dividers | `border-slate-200` / `border-line`                           |
+| Page background    | `bg-canvas`                                                  |
+| Panel / card       | `bg-white` / `bg-panel`                                      |
+| **Primary action** | `bg-primary hover:bg-primary-hover` (新) / `bg-brand` (旧)   |
+| Success            | `bg-status-success-bg text-status-success` 或 `.status-success` |
+| Warning            | `bg-status-warning-bg text-status-warning` 或 `.status-warning` |
+| Danger             | `bg-status-error-bg text-status-error` 或 `.status-error`    |
+| Info               | `bg-status-info-bg text-status-info` 或 `.status-info`       |
+| Running            | `bg-status-running-bg text-status-running` 或 `.status-running` |
+| Pending            | `bg-status-pending-bg text-status-pending` 或 `.status-pending` |
+| Tag: 来源表        | `.tag-base .tag-source`                                      |
+| Tag: 目标表        | `.tag-base .tag-target`                                      |
+| Tag: 中间表        | `.tag-base .tag-intermediate`                                |
+| Tag: 参考表        | `.tag-base .tag-reference`                                   |
+| Sidebar (dark)     | `bg-sidebar text-sidebar-fg border-sidebar-border`           |
 
 ### Typography
 
@@ -67,15 +97,22 @@ Use Tailwind defaults (`p-4`, `gap-3`, `space-y-6`, `rounded-lg`, `rounded-xl`, 
 
 ### Architecture
 
-Vue 3 Single-File Components, `<script setup>` syntax everywhere. No JSX, no Storybook, no Vue Router (single-page tab switcher in `App.vue`).
+Vue 3 Single-File Components, `<script setup>` syntax everywhere. No JSX, no Storybook.
+**Phase 1+** 引入 `vue-router` —— 详见 §3 路由表。
 
 ```
 src/
-├── App.vue                 # Shell: sidebar + header + view router. Owns ALL global state.
-├── main.js                 # createApp(App).mount('#app')
+├── App.vue                 # Owns ALL global state via provide('app', {...}). Renders <AppShell><router-view/></AppShell>.
+├── main.js                 # createApp(App).use(router).mount('#app')
 ├── style.css               # Tailwind directives + base/components layers
 ├── api.js                  # Tiny fetch wrappers: apiGet, apiJson, apiForm
-├── views/                  # Top-level tab views — inject('app'), NEVER take props
+├── router/
+│   └── index.js            # Hash-based router, 6 top-level routes
+├── layouts/                # Shell layout components
+│   ├── AppShell.vue        # Outer flex: <AppSidebar/><AppTopBar/><router-view/>
+│   ├── AppSidebar.vue      # Dark sidebar w/ lucide nav icons + driver-detect block
+│   └── AppTopBar.vue       # Breadcrumbs + global actions (config export / search / bell)
+├── views/                  # Routed views — inject('app'), NEVER take props
 │   ├── DatasourceView.vue
 │   ├── WorkbenchView.vue
 │   ├── WorkflowView.vue
@@ -170,12 +207,31 @@ If a Figma design touches the workflow editor, follow the existing split documen
 | Graph viz       | `@antv/g6` 5 — lineage only                                           |
 | Code editor     | `@codemirror/*` 6 — SQL editor                                        |
 | Utilities       | `@vueuse/core` (clipboard etc.); `@tanstack/vue-virtual` for big lists |
-| Icons           | None. See §5.                                                         |
-| Routing         | None. Tab state is `activeView` ref in `App.vue`                      |
+| Icons           | `lucide-vue-next` — receptive use only. See §5.                       |
+| Routing         | `vue-router` 4 (hash mode). Top-level routes in `src/router/index.js` |
 | State mgmt      | provide/inject. Pinia installed but unused — don't add stores         |
 | Testing         | None on the frontend (e2e Playwright lives in repo `tests/e2e/`)     |
 
-When MCP suggests Radix / shadcn / Headless UI / Heroicons / lucide: **don't install**. Replicate the shape with Tailwind utilities + the existing `.btn`/`.card`/`.pill` shortcuts.
+When MCP suggests Radix / shadcn / Headless UI / Heroicons: **don't install**. Replicate the shape with Tailwind utilities + the existing `.btn`/`.card`/`.pill`/`.status-badge`/`.tag-*` shortcuts. Lucide icons are now allowed (see §5).
+
+### Routing (Phase 1+)
+
+`src/router/index.js` registers six top-level routes via hash history (`createWebHashHistory`)
+— FastAPI serves a single SPA index at `/spa`, hash routes mean we don't need a SPA fallback rule.
+
+| Path                            | Component        | Notes                              |
+| ------------------------------- | ---------------- | ---------------------------------- |
+| `/datasources`                  | `DatasourceView` | redirected from `/`                |
+| `/data-compare`                 | `WorkbenchView`  |                                    |
+| `/workflows`                    | `WorkflowView`   | overview list                      |
+| `/workflows/:id`                | `WorkflowView`   | detail (deep-link wired Phase 2/3) |
+| `/workflow-runs/:runId`         | `WorkflowView`   | run detail                         |
+| `/lineage`                      | `LineageView`    | single-script analysis             |
+| `/batch-lineage`                | `BatchView`      | multi-script analysis              |
+| `/history`                      | `HistoryView`    |                                    |
+
+Active highlight in `AppSidebar.vue` matches via `route.path` prefix — see `NAV_ITEMS.matchPaths`.
+`provide('app', {...})` in `App.vue` is unchanged; views still pull state via `inject('app')`.
 
 ### Build wiring (don't break this)
 
@@ -212,19 +268,51 @@ frontend/frontend/
 
 ## 5. Icon system
 
-**There is no icon library.** UI affordances are conveyed through:
+**Allowed library: `lucide-vue-next`** — receptive use only. Phase 1+ (DataOps 控制台改造)
+放开了"无图标库"红线 —— 现代科技控制台需要导航/动作/状态层面的图标语义。
+但要避免滥用：图标按钮必须有 `title` / 文本 label，不要靠图标本身传业务含义。
 
-1. **Text glyphs** — short Chinese labels: `刷新`, `保存`, `删除`, `执行`.
-2. **Colored dots** — `<span class="h-3 w-3 rounded-full bg-green-500" />` for status.
-3. **Letter badges** — `<div class="grid h-10 w-10 place-items-center rounded-lg bg-blue-600 ... text-white">DB</div>` (1–2 letter "logo block", see `App.vue` sidebar).
-4. **Pill / chip** — `class="pill bg-blue-50 text-blue-600"` for tags.
+### When to use lucide
 
-When Figma uses real icons (Heroicons / Phosphor / Material), **prefer translating to the patterns above**. If an icon is truly load-bearing and can't be replaced with text:
+| 场景                                 | 用法                                                         |
+| ------------------------------------ | ------------------------------------------------------------ |
+| Sidebar 导航                         | 见 `AppSidebar.vue` `NAV_ITEMS` —— 每项一个 lucide 图标      |
+| TopBar 全局动作                      | 配置导出 / 搜索 / 通知 等                                    |
+| 页面主操作（"执行" / "新建" / "删除"） | 文字 + 前置图标（`<Play class="h-4 w-4" /> 执行`）           |
+| 状态徽章 / DAG 节点类型              | 视情况配图标，但不要用图标替代 status-badge 的语义色         |
 
-- Inline an SVG `<svg viewBox="..."><path d="..." /></svg>` directly in the component.
-- Size via Tailwind: `class="h-4 w-4"`. Color via `currentColor` + `text-*` utility.
-- **Do not** introduce `lucide-vue-next`, `@heroicons/vue`, etc. without first asking the user.
-- **Do not** wire the leftover `public/icons.svg` symbol sprite — it ships unused boilerplate icons that are not part of the design system.
+### When NOT to use
+
+1. **正文内联**：表格 cell / `<p>` 段落 / SQL 编辑器等内容区，仍优先用文字徽章 / 颜色点。
+2. **重复装饰**：同一行多个图标（动作菜单 + 状态 + 类型）会让信息密度变低 —— 留一个最关键的。
+3. **图标按钮无 label**：必须有 `title` 或可访问性文本，纯 icon 按钮在中文工具栏里不够直观。
+4. **替代文字 logo 块**：`<div class="grid h-10 w-10 place-items-center ...">DS</div>` 仍是首选，
+   除非该位置在 Figma 设计稿明确是图标位（如 sidebar 顶部 logo）。
+
+### Imports
+
+```vue
+<script setup>
+import { Database, Workflow, GitBranch, Play } from 'lucide-vue-next'
+</script>
+
+<template>
+  <Database class="h-5 w-5" />
+  <button class="btn btn-primary">
+    <Play class="h-4 w-4" /> 执行
+  </button>
+</template>
+```
+
+- Tree-shaken：只 import 用到的图标，bundle 影响小（每个 ~0.3 KB）。
+- 尺寸：`h-4 w-4`（小）/ `h-5 w-5`（标准）/ `h-6 w-6`（大）。
+- 颜色：跟随 `currentColor` —— 通过父级 `text-*` 控制。
+
+### 仍然不允许的
+
+- `@heroicons/vue` / `@iconify` / `@fortawesome` —— 一个图标库够了，不要混用。
+- `public/icons.svg` —— 那是 Vite 模板的 Bluesky/Discord/X 残留，与设计系统无关。
+- 大量自绘 SVG —— 业务有特殊形状（如 DAG 连接箭头）才内联 SVG，单图标走 lucide。
 
 ---
 
