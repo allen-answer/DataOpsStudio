@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.services.jobs import submit_workflow_run
 from app.services.notifier import notify_workflow_run
+from app.services.openlineage_emitter import emit_workflow_run_openlineage
 from app.services.repositories import workflow_store, workflow_template_store
 from app.services.workflow_engine import run_workflow
 from app.services.workflow_history import list_workflow_runs, persist_workflow_run
@@ -147,6 +148,7 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     persist_workflow_run(run)
     notify_workflow_run(workflow, run, trigger="manual")
+    emit_workflow_run_openlineage(workflow, run, trigger="manual")
     return run
 
 

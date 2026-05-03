@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+import json
+import logging
+import os
+import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from app.models import Artifact, AssetKind, AssetRef, Workflow, WorkflowRun
 
 
+logger = logging.getLogger(__name__)
+
 PRODUCER = "https://github.com/allen-answer/DataOpsStudio"
 DEFAULT_NAMESPACE = "dataops-studio"
 CUSTOM_FACET_SCHEMA = "https://dataops-studio.local/openlineage/facets/dataops-v1.json"
+DEFAULT_TIMEOUT_SECONDS = float(os.getenv("DATAOPS_OPENLINEAGE_TIMEOUT_SECONDS", "5"))
+
+
+@dataclass
+class OpenLineageEmitResult:
+    type: str
+    target: str
+    event_type: str
+    ok: bool
+    error: str = ""
 
 
 def build_workflow_run_events(
@@ -36,6 +53,51 @@ def build_workflow_run_events(
         _event_for_run(run_model, workflow_model, event_type, namespace)
         for event_type in event_types
     ]
+
+
+def emit_workflow_run_openlineage(
+    workflow: Workflow,
+    run: WorkflowRun,
+    *,
+    trigger: str = "",
+    job_id: str = "",
+) -> list[dict[str, Any]]:
+    """POST OpenLineage events for a workflow run.
+
+    The emitter is intentionally best-effort: external collector failures are
+    returned to the caller and logged, but never raised into the workflow
+    execution path. `trigger` and `job_id` are accepted so callers can keep a
+    stable integration contract even though the current OpenLineage event body
+    remains the pure output of `build_workflow_run_events`.
+    """
+    del trigger, job_id
+    results: list[OpenLineageEmitResult] = []
+    for target in _targets_for(workflow):
+        namespace = str(target.get("namespace") or os.getenv("DATAOPS_OPENLINEAGE_NAMESPACE") or DEFAULT_NAMESPACE)
+        events = build_workflow_run_events(run, workflow, namespace=namespace)
+        for event in events:
+            event_type = str(event.get("eventType") or "")
+            if not _target_accepts_event(target, event_type):
+                continue
+            try:
+                results.append(_send_event(target, event))
+            except Exception as exc:
+                logger.exception(
+                    "openlineage webhook emit failed workflow_id=%s run_id=%s event_type=%s",
+                    workflow.id,
+                    run.run_id,
+                    event_type,
+                )
+                results.append(
+                    OpenLineageEmitResult(
+                        type=_target_type(target),
+                        target=_target_label(target),
+                        event_type=event_type,
+                        ok=False,
+                        error=str(exc),
+                    )
+                )
+    return [result.__dict__ for result in results]
 
 
 def _event_for_run(
@@ -230,3 +292,71 @@ def _coerce_workflow(workflow: Workflow | dict[str, Any] | None) -> Workflow | N
     if workflow is None or isinstance(workflow, Workflow):
         return workflow
     return Workflow.model_validate(workflow)
+
+
+def _targets_for(workflow: Workflow) -> list[dict[str, Any]]:
+    targets = [
+        dict(item)
+        for item in getattr(workflow, "notifications", []) or []
+        if isinstance(item, dict)
+        and item.get("enabled", True)
+        and _target_type(item) in {"openlineage", "openlineage_webhook"}
+    ]
+    webhook_url = os.getenv("DATAOPS_OPENLINEAGE_WEBHOOK_URL", "").strip()
+    if webhook_url:
+        targets.append({
+            "type": "openlineage",
+            "url": webhook_url,
+            "events": ["all"],
+            "namespace": os.getenv("DATAOPS_OPENLINEAGE_NAMESPACE", DEFAULT_NAMESPACE),
+            "timeout_seconds": os.getenv("DATAOPS_OPENLINEAGE_TIMEOUT_SECONDS", ""),
+        })
+    return targets
+
+
+def _target_accepts_event(target: dict[str, Any], event_type: str) -> bool:
+    events = target.get("events") or ["all"]
+    if isinstance(events, str):
+        events = [events]
+    normalized = {str(item).upper() for item in events}
+    return "ALL" in normalized or event_type.upper() in normalized
+
+
+def _send_event(target: dict[str, Any], event: dict[str, Any]) -> OpenLineageEmitResult:
+    url = str(target.get("url") or "").strip()
+    event_type = str(event.get("eventType") or "")
+    if not url:
+        return OpenLineageEmitResult(type=_target_type(target), target="", event_type=event_type, ok=False, error="missing url")
+    body = json.dumps(event, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method=str(target.get("method") or "POST").upper(),
+    )
+    with urllib.request.urlopen(request, timeout=_timeout(target)) as response:  # noqa: S310 - user-configured internal webhook
+        status = getattr(response, "status", 200)
+        if status >= 400:
+            return OpenLineageEmitResult(
+                type=_target_type(target),
+                target=url,
+                event_type=event_type,
+                ok=False,
+                error=f"http {status}",
+            )
+    return OpenLineageEmitResult(type=_target_type(target), target=url, event_type=event_type, ok=True)
+
+
+def _timeout(target: dict[str, Any]) -> float:
+    value = target.get("timeout_seconds")
+    if value in (None, ""):
+        return DEFAULT_TIMEOUT_SECONDS
+    return float(value)
+
+
+def _target_type(target: dict[str, Any]) -> str:
+    return str(target.get("type") or "openlineage").lower()
+
+
+def _target_label(target: dict[str, Any]) -> str:
+    return str(target.get("url") or "")
