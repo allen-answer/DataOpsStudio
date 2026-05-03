@@ -214,6 +214,73 @@ def test_lineage_ai_disables_kimi_thinking_for_moonshot(monkeypatch):
     assert result["ai_enrichment"]["summary"] == "kimi ok"
 
 
+def test_lineage_ai_deepseek_reasoner_uses_deepseek_profile(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {"content": json.dumps({"summary": "deepseek ok"})}
+                }]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "deepseek-reasoner")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", fake_urlopen)
+
+    result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["max_tokens"] == 4096
+    assert "temperature" not in captured["payload"]
+    assert "thinking" not in captured["payload"]
+    assert result["ai_enrichment"]["summary"] == "deepseek ok"
+
+
+def test_lineage_ai_empty_content_with_reasoning_is_error(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "reasoning consumed the budget",
+                    },
+                }]
+            }).encode("utf-8")
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "deepseek-reasoner")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+
+    assert result["ai_enrichment"]["status"] == "error"
+    assert "empty content" in result["ai_enrichment"]["error"]
+
+
 def test_lineage_ai_anthropic_compatible_provider(monkeypatch):
     captured: dict[str, object] = {}
 

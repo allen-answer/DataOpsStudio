@@ -318,19 +318,22 @@ class OpenAICompatibleLineageAIProvider:
         base_url = config.base_url.rstrip("/") or "https://api.openai.com/v1"
         body = {
             "model": config.model,
-            "max_tokens": 1200,
+            "max_tokens": _openai_compatible_max_tokens(config),
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are a SQL lineage reviewer. Return compact JSON with keys "
-                        "summary, suggestions, risks, column_hints. Do not invent tables "
-                        "or overwrite deterministic lineage; cite evidence ids when possible."
+                        "You are a SQL lineage reviewer. Return compact JSON only with keys "
+                        "summary, suggestions, risks, column_hints. Example JSON: "
+                        "{\"summary\":\"...\",\"suggestions\":[],\"risks\":[],\"column_hints\":[]}. "
+                        "Do not invent tables or overwrite deterministic lineage; cite evidence ids when possible."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
+        if _should_use_json_object_response_format(config):
+            body["response_format"] = {"type": "json_object"}
         if _should_disable_kimi_thinking(config):
             body["thinking"] = {"type": "disabled"}
         data = _post_json(
@@ -339,8 +342,7 @@ class OpenAICompatibleLineageAIProvider:
             headers={"Authorization": f"Bearer {config.api_key}"},
             timeout=config.timeout_seconds,
         )
-        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-        return _loads_json_object(content)
+        return _loads_json_object(_openai_compatible_content(data))
 
 
 class AnthropicCompatibleLineageAIProvider:
@@ -478,6 +480,45 @@ def _should_disable_kimi_thinking(config: LineageAIConfig) -> bool:
     model = (config.model or "").lower()
     base_url = (config.base_url or "").lower()
     return model.startswith(("kimi-k2.6", "kimi-k2.5")) or "moonshot." in base_url or "kimi." in base_url
+
+
+def _is_deepseek_compatible(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    base_url = (config.base_url or "").lower()
+    return model.startswith("deepseek-") or "deepseek." in base_url
+
+
+def _is_deepseek_reasoning_model(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    return model in {"deepseek-reasoner"} or "reasoner" in model or model.endswith("-pro")
+
+
+def _should_use_json_object_response_format(config: LineageAIConfig) -> bool:
+    if _should_disable_kimi_thinking(config):
+        return False
+    base_url = (config.base_url or "").lower()
+    return _is_deepseek_compatible(config) or "api.openai.com" in base_url
+
+
+def _openai_compatible_max_tokens(config: LineageAIConfig) -> int:
+    # DeepSeek reasoning content shares the max_tokens budget with final content.
+    return 4096 if _is_deepseek_reasoning_model(config) else 1200
+
+
+def _openai_compatible_content(data: dict[str, Any]) -> str:
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = str(message.get("content") or "").strip()
+    if content:
+        return content
+    finish_reason = choice.get("finish_reason") or ""
+    reasoning = str(message.get("reasoning_content") or "")
+    if reasoning:
+        raise ValueError(
+            "provider returned empty content while reasoning_content was present"
+            + (f" (finish_reason={finish_reason})" if finish_reason else "")
+        )
+    raise ValueError("provider returned empty content" + (f" (finish_reason={finish_reason})" if finish_reason else ""))
 
 
 def _anthropic_messages_url(base_url: str) -> str:
