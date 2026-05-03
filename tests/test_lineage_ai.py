@@ -295,6 +295,45 @@ def test_lineage_ai_parses_anthropic_markdown_json(monkeypatch):
     assert result["ai_enrichment"]["summary"] == "fenced ok"
 
 
+def test_lineage_ai_compacts_large_payload_before_provider(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        name = "fake"
+
+        def enrich(self, payload, config):
+            captured["payload"] = payload
+            captured["chars"] = len(json.dumps(payload, ensure_ascii=False))
+            return {"summary": "compact ok"}
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "mock")
+    monkeypatch.setattr(lineage_ai, "_provider_for", lambda _: FakeProvider())
+    result = {
+        "graph_edges": [],
+        "report": {
+            "summary": {},
+            "inputs": [{"name": f"input_{i}", "desc": "x" * 1000} for i in range(80)],
+            "outputs": [{"name": f"output_{i}", "desc": "y" * 1000} for i in range(80)],
+            "table_edges": [{"source": f"s{i}", "target": f"t{i}", "reason": "z" * 1000} for i in range(90)],
+            "column_edges": [{"source": f"s.c{i}", "target": f"t.c{i}", "transform": "w" * 1000} for i in range(150)],
+        },
+        "warnings": [{"message": "warn" * 500} for _ in range(60)],
+        "parse_errors": [{"message": "err" * 500} for _ in range(60)],
+    }
+
+    enriched = lineage_ai.enrich_lineage_result(result, sql_text="select " + "a" * 10000, enabled=True)
+
+    payload = captured["payload"]
+    assert enriched["ai_enrichment"]["summary"] == "compact ok"
+    assert len(payload["inputs"]) == 20
+    assert len(payload["outputs"]) == 20
+    assert len(payload["table_edges"]) == 25
+    assert len(payload["column_edges"]) == 30
+    assert len(payload["warnings"]) == 15
+    assert len(payload["parse_errors"]) == 10
+    assert captured["chars"] < 50000
+
+
 def test_lineage_service_attaches_ai_enrichment_disabled(monkeypatch):
     monkeypatch.delenv("DATAOPS_LINEAGE_AI_PROVIDER", raising=False)
 

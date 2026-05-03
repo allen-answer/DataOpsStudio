@@ -17,7 +17,7 @@ const draft = reactive({
   model: '',
   base_url: '',
   api_key: '',
-  timeout_seconds: 20,
+  timeout_seconds: 60,
   include_raw: false,
   clear_api_key: false,
 })

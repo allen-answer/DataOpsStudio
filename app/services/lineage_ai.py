@@ -19,7 +19,7 @@ class LineageAIConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
-    timeout_seconds: float = 20.0
+    timeout_seconds: float = 60.0
 
 
 class LineageAIProvider(Protocol):
@@ -60,21 +60,29 @@ def test_lineage_ai_connection(override: dict[str, Any] | None = None) -> dict[s
 
     started = time.perf_counter()
     try:
+        request_payload = _compact_payload_for_provider({
+            "scope": "connection-test",
+            "dialect": "",
+            "sql_excerpt": "select 1",
+            "scripts": [],
+            "summary": {"table_edge_count": 0, "column_edge_count": 0},
+            "inputs": [],
+            "outputs": [],
+            "table_edges": [],
+            "column_edges": [],
+            "warnings": [],
+            "parse_errors": [],
+            "risks": [],
+        })
+        logger.info(
+            "lineage AI connection test provider=%s model=%s payload_chars=%s timeout=%ss",
+            config.provider,
+            config.model,
+            len(json.dumps(request_payload, ensure_ascii=False)),
+            config.timeout_seconds,
+        )
         enrichment = provider.enrich(
-            {
-                "scope": "connection-test",
-                "dialect": "",
-                "sql_excerpt": "select 1",
-                "scripts": [],
-                "summary": {"table_edge_count": 0, "column_edge_count": 0},
-                "inputs": [],
-                "outputs": [],
-                "table_edges": [],
-                "column_edges": [],
-                "warnings": [],
-                "parse_errors": [],
-                "risks": [],
-            },
+            request_payload,
             config,
         )
         return {
@@ -130,8 +138,17 @@ def enrich_lineage_result(
         return result
 
     payload = _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
+    payload = _compact_payload_for_provider(payload)
     started = time.perf_counter()
     try:
+        payload_chars = len(json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "lineage AI enrichment start provider=%s model=%s payload_chars=%s timeout=%ss",
+            config.provider,
+            config.model,
+            payload_chars,
+            config.timeout_seconds,
+        )
         enrichment = provider.enrich(payload, config)
         if not isinstance(enrichment, dict):
             raise ValueError("provider returned non-object enrichment")
@@ -285,7 +302,7 @@ def _config() -> LineageAIConfig:
         model=str(effective.get("model") or "").strip(),
         base_url=str(effective.get("base_url") or "").strip(),
         api_key=str(effective.get("api_key") or "").strip(),
-        timeout_seconds=float(effective.get("timeout_seconds") or 20),
+        timeout_seconds=float(effective.get("timeout_seconds") or 60),
     )
 
 
@@ -387,20 +404,60 @@ def _build_payload(
     return {
         "scope": scope,
         "dialect": dialect or "",
-        "sql_excerpt": _truncate(sql_text, 4000),
+        "sql_excerpt": _truncate(sql_text, 1500),
         "scripts": [
-            {"file_name": item.get("file_name", ""), "sql_excerpt": _truncate(item.get("sql", ""), 1500)}
-            for item in scripts[:20]
+            {"file_name": item.get("file_name", ""), "sql_excerpt": _truncate(item.get("sql", ""), 600)}
+            for item in scripts[:8]
         ],
         "summary": summary or _fallback_summary(result),
-        "inputs": (report.get("inputs") if isinstance(report, dict) else []) or [],
-        "outputs": (report.get("outputs") if isinstance(report, dict) else []) or [],
-        "table_edges": _limit_list((report.get("table_edges") if isinstance(report, dict) else []) or result.get("graph_edges", []), 80),
-        "column_edges": _limit_list((report.get("column_edges") if isinstance(report, dict) else []) or result.get("insert_mappings", []), 120),
-        "warnings": _limit_list(result.get("warnings", []), 80),
-        "parse_errors": _limit_list(result.get("parse_errors", []), 80),
-        "risks": _limit_list((report.get("risks") if isinstance(report, dict) else []) or [], 80),
+        "inputs": _limit_list((report.get("inputs") if isinstance(report, dict) else []) or [], 20),
+        "outputs": _limit_list((report.get("outputs") if isinstance(report, dict) else []) or [], 20),
+        "table_edges": _limit_list((report.get("table_edges") if isinstance(report, dict) else []) or result.get("graph_edges", []), 25),
+        "column_edges": _limit_list((report.get("column_edges") if isinstance(report, dict) else []) or result.get("insert_mappings", []), 30),
+        "warnings": _limit_list(result.get("warnings", []), 15),
+        "parse_errors": _limit_list(result.get("parse_errors", []), 10),
+        "risks": _limit_list((report.get("risks") if isinstance(report, dict) else []) or [], 15),
     }
+
+
+def _compact_payload_for_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    compact["sql_excerpt"] = _truncate(str(compact.get("sql_excerpt") or ""), 1500)
+    compact["scripts"] = [
+        {
+            "file_name": item.get("file_name", ""),
+            "sql_excerpt": _truncate(str(item.get("sql_excerpt") or ""), 600),
+        }
+        for item in _limit_list(compact.get("scripts"), 8)
+        if isinstance(item, dict)
+    ]
+    compact["inputs"] = _compact_items(compact.get("inputs"), 20)
+    compact["outputs"] = _compact_items(compact.get("outputs"), 20)
+    compact["table_edges"] = _compact_items(compact.get("table_edges"), 25)
+    compact["column_edges"] = _compact_items(compact.get("column_edges"), 30)
+    compact["warnings"] = _compact_items(compact.get("warnings"), 15)
+    compact["parse_errors"] = _compact_items(compact.get("parse_errors"), 10)
+    compact["risks"] = _compact_items(compact.get("risks"), 15)
+    return compact
+
+
+def _compact_items(value: Any, limit: int) -> list[Any]:
+    items = _limit_list(value, limit)
+    return [_compact_value(item, depth=0) for item in items]
+
+
+def _compact_value(value: Any, *, depth: int) -> Any:
+    if isinstance(value, str):
+        return _truncate(value, 240)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_compact_value(item, depth=depth + 1) for item in value[:8]]
+    if isinstance(value, dict):
+        if depth >= 2:
+            return {str(k): _truncate(str(v), 120) for k, v in list(value.items())[:10]}
+        return {str(k): _compact_value(v, depth=depth + 1) for k, v in list(value.items())[:16]}
+    return _truncate(str(value), 160)
 
 
 def _normalize_enrichment(

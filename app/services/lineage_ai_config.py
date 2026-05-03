@@ -25,7 +25,7 @@ def get_effective_lineage_ai_config() -> dict[str, Any]:
         "model": str(stored.get("model") or os.getenv("DATAOPS_LINEAGE_AI_MODEL", "")).strip(),
         "base_url": str(stored.get("base_url") or os.getenv("DATAOPS_LINEAGE_AI_BASE_URL", "")).strip(),
         "api_key": decrypt_secret(encrypted_key) if encrypted_key else env_key,
-        "timeout_seconds": _float(stored.get("timeout_seconds"), os.getenv("DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS", "20")),
+        "timeout_seconds": _float(stored.get("timeout_seconds"), os.getenv("DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS", "60")),
         "include_raw": _bool(stored.get("include_raw"), os.getenv("DATAOPS_LINEAGE_AI_INCLUDE_RAW", "false")),
         "source": "stored" if stored else "env",
         "api_key_source": "stored" if encrypted_key else ("env" if env_key else ""),
@@ -49,7 +49,7 @@ def save_lineage_ai_config(payload: dict[str, Any]) -> dict[str, Any]:
         "provider": provider,
         "model": str(payload.get("model", current.get("model", "")) or "").strip(),
         "base_url": str(payload.get("base_url", current.get("base_url", "")) or "").strip(),
-        "timeout_seconds": _float(payload.get("timeout_seconds"), current.get("timeout_seconds", 20)),
+        "timeout_seconds": _float(payload.get("timeout_seconds"), current.get("timeout_seconds", 60)),
         "include_raw": _bool(payload.get("include_raw"), current.get("include_raw", False)),
         "api_key_encrypted": str(current.get("api_key_encrypted") or ""),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -90,7 +90,7 @@ def _public_from_effective(config: dict[str, Any]) -> dict[str, Any]:
         "api_key_source": config.get("api_key_source") or "",
         "api_key_encrypted": bool(config.get("api_key_encrypted")),
         "source": config.get("source") or "env",
-        "timeout_seconds": config.get("timeout_seconds") or 20,
+        "timeout_seconds": config.get("timeout_seconds") or 60,
         "include_raw": bool(config.get("include_raw")),
         "updated_at": config.get("updated_at") or "",
     }
@@ -115,7 +115,7 @@ def _float(value: Any, fallback: Any) -> float:
     try:
         return float(value if value not in (None, "") else fallback)
     except (TypeError, ValueError):
-        return float(fallback if fallback not in (None, "") else 20)
+        return float(fallback if fallback not in (None, "") else 60)
 
 
 def _bool(value: Any, fallback: Any = False) -> bool:
