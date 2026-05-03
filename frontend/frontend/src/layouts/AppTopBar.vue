@@ -1,9 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChevronRight, Search, FileDown, ShieldAlert } from 'lucide-vue-next'
+import { ChevronRight, Search, FileDown, ShieldAlert, LogOut, User as UserIcon } from 'lucide-vue-next'
 import CommandPalette from '../components/CommandPalette.vue'
 import NotificationPopover from '../components/NotificationPopover.vue'
+import { useAuthStore } from '../stores/auth'
+
+const authStore = useAuthStore()
+const userMenuOpen = ref(false)
 
 const props = defineProps({
   // 路由 path → 面包屑文案的 map；若 view 想自定义动态面包屑，可通过 slot 覆盖
@@ -110,6 +114,36 @@ const computedCrumbs = computed(() => {
 
       <!-- 通知 popover：异步任务状态 -->
       <NotificationPopover />
+
+      <!-- 用户菜单 —— 当前账号 / 角色徽章 / 注销 -->
+      <div v-if="authStore.user" class="relative">
+        <button
+          class="btn btn-ghost flex h-9 items-center gap-2 px-2 text-xs"
+          :title="`${authStore.user.username} (${authStore.user.role})`"
+          @click="userMenuOpen = !userMenuOpen"
+        >
+          <span class="grid h-6 w-6 place-items-center rounded-full bg-primary-light text-[10px] font-bold text-primary">
+            {{ (authStore.user.display_name || authStore.user.username).slice(0, 1).toUpperCase() }}
+          </span>
+          <span class="hidden md:inline font-medium text-slate-700">{{ authStore.user.display_name || authStore.user.username }}</span>
+        </button>
+        <div
+          v-if="userMenuOpen"
+          class="absolute right-0 top-full z-30 mt-1 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
+        >
+          <div class="border-b border-slate-100 px-3 py-2">
+            <p class="text-xs font-bold text-slate-800">{{ authStore.user.display_name || authStore.user.username }}</p>
+            <p class="muted text-[10px]">{{ authStore.user.username }} · {{ authStore.user.role }}</p>
+          </div>
+          <button
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+            @click="userMenuOpen = false; authStore.logout()"
+          >
+            <LogOut class="h-3.5 w-3.5" />
+            注销
+          </button>
+        </div>
+      </div>
     </div>
 
     <CommandPalette v-model:open="paletteOpen" />
