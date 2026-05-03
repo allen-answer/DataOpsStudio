@@ -2,7 +2,7 @@
 
 一个轻量 DataOps 工作台：多数据库数据对比、SQL 血缘、ETL 多脚本流程分析、可编排的作业流和 Schema 元数据辅助。
 
-支持三种部署形态：开发模式、Docker 生产部署、Windows 离线包。
+支持三种部署形态：开发模式、Docker 生产部署、Windows 离线包；Docker 模式可选启用内置 MySQL 样例库。
 
 ## 功能
 
@@ -27,6 +27,7 @@
 |------|--------|------|
 | 日常开发 | 开发模式 | `npm run dev` + `uvicorn ... --reload` |
 | 生产部署 / 内部演示 | Docker 模式 | `docker compose up -d --build` |
+| 内置样例库演示 | Docker + demo 数据源 | `docker compose --profile demo-db up -d --build` |
 | 客户离线现场 | Windows 离线包 | `scripts/build_offline_windows.ps1` 打包 |
 
 ---
@@ -89,7 +90,15 @@ cd frontend/frontend && npm run build
 docker compose up -d --build
 ```
 
-服务起来后访问 `http://localhost:8010`。MySQL 8 暴露在 `localhost:3307`（容器名 `mysql8`，内部端口 3306），首次启动会执行 `init_db/01_init.sql` 初始化测试数据。
+服务起来后访问 `http://localhost:8010`。默认只启动 app，应用自身状态仍然落在本地 JSON / 文件，不依赖数据库。
+
+如果需要跑仓库内置 MySQL 样例数据源，再启用 demo profile：
+
+```bash
+docker compose --profile demo-db up -d --build
+```
+
+MySQL 8 会暴露在 `localhost:3307`（容器名 `mysql8`，内部端口 3306），首次启动执行 `init_db/01_init.sql` 初始化测试数据。它只是演示 / 测试数据源，不是 app 的元数据库。
 
 挂载到宿主机的目录（容器重启后保留）：
 
@@ -182,7 +191,7 @@ docker compose up -d --build app
 ├── logs/                       # 应用日志（gitignore）
 ├── main.py                     # FastAPI 入口
 ├── Dockerfile                  # 多阶段 build：node → python
-├── docker-compose.yml          # 本地一键起：app + mysql8
+├── docker-compose.yml          # 默认起 app；demo-db profile 可选起 MySQL 样例库
 ├── README.md                   # 本文件
 └── README_OFFLINE.md           # 离线模式专用说明（也会进 release zip）
 ```

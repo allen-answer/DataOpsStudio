@@ -98,8 +98,8 @@ const mappingIssues = computed(() => {
         <li v-if="!intersectionRows.length" class="flex items-start gap-2">
           <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-error" />
           <span class="text-status-error">
-            两侧字段没有同名交集 —— 当前会被全部当作"仅源/仅目标"列。
-            必须用「字段映射」做对齐，否则没法做值比较
+            两侧字段没有同名交集 —— 未配置字段映射时会退回按位置映射。
+            请确认左右 SELECT 字段顺序一致，或用「字段映射」明确对齐
           </span>
         </li>
         <li v-else class="flex items-start gap-2">

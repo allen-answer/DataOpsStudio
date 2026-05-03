@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject } from 'vue'
-import { Database, Eye, KeyRound, ListChecks, Wand2 } from 'lucide-vue-next'
+import { AlertTriangle, Database, Eye, Info, KeyRound, ListChecks, Wand2 } from 'lucide-vue-next'
 
 const props = defineProps({
   title: { type: String, default: '已缓存字段' },
@@ -14,6 +14,7 @@ const {
   targetPreviewData,
   sourceFields,
   targetFields,
+  schemaDiagnostics,
   fieldPickerRows,
   fieldPickerHasFields,
   toggleFieldIncluded,
@@ -84,7 +85,23 @@ function setPrimaryKey(name) {
       暂无缓存字段。请先在数据来源页点击“预览”或“提取字段”。
     </div>
 
-    <div v-else class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+    <div
+      v-if="fieldPickerHasFields && schemaDiagnostics.warnings.length"
+      class="rounded-lg border border-status-warning-bg/70 bg-status-warning-bg/20 p-3 text-xs text-slate-700"
+    >
+      <div class="mb-1 flex items-center gap-1.5 font-semibold text-status-warning">
+        <AlertTriangle class="h-3.5 w-3.5" />
+        Schema 提示
+      </div>
+      <ul class="space-y-1">
+        <li v-for="(warning, i) in schemaDiagnostics.warnings.slice(0, 4)" :key="i" class="flex items-start gap-1.5">
+          <Info class="mt-0.5 h-3 w-3 shrink-0 text-status-info" />
+          <span>{{ warning.message }}</span>
+        </li>
+      </ul>
+    </div>
+
+    <div v-if="fieldPickerHasFields" class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
       <div
         v-for="row in fieldPickerRows"
         :key="row.key"

@@ -6,6 +6,8 @@ from typing import Any, Callable, Iterator
 
 from openpyxl import load_workbook
 
+from app.services.compare_schema import uniquify_columns
+
 
 @dataclass
 class ExcelReader:
@@ -49,7 +51,11 @@ class ExcelReader:
             headers: list[str | None] = []
             for index, raw_row in enumerate(row_iter, start=1):
                 if index == self.header_row:
-                    headers = [self._normalize_header(cell) for cell in raw_row]
+                    raw_headers = [self._normalize_header(cell) for cell in raw_row]
+                    headers = [
+                        unique if raw else None
+                        for raw, unique in zip(raw_headers, uniquify_columns(raw_headers), strict=False)
+                    ]
                     break
             if not headers:
                 return
@@ -93,7 +99,12 @@ def list_columns(file_path: Path, sheet: str = "", header_row: int = 1) -> list[
         worksheet = workbook[sheet] if sheet else workbook[workbook.sheetnames[0]]
         for index, raw_row in enumerate(worksheet.iter_rows(values_only=True), start=1):
             if index == header_row:
-                return [str(cell).strip() for cell in raw_row if cell is not None and str(cell).strip()]
+                raw_headers = [str(cell).strip() if cell is not None else "" for cell in raw_row]
+                return [
+                    unique
+                    for raw, unique in zip(raw_headers, uniquify_columns(raw_headers), strict=False)
+                    if raw
+                ]
         return []
     finally:
         workbook.close()

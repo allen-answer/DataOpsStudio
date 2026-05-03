@@ -47,10 +47,12 @@ const { datasourceDraft, editDraft } = datasourceStore
 // task store 解构：ref 字段经 storeToRefs；reactive (taskDraft) 直接拿
 const {
   selectedTaskId, sourceFields, targetFields,
+  sourceFieldWarnings, targetFieldWarnings,
   previewOutput, sourcePreviewData, targetPreviewData,
   compareResult, asyncJob, asyncStatus, asyncPollTimer,
   ignoredColumnSet, fieldPickerRows, fieldPickerHasFields,
   taskValidation, taskValidationIssues, canSaveTask, isSavedTask,
+  schemaDiagnostics,
 } = storeToRefs(taskStore)
 const { taskDraft } = taskStore
 const {
@@ -264,6 +266,7 @@ provide('app', {
   selectedTaskId, currentTask, isSavedTask,
   taskValidationIssues, canSaveTask,
   sourcePreviewData, targetPreviewData, sourceFields, targetFields,
+  sourceFieldWarnings, targetFieldWarnings,
   compareResult, asyncJob, asyncStatus, previewOutput, actionStatus,
   lineage, lineageAIStatus, batch, batchActiveTab, batchTabs,
   selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
@@ -271,7 +274,7 @@ provide('app', {
   driverItems, historyTaskOptions, filteredHistory,
   compareHistoryCount, lineageHistoryCount, compareBuckets,
   batchSelectedFileNames,
-  fieldPickerRows, fieldPickerHasFields,
+  fieldPickerRows, fieldPickerHasFields, schemaDiagnostics,
   toggleFieldIncluded, fieldPickerSelectAll, fieldPickerExcludeOneSided,
   // handlers — bootstrap / utils
   loadBootstrap, setNotice, setActionStatus, toErrorMessage,

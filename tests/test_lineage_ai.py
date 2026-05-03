@@ -43,6 +43,7 @@ def test_lineage_ai_default_disabled(monkeypatch):
 
     assert enriched["ai_enrichment"]["enabled"] is False
     assert enriched["ai_enrichment"]["status"] == "disabled"
+    assert enriched["ai_enrichment"]["reason"] == "not_requested"
 
 
 def test_lineage_ai_status_is_non_sensitive(monkeypatch):
@@ -90,6 +91,20 @@ def test_lineage_ai_ui_switch_on_but_provider_off(monkeypatch):
 
     assert enriched["ai_enrichment"]["enabled"] is False
     assert enriched["ai_enrichment"]["status"] == "disabled"
+    assert enriched["ai_enrichment"]["reason"] == "provider_off"
+
+
+def test_lineage_ai_ui_switch_on_but_provider_incomplete(monkeypatch):
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.delenv("DATAOPS_LINEAGE_AI_MODEL", raising=False)
+    monkeypatch.delenv("DATAOPS_LINEAGE_AI_API_KEY", raising=False)
+    result = analyze_sql_lineage("insert into dwd.t select id from ods.s", dialect="mysql")
+
+    enriched = lineage_ai.enrich_lineage_result(result, sql_text="select 1", enabled=True)
+
+    assert enriched["ai_enrichment"]["enabled"] is True
+    assert enriched["ai_enrichment"]["status"] == "error"
+    assert "配置不完整" in enriched["ai_enrichment"]["error"]
 
 
 def test_lineage_ai_openai_compatible_provider(monkeypatch):

@@ -14,6 +14,7 @@ const {
   taskDraft,
   sourcePreviewData, targetPreviewData,
   sourceFields, targetFields,
+  sourceFieldWarnings, targetFieldWarnings,
   extractFields, previewTask, formatSql, uploadExcel, copyField,
 } = inject('app')
 
@@ -28,8 +29,9 @@ const headerRow = computed({
 const excelFilename = computed(() => taskDraft[`${props.side}_excel_filename`])
 const excelSheets   = computed(() => taskDraft[`${props.side}_excel_sheets`] || [])
 const fields        = computed(() => props.side === 'source' ? sourceFields.value : targetFields.value)
+const fieldWarnings = computed(() => props.side === 'source' ? sourceFieldWarnings.value : targetFieldWarnings.value)
 const previewData   = computed(() => props.side === 'source' ? sourcePreviewData.value : targetPreviewData.value)
-const previewColumns = computed(() => Object.keys(previewData.value?.rows?.[0] ?? {}))
+const previewColumns = computed(() => previewData.value?.columns?.length ? previewData.value.columns : Object.keys(previewData.value?.rows?.[0] ?? {}))
 
 const isSql = computed(() => kind.value === 'sql')
 
@@ -133,6 +135,10 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
         :title="'点击复制：' + col"
         @click="copyField(col)"
       >{{ col }}</span>
+    </div>
+
+    <div v-if="fieldWarnings.length" class="rounded-lg border border-status-warning-bg/70 bg-status-warning-bg/20 p-2 text-[11px] text-status-warning">
+      <p v-for="(warning, i) in fieldWarnings" :key="i">{{ warning.message }}</p>
     </div>
 
     <!-- 预览结果（SQL 模式） -->

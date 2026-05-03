@@ -128,19 +128,34 @@ def enrich_lineage_result(
     """
     config = _config()
     if not enabled:
-        result["ai_enrichment"] = _disabled_enrichment()
+        result["ai_enrichment"] = _disabled_enrichment(
+            reason="not_requested",
+            message="本次分析未请求 AI 辅助。",
+        )
         return result
 
     provider = _provider_for(config.provider)
     if provider is None:
         if config.provider in {"off", "disabled", "none", ""}:
-            result["ai_enrichment"] = _disabled_enrichment()
+            result["ai_enrichment"] = _disabled_enrichment(
+                reason="provider_off",
+                message="AI provider 未启用；请在 AI 配置中选择 provider 并保存配置。",
+            )
         else:
             result["ai_enrichment"] = _error_enrichment(
                 provider=config.provider,
                 model=config.model,
                 error=f"unsupported provider: {config.provider}",
             )
+        return result
+
+    config_error = _config_error(config)
+    if config_error:
+        result["ai_enrichment"] = _error_enrichment(
+            provider=config.provider,
+            model=config.model,
+            error=config_error,
+        )
         return result
 
     payload = _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
@@ -187,19 +202,34 @@ def enqueue_lineage_ai_enrichment(
     """Attach a pending AI job and run provider enrichment in the background."""
     config = _config()
     if not enabled:
-        result["ai_enrichment"] = _disabled_enrichment()
+        result["ai_enrichment"] = _disabled_enrichment(
+            reason="not_requested",
+            message="本次分析未请求 AI 辅助。",
+        )
         return result
 
     provider = _provider_for(config.provider)
     if provider is None:
         if config.provider in {"off", "disabled", "none", ""}:
-            result["ai_enrichment"] = _disabled_enrichment()
+            result["ai_enrichment"] = _disabled_enrichment(
+                reason="provider_off",
+                message="AI provider 未启用；请在 AI 配置中选择 provider 并保存配置。",
+            )
         else:
             result["ai_enrichment"] = _error_enrichment(
                 provider=config.provider,
                 model=config.model,
                 error=f"unsupported provider: {config.provider}",
             )
+        return result
+
+    config_error = _config_error(config)
+    if config_error:
+        result["ai_enrichment"] = _error_enrichment(
+            provider=config.provider,
+            model=config.model,
+            error=config_error,
+        )
         return result
 
     payload = _compact_payload_for_provider(
@@ -455,6 +485,23 @@ def _provider_for(name: str) -> LineageAIProvider | None:
     if normalized == "ollama":
         return OllamaLineageAIProvider()
     return None
+
+
+def _config_error(config: LineageAIConfig) -> str:
+    provider = (config.provider or "off").lower()
+    if provider == "mock":
+        return ""
+    if provider in {"openai", "azure", "http", "openai-compatible", "anthropic", "anthropic-compatible", "claude"}:
+        missing = []
+        if not config.model:
+            missing.append("model")
+        if not config.api_key:
+            missing.append("api_key")
+        if missing:
+            return "AI provider 配置不完整，缺少：" + ", ".join(missing)
+    if provider == "ollama" and not config.model:
+        return "AI provider 配置不完整，缺少：model"
+    return ""
 
 
 def _chat_completions_url(base_url: str) -> str:
@@ -719,7 +766,7 @@ def _normalize_enrichment(
     }
 
 
-def _disabled_enrichment() -> dict[str, Any]:
+def _disabled_enrichment(reason: str = "disabled", message: str = "") -> dict[str, Any]:
     return {
         "enabled": False,
         "status": "disabled",
@@ -730,6 +777,8 @@ def _disabled_enrichment() -> dict[str, Any]:
         "suggestions": [],
         "risks": [],
         "column_hints": [],
+        "reason": reason,
+        "message": message,
     }
 
 

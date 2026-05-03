@@ -60,6 +60,7 @@ const DEFAULT_DRAFT = () => ({
   key_columns: '',
   ignore_columns: '',
   column_mappings: '',
+  schema_policy: 'warn',
   numeric_tolerance: '',
   trim_strings: false,
   case_insensitive: false,
@@ -79,6 +80,8 @@ export const useTaskStore = defineStore('task', () => {
 
   const sourceFields = ref([])
   const targetFields = ref([])
+  const sourceFieldWarnings = ref([])
+  const targetFieldWarnings = ref([])
 
   const previewOutput = ref('')
   const sourcePreviewData = ref(null)
@@ -128,6 +131,34 @@ export const useTaskStore = defineStore('task', () => {
   })
 
   const fieldPickerHasFields = computed(() => fieldPickerRows.value.length > 0)
+
+  const schemaDiagnostics = computed(() => {
+    const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
+    const targetSet = new Set(targetFields.value.map(normalizeColumn))
+    const sourceOnly = sourceFields.value.filter(c => !targetSet.has(normalizeColumn(c)))
+    const targetOnly = targetFields.value.filter(c => !sourceSet.has(normalizeColumn(c)))
+    const warnings = [
+      ...sourceFieldWarnings.value,
+      ...targetFieldWarnings.value,
+    ]
+    if (sourceFields.value.length && targetFields.value.length && sourceFields.value.length !== targetFields.value.length) {
+      warnings.push({
+        type: 'schema_count_mismatch',
+        level: 'warning',
+        message: `源/目标字段数量不一致：source=${sourceFields.value.length}，target=${targetFields.value.length}；未配置字段映射时会按位置映射到较短一侧。`,
+      })
+    }
+    if (sourceOnly.length || targetOnly.length) {
+      warnings.push({
+        type: 'one_sided_columns',
+        level: 'warning',
+        message: `仅源 ${sourceOnly.length} 个，仅目标 ${targetOnly.length} 个；多出的字段会按缺失值参与对比，或可加入忽略字段。`,
+        source_only: sourceOnly,
+        target_only: targetOnly,
+      })
+    }
+    return { sourceOnly, targetOnly, warnings }
+  })
 
   function toggleFieldIncluded(name) {
     const key = normalizeColumn(name)
@@ -190,6 +221,7 @@ export const useTaskStore = defineStore('task', () => {
       key_columns: (task?.key_columns || []).join(', '),
       ignore_columns: (task?.rules?.ignore_columns || []).join(', '),
       column_mappings: Object.entries(task?.rules?.column_mappings || {}).map(([s, t]) => `${s} -> ${t}`).join('\n'),
+      schema_policy: task?.rules?.schema_policy || 'warn',
       numeric_tolerance: task?.rules?.numeric_tolerance ?? '',
       trim_strings: Boolean(task?.rules?.trim_strings),
       case_insensitive: Boolean(task?.rules?.case_insensitive),
@@ -228,6 +260,7 @@ export const useTaskStore = defineStore('task', () => {
       rules: {
         ignore_columns: parseCsv(taskDraft.ignore_columns),
         column_mappings: parseMappings(taskDraft.column_mappings),
+        schema_policy: taskDraft.schema_policy || 'warn',
         numeric_tolerance: taskDraft.numeric_tolerance === '' ? null : Number(taskDraft.numeric_tolerance),
         trim_strings: taskDraft.trim_strings,
         case_insensitive: taskDraft.case_insensitive,
@@ -250,6 +283,8 @@ export const useTaskStore = defineStore('task', () => {
     targetPreviewData.value = null
     sourceFields.value = []
     targetFields.value = []
+    sourceFieldWarnings.value = []
+    targetFieldWarnings.value = []
     compareResult.value = null
     asyncStatus.value = null
   }
@@ -470,10 +505,15 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const result = await apiJson('/api/preview/rows', 'POST', payload)
       previewRef.value = result
-      const columns = Object.keys(result.rows?.[0] || {})
+      const columns = result.columns?.length ? result.columns : Object.keys(result.rows?.[0] || {})
       if (columns.length) {
-        if (side === 'source') sourceFields.value = columns
-        else targetFields.value = columns
+        if (side === 'source') {
+          sourceFields.value = columns
+          sourceFieldWarnings.value = result.warnings || []
+        } else {
+          targetFields.value = columns
+          targetFieldWarnings.value = result.warnings || []
+        }
       }
       notice.setActionStatus('success', '预览完成', `返回 ${result.rows?.length ?? 0} 行`)
     } catch (error) {
@@ -488,6 +528,7 @@ export const useTaskStore = defineStore('task', () => {
     notice.setActionStatus('running', '正在提取字段')
     try {
       let columns = []
+      let warnings = []
       if (kind === 'excel') {
         const result = await apiJson('/api/preview/columns', 'POST', {
           kind: 'excel',
@@ -496,8 +537,9 @@ export const useTaskStore = defineStore('task', () => {
           header_row: Number(taskDraft[`${side}_header_row`]) || 1,
         })
         columns = result.columns || []
+        warnings = result.warnings || []
       } else {
-        const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
+        const sql = side === 'target' && taskDraft.sql_mode === 'single' ? taskDraft.source_sql : taskDraft[`${side}_sql`]
         const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
         columns = (data.output_columns || []).filter(c => !c.includes('*'))
         if (columns.length === 0) {
@@ -508,10 +550,13 @@ export const useTaskStore = defineStore('task', () => {
             sql,
           })
           columns = result.columns || []
+          warnings = result.warnings || []
         }
       }
       if (side === 'source') sourceFields.value = columns
       else targetFields.value = columns
+      if (side === 'source') sourceFieldWarnings.value = warnings
+      else targetFieldWarnings.value = warnings
       notice.setActionStatus('success', '字段提取完成', `识别字段 ${columns.length} 个`)
     } catch (error) {
       notice.setActionStatus('error', '字段提取失败', _toErrorMessage(error))
@@ -587,12 +632,14 @@ export const useTaskStore = defineStore('task', () => {
     // state
     taskDraft, selectedTaskId,
     sourceFields, targetFields,
+    sourceFieldWarnings, targetFieldWarnings,
     previewOutput, sourcePreviewData, targetPreviewData,
     compareResult, asyncJob, asyncStatus, asyncPollTimer,
     // computed
     ignoredColumnSet, fieldPickerRows, fieldPickerHasFields,
     taskValidation, taskValidationIssues, canSaveTask, isSavedTask,
     currentTask,
+    schemaDiagnostics,
     // utility
     normalizeColumn, parseCsv, parseMappings,
     // field picker actions

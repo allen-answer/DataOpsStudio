@@ -31,6 +31,10 @@ const summaryCards = computed(() => {
   ]
 })
 
+const schemaReport = computed(() => compareResult.value?.schema_report || null)
+const schemaWarnings = computed(() => schemaReport.value?.warnings || [])
+const comparedPreview = computed(() => schemaReport.value?.compared_columns?.slice(0, 12) || [])
+
 const cardClass = (tone) => ({
   success: 'bg-status-success-bg text-status-success',
   error:   'bg-status-error-bg text-status-error',
@@ -117,6 +121,42 @@ const cardClass = (tone) => ({
           <strong class="block text-2xl font-bold">{{ card.value }}</strong>
           <span class="text-[11px] font-semibold opacity-80">{{ card.label }}</span>
         </button>
+      </div>
+
+      <div v-if="schemaReport" class="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-sm font-semibold text-slate-700">Schema 对齐</h4>
+            <p class="muted text-[11px]">
+              {{ schemaReport.mapping_mode === 'position' ? '按位置映射' : '手工字段映射' }}
+              · source {{ schemaReport.source_count }} 列 / target {{ schemaReport.target_count }} 列
+              · 参与值比较 {{ schemaReport.compared_count }} 列
+            </p>
+          </div>
+          <span
+            class="rounded-full px-2 py-0.5 text-[10px] font-bold"
+            :class="schemaReport.has_schema_mismatch ? 'bg-status-warning-bg text-status-warning' : 'bg-status-success-bg text-status-success'"
+          >
+            {{ schemaReport.has_schema_mismatch ? 'schema warning' : 'schema aligned' }}
+          </span>
+        </div>
+        <ul v-if="schemaWarnings.length" class="mt-2 space-y-1 text-[11px] text-slate-700">
+          <li v-for="(warning, i) in schemaWarnings" :key="i" class="flex items-start gap-1.5">
+            <AlertCircle class="mt-0.5 h-3 w-3 shrink-0 text-status-warning" />
+            <span>{{ warning.message }}</span>
+          </li>
+        </ul>
+        <div v-if="comparedPreview.length" class="mt-2 grid gap-1 text-[11px] md:grid-cols-2 xl:grid-cols-3">
+          <div
+            v-for="(item, i) in comparedPreview"
+            :key="i"
+            class="flex items-center justify-between gap-2 rounded border border-slate-200 bg-white px-2 py-1"
+          >
+            <span class="truncate font-mono text-slate-700">{{ item.source || '(缺失)' }}</span>
+            <span class="shrink-0 text-slate-400">→</span>
+            <span class="truncate font-mono text-slate-700">{{ item.target || '(缺失)' }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- bucket 样例 -->

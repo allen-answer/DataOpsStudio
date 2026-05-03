@@ -3,11 +3,13 @@ from __future__ import annotations
 import importlib
 import logging
 import time
+from typing import NamedTuple
 from typing import Any
 
 from app.dbclients.drivers import add_db2_dll_directories, first_available_module
 from app.dbclients import pool as _pool
 from app.models import DataSource, DatabaseType
+from app.services.compare_schema import column_warnings, uniquify_columns
 
 
 class DbClientError(RuntimeError):
@@ -19,6 +21,19 @@ CONNECT_TIMEOUT_SECONDS = 10
 QUERY_TIMEOUT_SECONDS = 300
 
 
+class QueryRows(NamedTuple):
+    rows: list[dict[str, Any]]
+    columns: list[str]
+    raw_columns: list[str]
+    warnings: list[dict[str, Any]]
+
+
+class QueryColumns(NamedTuple):
+    columns: list[str]
+    raw_columns: list[str]
+    warnings: list[dict[str, Any]]
+
+
 def fetch_rows(
     source: DataSource,
     sql: str,
@@ -27,6 +42,24 @@ def fetch_rows(
     chunk_size: int | None = None,
     progress_callback: Any | None = None,
 ) -> list[dict[str, Any]]:
+    return fetch_rows_with_schema(
+        source,
+        sql,
+        max_rows=max_rows,
+        raise_on_overflow=raise_on_overflow,
+        chunk_size=chunk_size,
+        progress_callback=progress_callback,
+    ).rows
+
+
+def fetch_rows_with_schema(
+    source: DataSource,
+    sql: str,
+    max_rows: int | None = None,
+    raise_on_overflow: bool = True,
+    chunk_size: int | None = None,
+    progress_callback: Any | None = None,
+) -> QueryRows:
     module_name = first_available_module(source.db_type)
     if not module_name:
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
@@ -42,15 +75,15 @@ def fetch_rows(
     )
     try:
         with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
-            rows = _fetch_with_dbapi(connection, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
+            result = _fetch_with_dbapi(connection, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
         logger.info(
             "query success datasource=%s db_type=%s rows=%s elapsed=%.3fs",
             source.name,
             source.db_type.value,
-            len(rows),
+            len(result.rows),
             time.perf_counter() - start,
         )
-        return rows
+        return result
     except DbClientError:
         logger.exception("query failed datasource=%s db_type=%s", source.name, source.db_type.value)
         raise
@@ -88,7 +121,7 @@ def _fetch_with_dbapi(
     raise_on_overflow: bool = True,
     chunk_size: int | None = None,
     progress_callback: Any | None = None,
-) -> list[dict[str, Any]]:
+) -> QueryRows:
     cursor = None
     try:
         try:
@@ -102,9 +135,15 @@ def _fetch_with_dbapi(
             raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
 
         try:
-            columns = [desc[0] for desc in cursor.description or []]
+            raw_columns = [desc[0] for desc in cursor.description or []]
+            columns = uniquify_columns(raw_columns)
             rows = _fetch_rows_in_chunks(cursor, columns, max_rows, raise_on_overflow, chunk_size, progress_callback)
-            return rows
+            return QueryRows(
+                rows=rows,
+                columns=columns,
+                raw_columns=raw_columns,
+                warnings=column_warnings(raw_columns, columns),
+            )
         except Exception as exc:
             raise DbClientError(f"fetch rows failed: {exc}") from exc
     finally:
@@ -119,6 +158,11 @@ def _fetch_with_dbapi(
 def fetch_columns(source: DataSource, sql: str) -> list[str]:
     """Return column names for `sql` without materializing rows. Uses
     `cursor.description` so empty result sets still yield the schema."""
+    return fetch_column_details(source, sql).columns
+
+
+def fetch_column_details(source: DataSource, sql: str) -> QueryColumns:
+    """Return unique column names plus raw cursor names for diagnostics."""
     module_name = first_available_module(source.db_type)
     if not module_name:
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
@@ -130,7 +174,13 @@ def fetch_columns(source: DataSource, sql: str) -> list[str]:
                 cursor.execute(sql)
             except Exception as exc:
                 raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
-            return [desc[0] for desc in cursor.description or []]
+            raw_columns = [desc[0] for desc in cursor.description or []]
+            columns = uniquify_columns(raw_columns)
+            return QueryColumns(
+                columns=columns,
+                raw_columns=raw_columns,
+                warnings=column_warnings(raw_columns, columns),
+            )
         finally:
             if cursor is not None:
                 try:
@@ -240,7 +290,7 @@ def _iter_with_dbapi(
     try:
         cursor = connection.cursor()
         cursor.execute(sql)
-        columns = [desc[0] for desc in cursor.description or []]
+        columns = uniquify_columns([desc[0] for desc in cursor.description or []])
         batch_size = max(1, int(chunk_size or 5000))
         while True:
             remaining = None if max_rows is None else max_rows - fetched

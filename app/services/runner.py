@@ -10,6 +10,7 @@ from typing import Any
 from app.compare.engine import compare_rows, compare_sorted_row_iterators
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
 from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
+from app.services.compare_schema import build_schema_report
 from app.services.excel_uploads import resolve_excel_path, resolve_uploaded_path
 from app.services.exporter import write_excel, write_result_json
 from app.services.repositories import datasource_store, task_store
@@ -41,6 +42,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         _notify(status_callback, "validating", "校验输入")
         source_reader = build_reader(task, "source")
         target_reader = build_reader(task, "target")
+        schema_report: dict[str, Any] = {}
 
         progress = lambda side: lambda count: _notify(status_callback, f"querying_{side}", f"读取{('源' if side == 'source' else '目标')}数据：已 {count} 行")
 
@@ -72,6 +74,15 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
                 chunk_size=task.limits.fetch_chunk_size,
                 progress_callback=progress("target"),
             )
+            schema_report = build_schema_report(
+                list(source_rows[0]) if source_rows else [],
+                list(target_rows[0]) if target_rows else [],
+                task.key_columns,
+                task.rules,
+            )
+            if task.rules.schema_policy == "strict" and schema_report.get("has_schema_mismatch"):
+                messages = [item.get("message", "") for item in schema_report.get("warnings", []) if item.get("message")]
+                raise ValueError("Schema mismatch: " + "；".join(messages))
             _notify(status_callback, "comparing", "执行对比")
             buckets = compare_rows(source_rows, target_rows, task.key_columns, task.rules)
             source_rows_count = len(source_rows)
@@ -97,6 +108,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         "summary": summary.model_dump(),
         "rules": task.rules.model_dump(),
         "limits": task.limits.model_dump(),
+        "schema_report": schema_report,
         "buckets": buckets,
     }
 
@@ -128,6 +140,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         elapsed_seconds=elapsed_seconds,
         source_rows=source_rows_count,
         target_rows=target_rows_count,
+        schema_report=schema_report,
         samples={name: [_json_safe(row) for row in rows[:20]] for name, rows in buckets.items()},
     )
 

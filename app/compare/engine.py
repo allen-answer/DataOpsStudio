@@ -128,9 +128,13 @@ def _rules_with_positional_mappings(
         return rules
     source_columns = list(source_rows[0])
     target_columns = list(target_rows[0])
-    if len(source_columns) != len(target_columns):
-        return rules
-    return rules.model_copy(update={"column_mappings": dict(zip(source_columns, target_columns, strict=True))})
+    mappings: dict[str, str] = {}
+    for index, source_column in enumerate(source_columns):
+        if index < len(target_columns):
+            mappings[source_column] = target_columns[index]
+        else:
+            mappings[source_column] = f"__missing_target_column_{index + 1}_{source_column}"
+    return rules.model_copy(update={"column_mappings": mappings})
 
 
 def _index_rows(
@@ -272,10 +276,11 @@ def _target_column_name(source_column: str, target_row: dict[str, Any], column_m
         resolved_mapped = _resolve_column(target_row, mapped)
         if resolved_mapped:
             return resolved_mapped
+        return mapped
     resolved_source = _resolve_column(target_row, source_column)
     if resolved_source:
         return resolved_source
-    return mapped or source_column
+    return source_column
 
 
 def _mapped_column_name(source_column: str, column_mappings: dict[str, str]) -> str | None:

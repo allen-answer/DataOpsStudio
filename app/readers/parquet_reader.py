@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from app.services.compare_schema import uniquify_columns
+
 
 def _require_pyarrow():
     try:
@@ -54,8 +56,9 @@ class ParquetReader:
         batch_size = max(1, int(chunk_size or 5000))
         kept_count = 0
         for batch in parquet_file.iter_batches(batch_size=batch_size, columns=self.columns):
-            cols = batch.column_names
-            arrs = [batch.column(c).to_pylist() for c in cols]
+            raw_cols = batch.column_names
+            cols = uniquify_columns(raw_cols)
+            arrs = [batch.column(i).to_pylist() for i in range(len(raw_cols))]
             for row_idx in range(batch.num_rows):
                 row_dict = {cols[i]: arrs[i][row_idx] for i in range(len(cols))}
                 if all(value is None or value == "" for value in row_dict.values()):
@@ -73,4 +76,4 @@ class ParquetReader:
 def list_columns(file_path: Path) -> list[str]:
     pq = _require_pyarrow()
     parquet_file = pq.ParquetFile(file_path)
-    return list(parquet_file.schema.names)
+    return uniquify_columns(list(parquet_file.schema.names))

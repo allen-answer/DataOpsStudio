@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, HTTPException
 
 from app.api._shared import ensure_datasources_for_kind
-from app.dbclients.factory import fetch_rows
+from app.dbclients.factory import fetch_rows_with_schema
 from app.models import (
     CompareResult,
     CompareTask,
@@ -127,7 +127,13 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
                 rows.append(row)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"side": side, "limit": preview_limit, "truncated": truncated, "rows": rows}
+        return {
+            "side": side,
+            "limit": preview_limit,
+            "truncated": truncated,
+            "columns": list(rows[0]) if rows else [],
+            "rows": rows,
+        }
 
     datasource_id = task.target_id if side == "target" else task.source_id
     override_datasource_id = payload.get("datasource_id")
@@ -142,7 +148,14 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
         sql = override_sql
     try:
         validate_readonly_sql(sql)
-        rows = fetch_rows(datasource, sql, max_rows=preview_limit, raise_on_overflow=False)
+        result = fetch_rows_with_schema(datasource, sql, max_rows=preview_limit, raise_on_overflow=False)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"side": side, "limit": preview_limit, "truncated": len(rows) == preview_limit, "rows": rows}
+    return {
+        "side": side,
+        "limit": preview_limit,
+        "truncated": len(result.rows) == preview_limit,
+        "columns": result.columns,
+        "warnings": result.warnings,
+        "rows": result.rows,
+    }

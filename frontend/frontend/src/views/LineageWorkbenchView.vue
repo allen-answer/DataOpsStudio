@@ -61,6 +61,23 @@ const progressHint = computed(() => {
   if (aiPending.value) return '规则血缘已返回，AI 结果完成后会自动补充到 AI 辅助页'
   return ''
 })
+const aiReady = computed(() => Boolean(lineageAIStatus.value?.enabled && lineageAIStatus.value?.configured))
+const aiStatusHint = computed(() => {
+  if (!lineageAIStatus.value) return '正在读取 AI 配置状态'
+  if (aiReady.value) {
+    const parts = [`provider: ${lineageAIStatus.value.provider}`]
+    if (lineageAIStatus.value.model) parts.push(`model: ${lineageAIStatus.value.model}`)
+    return parts.join(' · ')
+  }
+  if (lineageAIStatus.value.enabled) return 'AI provider 已设置但配置不完整，请补齐 model / API Key'
+  return 'AI provider 未启用；请到 AI 配置选择 provider 并保存'
+})
+
+watch([aiReady, mode], () => {
+  if (!aiReady.value && inputState.value?.aiEnabled) {
+    inputState.value.aiEnabled = false
+  }
+}, { immediate: true })
 
 function runAnalyze() {
   if (isSinglePipeline.value) {
@@ -211,18 +228,21 @@ function onZipChange(e) {
 
       <div class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2">
         <label class="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <input v-model="inputState.aiEnabled" type="checkbox" class="h-4 w-4 rounded border-violet-300 text-violet-600">
+          <input
+            v-model="inputState.aiEnabled"
+            type="checkbox"
+            :disabled="!aiReady"
+            class="h-4 w-4 rounded border-violet-300 text-violet-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
           AI 辅助分析
         </label>
         <p class="text-xs text-slate-500">
-          <span v-if="lineageAIStatus?.enabled && lineageAIStatus?.configured">
-            provider: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.provider }}</code>
-            <span v-if="lineageAIStatus.model"> · model: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.model }}</code></span>
-          </span>
-          <span v-else-if="lineageAIStatus?.enabled">
-            AI provider 已设置但配置不完整，普通离线分析不受影响
-          </span>
-          <span v-else>默认关闭；只追加 ai_enrichment，不覆盖规则血缘</span>
+          <span>{{ aiStatusHint }}</span>
+          <a
+            v-if="!aiReady"
+            href="#/admin/ai"
+            class="ml-2 font-semibold text-violet-700 hover:text-violet-800"
+          >去配置</a>
         </p>
       </div>
     </div>

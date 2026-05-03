@@ -61,6 +61,8 @@ class PreviewRowsResponse(BaseModel):
     side: str
     limit: int
     truncated: bool
+    columns: list[str] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -68,6 +70,7 @@ class PreviewColumnsResponse(BaseModel):
     """POST /api/preview/columns 返回。SQL kind 与 Excel kind 共用同一
     形状——只输出列名列表，元数据由调用方自行决定怎么用。"""
     columns: list[str] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SqlAssistResponse(BaseModel):

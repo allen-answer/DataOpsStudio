@@ -47,8 +47,11 @@ Windows EPERM 影响。CI 也走 Linux runner。
 ### Docker（主要开发方式）
 
 ```bash
-# 启动全部服务（MySQL 8 + app），代码有变动时自动重建
+# 启动 app，代码有变动时自动重建
 wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose up -d --build"
+
+# 启动 app + 可选 MySQL 样例数据源
+wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose --profile demo-db up -d --build"
 
 # 仅重启 app（仅前端构建后；Python 代码改动必须重建镜像，restart 不够）
 wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker compose restart app"
@@ -63,7 +66,7 @@ wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/g/work/DataOpsStudio && docker cp app/. 
 wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 ```
 
-应用访问地址：**http://localhost:8010**。MySQL 8 暴露在 **localhost:3307**（容器名 `mysql8`，内部端口 3306）。
+应用访问地址：**http://localhost:8010**。默认 compose 只启动 app；MySQL 8 是可选 demo 数据源，启用 `demo-db` profile 后暴露在 **localhost:3307**（容器名 `mysql8`，内部端口 3306），不是 app 元数据库。
 
 `docker-compose.yml` 只 bind-mount `config/results/logs`，**app 源码（`main.py`、`app/`、`tests/`）和前端构建产物（`static/spa/`）都打入镜像**。所以：
 - **前端**：构建产物 `static/spa/index.html` + `assets/` 由 Dockerfile 多阶段构建生成，**改前端代码必须 `docker compose up -d --build`**，仅 restart 不够。本地 dev 模式：`cd frontend/frontend && npm run dev`，vite proxy 到 `app:8000`。

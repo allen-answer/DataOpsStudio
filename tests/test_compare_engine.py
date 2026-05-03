@@ -81,6 +81,29 @@ def test_column_mapping_detects_mismatch():
     assert result["diff"]
 
 
+def test_positional_mapping_handles_unequal_column_counts():
+    src = [{"id": 1, "name": "Alice", "etl_dt": "2026-05-04"}]
+    tgt = [{"id2": 1, "client_name": "Alice"}]
+
+    result = compare_rows(src, tgt, ["id"])
+
+    assert result["diff"] == [
+        {
+            "key": [1],
+            "source": src[0],
+            "target": tgt[0],
+            "changes": {
+                "etl_dt": {
+                    "source": "2026-05-04",
+                    "target": None,
+                    "target_column": "__missing_target_column_3_etl_dt",
+                }
+            },
+        }
+    ]
+    assert result["same"] == []
+
+
 # --- compare_rules: numeric tolerance ---
 
 def test_numeric_tolerance_within_range():

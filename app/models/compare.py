@@ -12,6 +12,7 @@ from app.models.common import SourceKind, SqlMode
 class CompareRules(BaseModel):
     ignore_columns: list[str] = Field(default_factory=list)
     column_mappings: dict[str, str] = Field(default_factory=dict)
+    schema_policy: Literal["warn", "strict"] = "warn"
     numeric_tolerance: float | None = Field(default=None, ge=0)
     trim_strings: bool = False
     case_insensitive: bool = False
@@ -189,6 +190,7 @@ class CompareResult(BaseModel):
     elapsed_seconds: float = 0
     source_rows: int = 0
     target_rows: int = 0
+    schema_report: dict[str, Any] = Field(default_factory=dict)
     samples: dict[Literal["only_source", "only_target", "diff", "same"], list[dict[str, Any]]]
 
 

@@ -1,9 +1,17 @@
 <script setup>
+import { computed } from 'vue'
+
 const props = defineProps({
   enrichment: { type: Object, default: () => ({}) },
 })
 
 const list = (value) => Array.isArray(value) ? value : []
+const disabledMessage = computed(() =>
+  props.enrichment.message
+    || (props.enrichment.reason === 'provider_off'
+      ? 'AI provider 未启用；请到 AI 配置选择 provider 并保存。'
+      : '本次分析未请求 AI 辅助。')
+)
 </script>
 
 <template>
@@ -29,7 +37,12 @@ const list = (value) => Array.isArray(value) ? value : []
 
     <div v-if="!enrichment.enabled" class="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
       <p class="text-sm font-semibold text-slate-600">AI 未启用</p>
-      <p class="mt-1 text-xs text-slate-500">离线规则分析仍会正常输出；需要时在分析入口勾选“AI 辅助分析”，并配置 provider 环境变量。</p>
+      <p class="mt-1 text-xs text-slate-500">{{ disabledMessage }}</p>
+      <a
+        v-if="enrichment.reason === 'provider_off'"
+        href="#/admin/ai"
+        class="mt-3 inline-flex rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700"
+      >去 AI 配置</a>
     </div>
 
     <div v-else-if="enrichment.status === 'pending'" class="rounded-xl border border-amber-200 bg-amber-50 p-4">

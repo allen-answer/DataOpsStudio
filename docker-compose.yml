@@ -1,5 +1,9 @@
 services:
+  # 可选 demo 数据源：仅本地演示 / 测试样例需要。
+  # 默认 `docker compose up` 不启动 MySQL，app 自身不依赖任何应用元数据库。
+  # 如需样例库：`docker compose --profile demo-db up -d --build`
   mysql8:
+    profiles: ["demo-db"]
     image: mysql:8.0
     container_name: mysql8
     # MySQL 8 docker 镜像 client/results 默认 latin1，UTF-8 init script 会被
@@ -35,9 +39,6 @@ services:
       - ./config:/app/config
       - ./results:/app/results
       - ./logs:/app/logs
-    depends_on:
-      mysql8:
-        condition: service_healthy
     restart: unless-stopped
 
   # 浏览器 e2e（可选 profile，默认 docker compose up 不启动）

@@ -59,6 +59,16 @@ const RULE_TOGGLES = computed(() => [
           <p class="muted mt-1 text-[11px]">这些字段不参与值比较；主键不能放进忽略字段。</p>
         </label>
       </div>
+      <div class="mt-3 max-w-md">
+        <label>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">Schema 策略</span>
+          <select v-model="taskDraft.schema_policy" class="bg-slate-50 text-sm">
+            <option value="warn">允许字段不一致，按位置映射并提示</option>
+            <option value="strict">严格模式：字段不一致时阻断执行</option>
+          </select>
+        </label>
+        <p class="muted mt-1 text-[11px]">未手工配置字段映射时，系统按左右字段顺序映射；多出的字段会标记为仅单侧。</p>
+      </div>
     </div>
 
     <!-- 对比开关 4 个 -->

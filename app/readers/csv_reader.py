@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from app.services.compare_schema import uniquify_columns
+
 
 @dataclass
 class CsvReader:
@@ -52,7 +54,11 @@ class CsvReader:
             headers: list[str] = []
             for index, raw_row in enumerate(reader, start=1):
                 if index == self.header_row:
-                    headers = [self._normalize_header(cell) or "" for cell in raw_row]
+                    raw_headers = [self._normalize_header(cell) or "" for cell in raw_row]
+                    headers = [
+                        unique if raw else ""
+                        for raw, unique in zip(raw_headers, uniquify_columns(raw_headers), strict=False)
+                    ]
                     break
             if not any(headers):
                 return
@@ -105,9 +111,10 @@ def list_columns(
         reader = csv.reader(handle, delimiter=delimiter, quotechar=quotechar)
         for index, raw_row in enumerate(reader, start=1):
             if index == header_row:
+                raw_headers = [str(cell).strip().lstrip("﻿") if cell is not None else "" for cell in raw_row]
                 return [
-                    str(cell).strip().lstrip("﻿")
-                    for cell in raw_row
-                    if cell is not None and str(cell).strip()
+                    unique
+                    for raw, unique in zip(raw_headers, uniquify_columns(raw_headers), strict=False)
+                    if raw
                 ]
         return []

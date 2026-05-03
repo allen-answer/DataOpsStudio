@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
-from app.dbclients.factory import fetch_columns, fetch_rows
+from app.dbclients.factory import fetch_column_details, fetch_rows_with_schema
 from app.models import (
     ExcelUploadResponse,
     PreviewColumnsResponse,
@@ -52,10 +52,17 @@ def preview_rows_api(payload: dict[str, object] = Body(...)):
             raise HTTPException(status_code=404, detail="Datasource not found")
         try:
             validate_readonly_sql(sql)
-            rows = fetch_rows(datasource, sql, max_rows=limit, raise_on_overflow=False)
+            result = fetch_rows_with_schema(datasource, sql, max_rows=limit, raise_on_overflow=False)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"side": side, "limit": limit, "truncated": len(rows) == limit, "rows": rows}
+        return {
+            "side": side,
+            "limit": limit,
+            "truncated": len(result.rows) == limit,
+            "columns": result.columns,
+            "warnings": result.warnings,
+            "rows": result.rows,
+        }
 
     try:
         if kind == "excel":
@@ -91,7 +98,8 @@ def preview_rows_api(payload: dict[str, object] = Body(...)):
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"side": side, "limit": limit, "truncated": truncated, "rows": rows}
+    columns = list(rows[0]) if rows else []
+    return {"side": side, "limit": limit, "truncated": truncated, "columns": columns, "rows": rows}
 
 
 @router.post("/api/preview/columns", response_model=PreviewColumnsResponse)
@@ -108,10 +116,10 @@ def preview_columns_api(payload: dict[str, object] = Body(...)):
             raise HTTPException(status_code=404, detail="Datasource not found")
         try:
             validate_readonly_sql(sql)
-            columns = fetch_columns(datasource, sql)
+            details = fetch_column_details(datasource, sql)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"columns": columns}
+        return {"columns": details.columns, "warnings": details.warnings}
     if kind == "excel":
         excel_path = str(payload.get("excel_path") or "")
         sheet = str(payload.get("sheet") or "")
