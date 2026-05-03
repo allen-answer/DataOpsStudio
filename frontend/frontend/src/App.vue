@@ -5,9 +5,10 @@ import { useClipboard } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { apiForm, apiGet, apiJson } from './api'
 import AppShell from './layouts/AppShell.vue'
-import { validateTaskDraft } from './utils/taskValidation'
+// validateTaskDraft 已经迁到 useTaskStore 内部使用
 import { useNoticeStore } from './stores/notice'
 import { useDatasourceStore } from './stores/datasource'
+import { useTaskStore } from './stores/task'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -23,23 +24,29 @@ import { useDatasourceStore } from './stores/datasource'
 //     把 reactive 包成 ref，破坏 view 的 `obj.field = x` 直接赋值用法
 const noticeStore = useNoticeStore()
 const datasourceStore = useDatasourceStore()
+const taskStore = useTaskStore()
 const { notice } = storeToRefs(noticeStore)
 const { actionStatus, setNotice, setActionStatus } = noticeStore
 const { editingDatasourceId } = storeToRefs(datasourceStore)
 const { datasourceDraft, editDraft } = datasourceStore
+// task store 解构：ref 字段经 storeToRefs；reactive (taskDraft) 直接拿
+const {
+  selectedTaskId, sourceFields, targetFields,
+  previewOutput, sourcePreviewData, targetPreviewData,
+  compareResult, asyncJob, asyncStatus, asyncPollTimer,
+  ignoredColumnSet, fieldPickerRows, fieldPickerHasFields,
+  taskValidation, taskValidationIssues, canSaveTask, isSavedTask,
+} = storeToRefs(taskStore)
+const { taskDraft } = taskStore
+const {
+  toggleFieldIncluded, fieldPickerSelectAll, fieldPickerExcludeOneSided,
+  normalizeColumn, parseCsv, parseMappings,
+  fillDraft: storeFillDraft, taskPayload: storeTaskPayload,
+  resetSelectionState, stopAsyncPoll: storeStopAsyncPoll,
+} = taskStore
 
 const route = useRoute()
 const loading = ref(false)
-const asyncPollTimer = ref(null)
-const selectedTaskId = ref('new')
-const previewOutput = ref('')
-const sourcePreviewData = ref(null)
-const targetPreviewData = ref(null)
-const sourceFields = ref([])
-const targetFields = ref([])
-const compareResult = ref(null)
-const asyncJob = ref(null)
-const asyncStatus = ref(null)
 const selectedWorkflowId = ref('new')
 const workflowResult = ref(null)
 const workflowAsyncJob = ref(null)
@@ -61,40 +68,7 @@ const state = reactive({
   historySheets: [],
 })
 
-const taskDraft = reactive({
-  name: '',
-  source_kind: 'sql',
-  target_kind: 'sql',
-  source_id: '',
-  target_id: '',
-  sql_mode: 'single',
-  source_sql: '',
-  target_sql: '',
-  // Excel-side fields. excel_filename and excel_sheets are UI-only — the
-  // backend persists path/sheet/header_row, the rest is for showing
-  // upload state and the sheet dropdown.
-  source_excel_path: '',
-  source_excel_filename: '',
-  source_excel_sheets: [],
-  source_sheet: '',
-  source_header_row: 1,
-  target_excel_path: '',
-  target_excel_filename: '',
-  target_excel_sheets: [],
-  target_sheet: '',
-  target_header_row: 1,
-  key_columns: '',
-  ignore_columns: '',
-  column_mappings: '',
-  numeric_tolerance: '',
-  trim_strings: false,
-  case_insensitive: false,
-  empty_as_null: false,
-  max_rows: 100000,
-  export_max_rows: 50000,
-  fetch_chunk_size: 5000,
-  stream_compare: false,
-})
+// taskDraft / selectedTaskId / 字段选择 / preview / asyncJob 已迁移到 useTaskStore（顶部解构）
 
 // datasourceDraft / editDraft / editingDatasourceId 已迁移到 useDatasourceStore
 // （顶部 storeToRefs 暴露），下面的 startEdit/cancelEdit 也走 store。
@@ -142,15 +116,9 @@ const batch = reactive({
   error: '',
 })
 
+// currentTask 仍依赖 state.tasks（list 还在 App.vue），留在这里 join；
+// isSavedTask / taskValidation / taskValidationIssues / canSaveTask 已迁到 useTaskStore。
 const currentTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value))
-const isSavedTask = computed(() => selectedTaskId.value !== 'new')
-
-// Compare task 校验：派发 issues + canSaveTask 给 view 用。前端做即时反馈，
-// 后端 _validate_compare_inputs 是权威；issues.field 对应 STEP_BY_FIELD 让步骤
-// 条能标红
-const taskValidation = computed(() => validateTaskDraft(taskDraft))
-const taskValidationIssues = computed(() => taskValidation.value.issues)
-const canSaveTask = computed(() => taskValidation.value.canSave)
 const currentWorkflow = computed(() => state.workflows.find((wf) => wf.id === selectedWorkflowId.value))
 const isSavedWorkflow = computed(() => selectedWorkflowId.value !== 'new')
 const selectedHistory = ref(new Set())
@@ -197,51 +165,9 @@ const compareBuckets = [
   { id: 'same', label: '一致' },
 ]
 
-// Field picker — union of source/target fields with which-side badges, mapped
-// to taskDraft.ignore_columns. Matching is case-insensitive + trim, mirroring
-// _normalize_column_name() in app/compare/engine.py.
-const normalizeColumn = (col) => String(col || '').trim().toLowerCase()
-const ignoredColumnSet = computed(() =>
-  new Set(parseCsv(taskDraft.ignore_columns).map(normalizeColumn))
-)
-const fieldPickerRows = computed(() => {
-  const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
-  const targetSet = new Set(targetFields.value.map(normalizeColumn))
-  const order = []
-  const seen = new Set()
-  const push = (name) => {
-    const key = normalizeColumn(name)
-    if (!key || seen.has(key)) return
-    seen.add(key)
-    order.push({
-      name,
-      key,
-      onSource: sourceSet.has(key),
-      onTarget: targetSet.has(key),
-    })
-  }
-  sourceFields.value.forEach(push)
-  targetFields.value.forEach(push)
-  return order.map((row) => ({ ...row, included: !ignoredColumnSet.value.has(row.key) }))
-})
-const fieldPickerHasFields = computed(() => fieldPickerRows.value.length > 0)
-const toggleFieldIncluded = (name) => {
-  const key = normalizeColumn(name)
-  const currentIgnore = parseCsv(taskDraft.ignore_columns)
-  const without = currentIgnore.filter((col) => normalizeColumn(col) !== key)
-  if (without.length < currentIgnore.length) {
-    taskDraft.ignore_columns = without.join(', ')
-  } else {
-    taskDraft.ignore_columns = [...currentIgnore, name].join(', ')
-  }
-}
-const fieldPickerSelectAll = () => { taskDraft.ignore_columns = '' }
-const fieldPickerExcludeOneSided = () => {
-  const oneSided = fieldPickerRows.value
-    .filter((row) => !(row.onSource && row.onTarget))
-    .map((row) => row.name)
-  taskDraft.ignore_columns = oneSided.join(', ')
-}
+// Field picker（normalizeColumn / parseCsv / parseMappings / ignoredColumnSet /
+// fieldPickerRows / fieldPickerHasFields / toggleFieldIncluded /
+// fieldPickerSelectAll / fieldPickerExcludeOneSided）已迁移到 useTaskStore
 
 const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
   const previousTaskId = selectedTaskId.value
@@ -255,7 +181,7 @@ const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
     state.dbTypes = data.db_types || []
     state.history = data.history || []
     state.historySheets = data.history_sheets || []
-    if (state.dbTypes.length) datasourceDraft.value.db_type = state.dbTypes[0]
+    if (state.dbTypes.length) datasourceDraft.db_type = state.dbTypes[0]
     if (state.datasources.length) {
       taskDraft.source_id = state.datasources[0].id
       taskDraft.target_id = state.datasources[0].id
@@ -276,25 +202,10 @@ const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
   }
 }
 
-const parseCsv = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
-const parseMappings = (value) => {
-  const result = {}
-  String(value || '').split('\n').forEach((line) => {
-    const [source, target] = line.split('->').map((item) => item?.trim())
-    if (source && target) result[source] = target
-  })
-  return result
-}
+// parseCsv / parseMappings / normalizeColumn 已迁到 useTaskStore（顶部解构）
 
-// setActionStatus / setNotice 已迁移到 useNoticeStore —— App.vue 顶部 import 后
-// 重新通过 provide('app') 暴露同名给 inject('app') 的 view 用（backward compat）
-
-const stopAsyncPoll = () => {
-  if (asyncPollTimer.value) {
-    clearInterval(asyncPollTimer.value)
-    asyncPollTimer.value = null
-  }
-}
+// setActionStatus / setNotice 迁到 useNoticeStore；stopAsyncPoll 迁到 useTaskStore。
+const stopAsyncPoll = storeStopAsyncPoll
 
 const toErrorMessage = (error) => error?.message || String(error || '未知错误')
 const historyItemTaskLabel = (item) => item.task_name || (item.task_id ? `任务 ${item.task_id.slice(0, 8)}` : '非对比任务')
@@ -326,82 +237,15 @@ const deleteHistory = async (runId) => {
   }
 }
 
-const taskPayload = () => ({
-  name: taskDraft.name,
-  source_kind: taskDraft.source_kind,
-  target_kind: taskDraft.target_kind,
-  source_id: taskDraft.source_id,
-  target_id: taskDraft.target_id,
-  sql_mode: taskDraft.sql_mode,
-  source_sql: taskDraft.source_sql,
-  target_sql: taskDraft.target_sql,
-  source_excel_path: taskDraft.source_excel_path,
-  source_sheet: taskDraft.source_sheet,
-  source_header_row: Number(taskDraft.source_header_row) || 1,
-  target_excel_path: taskDraft.target_excel_path,
-  target_sheet: taskDraft.target_sheet,
-  target_header_row: Number(taskDraft.target_header_row) || 1,
-  key_columns: parseCsv(taskDraft.key_columns),
-  rules: {
-    ignore_columns: parseCsv(taskDraft.ignore_columns),
-    column_mappings: parseMappings(taskDraft.column_mappings),
-    numeric_tolerance: taskDraft.numeric_tolerance === '' ? null : Number(taskDraft.numeric_tolerance),
-    trim_strings: taskDraft.trim_strings,
-    case_insensitive: taskDraft.case_insensitive,
-    empty_as_null: taskDraft.empty_as_null,
-  },
-  limits: {
-    max_rows: Number(taskDraft.max_rows),
-    export_max_rows: Number(taskDraft.export_max_rows),
-    fetch_chunk_size: Number(taskDraft.fetch_chunk_size),
-    stream_compare: taskDraft.stream_compare,
-  },
-})
-
-const fillDraft = (task) => {
-  Object.assign(taskDraft, {
-    name: task?.name || '',
-    source_kind: task?.source_kind || 'sql',
-    target_kind: task?.target_kind || 'sql',
-    source_id: task?.source_id || state.datasources[0]?.id || '',
-    target_id: task?.target_id || state.datasources[0]?.id || '',
-    sql_mode: task?.sql_mode || 'single',
-    source_sql: task?.source_sql || '',
-    target_sql: task?.target_sql || '',
-    source_excel_path: task?.source_excel_path || '',
-    source_excel_filename: task?.source_excel_path ? task.source_excel_path.split('/').pop() : '',
-    source_excel_sheets: [],
-    source_sheet: task?.source_sheet || '',
-    source_header_row: task?.source_header_row || 1,
-    target_excel_path: task?.target_excel_path || '',
-    target_excel_filename: task?.target_excel_path ? task.target_excel_path.split('/').pop() : '',
-    target_excel_sheets: [],
-    target_sheet: task?.target_sheet || '',
-    target_header_row: task?.target_header_row || 1,
-    key_columns: (task?.key_columns || []).join(', '),
-    ignore_columns: (task?.rules?.ignore_columns || []).join(', '),
-    column_mappings: Object.entries(task?.rules?.column_mappings || {}).map(([s, t]) => `${s} -> ${t}`).join('\n'),
-    numeric_tolerance: task?.rules?.numeric_tolerance ?? '',
-    trim_strings: Boolean(task?.rules?.trim_strings),
-    case_insensitive: Boolean(task?.rules?.case_insensitive),
-    empty_as_null: Boolean(task?.rules?.empty_as_null),
-    max_rows: task?.limits?.max_rows || 100000,
-    export_max_rows: task?.limits?.export_max_rows || 50000,
-    fetch_chunk_size: task?.limits?.fetch_chunk_size || 5000,
-    stream_compare: Boolean(task?.limits?.stream_compare),
-  })
-}
+// taskPayload / fillDraft 已迁到 useTaskStore；fillDraft 接受 fallbackDatasourceId
+// 用于"任务里 source_id 为空时退回首个数据源"。
+const taskPayload = storeTaskPayload
+const fillDraft = (task) => storeFillDraft(task, state.datasources[0]?.id || '')
 
 const selectTask = (id) => {
   stopAsyncPoll()
   selectedTaskId.value = id
-  previewOutput.value = ''
-  sourcePreviewData.value = null
-  targetPreviewData.value = null
-  sourceFields.value = []
-  targetFields.value = []
-  compareResult.value = null
-  asyncStatus.value = null
+  resetSelectionState()
   setActionStatus(
     id === 'new' ? 'idle' : 'ready',
     id === 'new' ? '新建任务' : '任务已载入',
