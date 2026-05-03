@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Users,
   ScrollText,
+  Bot,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
 
 // admin-only nav 项：仅 admin role 可见
 const ADMIN_NAV_ITEMS = [
+  { id: 'ai',        label: 'AI 配置',       icon: Bot,          path: '/admin/ai',        matchPaths: ['/admin/ai'] },
   { id: 'users',     label: '用户管理',  icon: Users,        path: '/admin/users',     matchPaths: ['/admin/users'] },
   { id: 'audit',     label: '审计日志',  icon: ScrollText,   path: '/admin/audit',     matchPaths: ['/admin/audit'] },
   { id: 'projects',  label: '项目管理',  icon: FolderOpen,   path: '/admin/projects',  matchPaths: ['/admin/projects'] },

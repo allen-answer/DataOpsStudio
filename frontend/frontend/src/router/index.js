@@ -20,6 +20,7 @@ import LoginView from '../views/LoginView.vue'
 import UserManagementView from '../views/admin/UserManagementView.vue'
 import AuditLogView from '../views/admin/AuditLogView.vue'
 import ProjectManagementView from '../views/admin/ProjectManagementView.vue'
+import AIConfigView from '../views/admin/AIConfigView.vue'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
@@ -40,6 +41,7 @@ const routes = [
   { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },
   { path: '/admin/audit',    name: 'admin-audit',    component: AuditLogView,           meta: { adminOnly: true } },
   { path: '/admin/projects', name: 'admin-projects', component: ProjectManagementView,  meta: { adminOnly: true } },
+  { path: '/admin/ai',       name: 'admin-ai',       component: AIConfigView,           meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]

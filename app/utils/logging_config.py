@@ -11,11 +11,14 @@ from app.utils.paths import LOGS_DIR
 # 模式，替换成 `***`。这只是最后一道防线 —— 业务代码不应该主动 log 密码，
 # 但如果有人在 traceback / repr(datasource) / debug log 里不小心带上，filter
 # 可以兜住，不会写到磁盘 / stdout。
+_SENSITIVE_KEYS = r"password|passwd|pwd|api_key|apikey|access_token|refresh_token|token|secret|authorization"
+
 _PASSWORD_PATTERNS = [
     # form / kwargs 风格：password=secret
-    re.compile(r"(?i)(password|passwd|pwd)\s*=\s*['\"]?([^'\"\s,)}\]]+)['\"]?"),
+    re.compile(rf"(?i)({_SENSITIVE_KEYS})\s*=\s*['\"]?([^'\"\s,)}}\]]+)['\"]?"),
     # JSON 风格："password": "secret"
-    re.compile(r'(?i)("(?:password|passwd|pwd)"\s*:\s*)"([^"]*)"'),
+    re.compile(rf'(?i)("(?:{_SENSITIVE_KEYS})"\s*:\s*)"([^"]*)"'),
+    re.compile(r"(?i)(authorization\s*:\s*)(bearer\s+)?([^,\s)}\]]+)"),
 ]
 
 
@@ -30,6 +33,7 @@ class RedactingFilter(logging.Filter):
         original = msg
         msg = _PASSWORD_PATTERNS[0].sub(lambda m: f"{m.group(1)}=***", msg)
         msg = _PASSWORD_PATTERNS[1].sub(lambda m: f'{m.group(1)}"***"', msg)
+        msg = _PASSWORD_PATTERNS[2].sub(lambda m: f"{m.group(1)}{m.group(2) or ''}***", msg)
         if msg != original:
             record.msg = msg
             record.args = ()

@@ -30,24 +30,70 @@ class LineageAIProvider(Protocol):
 
 def lineage_ai_status() -> dict[str, Any]:
     """Return non-sensitive AI provider state for the frontend."""
-    config = _config()
-    provider = config.provider
-    enabled = provider not in {"off", "disabled", "none", ""}
-    configured = False
-    if provider == "mock":
-        configured = True
-    elif provider in {"openai", "azure", "http", "openai-compatible"}:
-        configured = bool(config.api_key and config.model)
-    elif provider == "ollama":
-        configured = bool(config.model)
+    from app.services.lineage_ai_config import get_public_lineage_ai_config
+
+    status = get_public_lineage_ai_config()
     return {
-        "enabled": enabled,
-        "provider": provider,
-        "model": config.model,
-        "configured": configured,
-        "base_url_configured": bool(config.base_url),
-        "timeout_seconds": config.timeout_seconds,
+        **status,
+        "base_url_configured": bool(status.get("base_url")),
+        "base_url": "",
     }
+
+
+def test_lineage_ai_connection(override: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Probe the configured provider with a tiny payload.
+
+    The optional override is in-memory only. It lets the admin UI test a new
+    key/base URL before saving, while persisted secrets remain encrypted.
+    """
+    config = _config_with_override(override or {})
+    provider = _provider_for(config.provider)
+    if provider is None:
+        return {
+            "ok": False,
+            "status": "disabled",
+            "provider": config.provider or "off",
+            "model": config.model,
+            "error": "AI provider is disabled",
+        }
+
+    started = time.perf_counter()
+    try:
+        enrichment = provider.enrich(
+            {
+                "scope": "connection-test",
+                "dialect": "",
+                "sql_excerpt": "select 1",
+                "scripts": [],
+                "summary": {"table_edge_count": 0, "column_edge_count": 0},
+                "inputs": [],
+                "outputs": [],
+                "table_edges": [],
+                "column_edges": [],
+                "warnings": [],
+                "parse_errors": [],
+                "risks": [],
+            },
+            config,
+        )
+        return {
+            "ok": True,
+            "status": "success",
+            "provider": provider.name,
+            "model": config.model,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "summary": str((enrichment or {}).get("summary") or ""),
+        }
+    except Exception as exc:
+        logger.warning("lineage AI connection test failed provider=%s error=%s", config.provider, exc)
+        return {
+            "ok": False,
+            "status": "error",
+            "provider": config.provider,
+            "model": config.model,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "error": str(exc),
+        }
 
 
 def enrich_lineage_result(
@@ -133,9 +179,9 @@ class OpenAICompatibleLineageAIProvider:
 
     def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
         if not config.api_key:
-            raise ValueError("DATAOPS_LINEAGE_AI_API_KEY is required")
+            raise ValueError("AI API key is required")
         if not config.model:
-            raise ValueError("DATAOPS_LINEAGE_AI_MODEL is required")
+            raise ValueError("AI model is required")
         base_url = config.base_url.rstrip("/") or "https://api.openai.com/v1"
         body = {
             "model": config.model,
@@ -168,7 +214,7 @@ class OllamaLineageAIProvider:
 
     def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
         if not config.model:
-            raise ValueError("DATAOPS_LINEAGE_AI_MODEL is required")
+            raise ValueError("AI model is required")
         base_url = config.base_url.rstrip("/") or "http://localhost:11434"
         body = {
             "model": config.model,
@@ -185,13 +231,33 @@ class OllamaLineageAIProvider:
 
 
 def _config() -> LineageAIConfig:
-    provider = os.getenv("DATAOPS_LINEAGE_AI_PROVIDER", "off").strip().lower() or "off"
+    from app.services.lineage_ai_config import get_effective_lineage_ai_config
+
+    effective = get_effective_lineage_ai_config()
+    provider = str(effective.get("provider") or "off").strip().lower() or "off"
     return LineageAIConfig(
         provider=provider,
-        model=os.getenv("DATAOPS_LINEAGE_AI_MODEL", "").strip(),
-        base_url=os.getenv("DATAOPS_LINEAGE_AI_BASE_URL", "").strip(),
-        api_key=os.getenv("DATAOPS_LINEAGE_AI_API_KEY", "").strip(),
-        timeout_seconds=float(os.getenv("DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS", "20")),
+        model=str(effective.get("model") or "").strip(),
+        base_url=str(effective.get("base_url") or "").strip(),
+        api_key=str(effective.get("api_key") or "").strip(),
+        timeout_seconds=float(effective.get("timeout_seconds") or 20),
+    )
+
+
+def _config_with_override(override: dict[str, Any]) -> LineageAIConfig:
+    base = _config()
+    provider = str(override.get("provider") or base.provider or "off").strip().lower() or "off"
+    timeout = override.get("timeout_seconds", base.timeout_seconds)
+    try:
+        timeout_seconds = float(timeout if timeout not in (None, "") else base.timeout_seconds)
+    except (TypeError, ValueError):
+        timeout_seconds = base.timeout_seconds
+    return LineageAIConfig(
+        provider=provider,
+        model=str(override.get("model") if override.get("model") is not None else base.model).strip(),
+        base_url=str(override.get("base_url") if override.get("base_url") is not None else base.base_url).strip(),
+        api_key=str(override.get("api_key") or base.api_key).strip(),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -254,7 +320,7 @@ def _normalize_enrichment(
         "suggestions": _list_of_dicts(value.get("suggestions")),
         "risks": _list_of_dicts(value.get("risks")),
         "column_hints": _list_of_dicts(value.get("column_hints")),
-        "raw": value if os.getenv("DATAOPS_LINEAGE_AI_INCLUDE_RAW", "false").lower() in {"1", "true", "yes"} else {},
+        "raw": value if _include_raw_enabled() else {},
     }
 
 
@@ -291,6 +357,15 @@ def _error_enrichment(
         "column_hints": [],
         "error": error,
     }
+
+
+def _include_raw_enabled() -> bool:
+    try:
+        from app.services.lineage_ai_config import get_effective_lineage_ai_config
+
+        return bool(get_effective_lineage_ai_config().get("include_raw"))
+    except Exception:
+        return os.getenv("DATAOPS_LINEAGE_AI_INCLUDE_RAW", "false").lower() in {"1", "true", "yes"}
 
 
 def _post_json(

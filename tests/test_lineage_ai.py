@@ -2,8 +2,36 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.lineage.analyzer import analyze_sql_lineage
 from app.services import lineage_ai, lineage_service
+from app.services.lineage_ai_config import (
+    get_effective_lineage_ai_config,
+    get_public_lineage_ai_config,
+    save_lineage_ai_config,
+)
+from app.services.secret_crypto import is_encrypted
+
+
+@pytest.fixture(autouse=True)
+def isolated_ai_config(tmp_path, monkeypatch):
+    cfg = tmp_path / "lineage_ai.json"
+    key = tmp_path / ".dataops_secret.key"
+    from app.services import lineage_ai_config as lineage_ai_config_svc, secret_crypto as secret_crypto_svc
+
+    monkeypatch.setattr(lineage_ai_config_svc, "LINEAGE_AI_CONFIG_FILE", cfg)
+    monkeypatch.setattr(secret_crypto_svc, "LOCAL_SECRET_KEY_FILE", key)
+    for name in [
+        "DATAOPS_LINEAGE_AI_PROVIDER",
+        "DATAOPS_LINEAGE_AI_MODEL",
+        "DATAOPS_LINEAGE_AI_BASE_URL",
+        "DATAOPS_LINEAGE_AI_API_KEY",
+        "DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS",
+        "DATAOPS_LINEAGE_AI_INCLUDE_RAW",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    yield
 
 
 def test_lineage_ai_default_disabled(monkeypatch):
@@ -129,3 +157,75 @@ def test_lineage_service_can_enable_mock_ai(monkeypatch):
 
     assert result["ai_enrichment"]["status"] == "success"
     assert result["ai_enrichment"]["provider"] == "mock"
+
+
+def test_lineage_ai_config_encrypts_saved_api_key():
+    public = save_lineage_ai_config({
+        "provider": "openai",
+        "model": "lineage-model",
+        "base_url": "http://ai.local/v1",
+        "api_key": "super-secret-key",
+    })
+
+    from app.services import lineage_ai_config as lineage_ai_config_svc
+
+    raw = json.loads(lineage_ai_config_svc.LINEAGE_AI_CONFIG_FILE.read_text(encoding="utf-8"))
+    assert "super-secret-key" not in lineage_ai_config_svc.LINEAGE_AI_CONFIG_FILE.read_text(encoding="utf-8")
+    assert is_encrypted(raw["api_key_encrypted"])
+    assert public["api_key_set"] is True
+    assert public["api_key_encrypted"] is True
+    assert "api_key" not in public
+    assert get_effective_lineage_ai_config()["api_key"] == "super-secret-key"
+
+
+def test_lineage_ai_config_blank_key_preserves_and_clear_removes():
+    save_lineage_ai_config({"provider": "openai", "model": "m1", "api_key": "first-key"})
+
+    save_lineage_ai_config({"provider": "openai", "model": "m2", "api_key": ""})
+    assert get_effective_lineage_ai_config()["api_key"] == "first-key"
+    assert get_public_lineage_ai_config()["model"] == "m2"
+
+    public = save_lineage_ai_config({"provider": "openai", "model": "m2", "clear_api_key": True})
+    assert public["api_key_set"] is False
+    assert get_effective_lineage_ai_config()["api_key"] == ""
+
+
+def test_lineage_ai_connection_test_uses_in_memory_override():
+    result = lineage_ai.test_lineage_ai_connection({
+        "provider": "mock",
+        "model": "demo-model",
+        "api_key": "not-saved",
+    })
+
+    assert result["ok"] is True
+    assert result["provider"] == "mock"
+    assert get_public_lineage_ai_config()["api_key_set"] is False
+
+
+def test_lineage_ai_config_api_is_admin_only_and_non_sensitive(isolated_storage):
+    from app.services import auth as auth_svc
+    from fastapi.testclient import TestClient
+    from main import app
+
+    auth_svc.bootstrap_default_admin()
+    client = TestClient(app)
+
+    assert client.get("/api/lineage/ai/config").status_code == 401
+    token = client.post("/api/auth/login", json={"username": "admin", "password": "admin"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.put(
+        "/api/lineage/ai/config",
+        headers=headers,
+        json={"provider": "openai", "model": "lineage-model", "api_key": "api-secret"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["api_key_set"] is True
+    assert "api_key" not in payload
+    assert "api-secret" not in response.text
+
+    status = client.get("/api/lineage/ai/status").json()
+    assert status["api_key_set"] is True
+    assert "api_key" not in status
+    assert "api-secret" not in json.dumps(status)

@@ -12,6 +12,8 @@ TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 WORKFLOWS_FILE = CONFIG_DIR / "workflows.json"
 WORKFLOW_TEMPLATES_FILE = CONFIG_DIR / "workflow_templates.json"
+LINEAGE_AI_CONFIG_FILE = CONFIG_DIR / "lineage_ai.json"
+LOCAL_SECRET_KEY_FILE = CONFIG_DIR / ".dataops_secret.key"
 WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
 LINEAGE_GROUP_RULES_YAML = CONFIG_DIR / "lineage_group_rules.yml"
 LINEAGE_GROUP_RULES_JSON = CONFIG_DIR / "lineage_group_rules.json"
@@ -32,6 +34,8 @@ def ensure_dirs() -> None:
         WORKFLOWS_FILE.write_text("[]", encoding="utf-8")
     if not WORKFLOW_TEMPLATES_FILE.exists():
         WORKFLOW_TEMPLATES_FILE.write_text("[]", encoding="utf-8")
+    if not LINEAGE_AI_CONFIG_FILE.exists():
+        LINEAGE_AI_CONFIG_FILE.write_text("{}", encoding="utf-8")
     if not USERS_FILE.exists():
         USERS_FILE.write_text("[]", encoding="utf-8")
     if not PROJECTS_FILE.exists():
