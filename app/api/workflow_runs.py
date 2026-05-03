@@ -12,11 +12,11 @@ from app.models import (
     WorkflowRunSummary,
 )
 from app.services.jobs import submit_workflow_run
-from app.services.openlineage_emitter import build_workflow_run_events
+from app.services.openlineage_emitter import build_workflow_run_events, emit_workflow_run_openlineage
 from app.services.repositories import workflow_store
 from app.services.workflow_engine import transitive_ancestors
 from app.services.workflow_history import (
-    delete_workflow_run, get_workflow_run, list_workflow_runs,
+    delete_workflow_run, get_workflow_run, list_workflow_runs, persist_workflow_run,
 )
 
 
@@ -44,6 +44,21 @@ def get_workflow_run_openlineage_api(run_id: str):
     run = WorkflowRun.model_validate(run_data)
     workflow = workflow_store.get(run.workflow_id)
     return {"events": build_workflow_run_events(run, workflow)}
+
+
+@router.post("/api/workflow-runs/{run_id}/openlineage/emit")
+def emit_workflow_run_openlineage_api(run_id: str):
+    run_data = get_workflow_run(run_id)
+    if run_data is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    run = WorkflowRun.model_validate(run_data)
+    workflow = workflow_store.get(run.workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    results = emit_workflow_run_openlineage(workflow, run, trigger="manual_reemit")
+    run.integrations["openlineage"] = results
+    persist_workflow_run(run)
+    return {"ok": all(item.get("ok") for item in results) if results else False, "results": results}
 
 
 @router.delete("/api/workflow-runs/{run_id}", response_model=OkResponse)

@@ -10,6 +10,11 @@ from app.services import lineage_service
 router = APIRouter()
 
 
+@router.get("/api/lineage/ai/status")
+def lineage_ai_status_api():
+    return lineage_service.ai_status()
+
+
 @router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
 def lineage_api(payload: dict[str, str] = Body(...)):
     try:

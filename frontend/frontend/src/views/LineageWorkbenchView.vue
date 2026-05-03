@@ -14,6 +14,7 @@ const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue
 
 const {
   lineage, batch, batchSelectedFileNames,
+  lineageAIStatus, loadLineageAIStatus,
   analyzeLineage, analyzeBatch,
 } = inject('app')
 
@@ -34,7 +35,10 @@ function defaultModeFromRoute(path) {
 
 const mode = ref(defaultModeFromRoute(route.path))
 watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
-onMounted(() => { mode.value = defaultModeFromRoute(route.path) })
+onMounted(() => {
+  mode.value = defaultModeFromRoute(route.path)
+  loadLineageAIStatus?.()
+})
 
 const currentModeMeta = computed(() => MODES.find(m => m.id === mode.value))
 const isSinglePipeline = computed(() => currentModeMeta.value?.pipeline === 'single')
@@ -176,6 +180,23 @@ function onZipChange(e) {
           </template>
         </SchemaPanel>
       </div>
+
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2">
+        <label class="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <input v-model="inputState.aiEnabled" type="checkbox" class="h-4 w-4 rounded border-violet-300 text-violet-600">
+          AI 辅助分析
+        </label>
+        <p class="text-xs text-slate-500">
+          <span v-if="lineageAIStatus?.enabled && lineageAIStatus?.configured">
+            provider: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.provider }}</code>
+            <span v-if="lineageAIStatus.model"> · model: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.model }}</code></span>
+          </span>
+          <span v-else-if="lineageAIStatus?.enabled">
+            AI provider 已设置但配置不完整，普通离线分析不受影响
+          </span>
+          <span v-else>默认关闭；只追加 ai_enrichment，不覆盖规则血缘</span>
+        </p>
+      </div>
     </div>
 
     <!-- 错误条 -->
@@ -200,6 +221,7 @@ function onZipChange(e) {
       :graph-edges="isSinglePipeline ? (result.graph_edges || []) : (result.table_edges || [])"
       :columns="isSinglePipeline ? (result.columns || []) : []"
       :insert-mappings="isSinglePipeline ? (result.insert_mappings || []) : (result.field_mappings || [])"
+      :ai-enrichment="result.ai_enrichment || {}"
     />
   </section>
 </template>

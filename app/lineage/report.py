@@ -340,10 +340,14 @@ def _column_edges_from_insert_mappings(insert_mappings: list[dict[str, Any]]) ->
         source_table = source_tables[0] if len(source_tables) == 1 else ""
         if not sources:
             edges.append({
-                "source_table": "", "source_column": "",
+                "source_table": m.get("source_type", "") or "constant",
+                "source_column": m.get("source_type", "") or "constant",
                 "target_table": target_table, "target_column": target_column,
                 "transform": m.get("expression", "") or m.get("transform", ""),
                 "confidence": m.get("confidence", "high"),
+                "reason": m.get("reason", ""),
+                "source_type": m.get("source_type", "constant"),
+                "warnings": m.get("warnings", []) or [],
                 "statement_index": m.get("statement_index", ""),
             })
             continue
@@ -354,6 +358,9 @@ def _column_edges_from_insert_mappings(insert_mappings: list[dict[str, Any]]) ->
                 "target_table": target_table, "target_column": target_column,
                 "transform": m.get("expression", "") or m.get("transform", ""),
                 "confidence": m.get("confidence", "high"),
+                "reason": m.get("reason", ""),
+                "source_type": m.get("source_type", "column"),
+                "warnings": m.get("warnings", []) or [],
                 "statement_index": m.get("statement_index", ""),
             })
     return edges
@@ -370,6 +377,9 @@ def _column_edges_from_field_mappings(field_mappings: list[dict[str, Any]]) -> l
             "target_column": m.get("target_column", "") or "",
             "transform": m.get("expression", "") or m.get("transform", ""),
             "confidence": m.get("confidence", "high"),
+            "reason": m.get("reason", ""),
+            "source_type": m.get("source_type", "column"),
+            "warnings": m.get("warnings", []) or [],
             "file_name": m.get("file_name", "") or "",
             "statement_index": m.get("statement_index", ""),
         })

@@ -258,9 +258,11 @@ def _run_workflow_job(
                     resume_from=resume_from,
                     from_node_id=from_node_id,
                 )
-                persist_workflow_run(run)
                 notify_workflow_run(workflow, run, trigger=trigger, job_id=job_id)
-                emit_workflow_run_openlineage(workflow, run, trigger=trigger, job_id=job_id)
+                emit_results = emit_workflow_run_openlineage(workflow, run, trigger=trigger, job_id=job_id)
+                if emit_results:
+                    run.integrations["openlineage"] = emit_results
+                persist_workflow_run(run)
                 result = run.model_dump(mode="json")
                 if run.error == "cancelled":
                     _patch_job(

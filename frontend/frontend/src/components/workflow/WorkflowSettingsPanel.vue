@@ -1,14 +1,48 @@
 <script setup>
+import { computed, inject } from 'vue'
 import { parameterTypeMeta } from '../../mock/workflow_meta'
 
 // 详情页右侧元数据 sidebar：运行参数预览 + 描述/项目/状态/owner/cron/tags +
 // 输入/输出资产编辑器 + 资产只读卡。workflowDraft 由父传入，子直接 mutate
 // （保留旧行为：reactive proxy 经 prop 仍能被子组件改）。
-defineProps({
+const props = defineProps({
   workflowDraft: { type: Object, required: true },
   parameters:    { type: Array,  default: () => [] },   // 解析自 params 节点
   resolvedParams: { type: Object, default: () => ({}) },
 })
+
+const { state } = inject('app', { state: { datasources: [] } })
+
+const openLineageTargets = computed(() => (props.workflowDraft.notifications || [])
+  .filter((item) => ['openlineage', 'openlineage_webhook'].includes(String(item.type || '').toLowerCase())))
+
+function addOpenLineageTarget() {
+  ;(props.workflowDraft.notifications || (props.workflowDraft.notifications = [])).push({
+    type: 'openlineage',
+    enabled: true,
+    url: '',
+    events: ['all'],
+    namespace: 'dataops-studio',
+    timeout_seconds: 5,
+  })
+}
+
+function removeNotification(target) {
+  const index = (props.workflowDraft.notifications || []).indexOf(target)
+  if (index >= 0) props.workflowDraft.notifications.splice(index, 1)
+}
+
+function addSensor(type = 'sql') {
+  const next = (props.workflowDraft.sensors || []).length + 1
+  ;(props.workflowDraft.sensors || (props.workflowDraft.sensors = [])).push({
+    id: `${type}_${next}`,
+    type,
+    enabled: true,
+    interval_seconds: 60,
+    cooldown_seconds: 300,
+    ...(type === 'sql' ? { datasource_id: '', sql: 'select 1 as ready' } : { url: '', expect_status: 200, json_path: '', equals: '' }),
+  })
+}
 </script>
 
 <template>
@@ -89,6 +123,88 @@ defineProps({
                  placeholder="orders, daily, prod"
                  class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
         </label>
+
+        <!-- Sensor 配置 -->
+        <div class="rounded-lg border border-slate-200 bg-slate-50/60 p-2">
+          <div class="mb-2 flex items-center justify-between">
+            <span class="text-[10px] font-semibold text-slate-500">Sensor 触发器</span>
+            <div class="flex gap-1">
+              <button class="text-[10.5px] font-semibold text-blue-600 hover:underline" @click="addSensor('sql')">+ SQL</button>
+              <button class="text-[10.5px] font-semibold text-blue-600 hover:underline" @click="addSensor('http')">+ HTTP</button>
+            </div>
+          </div>
+          <ul class="space-y-2">
+            <li v-for="(sensor, i) in workflowDraft.sensors" :key="sensor.id || i" class="rounded-lg border border-slate-200 bg-white p-2">
+              <div class="grid grid-cols-[56px_minmax(0,1fr)_70px_24px] gap-1">
+                <select v-model="sensor.type" class="rounded-md border border-slate-200 px-1 py-1 text-[11px]">
+                  <option value="sql">SQL</option>
+                  <option value="http">HTTP</option>
+                </select>
+                <input v-model="sensor.id" placeholder="sensor_id" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                <label class="flex items-center justify-center gap-1 text-[10.5px] text-slate-600">
+                  <input v-model="sensor.enabled" type="checkbox"> 启用
+                </label>
+                <button class="rounded text-rose-600 hover:bg-rose-50" @click="workflowDraft.sensors.splice(i, 1)">×</button>
+              </div>
+              <div class="mt-1 grid grid-cols-2 gap-1">
+                <input v-model.number="sensor.interval_seconds" type="number" min="5" placeholder="interval_seconds"
+                       class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                <input v-model.number="sensor.cooldown_seconds" type="number" min="0" placeholder="cooldown_seconds"
+                       class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+              </div>
+              <template v-if="sensor.type === 'sql'">
+                <select v-model="sensor.datasource_id" class="mt-1 block w-full rounded-md border border-slate-200 px-2 py-1 text-[11px]">
+                  <option value="">选择数据源</option>
+                  <option v-for="ds in state.datasources" :key="ds.id" :value="ds.id">{{ ds.name }} · {{ ds.db_type }}</option>
+                </select>
+                <textarea v-model="sensor.sql" rows="2" placeholder="select count(*) > 0 as ready from ..."
+                          class="mt-1 block w-full rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]"></textarea>
+              </template>
+              <template v-else>
+                <input v-model="sensor.url" placeholder="https://example.com/ready"
+                       class="mt-1 block w-full rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                <div class="mt-1 grid grid-cols-3 gap-1">
+                  <input v-model.number="sensor.expect_status" type="number" placeholder="200" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                  <input v-model="sensor.json_path" placeholder="$.ready" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                  <input v-model="sensor.equals" placeholder="equals 可选" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                </div>
+              </template>
+            </li>
+          </ul>
+          <p v-if="!workflowDraft.sensors?.length" class="text-[11px] text-slate-400">未配置 sensor；active 状态下可由 cron 或 sensor 自动触发。</p>
+        </div>
+
+        <!-- OpenLineage webhook 配置 -->
+        <div class="rounded-lg border border-violet-100 bg-violet-50/50 p-2">
+          <div class="mb-2 flex items-center justify-between">
+            <span class="text-[10px] font-semibold text-violet-700">OpenLineage Webhook</span>
+            <button class="text-[10.5px] font-semibold text-violet-700 hover:underline" @click="addOpenLineageTarget">+ 添加</button>
+          </div>
+          <ul class="space-y-2">
+            <li v-for="target in openLineageTargets" :key="target.url || target.namespace" class="rounded-lg border border-violet-100 bg-white p-2">
+              <div class="grid grid-cols-[minmax(0,1fr)_90px_24px] gap-1">
+                <input v-model="target.url" placeholder="http://marquez:5000/api/v1/lineage"
+                       class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                <label class="flex items-center justify-center gap-1 text-[10.5px] text-slate-600">
+                  <input v-model="target.enabled" type="checkbox"> 启用
+                </label>
+                <button class="rounded text-rose-600 hover:bg-rose-50" @click="removeNotification(target)">×</button>
+              </div>
+              <div class="mt-1 grid grid-cols-3 gap-1">
+                <select :value="(target.events || ['all']).join(',')" class="rounded-md border border-slate-200 px-1 py-1 text-[11px]"
+                        @change="target.events = $event.target.value === 'all' ? ['all'] : [$event.target.value]">
+                  <option value="all">all</option>
+                  <option value="START">START</option>
+                  <option value="COMPLETE">COMPLETE</option>
+                  <option value="FAIL">FAIL</option>
+                </select>
+                <input v-model="target.namespace" placeholder="dataops-studio" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+                <input v-model.number="target.timeout_seconds" type="number" min="1" placeholder="5" class="rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px]">
+              </div>
+            </li>
+          </ul>
+          <p v-if="!openLineageTargets.length" class="text-[11px] text-slate-400">未配置时可用 DATAOPS_OPENLINEAGE_WEBHOOK_URL 兜底。</p>
+        </div>
 
         <!-- 输入资产编辑器 -->
         <div>

@@ -28,6 +28,28 @@ class LineageAIProvider(Protocol):
         ...
 
 
+def lineage_ai_status() -> dict[str, Any]:
+    """Return non-sensitive AI provider state for the frontend."""
+    config = _config()
+    provider = config.provider
+    enabled = provider not in {"off", "disabled", "none", ""}
+    configured = False
+    if provider == "mock":
+        configured = True
+    elif provider in {"openai", "azure", "http", "openai-compatible"}:
+        configured = bool(config.api_key and config.model)
+    elif provider == "ollama":
+        configured = bool(config.model)
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "model": config.model,
+        "configured": configured,
+        "base_url_configured": bool(config.base_url),
+        "timeout_seconds": config.timeout_seconds,
+    }
+
+
 def enrich_lineage_result(
     result: dict[str, Any],
     *,

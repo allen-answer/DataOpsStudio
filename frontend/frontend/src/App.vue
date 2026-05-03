@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 
 import { useRoute } from 'vue-router'
 import { useClipboard } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { apiForm, apiGet, apiJson } from './api'
+import { apiGet } from './api'
 import AppShell from './layouts/AppShell.vue'
 // validateTaskDraft 已经迁到 useTaskStore 内部使用
 import { useNoticeStore } from './stores/notice'
@@ -73,13 +73,15 @@ const {
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet,
   addParameter, removeParameter,
-  loadWorkflowRunHistory, loadAllWorkflowRuns, loadWorkflowRunDetail,
+  loadWorkflowRunHistory, loadAllWorkflowRuns, loadWorkflowRunDetail, reemitWorkflowRunOpenLineage,
+  loadWorkflowTemplates, saveWorkflowAsTemplate, createWorkflowFromTemplate, deleteWorkflowTemplate,
   selectWorkflow, saveWorkflow, deleteWorkflow,
   runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
   rerunWorkflowFromNode, cancelWorkflowAsync,
 } = workflowStore
 
 // lineage / batch store
+const { lineageAIStatus } = storeToRefs(lineageStore)
 const { lineage } = lineageStore
 const { batchActiveTab, batchSelectedFileNames } = storeToRefs(batchStore)
 const { batch, batchTabs } = batchStore
@@ -208,75 +210,7 @@ const exportHistory = historyStore.exportHistory
 //   extractFields / recommendKey / formatSql
 //   currentTask / fillDraft / taskPayload
 
-// --- Workflow handlers 已迁到 useWorkflowStore；codex 的模板 4 个仍在下面 ---
-
-const loadWorkflowTemplates = async () => {
-  try {
-    workflowTemplates.value = await apiGet('/api/workflow-templates')
-    state.workflowTemplates = workflowTemplates.value
-  } catch (error) {
-    setNotice(`加载模板失败：${toErrorMessage(error)}`)
-  }
-}
-
-const saveWorkflowAsTemplate = async () => {
-  if (selectedWorkflowId.value === 'new') {
-    setNotice('请先保存作业流，再沉淀为模板')
-    return
-  }
-  const defaultName = `${workflowDraft.name || currentWorkflow.value?.name || 'workflow'} 模板`
-  const name = prompt('模板名称', defaultName)
-  if (!name) return
-  try {
-    const template = await apiJson(`/api/workflows/${selectedWorkflowId.value}/template`, 'POST', {
-      name,
-      description: workflowDraft.description || currentWorkflow.value?.description || '',
-      category: workflowDraft.project || currentWorkflow.value?.project || '',
-      tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags : [],
-    })
-    workflowTemplates.value = [template, ...workflowTemplates.value.filter((item) => item.id !== template.id)]
-    state.workflowTemplates = workflowTemplates.value
-    setNotice('作业流模板已保存')
-    return template
-  } catch (error) {
-    setNotice(`保存模板失败：${toErrorMessage(error)}`)
-    return null
-  }
-}
-
-const createWorkflowFromTemplate = async (templateId, options = {}) => {
-  const template = workflowTemplates.value.find((item) => item.id === templateId)
-  const defaultName = options.name || `${template?.workflow?.name || template?.name || 'workflow'} 副本`
-  const name = options.skipPrompt ? defaultName : prompt('新作业流名称', defaultName)
-  if (!name) return null
-  try {
-    const workflow = await apiJson(`/api/workflow-templates/${templateId}/instantiate`, 'POST', {
-      name,
-      project: options.project || '',
-      owner: options.owner || '',
-      status: options.status || 'draft',
-    })
-    state.workflows.unshift(workflow)
-    selectWorkflow(workflow.id)
-    setNotice('已从模板创建作业流')
-    return workflow
-  } catch (error) {
-    setNotice(`从模板创建失败：${toErrorMessage(error)}`)
-    return null
-  }
-}
-
-const deleteWorkflowTemplate = async (templateId) => {
-  if (!confirm('确认删除这个作业流模板？不会影响已创建的作业流。')) return
-  try {
-    await apiJson(`/api/workflow-templates/${templateId}`, 'DELETE')
-    workflowTemplates.value = workflowTemplates.value.filter((item) => item.id !== templateId)
-    state.workflowTemplates = workflowTemplates.value
-    setNotice('模板已删除')
-  } catch (error) {
-    setNotice(`删除模板失败：${toErrorMessage(error)}`)
-  }
-}
+// Workflow handlers（含模板）已迁到 useWorkflowStore。
 
 // startEdit/cancelEdit 直接走 store 方法（暴露在 provide('app')）
 const startEditDatasource = datasourceStore.startEditDatasource
@@ -291,6 +225,7 @@ const testDatasource = datasourceStore.testDatasource
 
 // analyzeLineage / analyzeBatch 已迁到对应 store
 const analyzeLineage = lineageStore.analyzeLineage
+const loadLineageAIStatus = lineageStore.loadLineageAIStatus
 const analyzeBatch = batchStore.analyzeBatch
 
 // 含密码导出 —— 二次确认弹窗，避免误点把明文密码导出去。
@@ -318,7 +253,7 @@ provide('app', {
   taskValidationIssues, canSaveTask,
   sourcePreviewData, targetPreviewData, sourceFields, targetFields,
   compareResult, asyncJob, asyncStatus, previewOutput, actionStatus,
-  lineage, batch, batchActiveTab, batchTabs,
+  lineage, lineageAIStatus, batch, batchActiveTab, batchTabs,
   selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
   // computed
   driverItems, historyTaskOptions, filteredHistory,
@@ -337,7 +272,7 @@ provide('app', {
   startEditDatasource, cancelEditDatasource, updateDatasource,
   deleteDatasource, createDatasource, testDatasource,
   // handlers — lineage / batch
-  analyzeLineage, analyzeBatch,
+  analyzeLineage, analyzeBatch, loadLineageAIStatus,
   // handlers — history
   loadHistory, deleteHistory, exportHistory,
   // workflow state + handlers
@@ -349,7 +284,7 @@ provide('app', {
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   addExportSheet, removeExportSheet, moveExportSheet, SHEET_TEMPLATES,
   addParameter, removeParameter,
-  loadWorkflowRunHistory, loadWorkflowRunDetail, loadAllWorkflowRuns,
+  loadWorkflowRunHistory, loadWorkflowRunDetail, loadAllWorkflowRuns, reemitWorkflowRunOpenLineage,
 })
 </script>
 

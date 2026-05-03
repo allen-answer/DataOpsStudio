@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import {
   LayoutDashboard, Inbox, Upload, Workflow,
-  Network, Layers, Sparkles, GitBranch, AlertTriangle,
+  Network, Layers, Sparkles, GitBranch, AlertTriangle, Bot,
 } from 'lucide-vue-next'
 import LineageSummaryPanel from '../components/lineage/LineageSummaryPanel.vue'
 import LineageAssetPanel from '../components/lineage/LineageAssetPanel.vue'
@@ -11,6 +11,7 @@ import LineageGraphPanel from '../components/lineage/LineageGraphPanel.vue'
 import LineageSemanticPanel from '../components/lineage/LineageSemanticPanel.vue'
 import LineageImpactPanel from '../components/lineage/LineageImpactPanel.vue'
 import LineageRiskPanel from '../components/lineage/LineageRiskPanel.vue'
+import LineageAIEnrichmentPanel from '../components/lineage/LineageAIEnrichmentPanel.vue'
 import ColumnLineageGraph from '../components/lineage/ColumnLineageGraph.vue'
 import LineageMappings from '../components/LineageMappings.vue'
 
@@ -25,6 +26,7 @@ const props = defineProps({
   graphEdges:  { type: Array, default: () => [] },
   columns: { type: Array, default: () => [] },
   insertMappings: { type: Array, default: () => [] },
+  aiEnrichment: { type: Object, default: () => ({}) },
 })
 
 const TABS = [
@@ -37,6 +39,7 @@ const TABS = [
   { id: 'semantic',label: '语义血缘', icon: Sparkles },
   { id: 'impact',  label: '影响分析', icon: GitBranch },
   { id: 'risks',   label: '风险',     icon: AlertTriangle },
+  { id: 'ai',      label: 'AI 辅助',  icon: Bot },
 ]
 
 const activeTab = ref('summary')
@@ -79,6 +82,7 @@ const tabBadgeCount = computed(() => ({
   column:  props.report.column_edges?.length || 0,
   impact:  Object.keys(props.report.impact_analysis?.downstream || {}).length,
   risks:   props.report.risks?.length || 0,
+  ai:      props.aiEnrichment?.enabled ? 1 : 0,
 }))
 </script>
 
@@ -194,6 +198,11 @@ const tabBadgeCount = computed(() => ({
       v-else-if="activeTab === 'risks'"
       :risks="report.risks"
       :preset="tabPresets.risks"
+    />
+
+    <LineageAIEnrichmentPanel
+      v-else-if="activeTab === 'ai'"
+      :enrichment="aiEnrichment"
     />
   </div>
 </template>

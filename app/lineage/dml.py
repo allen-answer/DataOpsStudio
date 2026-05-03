@@ -122,6 +122,8 @@ def update_table_mappings(statement: Any) -> list[dict[str, Any]]:
             "transform": "UPDATE",
             "dml_type": "UPDATE",
             "confidence": "medium",
+            "reason": "UPDATE 仅能静态确认表级依赖",
+            "source_type": "table",
             "warnings": [],
         }
         for i, src in enumerate(source_tables)
@@ -157,6 +159,8 @@ def merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
             "transform": "MERGE",
             "dml_type": "MERGE",
             "confidence": "medium",
+            "reason": "MERGE USING 来源表级依赖",
+            "source_type": "table",
             "warnings": [],
         }
         for i, src in enumerate(source_tables)
@@ -192,6 +196,8 @@ def delete_table_mappings(statement: Any) -> list[dict[str, Any]]:
             "transform": "DELETE",
             "dml_type": "DELETE",
             "confidence": "medium",
+            "reason": "DELETE 条件来源表级依赖",
+            "source_type": "table",
             "warnings": [],
         }
         for i, src in enumerate(source_tables)
@@ -246,6 +252,8 @@ def insert_mappings(
                         "transform": "星号展开",
                         "dml_type": insert_dml_type(statement),
                         "confidence": "high",
+                        "reason": "Schema 星号展开",
+                        "source_type": "column",
                         "warnings": [],
                     }
                 )
@@ -266,6 +274,8 @@ def insert_mappings(
                 "transform": transform_type(expression),
                 "dml_type": insert_dml_type(statement),
                 "confidence": info["confidence"],
+                "reason": info["reason"],
+                "source_type": info["source_type"],
                 "warnings": info["warnings"],
             }
         )
@@ -310,6 +320,8 @@ def create_table_mappings(
                         "dml_type": create_dml_type(statement),
                         "is_temp": is_temp,
                         "confidence": "high",
+                        "reason": "Schema 星号展开",
+                        "source_type": "column",
                         "warnings": [],
                     }
                 )
@@ -331,6 +343,8 @@ def create_table_mappings(
                 "dml_type": create_dml_type(statement),
                 "is_temp": is_temp,
                 "confidence": info["confidence"],
+                "reason": info["reason"],
+                "source_type": info["source_type"],
                 "warnings": info["warnings"],
             }
         )

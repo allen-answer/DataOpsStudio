@@ -6,7 +6,8 @@ import WorkflowRunNodeDetail from '../../components/workflow/WorkflowRunNodeDeta
 const emit = defineEmits(['back', 'open-detail'])
 const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
         rerunWorkflowFromNode,
-        workflowAsyncJob, workflowAsyncStatus, cancelWorkflowAsync } = inject('app')
+        workflowAsyncJob, workflowAsyncStatus, cancelWorkflowAsync,
+        reemitWorkflowRunOpenLineage } = inject('app')
 
 // 历史 run 复用变量重跑：剥掉内置变量，避免冻结时间。和 detail view 共享
 // 同样的 helper 语义。
@@ -123,6 +124,8 @@ const stepBarStyle = (step) => ({
 
 // 事件流合成
 const events = computed(() => synthesizeEvents(run.value))
+const openLineageResults = computed(() => run.value?.integrations?.openlineage || [])
+const openLineageOkCount = computed(() => openLineageResults.value.filter((item) => item.ok).length)
 
 // 选中节点的事件 —— 传给 WorkflowRunNodeDetail 渲染
 const selectedNodeEvents = computed(() => events.value.filter((ev) => ev.step === selectedNodeId.value))
@@ -217,6 +220,34 @@ const runStatusDisplay = computed(() => {
             ▣ 终止
           </button>
         </div>
+      </div>
+
+      <div v-if="openLineageResults.length" class="mt-3 rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-[10.5px] font-semibold uppercase tracking-wider text-violet-700">
+            OpenLineage · {{ openLineageOkCount }}/{{ openLineageResults.length }} sent
+          </p>
+          <button class="inline-flex h-7 items-center gap-1 rounded-lg border border-violet-200 bg-white px-2.5 text-[11px] font-semibold text-violet-700 transition hover:bg-violet-50"
+                  @click="reemitWorkflowRunOpenLineage?.(run.run_id)">
+            重新发送
+          </button>
+        </div>
+        <div class="mt-2 grid gap-1 md:grid-cols-2">
+          <div v-for="(item, i) in openLineageResults" :key="i" class="rounded border border-violet-100 bg-white px-2 py-1 text-[11px]">
+            <span class="font-mono font-semibold" :class="item.ok ? 'text-emerald-700' : 'text-rose-700'">{{ item.event_type }}</span>
+            <span class="text-slate-400"> · </span>
+            <span class="break-all font-mono text-slate-600">{{ item.target || '(missing url)' }}</span>
+            <p v-if="item.error" class="mt-0.5 break-all font-mono text-rose-700">{{ item.error }}</p>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="mt-3 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <p class="text-[11px] text-slate-500">OpenLineage 未发送或未配置 webhook。</p>
+        <button class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                @click="reemitWorkflowRunOpenLineage?.(run.run_id)">
+          尝试发送
+        </button>
       </div>
 
       <!-- summary stats -->

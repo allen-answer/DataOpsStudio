@@ -16,6 +16,20 @@ def test_lineage_ai_default_disabled(monkeypatch):
     assert enriched["ai_enrichment"]["status"] == "disabled"
 
 
+def test_lineage_ai_status_is_non_sensitive(monkeypatch):
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "lineage-model")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+
+    status = lineage_ai.lineage_ai_status()
+
+    assert status["enabled"] is True
+    assert status["configured"] is True
+    assert status["provider"] == "openai"
+    assert status["model"] == "lineage-model"
+    assert "api_key" not in status
+
+
 def test_lineage_ai_mock_provider_is_additive(monkeypatch):
     monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "mock")
     result = analyze_sql_lineage("insert into dwd.t select id from ods.s", dialect="mysql")

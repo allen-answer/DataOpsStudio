@@ -146,9 +146,11 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
         run = run_workflow(workflow, variables)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    persist_workflow_run(run)
     notify_workflow_run(workflow, run, trigger="manual")
-    emit_workflow_run_openlineage(workflow, run, trigger="manual")
+    emit_results = emit_workflow_run_openlineage(workflow, run, trigger="manual")
+    if emit_results:
+        run.integrations["openlineage"] = emit_results
+    persist_workflow_run(run)
     return run
 
 

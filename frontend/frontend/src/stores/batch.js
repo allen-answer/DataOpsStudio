@@ -18,6 +18,7 @@ function makeBatchDraft() {
     schemaDialect: '',
     schemaFiles: [],
     files: [],
+    aiEnabled: false,
     result: null,
     exports: null,
     error: '',
@@ -58,6 +59,7 @@ export const useBatchStore = defineStore('batch', () => {
     form.append('schema_table_filter', batch.schemaTableFilter)
     form.append('schema_only_sql_tables', batch.schemaOnlySqlTables ? 'true' : '')
     form.append('schema_dialect', batch.schemaDialect)
+    form.append('ai_enabled', batch.aiEnabled ? 'true' : '')
     batch.files.forEach((file) => form.append('sql_files', file))
     batch.schemaFiles.forEach((file) => form.append('schema_file', file))
     try {

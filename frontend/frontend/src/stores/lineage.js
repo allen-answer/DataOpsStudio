@@ -4,9 +4,9 @@
  * 跟 batch store 拆开是因为 LineageWorkbenchView 同时支持单脚本 / 多脚本 /
  * ZIP 模式，每种模式有自己的本地状态（result + error + 上传文件）。
  */
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { apiForm, apiJson } from '../api'
+import { apiForm, apiGet, apiJson } from '../api'
 
 
 function makeLineageDraft() {
@@ -20,6 +20,7 @@ function makeLineageDraft() {
     schemaDialect: '',
     schemaFiles: [],
     sqlFile: null,
+    aiEnabled: false,
     result: null,
     error: '',
   })
@@ -28,6 +29,7 @@ function makeLineageDraft() {
 
 export const useLineageStore = defineStore('lineage', () => {
   const lineage = makeLineageDraft()
+  const lineageAIStatus = ref(null)
 
   function resetResult() {
     lineage.result = null
@@ -47,6 +49,7 @@ export const useLineageStore = defineStore('lineage', () => {
         form.append('schema_table_filter', lineage.schemaTableFilter)
         form.append('schema_only_sql_tables', lineage.schemaOnlySqlTables ? 'true' : '')
         form.append('schema_dialect', lineage.schemaDialect)
+        form.append('ai_enabled', lineage.aiEnabled ? 'true' : '')
         if (lineage.sqlFile) form.append('sql_file', lineage.sqlFile)
         lineage.schemaFiles.forEach((file) => form.append('schema_file', file))
         lineage.result = await apiForm('/api/lineage/analyze-form', form)
@@ -59,6 +62,7 @@ export const useLineageStore = defineStore('lineage', () => {
           schema_table_filter: lineage.schemaTableFilter,
           schema_only_sql_tables: lineage.schemaOnlySqlTables ? 'true' : '',
           schema_dialect: lineage.schemaDialect,
+          ai_enabled: lineage.aiEnabled ? 'true' : '',
           schema: '',
         })
       }
@@ -67,5 +71,10 @@ export const useLineageStore = defineStore('lineage', () => {
     }
   }
 
-  return { lineage, resetResult, analyzeLineage }
+  async function loadLineageAIStatus() {
+    lineageAIStatus.value = await apiGet('/api/lineage/ai/status')
+    return lineageAIStatus.value
+  }
+
+  return { lineage, lineageAIStatus, resetResult, analyzeLineage, loadLineageAIStatus }
 })

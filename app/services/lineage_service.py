@@ -13,12 +13,17 @@ from app.lineage.analyzer import analyze_sql_lineage
 from app.lineage.batch_analyzer import ScriptInput, analyze_lineage_batch
 from app.services._io_utils import check_zip_safety, decode_sql_content, truthy
 from app.services.lineage_ai import enrich_lineage_result
+from app.services.lineage_ai import lineage_ai_status
 from app.services.lineage_exporter import write_lineage_batch_excel, write_lineage_json
 from app.services.schema_metadata import parse_schema_metadata
 from app.services.schema_service import resolve_lineage_schema, schema_from_files
 from app.utils.paths import RESULTS_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def ai_status() -> dict[str, object]:
+    return lineage_ai_status()
 
 
 def analyze_json(payload: dict[str, str]) -> dict[str, object]:
