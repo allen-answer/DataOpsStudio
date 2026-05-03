@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import copy
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -26,6 +27,7 @@ def export_history_sheets(run_ids: Iterable[str], sheet_names: Iterable[str]) ->
     default_sheet = output.active
     output.remove(default_sheet)
     used_names: set[str] = set()
+    keep_original_name = len(selected_run_ids) == 1 and len(selected_sheets) == 1
 
     copied = 0
     for run_id in selected_run_ids:
@@ -33,13 +35,20 @@ def export_history_sheets(run_ids: Iterable[str], sheet_names: Iterable[str]) ->
         if RESULTS_DIR.resolve() not in source_path.parents or not source_path.exists():
             continue
         source_book = load_workbook(source_path)
-        for sheet_name in selected_sheets:
-            if sheet_name not in source_book.sheetnames:
-                continue
-            target_name = _unique_sheet_name(f"{sheet_name}_{run_id[-8:]}", used_names)
-            target_sheet = output.create_sheet(target_name)
-            _copy_sheet_values(source_book[sheet_name], target_sheet)
-            copied += 1
+        try:
+            for sheet_name in selected_sheets:
+                if sheet_name not in source_book.sheetnames:
+                    continue
+                target_name = (
+                    _unique_sheet_name(sheet_name, used_names)
+                    if keep_original_name
+                    else _unique_sheet_name(f"{sheet_name}_{run_id[-8:]}", used_names)
+                )
+                target_sheet = output.create_sheet(target_name)
+                _copy_sheet(source_book[sheet_name], target_sheet)
+                copied += 1
+        finally:
+            source_book.close()
 
     if copied == 0:
         raise ValueError("未找到可导出的历史 Excel 或所选 sheet")
@@ -49,16 +58,37 @@ def export_history_sheets(run_ids: Iterable[str], sheet_names: Iterable[str]) ->
     return output_path
 
 
-def _copy_sheet_values(source: Worksheet, target: Worksheet) -> None:
+def _copy_sheet(source: Worksheet, target: Worksheet) -> None:
     for row in source.iter_rows():
         for cell in row:
-            target.cell(row=cell.row, column=cell.column, value=cell.value)
+            target_cell = target.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                target_cell.font = copy(cell.font)
+                target_cell.fill = copy(cell.fill)
+                target_cell.border = copy(cell.border)
+                target_cell.alignment = copy(cell.alignment)
+                target_cell.protection = copy(cell.protection)
+            target_cell.number_format = cell.number_format
+            target_cell.hyperlink = copy(cell.hyperlink) if cell.hyperlink else None
+            target_cell.comment = copy(cell.comment) if cell.comment else None
+
+    for merged_range in source.merged_cells.ranges:
+        target.merge_cells(str(merged_range))
+
     for column_letter, dimension in source.column_dimensions.items():
         target.column_dimensions[column_letter].width = dimension.width
+        target.column_dimensions[column_letter].hidden = dimension.hidden
+
+    for row_index, dimension in source.row_dimensions.items():
+        target.row_dimensions[row_index].height = dimension.height
+        target.row_dimensions[row_index].hidden = dimension.hidden
+
     if source.freeze_panes:
         target.freeze_panes = source.freeze_panes
     if source.auto_filter and source.auto_filter.ref:
         target.auto_filter.ref = source.auto_filter.ref
+
+    target.sheet_view.showGridLines = source.sheet_view.showGridLines
 
 
 def _safe_run_id(run_id: str) -> str:

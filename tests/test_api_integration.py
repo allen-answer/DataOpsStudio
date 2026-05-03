@@ -240,6 +240,58 @@ def test_history_export_returns_correct_xlsx_mimetype(client, isolated_storage):
     assert "history_export_" in response.headers.get("content-disposition", "")
 
 
+# --- /history/export 汇总对照保真 ---
+
+def test_history_export_single_sheet_preserves_summary_sheet_shape(client, isolated_storage):
+    """单条历史导出一个 sheet 时，应保留原 sheet 名、合并单元格和主要格式。
+
+    这样从执行历史导出的「汇总对照」和数据对比单次导出的「汇总对照」在结构上
+    保持一致，避免用户下载后看到一个被改名、丢格式的副本。
+    """
+    from io import BytesIO
+
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.styles import Font, PatternFill
+
+    run_id = "test_run_summary"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "汇总对照"
+    sheet["A1"] = "源数据源"
+    sheet["C1"] = "对比结果"
+    sheet.merge_cells("A1:B1")
+    sheet.merge_cells("C1:D1")
+    sheet["A2"] = "id"
+    sheet["B2"] = "name"
+    sheet["C2"] = "是否存在"
+    sheet["D2"] = "差异字段"
+    sheet.append([1, "张三", "两边都有", "name"])
+    sheet["A1"].font = Font(bold=True)
+    sheet["A1"].fill = PatternFill("solid", fgColor="DCEBFF")
+    sheet.freeze_panes = "A3"
+    sheet.auto_filter.ref = "A2:D3"
+    sheet.column_dimensions["A"].width = 18
+    book.save(isolated_storage["results"] / f"{run_id}.xlsx")
+
+    response = client.post(
+        "/history/export",
+        data={"run_ids": [run_id], "sheet_names": ["汇总对照"]},
+    )
+
+    assert response.status_code == 200, response.text
+    exported = load_workbook(BytesIO(response.content))
+    assert exported.sheetnames == ["汇总对照"]
+    exported_sheet = exported["汇总对照"]
+    assert "A1:B1" in [str(rng) for rng in exported_sheet.merged_cells.ranges]
+    assert "C1:D1" in [str(rng) for rng in exported_sheet.merged_cells.ranges]
+    assert exported_sheet.freeze_panes == "A3"
+    assert exported_sheet.auto_filter.ref == "A2:D3"
+    assert exported_sheet.column_dimensions["A"].width == 18
+    assert exported_sheet["A1"].font.bold is True
+    assert exported_sheet["A1"].fill.fgColor.rgb == "00DCEBFF"
+    assert exported_sheet["D3"].value == "name"
+
+
 # --- workflow rerun 链路（局部重跑接口） ---
 
 def test_rerun_workflow_run_from_node_succeeds(client, isolated_storage):
