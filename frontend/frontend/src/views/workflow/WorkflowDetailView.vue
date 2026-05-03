@@ -82,6 +82,20 @@ const workflowAsyncLabel = computed(() => {
 })
 
 const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
+const selectedConfigNode = computed(() =>
+  workflowDraft.nodes.find((node) => node.id && node.id === selectedNodeId.value) || null
+)
+const selectedConfigNodeIndex = computed(() =>
+  workflowDraft.nodes.findIndex((node) => node.id && node.id === selectedNodeId.value)
+)
+const selectedLineageInputLabel = computed(() => {
+  const node = selectedConfigNode.value
+  if (!node || node.type !== 'lineage') return ''
+  const mode = node.input_mode || (node.script_path ? 'uploaded_file' : 'inline_sql')
+  if (mode === 'uploaded_zip') return `ZIP: ${node.script_filename || node.script_path || 'not selected'}`
+  if (mode === 'uploaded_file') return `FILE: ${node.script_filename || node.script_path || 'not selected'}`
+  return 'INLINE SQL'
+})
 
 // 空态点 "+ 添加" 时跳到节点配置 tab 并新增第一个节点
 const handleAddNodeFromCanvas = () => {
@@ -117,6 +131,15 @@ const eventTypeMeta = {
 const levelClass = (level) => ({ INFO: 'text-slate-700', WARN: 'text-amber-700', ERROR: 'text-rose-700' }[level] || 'text-slate-700')
 
 watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
+watch(
+  () => workflowDraft.nodes.map((node) => `${node.id}:${node.type}`).join('|'),
+  () => {
+    if (selectedNodeId.value && workflowDraft.nodes.some((node) => node.id === selectedNodeId.value)) return
+    const lineageNode = workflowDraft.nodes.find((node) => node.type === 'lineage')
+    selectedNodeId.value = lineageNode?.id || workflowDraft.nodes[0]?.id || ''
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
@@ -228,17 +251,56 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
     </div>
 
     <!-- 主区域：左 DAG canvas + 右元数据 -->
-    <div class="grid grid-cols-[minmax(0,1fr)_320px] gap-3">
+    <div class="grid grid-cols-[minmax(0,1fr)_380px] gap-3">
       <WorkflowDagCanvas
         :nodes="workflowDraft.nodes"
         :latest-run="latestRun"
         v-model:selected-node-id="selectedNodeId"
         @add-node="handleAddNodeFromCanvas" />
 
-      <WorkflowSettingsPanel
-        :workflow-draft="workflowDraft"
-        :parameters="displayParameters"
-        :resolved-params="resolvedParams" />
+      <div class="space-y-3">
+        <section v-if="selectedConfigNode" class="rounded-xl border border-violet-200 bg-white shadow-sm">
+          <div class="border-b border-violet-100 bg-violet-50/70 px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <p class="text-[10.5px] font-bold uppercase tracking-wider text-violet-500">选中节点配置</p>
+                <div class="mt-0.5 flex items-center gap-2">
+                  <span class="grid h-5 w-5 place-items-center rounded bg-violet-600 text-[10px] font-bold text-white">
+                    {{ selectedConfigNodeIndex + 1 }}
+                  </span>
+                  <span class="truncate text-sm font-bold text-slate-800">{{ selectedConfigNode.name || selectedConfigNode.id }}</span>
+                  <span class="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
+                        :class="{
+                          'bg-sky-50 text-sky-700': selectedConfigNode.type === 'params',
+                          'bg-blue-50 text-blue-700': selectedConfigNode.type === 'compare',
+                          'bg-emerald-50 text-emerald-700': selectedConfigNode.type === 'lineage',
+                          'bg-amber-50 text-amber-700': selectedConfigNode.type === 'excel_export',
+                          'bg-purple-50 text-purple-700': selectedConfigNode.type === 'http',
+                        }">{{ selectedConfigNode.type }}</span>
+                </div>
+              </div>
+              <button class="shrink-0 rounded-lg border border-violet-200 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-violet-50" @click="activeTab = 'config'">
+                完整配置
+              </button>
+            </div>
+            <p v-if="selectedLineageInputLabel" class="mt-1 truncate font-mono text-[10.5px] text-violet-700">{{ selectedLineageInputLabel }}</p>
+          </div>
+
+          <div class="p-3">
+            <WorkflowLineageNodeEditor
+              v-if="selectedConfigNode.type === 'lineage'"
+              :node="selectedConfigNode" />
+            <div v-else class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-[12px] text-slate-500">
+              当前只把血缘节点的上传入口前置到右侧。其他节点仍在下方“节点配置”里编辑，避免对比/导出的大表单挤在侧栏里。
+            </div>
+          </div>
+        </section>
+
+        <WorkflowSettingsPanel
+          :workflow-draft="workflowDraft"
+          :parameters="displayParameters"
+          :resolved-params="resolvedParams" />
+      </div>
     </div>
 
     <!-- 标签页区域 -->

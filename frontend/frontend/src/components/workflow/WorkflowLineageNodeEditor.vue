@@ -83,6 +83,12 @@ async function uploadLineageFile(event) {
       </label>
     </div>
 
+    <label class="inline-flex items-center gap-2 rounded-lg border border-violet-100 bg-violet-50/70 px-2.5 py-2 text-xs text-slate-700">
+      <input v-model="node.ai_enabled" type="checkbox" class="h-3.5 w-3.5 rounded border-slate-300 text-violet-600">
+      <span class="font-semibold">AI 辅助分析</span>
+      <span class="text-[11px] text-slate-500">默认关闭；需要后端配置 provider 后才会增强报告。</span>
+    </label>
+
     <label v-if="node.input_mode === 'inline_sql'">
       <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">SQL</span>
       <textarea v-model="node.sql" class="block min-h-[76px] w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 font-mono text-[12px]" placeholder="SELECT * FROM ..."></textarea>

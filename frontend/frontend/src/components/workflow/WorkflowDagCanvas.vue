@@ -23,7 +23,15 @@ const nodeStatusByid = computed(() => {
 })
 
 const layout = computed(() => {
-  const nodes = props.nodes.map((n) => ({ id: n.id, name: n.name, type: n.type, depends_on: n.depends_on || [] }))
+  const nodes = props.nodes.map((n) => ({
+    id: n.id,
+    name: n.name,
+    type: n.type,
+    depends_on: n.depends_on || [],
+    input_mode: n.input_mode || '',
+    script_filename: n.script_filename || '',
+    script_path: n.script_path || '',
+  }))
   return layoutDAG(nodes, { nodeW: 220, nodeH: 84, gapX: 80, gapY: 28, padX: 40, padY: 40 })
 })
 
@@ -57,6 +65,13 @@ const edgeHighlighted = (edge) =>
   props.selectedNodeId && (edge.source === props.selectedNodeId || edge.target === props.selectedNodeId)
 
 const nodeStatus = (nodeId) => nodeStatusByid.value[nodeId]?.status || 'pending'
+const lineageInputLabel = (node) => {
+  if (node.type !== 'lineage') return ''
+  const mode = node.input_mode || (node.script_path ? 'uploaded_file' : 'inline_sql')
+  if (mode === 'uploaded_zip') return `ZIP ${node.script_filename || node.script_path || 'not selected'}`
+  if (mode === 'uploaded_file') return `FILE ${node.script_filename || node.script_path || 'not selected'}`
+  return 'SQL inline'
+}
 
 // DAG canvas 节点 box 描边色 —— 失败/跳过的节点要醒目，光看小圆点容易漏。
 // selected 仍走蓝环；非 selected 时按状态着色。
@@ -152,6 +167,7 @@ const tooltipStyle = computed(() => {
             <span class="font-mono text-slate-500">{{ n.id }}</span>
             <span v-if="nodeStatusByid[n.id]" class="ml-auto font-mono text-slate-500">{{ nodeStatusByid[n.id].elapsed_seconds }}s</span>
           </div>
+          <span v-if="lineageInputLabel(n)" class="line-clamp-1 font-mono text-[10px] text-emerald-700">{{ lineageInputLabel(n) }}</span>
           <span v-if="nodeStatusByid[n.id]?.error" class="line-clamp-1 text-[10px] text-rose-600">{{ nodeStatusByid[n.id].error }}</span>
         </button>
 

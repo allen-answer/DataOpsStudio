@@ -122,6 +122,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       script_path: node.config?.script_path || '',
       script_filename: node.config?.script_filename || '',
       script_kind: node.config?.script_kind || '',
+      ai_enabled: Boolean(node.config?.ai_enabled),
       method: node.config?.method || 'GET',
       url: node.config?.url || '',
       body: node.config?.body || '',
@@ -180,6 +181,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         input_mode: mode,
         ...(node.dialect ? { dialect: node.dialect } : {}),
       }
+      if (node.ai_enabled) config.ai_enabled = true
       if (mode === 'inline_sql') {
         config.sql = node.sql || ''
       } else {
