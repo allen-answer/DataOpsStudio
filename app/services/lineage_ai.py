@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -200,7 +201,7 @@ class OpenAICompatibleLineageAIProvider:
             ],
         }
         data = _post_json(
-            f"{base_url}/chat/completions",
+            _chat_completions_url(base_url),
             body,
             headers={"Authorization": f"Bearer {config.api_key}"},
             timeout=config.timeout_seconds,
@@ -272,6 +273,26 @@ def _provider_for(name: str) -> LineageAIProvider | None:
     if normalized == "ollama":
         return OllamaLineageAIProvider()
     return None
+
+
+def _chat_completions_url(base_url: str) -> str:
+    """Accept common OpenAI-compatible URL shapes.
+
+    Users often copy either the SDK base URL (`.../v1`), the bare service URL,
+    or the full endpoint (`.../v1/chat/completions`). Normalize all of them to
+    a single chat completions endpoint to avoid accidental 404s.
+    """
+    raw = (base_url or "").strip().rstrip("/") or "https://api.openai.com/v1"
+    if raw.endswith("/chat/completions"):
+        return raw
+
+    parts = urlsplit(raw)
+    path = parts.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/v1/chat/completions"
+    else:
+        path = f"{path}/chat/completions"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _build_payload(

@@ -154,7 +154,10 @@ onMounted(() => {
 
           <label class="space-y-1.5 lg:col-span-2">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Base URL</span>
-            <input v-model="draft.base_url" placeholder="https://api.openai.com/v1 / http://localhost:11434" />
+            <input v-model="draft.base_url" placeholder="Kimi: https://api.moonshot.ai/v1" />
+            <p class="text-xs text-slate-500">
+              可以填 SDK Base URL，也可以填完整 chat/completions 地址；系统会自动规整。
+            </p>
           </label>
 
           <label class="space-y-1.5 lg:col-span-2">

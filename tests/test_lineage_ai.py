@@ -135,6 +135,48 @@ def test_lineage_ai_openai_compatible_provider(monkeypatch):
     assert result["ai_enrichment"]["suggestions"] == [{"message": "review dynamic sql"}]
 
 
+def test_lineage_ai_accepts_full_or_bare_openai_compatible_urls(monkeypatch):
+    captured_urls: list[str] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {"content": json.dumps({"summary": "ok"})}
+                }]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "lineage-model")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", fake_urlopen)
+
+    for base_url in [
+        "https://api.moonshot.ai",
+        "https://api.moonshot.ai/v1",
+        "https://api.moonshot.ai/v1/chat/completions",
+    ]:
+        monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", base_url)
+        result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+        assert result["ai_enrichment"]["summary"] == "ok"
+
+    assert captured_urls == [
+        "https://api.moonshot.ai/v1/chat/completions",
+        "https://api.moonshot.ai/v1/chat/completions",
+        "https://api.moonshot.ai/v1/chat/completions",
+    ]
+
+
 def test_lineage_service_attaches_ai_enrichment_disabled(monkeypatch):
     monkeypatch.delenv("DATAOPS_LINEAGE_AI_PROVIDER", raising=False)
 
