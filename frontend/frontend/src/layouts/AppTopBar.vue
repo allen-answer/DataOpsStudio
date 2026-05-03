@@ -1,7 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChevronRight, Bell, Search, FileDown, ShieldAlert } from 'lucide-vue-next'
+import { ChevronRight, Search, FileDown, ShieldAlert } from 'lucide-vue-next'
+import CommandPalette from '../components/CommandPalette.vue'
+import NotificationPopover from '../components/NotificationPopover.vue'
 
 const props = defineProps({
   // 路由 path → 面包屑文案的 map；若 view 想自定义动态面包屑，可通过 slot 覆盖
@@ -12,6 +14,23 @@ const props = defineProps({
 defineEmits(['confirm-include-passwords'])
 
 const route = useRoute()
+
+// 命令面板（搜索按钮 + Ctrl/Cmd+K）
+const paletteOpen = ref(false)
+
+function onGlobalKey(event) {
+  if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
+    event.preventDefault()
+    paletteOpen.value = true
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKey)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey)
+})
 
 // 默认面包屑：从 route.matched 反推，失败回退路由 path
 const ROUTE_LABELS = {
@@ -76,13 +95,23 @@ const computedCrumbs = computed(() => {
         含密码导出
       </a>
 
-      <!-- Reserved: search / notifications（点击当前无功能，保持视觉一致即可） -->
-      <button class="btn btn-ghost h-9 w-9 px-0" title="搜索（暂未实现）">
+      <!-- 命令面板触发器（Ctrl/Cmd+K 全局快捷键） -->
+      <button
+        class="btn btn-ghost flex h-9 items-center gap-2 px-3 text-xs"
+        title="搜索导航 / 数据源 / 任务（Ctrl+K）"
+        @click="paletteOpen = true"
+      >
         <Search class="h-4 w-4" />
+        <span class="hidden md:inline text-slate-500">搜索</span>
+        <kbd class="hidden md:inline rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+          Ctrl K
+        </kbd>
       </button>
-      <button class="btn btn-ghost relative h-9 w-9 px-0" title="通知（暂未实现）">
-        <Bell class="h-4 w-4" />
-      </button>
+
+      <!-- 通知 popover：异步任务状态 -->
+      <NotificationPopover />
     </div>
+
+    <CommandPalette v-model:open="paletteOpen" />
   </header>
 </template>
