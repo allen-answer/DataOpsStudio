@@ -1,4 +1,8 @@
 -- DataOpsStudio 测试数据初始化
+-- Docker 入口 mysql client 默认 character_set_client=latin1，UTF-8 SQL 文件
+-- 字节会被当 latin1 读，写到 utf8mb4 列就是 mojibake（"张三" → "å¼ ä¸‰"）。
+-- 显式 SET NAMES utf8mb4 强制三个 charset 变量都对齐。
+SET NAMES utf8mb4;
 USE dataops;
 
 -- ─── 部门表 ───────────────────────────────────────────────────────────────────
@@ -6,7 +10,7 @@ CREATE TABLE departments (
   id       INT         PRIMARY KEY,
   name     VARCHAR(50) NOT NULL,
   manager  VARCHAR(50)
-);
+) DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO departments VALUES
 (1, '研发部',   '张伟'),
@@ -24,7 +28,7 @@ CREATE TABLE users (
   salary     DECIMAL(10,2),
   status     VARCHAR(20),
   created_at DATE
-);
+) DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO users VALUES
 (1,  '张三',   'zhangsan@company.com',  1, 15000.00, 'active',   '2023-01-15'),
@@ -50,7 +54,7 @@ CREATE TABLE users_archive (
   salary     DECIMAL(10,2),
   status     VARCHAR(20),
   created_at DATE
-);
+) DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO users_archive VALUES
 (1,  '张三',   'zhangsan@company.com',  1, 15000.00, 'active',   '2023-01-15'),
@@ -75,7 +79,7 @@ CREATE TABLE orders (
   amount     DECIMAL(10,2),
   status     VARCHAR(20),
   order_date DATE
-);
+) DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO orders VALUES
 (1,  1, '数据分析平台授权',  5000.00,  'completed',  '2024-01-10'),
@@ -103,7 +107,7 @@ CREATE TABLE orders_v2 (
   amount     DECIMAL(10,2),
   status     VARCHAR(20),
   order_date DATE
-);
+) DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO orders_v2 VALUES
 (1,  1, '数据分析平台授权',  5000.00,  'completed',  '2024-01-10'),

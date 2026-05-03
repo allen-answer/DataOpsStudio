@@ -2,6 +2,13 @@ services:
   mysql8:
     image: mysql:8.0
     container_name: mysql8
+    # MySQL 8 docker 镜像 client/results 默认 latin1，UTF-8 init script 会被
+    # 当 latin1 解释 → utf8mb4 列里写 mojibake。强制 server / connect 默认走
+    # utf8mb4，避免下次起容器或第三方 mysql client 又踩同一个坑。
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
     environment:
       MYSQL_ROOT_PASSWORD: root123
       MYSQL_DATABASE: dataops
