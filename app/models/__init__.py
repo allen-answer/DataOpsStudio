@@ -55,6 +55,19 @@ from app.models.workflow import (
     WorkflowTemplateInstantiate,
 )
 
+# --- 用户 / 项目 / 审计 ---
+from app.models.user import (
+    AuditLogEntry,
+    LoginRequest,
+    LoginResponse,
+    Project,
+    ProjectCreate,
+    User,
+    UserCreate,
+    UserRole,
+    UserUpdate,
+)
+
 # --- API 响应 schema ---
 from app.models.responses import (
     BootstrapResponse,
@@ -87,6 +100,10 @@ __all__ = [
     "WorkflowNodeRun", "WorkflowNodeType", "WorkflowRun", "WorkflowRunStatus",
     "WorkflowRunSummary", "WorkflowStatus", "WorkflowTemplate",
     "WorkflowTemplateCreate", "WorkflowTemplateInstantiate",
+    # user / project / audit
+    "AuditLogEntry", "LoginRequest", "LoginResponse",
+    "Project", "ProjectCreate",
+    "User", "UserCreate", "UserRole", "UserUpdate",
     # responses
     "BootstrapResponse", "ConnectionTestResult", "DriverInfo",
     "ExcelUploadResponse", "LineageAnalyzeResult",

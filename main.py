@@ -39,5 +39,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Lightweight Data Compare Tool", version="0.1.0", lifespan=lifespan)
+# 审计日志中间件 —— 记 mutating endpoint 流水到 logs/audit.jsonl
+from app.services.audit import AuditLogMiddleware
+app.add_middleware(AuditLogMiddleware)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(router)

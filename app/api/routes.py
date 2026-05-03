@@ -10,10 +10,12 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api import (
+    auth,
     config_io,
     datasources,
     history,
     lineage,
+    projects,
     runs,
     scheduler,
     system,
@@ -28,6 +30,8 @@ router = APIRouter()
 # include 顺序仅影响 OpenAPI /docs 的展示分组，不影响实际路由匹配（FastAPI
 # 路由匹配按"先注册先匹配"+"具体路径优先"）。
 router.include_router(system.router)
+router.include_router(auth.router)
+router.include_router(projects.router)
 router.include_router(datasources.router)
 router.include_router(tasks.router)
 router.include_router(runs.router)
