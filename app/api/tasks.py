@@ -118,10 +118,16 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
     kind = task.target_kind if side == "target" else task.source_kind
     if kind != SourceKind.SQL:
         try:
-            rows = build_reader(task, side).fetch_all(max_rows=preview_limit)
+            rows = []
+            truncated = False
+            for index, row in enumerate(build_reader(task, side).iter_rows(max_rows=None), start=1):
+                if index > preview_limit:
+                    truncated = True
+                    break
+                rows.append(row)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"side": side, "limit": preview_limit, "truncated": len(rows) == preview_limit, "rows": rows}
+        return {"side": side, "limit": preview_limit, "truncated": truncated, "rows": rows}
 
     datasource_id = task.target_id if side == "target" else task.source_id
     override_datasource_id = payload.get("datasource_id")

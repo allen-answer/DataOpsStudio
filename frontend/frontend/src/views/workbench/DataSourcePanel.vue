@@ -11,7 +11,7 @@ const props = defineProps({
 })
 
 const {
-  taskDraft, isSavedTask,
+  taskDraft,
   sourcePreviewData, targetPreviewData,
   sourceFields, targetFields,
   extractFields, previewTask, formatSql, uploadExcel, copyField,
@@ -29,6 +29,7 @@ const excelFilename = computed(() => taskDraft[`${props.side}_excel_filename`])
 const excelSheets   = computed(() => taskDraft[`${props.side}_excel_sheets`] || [])
 const fields        = computed(() => props.side === 'source' ? sourceFields.value : targetFields.value)
 const previewData   = computed(() => props.side === 'source' ? sourcePreviewData.value : targetPreviewData.value)
+const previewColumns = computed(() => Object.keys(previewData.value?.rows?.[0] ?? {}))
 
 const isSql = computed(() => kind.value === 'sql')
 
@@ -81,8 +82,7 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
         <button
           v-if="isSql"
           class="btn btn-primary h-7 gap-1 px-2 text-[11px]"
-          :disabled="!isSavedTask"
-          title="预览前 N 行"
+          title="按当前草稿预览前 10 行，不需要先保存任务"
           @click="previewTask(side)"
         >
           <Eye class="h-3 w-3" /> 预览
@@ -140,17 +140,23 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
       <p v-if="previewData.loading" class="text-slate-400">预览中...</p>
       <p v-else-if="previewData.error" class="status-badge status-error">{{ previewData.error }}</p>
       <template v-else>
-        <p class="muted mb-1 text-[11px]">前 {{ previewData.rows?.length ?? 0 }} 行</p>
+        <p class="muted mb-1 text-[11px]">
+          前 {{ previewData.rows?.length ?? 0 }} 行
+          <span v-if="previewData.truncated" class="ml-1 text-amber-600">已截断，仅用于字段选择</span>
+        </p>
+        <p v-if="!previewData.rows?.length" class="rounded-lg border border-dashed border-slate-200 p-3 text-slate-400">
+          查询成功，但没有返回行。
+        </p>
         <div class="overflow-x-auto rounded-lg border border-slate-200">
-          <table class="w-full">
+          <table v-if="previewData.rows?.length" class="w-full">
             <thead>
               <tr class="border-b border-slate-200 bg-slate-50">
-                <th v-for="col in Object.keys(previewData.rows?.[0] ?? {})" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th>
+                <th v-for="col in previewColumns" :key="col" class="px-3 py-2 text-left font-bold text-slate-600">{{ col }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(row, i) in previewData.rows" :key="i" class="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                <td v-for="col in Object.keys(previewData.rows[0])" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td>
+                <td v-for="col in previewColumns" :key="col" class="px-3 py-2 text-slate-700">{{ row[col] ?? '' }}</td>
               </tr>
             </tbody>
           </table>

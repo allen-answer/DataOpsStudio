@@ -445,16 +445,36 @@ export const useTaskStore = defineStore('task', () => {
 
   async function previewTask(side) {
     const notice = useNoticeStore()
-    if (selectedTaskId.value === 'new') return
     const previewRef = side === 'source' ? sourcePreviewData : targetPreviewData
     previewRef.value = { loading: true }
+    const kind = taskDraft[`${side}_kind`] || 'sql'
     const sql = side === 'target' && taskDraft.sql_mode === 'double' ? taskDraft.target_sql : taskDraft.source_sql
     const datasourceId = side === 'target' ? taskDraft.target_id : taskDraft.source_id
+    const payload = { side, kind, limit: 10 }
+    if (kind === 'sql') {
+      payload.sql = sql
+      payload.datasource_id = datasourceId
+    } else if (kind === 'excel') {
+      payload.excel_path = taskDraft[`${side}_excel_path`]
+      payload.sheet = taskDraft[`${side}_sheet`]
+      payload.header_row = Number(taskDraft[`${side}_header_row`]) || 1
+    } else if (kind === 'csv') {
+      payload.file_path = taskDraft[`${side}_file_path`]
+      payload.encoding = taskDraft[`${side}_file_encoding`] || 'utf-8-sig'
+      payload.delimiter = taskDraft[`${side}_csv_delimiter`] || ','
+      payload.header_row = Number(taskDraft[`${side}_header_row`]) || 1
+    } else if (kind === 'parquet') {
+      payload.file_path = taskDraft[`${side}_file_path`]
+    }
     notice.setActionStatus('running', side === 'target' ? '正在预览目标数据' : '正在预览源数据')
     try {
-      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST',
-        { side, sql, datasource_id: datasourceId, limit: 3 })
+      const result = await apiJson('/api/preview/rows', 'POST', payload)
       previewRef.value = result
+      const columns = Object.keys(result.rows?.[0] || {})
+      if (columns.length) {
+        if (side === 'source') sourceFields.value = columns
+        else targetFields.value = columns
+      }
       notice.setActionStatus('success', '预览完成', `返回 ${result.rows?.length ?? 0} 行`)
     } catch (error) {
       previewRef.value = { error: _toErrorMessage(error) }

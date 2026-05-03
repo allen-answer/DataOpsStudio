@@ -2,6 +2,7 @@
 import { inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import DataSourcePanel from './DataSourcePanel.vue'
+import FieldCachePanel from './FieldCachePanel.vue'
 import { useProjectStore } from '../../stores/project'
 
 const { state, taskDraft } = inject('app')
@@ -54,5 +55,11 @@ const { projects } = storeToRefs(useProjectStore())
       <DataSourcePanel side="source" />
       <DataSourcePanel side="target" />
     </div>
+
+    <FieldCachePanel
+      title="预览字段缓存"
+      hint="SQL 预览或提取字段后，列名会缓存到这里；可以直接设主键和忽略字段，也会带到后续步骤。"
+      compact
+    />
   </section>
 </template>

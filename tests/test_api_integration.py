@@ -16,6 +16,7 @@ import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 
 @pytest.fixture
@@ -124,6 +125,72 @@ def test_scheduler_status_endpoint(client, isolated_storage):
     payload = response.json()
     assert "running" in payload
     assert "entries" in payload
+
+
+def test_preview_rows_sql_uses_current_draft_without_saved_task(client, isolated_storage, monkeypatch):
+    ds = client.post("/api/datasources", json={
+        "name": "draft-preview-ds",
+        "db_type": "MySQL",
+        "host": "localhost",
+        "port": 3306,
+    }).json()
+
+    from app.api import uploads
+
+    captured = {}
+
+    def fake_fetch_rows(datasource, sql, max_rows=None, raise_on_overflow=True):
+        captured["datasource"] = datasource.id
+        captured["sql"] = sql
+        captured["max_rows"] = max_rows
+        return [{"id": 1, "name": "Alice"}]
+
+    monkeypatch.setattr(uploads, "fetch_rows", fake_fetch_rows)
+
+    response = client.post("/api/preview/rows", json={
+        "kind": "sql",
+        "side": "source",
+        "datasource_id": ds["id"],
+        "sql": "SELECT id, name FROM users ORDER BY id",
+        "limit": 10,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["rows"] == [{"id": 1, "name": "Alice"}]
+    assert captured == {
+        "datasource": ds["id"],
+        "sql": "SELECT id, name FROM users ORDER BY id",
+        "max_rows": 10,
+    }
+
+
+def test_preview_rows_excel_truncates_without_overflow_error(client, isolated_storage):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["id", "name"])
+    for index in range(1, 6):
+        sheet.append([index, f"user-{index}"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    upload = client.post(
+        "/api/uploads/excel",
+        files={"file": ("users.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert upload.status_code == 200, upload.text
+    uploaded = upload.json()
+
+    response = client.post("/api/preview/rows", json={
+        "kind": "excel",
+        "side": "source",
+        "excel_path": uploaded["path"],
+        "sheet": uploaded["sheets"][0],
+        "header_row": 1,
+        "limit": 3,
+    })
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["truncated"] is True
+    assert [row["id"] for row in payload["rows"]] == [1, 2, 3]
 
 
 def test_workflow_lineage_node_accepts_uploaded_text_file(client, isolated_storage):

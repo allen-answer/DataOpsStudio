@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, watch } from 'vue'
 import { Wand2, AlertTriangle } from 'lucide-vue-next'
+import FieldCachePanel from './FieldCachePanel.vue'
 
 const { taskDraft, recommendKey } = inject('app')
 
@@ -31,6 +32,11 @@ const RULE_TOGGLES = computed(() => [
 
 <template>
   <section class="space-y-4">
+    <FieldCachePanel
+      title="来自数据预览的字段缓存"
+      hint="第 1 步预览/提取到的字段会保留在这里；选择主键、忽略字段后立即写入当前规则。"
+      compact
+    />
     <!-- 主键 / 忽略字段 -->
     <div class="card">
       <h3 class="mb-3 text-base font-semibold text-slate-800">键 & 忽略</h3>
