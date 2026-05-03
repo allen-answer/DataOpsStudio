@@ -277,6 +277,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 3. **多脚本 report.process_steps 当前为空** —— `_build_batch_report()` 没把每个文件的 `procedure_segments` 累加进 `process_steps`。改 `batch_analyzer` 在调 `analyze_sql_lineage` 后保留 `procedure_segments` 进 file 子结果，再在 `report.py` 聚合。
 4. **DataCompare 预览样例 mojibake** —— `[MySQL] 用户表对比` 任务预览出 `name="å¼ ä¸‰"`（"张三" GBK→UTF-8 mojibake）。检查 init_db/01_init.sql 的字符集声明 + dbclients 连接串 `charset=utf8mb4`。
 5. **Excel/SQL 混合输入逻辑** —— Phase 2 把 DataCompare 拆成步骤式工作台，但 SQL vs Excel / Excel vs SQL / Excel vs Excel 三种交叉模式的字段映射、主键推荐、流式对比限制还没专门校验。下一轮先做交互校验，不再继续 UI 美化。
+6. **e2e 浏览器 smoke 缺 fixture** —— Docker 镜像里 `tests/e2e/` 跑不起来，原因是 `pytest-playwright` 的 `page` fixture 没注册（基础镜像没装 playwright + 没装浏览器内核）。CI / 本地 Docker 想跑浏览器 smoke 需要在 Dockerfile 加 `pip install playwright pytest-playwright && playwright install chromium`，或者只在 Linux runner 上有条件执行。当前 e2e 框架代码已落地，只是没启用。
 
 ### Phase 8（血缘图引擎双轨：G6 稳定 + Cytoscape 实验，待真实大图验证）
 
