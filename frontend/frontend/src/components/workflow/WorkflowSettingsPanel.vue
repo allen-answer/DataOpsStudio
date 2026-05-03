@@ -1,5 +1,7 @@
 <script setup>
+import { storeToRefs } from 'pinia'
 import { parameterTypeMeta } from '../../mock/workflow_meta'
+import { useProjectStore } from '../../stores/project'
 
 // 详情页右侧元数据 sidebar：运行参数预览 + 描述/项目/状态/owner/cron/tags +
 // 输入/输出资产编辑器 + 资产只读卡。workflowDraft 由父传入，子直接 mutate
@@ -9,6 +11,8 @@ defineProps({
   parameters:    { type: Array,  default: () => [] },   // 解析自 params 节点
   resolvedParams: { type: Object, default: () => ({}) },
 })
+
+const { projects } = storeToRefs(useProjectStore())
 </script>
 
 <template>
@@ -82,6 +86,14 @@ defineProps({
                    class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700">
           </label>
         </div>
+        <label class="block">
+          <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">关联项目空间</span>
+          <select v-model="workflowDraft.project_id"
+                  class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
+            <option value="">全局（无项目）</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+        </label>
         <label class="block">
           <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">标签（逗号分隔）</span>
           <input :value="(workflowDraft.tags || []).join(', ')"

@@ -13,8 +13,8 @@ router = APIRouter()
 
 
 @router.get("/api/history", response_model=list[HistoryItem])
-def result_history_api(task_id: str = ""):
-    return list_result_history(task_id)
+def result_history_api(task_id: str = "", project_id: str = ""):
+    return list_result_history(task_id, project_id)
 
 
 @router.delete("/api/history/{run_id}", response_model=OkResponse)

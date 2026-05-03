@@ -1,5 +1,7 @@
 <script setup>
 import { inject } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useProjectStore } from '../stores/project'
 
 const {
   state,
@@ -15,6 +17,15 @@ const {
   createDatasource,
   testDatasource,
 } = inject('app')
+
+const projectStore = useProjectStore()
+const { projects } = storeToRefs(projectStore)
+
+function projectName(id) {
+  if (!id) return '全局'
+  const p = projects.value.find(x => x.id === id)
+  return p ? p.name : `(已删除 ${id.slice(0, 6)})`
+}
 </script>
 
 <template>
@@ -66,6 +77,10 @@ const {
             <input v-model="editDraft.database" class="col-span-2 border-none bg-slate-50 px-3 py-2" placeholder="数据库 / 服务名">
             <input v-model="editDraft.username" class="border-none bg-slate-50 px-3 py-2" placeholder="用户名">
             <input v-model="editDraft.password" class="border-none bg-slate-50 px-3 py-2" type="password" placeholder="密码（留空不修改）">
+            <select v-model="editDraft.project_id" class="col-span-2 border-none bg-slate-50 px-3 py-2" title="所属项目">
+              <option value="">全局（无项目）</option>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
           </div>
           <div class="mt-4 flex gap-2 border-t border-slate-100 pt-4">
             <button class="flex-1 rounded-lg bg-blue-600 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="updateDatasource(item.id)">保存</button>
@@ -78,7 +93,8 @@ const {
             <span class="rounded bg-green-100 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-green-700">已配置</span>
           </div>
           <h3 class="mb-1 font-bold text-slate-800">{{ item.name }}</h3>
-          <p class="sql-font mb-4 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
+          <p class="sql-font mb-2 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
+          <p class="mb-4 text-[10px] uppercase tracking-wider text-slate-400">项目：{{ projectName(item.project_id) }}</p>
           <div class="flex gap-2 border-t border-slate-100 pt-4">
             <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="testDatasource(item.id)">测试连接</button>
             <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="startEditDatasource(item)">编辑</button>

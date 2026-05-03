@@ -1,8 +1,11 @@
 <script setup>
 import { inject } from 'vue'
+import { storeToRefs } from 'pinia'
 import DataSourcePanel from './DataSourcePanel.vue'
+import { useProjectStore } from '../../stores/project'
 
 const { state, taskDraft } = inject('app')
+const { projects } = storeToRefs(useProjectStore())
 </script>
 
 <template>
@@ -34,6 +37,13 @@ const { state, taskDraft } = inject('app')
           <select v-model="taskDraft.sql_mode" class="bg-slate-50">
             <option value="single">单 SQL（源/目标共用同一段 SQL）</option>
             <option value="double">双 SQL（源/目标分别填写）</option>
+          </select>
+        </label>
+        <label>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">关联项目空间</span>
+          <select v-model="taskDraft.project_id" class="bg-slate-50">
+            <option value="">全局（无项目）</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
         </label>
       </div>

@@ -11,6 +11,7 @@ const PROJECT_AWARE_PATHS = [
   '/api/datasources',
   '/api/tasks',
   '/api/workflows',
+  '/api/history',
 ]
 
 function authHeaders() {

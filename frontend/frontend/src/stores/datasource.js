@@ -36,6 +36,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
   const editDraft = reactive({
     name: '', db_type: '', host: '', port: 3306,
     database: '', username: '', password: '',
+    project_id: '',
   })
 
   function startEditDatasource(item) {
@@ -48,6 +49,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
       database: item.database,
       username: item.username,
       password: '',
+      project_id: item.project_id || '',
     })
   }
 

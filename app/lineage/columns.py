@@ -9,7 +9,7 @@ from typing import Any
 from app.lineage._common import normalize_table_name as _normalize_table_name
 from app.lineage._common import unique_strings as _unique_strings
 from app.lineage._common import weaker_confidence as _weaker_confidence
-from app.lineage.helpers import exp, sql, transform_type, variables_in_expression
+from app.lineage.helpers import exp, sql, transform_type, variables_in_expression, window_partition_columns
 from app.lineage.tables import (
     alias_names, explicit_alias, is_physical_source_table, table_name,
 )
@@ -242,19 +242,23 @@ def select_columns(
             })
             continue
         info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
-        result.append(
-            {
-                "select_index": select_index,
-                "output_column": expression.alias_or_name or sql(expression),
-                "expression": sql(expression),
-                "source_columns": info["source_columns"],
-                "source_tables": info["source_tables"],
-                "variables": variables_in_expression(expression, script_variables),
-                "transform": transform_type(expression),
-                "confidence": info["confidence"],
-                "warnings": info["warnings"],
-            }
-        )
+        entry: dict[str, Any] = {
+            "select_index": select_index,
+            "output_column": expression.alias_or_name or sql(expression),
+            "expression": sql(expression),
+            "source_columns": info["source_columns"],
+            "source_tables": info["source_tables"],
+            "variables": variables_in_expression(expression, script_variables),
+            "transform": transform_type(expression),
+            "confidence": info["confidence"],
+            "warnings": info["warnings"],
+        }
+        # 窗口函数额外暴露 partition_by / order_by 列（让前端能区分"分组依赖" vs 普通源）
+        if entry["transform"] == "窗口":
+            window_meta = window_partition_columns(expression)
+            if window_meta["partition_by"] or window_meta["order_by"]:
+                entry["window"] = window_meta
+        result.append(entry)
     return result
 
 

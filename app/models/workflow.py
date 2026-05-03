@@ -78,6 +78,9 @@ class Workflow(BaseModel):
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
+    # Sensor 触发器：每项 {type: "file"|"workflow_success", config: {...}, enabled, name}
+    # 调度器轮询 evaluate；命中即提交 workflow run
+    triggers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkflowCreate(BaseModel):
@@ -94,6 +97,7 @@ class WorkflowCreate(BaseModel):
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
+    triggers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # --- 运行状态 ---

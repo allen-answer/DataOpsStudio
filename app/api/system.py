@@ -51,7 +51,7 @@ def drivers():
 
 @router.get("/api/bootstrap", response_model=BootstrapResponse)
 def bootstrap(project_id: str = ""):
-    history = list_result_history()
+    history = list_result_history(project_id=project_id)
     # bootstrap 是首屏拉取，datasources 走前端展示，password 必须脱敏
     redacted_datasources = [
         ds.model_copy(update={"password": ""}) for ds in datasource_store.list()

@@ -8,7 +8,19 @@ from typing import Any
 from app.utils.paths import RESULTS_DIR
 
 
-def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
+def list_result_history(task_id: str = "", project_id: str = "") -> list[dict[str, Any]]:
+    """列历史结果。
+    - task_id 非空：仅匹配该 task 的 run
+    - project_id 非空：仅匹配该项目下 task 的 run + task 已删的孤儿 run（保留历史）
+    """
+    # project 过滤要 join task_store —— lazy import 避免循环
+    project_task_ids: set[str] | None = None
+    if project_id:
+        from app.services.repositories import task_store
+        project_task_ids = {
+            t.id for t in task_store.list()
+            if (t.project_id or "") == project_id or not (t.project_id or "")
+        }
     items = []
     for path in RESULTS_DIR.glob("*.json"):
         try:
@@ -18,14 +30,21 @@ def list_result_history(task_id: str = "") -> list[dict[str, Any]]:
         run_id = data.get("run_id") or path.stem
         excel_name = f"{run_id}.xlsx"
         excel_path = RESULTS_DIR / excel_name
-        if task_id and data.get("task_id", "") != task_id:
+        result_task_id = data.get("task_id", "")
+        if task_id and result_task_id != task_id:
             continue
+        if project_task_ids is not None and result_task_id and result_task_id not in project_task_ids:
+            # 已知 task 但不归当前项目 —— 跳过；
+            # task 已删（result_task_id 不在 task_store）的孤儿 run 仍展示
+            from app.services.repositories import task_store as _task_store
+            if _task_store.get(result_task_id) is not None:
+                continue
         sort_time = _history_sort_time(data, path)
         result_type = _classify_result(data)
         items.append(
             {
                 "run_id": run_id,
-                "task_id": data.get("task_id", ""),
+                "task_id": result_task_id,
                 "task_name": data.get("task_name", ""),
                 "started_at": data.get("started_at", ""),
                 "elapsed_seconds": data.get("elapsed_seconds", 0),

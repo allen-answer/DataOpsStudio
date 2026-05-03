@@ -51,6 +51,12 @@ export const useProjectStore = defineStore('project', () => {
     return project
   }
 
+  async function updateProject(projectId, { name, description, members }) {
+    const updated = await apiJson(`/api/projects/${projectId}`, 'PUT', { name, description, members })
+    await reload()
+    return updated
+  }
+
   async function deleteProject(projectId) {
     await apiJson(`/api/projects/${projectId}`, 'DELETE')
     if (currentProjectId.value === projectId) {
@@ -61,6 +67,6 @@ export const useProjectStore = defineStore('project', () => {
 
   return {
     currentProjectId, projects, currentProject,
-    setProject, reload, createProject, deleteProject,
+    setProject, reload, createProject, updateProject, deleteProject,
   }
 })
