@@ -268,6 +268,16 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - 字段级血缘（column-level lineage，独立于 Phase 7 双轨之外）
 - workflow 模板能力 + 端到端测试 + 乱码清理
 
+### 产品打磨 Phase 1-4 后续清理（非阻塞，待排期）
+
+`feat/product-ui-phase1` 分支已验收通过作为本轮产品打磨基线。下面是验收时记录的 5 项非阻塞收尾项，下一轮可挑做：
+
+1. **LineageGraph chunk 拆包** —— 当前 `LineageGraph-*.js` 1.4 MB / gzip 409 KB（`@antv/g6` 主体）。已用 `defineAsyncComponent` 懒加载，但仍是单个大 chunk。考虑 G6 按需 import（不要全量拉 `@antv/g6`），或拆 worker。
+2. **TopBar 搜索 / 通知占位按钮** —— 当前仅图标 + tooltip "暂未实现"。产品化时三选一：(a) 隐藏；(b) 禁用置灰；(c) 补真实功能（如 sidebar 项搜索 / 异步任务通知中心）。
+3. **多脚本 report.process_steps 当前为空** —— `_build_batch_report()` 没把每个文件的 `procedure_segments` 累加进 `process_steps`。改 `batch_analyzer` 在调 `analyze_sql_lineage` 后保留 `procedure_segments` 进 file 子结果，再在 `report.py` 聚合。
+4. **DataCompare 预览样例 mojibake** —— `[MySQL] 用户表对比` 任务预览出 `name="å¼ ä¸‰"`（"张三" GBK→UTF-8 mojibake）。检查 init_db/01_init.sql 的字符集声明 + dbclients 连接串 `charset=utf8mb4`。
+5. **Excel/SQL 混合输入逻辑** —— Phase 2 把 DataCompare 拆成步骤式工作台，但 SQL vs Excel / Excel vs SQL / Excel vs Excel 三种交叉模式的字段映射、主键推荐、流式对比限制还没专门校验。下一轮先做交互校验，不再继续 UI 美化。
+
 ## 血缘图设计（LineageGraph.vue）
 
 参考 DataHub / Dagster / dbt Explorer / Atlan 的可扩展模式，避免 dagre 在 50+ 节点时把图压成一列：
