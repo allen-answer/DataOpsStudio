@@ -18,6 +18,7 @@ class DataSource(BaseModel):
     username: str = ""
     password: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
+    project_id: str = ""   # 关联 Project.id；空 = 全局可见
 
 
 class DataSourceCreate(BaseModel):
@@ -29,3 +30,4 @@ class DataSourceCreate(BaseModel):
     username: str = ""
     password: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
+    project_id: str = ""

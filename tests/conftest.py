@@ -73,6 +73,17 @@ def isolated_storage(tmp_path, monkeypatch):
     from app.api import system as system_api
     monkeypatch.setattr(system_api, "RESULTS_DIR", results)
 
+    # 5. user / project / audit store —— D-MVP 多项目空间相关
+    from app.services import auth as auth_svc, audit as audit_svc
+    from app.api import projects as projects_api
+    monkeypatch.setattr(auth_svc.user_store, "path", cfg / "users.json")
+    monkeypatch.setattr(projects_api.project_store, "path", cfg / "projects.json")
+    monkeypatch.setattr(audit_svc, "AUDIT_LOG_FILE", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(paths_module, "USERS_FILE", cfg / "users.json")
+    monkeypatch.setattr(paths_module, "PROJECTS_FILE", cfg / "projects.json")
+    auth_svc.user_store.invalidate_cache()
+    projects_api.project_store.invalidate_cache()
+
     yield {
         "cfg": cfg,
         "results": results,

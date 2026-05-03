@@ -294,13 +294,16 @@ def _coerce_workflow(workflow: Workflow | dict[str, Any] | None) -> Workflow | N
     return Workflow.model_validate(workflow)
 
 
+_OPENLINEAGE_TARGET_TYPES = {"openlineage", "openlineage_webhook", "marquez", "datahub"}
+
+
 def _targets_for(workflow: Workflow) -> list[dict[str, Any]]:
     targets = [
         dict(item)
         for item in getattr(workflow, "notifications", []) or []
         if isinstance(item, dict)
         and item.get("enabled", True)
-        and _target_type(item) in {"openlineage", "openlineage_webhook"}
+        and _target_type(item) in _OPENLINEAGE_TARGET_TYPES
     ]
     webhook_url = os.getenv("DATAOPS_OPENLINEAGE_WEBHOOK_URL", "").strip()
     if webhook_url:
@@ -311,7 +314,61 @@ def _targets_for(workflow: Workflow) -> list[dict[str, Any]]:
             "namespace": os.getenv("DATAOPS_OPENLINEAGE_NAMESPACE", DEFAULT_NAMESPACE),
             "timeout_seconds": os.getenv("DATAOPS_OPENLINEAGE_TIMEOUT_SECONDS", ""),
         })
+    # Marquez / DataHub 通过 env 自动加 target，URL 已带固定路径或自动补全
+    marquez_url = os.getenv("DATAOPS_MARQUEZ_URL", "").strip()
+    if marquez_url:
+        targets.append({
+            "type": "marquez",
+            "url": marquez_url,
+            "events": ["all"],
+            "namespace": os.getenv("DATAOPS_OPENLINEAGE_NAMESPACE", DEFAULT_NAMESPACE),
+        })
+    datahub_url = os.getenv("DATAOPS_DATAHUB_URL", "").strip()
+    if datahub_url:
+        targets.append({
+            "type": "datahub",
+            "url": datahub_url,
+            "token": os.getenv("DATAOPS_DATAHUB_TOKEN", ""),
+            "events": ["all"],
+            "namespace": os.getenv("DATAOPS_OPENLINEAGE_NAMESPACE", DEFAULT_NAMESPACE),
+        })
     return targets
+
+
+# 各 collector 的标准 OpenLineage 端点路径。如果用户给的 URL 已经命中这个 suffix，
+# 不再追加；否则用 base URL + suffix。
+_DEFAULT_PATHS = {
+    "marquez": "/api/v1/lineage",
+    "datahub": "/openapi/v1/relationships/lineage",
+}
+
+
+def _resolve_url(target: dict[str, Any]) -> str:
+    """根据 target.type 把 base URL 补全成各 collector 的 OpenLineage 端点。"""
+    raw = str(target.get("url") or "").strip()
+    if not raw:
+        return ""
+    target_type = _target_type(target)
+    suffix = _DEFAULT_PATHS.get(target_type)
+    if not suffix:
+        return raw  # 通用 webhook：用户给什么 URL 就发到哪
+    if suffix in raw or raw.endswith(suffix):
+        return raw
+    return raw.rstrip("/") + suffix
+
+
+def _target_headers(target: dict[str, Any]) -> dict[str, str]:
+    """构造请求头：base + Bearer token + 用户自定义 headers。"""
+    headers = {"Content-Type": "application/json"}
+    token = str(target.get("token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    custom = target.get("headers") or {}
+    if isinstance(custom, dict):
+        for k, v in custom.items():
+            if isinstance(k, str) and isinstance(v, (str, int, float)):
+                headers[k] = str(v)
+    return headers
 
 
 def _target_accepts_event(target: dict[str, Any], event_type: str) -> bool:
@@ -323,7 +380,7 @@ def _target_accepts_event(target: dict[str, Any], event_type: str) -> bool:
 
 
 def _send_event(target: dict[str, Any], event: dict[str, Any]) -> OpenLineageEmitResult:
-    url = str(target.get("url") or "").strip()
+    url = _resolve_url(target)
     event_type = str(event.get("eventType") or "")
     if not url:
         return OpenLineageEmitResult(type=_target_type(target), target="", event_type=event_type, ok=False, error="missing url")
@@ -331,7 +388,7 @@ def _send_event(target: dict[str, Any], event: dict[str, Any]) -> OpenLineageEmi
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_target_headers(target),
         method=str(target.get("method") or "POST").upper(),
     )
     with urllib.request.urlopen(request, timeout=_timeout(target)) as response:  # noqa: S310 - user-configured internal webhook

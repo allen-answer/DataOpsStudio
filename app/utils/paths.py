@@ -15,6 +15,9 @@ WORKFLOW_TEMPLATES_FILE = CONFIG_DIR / "workflow_templates.json"
 WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
 LINEAGE_GROUP_RULES_YAML = CONFIG_DIR / "lineage_group_rules.yml"
 LINEAGE_GROUP_RULES_JSON = CONFIG_DIR / "lineage_group_rules.json"
+USERS_FILE = CONFIG_DIR / "users.json"
+PROJECTS_FILE = CONFIG_DIR / "projects.json"
+AUDIT_LOG_FILE = LOGS_DIR / "audit.jsonl"
 
 
 def ensure_dirs() -> None:
@@ -29,3 +32,7 @@ def ensure_dirs() -> None:
         WORKFLOWS_FILE.write_text("[]", encoding="utf-8")
     if not WORKFLOW_TEMPLATES_FILE.exists():
         WORKFLOW_TEMPLATES_FILE.write_text("[]", encoding="utf-8")
+    if not USERS_FILE.exists():
+        USERS_FILE.write_text("[]", encoding="utf-8")
+    if not PROJECTS_FILE.exists():
+        PROJECTS_FILE.write_text("[]", encoding="utf-8")

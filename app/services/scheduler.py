@@ -24,6 +24,7 @@ from app.models import Workflow, WorkflowStatus
 from app.services.jobs import get_job, submit_workflow_run
 from app.dbclients.factory import fetch_rows
 from app.services.repositories import datasource_store, workflow_store
+from app.services.sensors import SensorState, evaluate_sensor
 from app.utils.sql_guard import validate_readonly_sql
 
 
@@ -82,6 +83,8 @@ _lock = threading.RLock()
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None
 _scheduler: Any | None = None
+# sensor 状态：(workflow_id, sensor_index) → SensorState；进程内存活，重启清空
+_sensor_states: dict[tuple[str, int], SensorState] = {}
 
 
 def start_scheduler(interval_seconds: int | None = None) -> dict[str, Any]:
@@ -191,11 +194,12 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
 
     APScheduler handles actual cron firing. The fallback path keeps the previous
     manual due-check behavior for environments where APScheduler is not yet
-    installed.
+    installed. Sensor / event triggers are also polled here regardless of backend.
     """
     if APSCHEDULER_AVAILABLE:
         errors = _sync_jobs(now or datetime.now())
-        return {"submitted": [], "errors": errors, "status": scheduler_status()}
+        sensor_submitted = _tick_sensors()
+        return {"submitted": sensor_submitted, "errors": errors, "status": scheduler_status()}
     return _fallback_tick(now)
 
 
@@ -219,6 +223,7 @@ def reset_scheduler_state_for_tests() -> None:
         _state.backend = "apscheduler" if APSCHEDULER_AVAILABLE else "fallback"
         _state.entries.clear()
         _state.sensor_entries.clear()
+        _sensor_states.clear()
 
 
 def _ensure_sync_job() -> None:
@@ -461,7 +466,62 @@ def _fallback_tick(now: datetime | None = None) -> dict[str, Any]:
                         entry = _state.sensor_entries.get(_sensor_key(workflow.id, str(sensor.get("id") or "")))
                         if entry is not None:
                             entry.last_error = str(exc)
+    submitted.extend(_tick_sensors())
     return {"submitted": submitted, "errors": errors, "status": scheduler_status()}
+
+
+def _tick_sensors() -> list[dict[str, Any]]:
+    """轮询所有 active workflow 的 triggers，命中即提交 run。"""
+    submitted: list[dict[str, Any]] = []
+    workflows = workflow_store.list()
+    for workflow in workflows:
+        status_value = getattr(workflow.status, "value", workflow.status)
+        if status_value != WorkflowStatus.ACTIVE.value:
+            continue
+        triggers = list(getattr(workflow, "triggers", None) or [])
+        if not triggers:
+            continue
+        for index, sensor in enumerate(triggers):
+            if not isinstance(sensor, dict):
+                continue
+            key = (workflow.id, index)
+            with _lock:
+                state = _sensor_states.get(key) or SensorState()
+            try:
+                eval_result = evaluate_sensor(sensor, state, workflow_run_lookup=_lookup_runs)
+            except Exception as exc:
+                logger.exception("sensor evaluation crashed workflow_id=%s index=%s", workflow.id, index)
+                with _lock:
+                    _sensor_states[key] = state
+                continue
+            with _lock:
+                _sensor_states[key] = eval_result.new_state
+            if not eval_result.fired:
+                continue
+            try:
+                job = submit_workflow_run(
+                    workflow.id,
+                    {},
+                    max_retries=DEFAULT_MAX_RETRIES,
+                    trigger=f"sensor:{sensor.get('type', 'unknown')}",
+                )
+                submitted.append({
+                    "workflow_id": workflow.id,
+                    "job_id": str(job.get("job_id") or ""),
+                    "sensor_type": sensor.get("type", ""),
+                    "sensor_index": index,
+                    "reason": eval_result.reason,
+                })
+            except Exception:
+                logger.exception("sensor submit_workflow_run failed workflow_id=%s", workflow.id)
+    return submitted
+
+
+def _lookup_runs(workflow_id: str) -> list[dict[str, Any]]:
+    """workflow_success sensor 用：拿上游 workflow 的最近 runs。"""
+    from app.services.workflow_history import list_workflow_runs
+    summaries = list_workflow_runs(workflow_id, limit=20)
+    return [s.model_dump() if hasattr(s, "model_dump") else dict(s) for s in summaries]
 
 
 def _entry_for(workflow: Workflow, now: datetime) -> ScheduleEntry:

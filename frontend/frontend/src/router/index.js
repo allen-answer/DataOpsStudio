@@ -1,25 +1,29 @@
 /**
- * 6 个顶级路由 + 工作流详情/运行的深链。
+ * 顶级路由 + 工作流详情/运行的深链 + 登录页。
  *
  * Phase 1 决策：
- * - 用 createWebHashHistory，避免后端 fastapi static 还要单独配 spa fallback
- *   （现在 /static/spa/ 是一个 SPA bundle，hash 路由刷新永远命中根 index.html）
- * - WorkflowView 当前内部用 selectedWorkflowId/selectedRunId 切 list/detail/run，
- *   Phase 1 不强制深链复原选中状态——刷新后回到列表也算可接受。后续 Phase 2/3
- *   再做 :id / :runId → 内部状态的 watch 同步。
+ * - createWebHashHistory，避免后端 spa fallback 配置（/static/spa/ 永远命中
+ *   index.html，hash 路由刷新不打 404）
+ *
+ * D-MVP（多项目空间）：
+ * - 加 /login 路由，meta.public = true 跳过 auth 守卫
+ * - beforeEach 守卫：未登录访问 protected 路由 → 跳 /login?redirect=...
  */
 import { createRouter, createWebHashHistory } from 'vue-router'
 
 import DatasourceView from '../views/DatasourceView.vue'
 import WorkbenchView from '../views/WorkbenchView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
-// Phase 4：合并入口 LineageWorkbenchView 接管 /lineage 和 /batch-lineage 两条路径
-// 旧 LineageView / BatchView 文件保留在 views/ 但路由不再引用（git 历史可回滚）
 import LineageWorkbenchView from '../views/LineageWorkbenchView.vue'
 import HistoryView from '../views/HistoryView.vue'
+import LoginView from '../views/LoginView.vue'
+import UserManagementView from '../views/admin/UserManagementView.vue'
+import AuditLogView from '../views/admin/AuditLogView.vue'
+import ProjectManagementView from '../views/admin/ProjectManagementView.vue'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
+  { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
 
   { path: '/datasources',   name: 'datasources',   component: DatasourceView },
   { path: '/data-compare',  name: 'data-compare',  component: WorkbenchView },
@@ -28,19 +32,44 @@ const routes = [
   { path: '/workflows/:id',             name: 'workflow-detail',  component: WorkflowView, props: true },
   { path: '/workflow-runs/:runId',      name: 'workflow-run',     component: WorkflowView, props: true },
 
-  // Phase 4：两个 path 共用 LineageWorkbenchView，view 内部根据 route.path
-  // 决定默认 mode（/lineage → paste，/batch-lineage → multi）
   { path: '/lineage',       name: 'lineage',       component: LineageWorkbenchView },
   { path: '/batch-lineage', name: 'batch-lineage', component: LineageWorkbenchView },
   { path: '/history',       name: 'history',       component: HistoryView },
 
-  // Catch-all → 数据源（首屏）
+  // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示
+  { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },
+  { path: '/admin/audit',    name: 'admin-audit',    component: AuditLogView,           meta: { adminOnly: true } },
+  { path: '/admin/projects', name: 'admin-projects', component: ProjectManagementView,  meta: { adminOnly: true } },
+
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]
 
 export const router = createRouter({
   history: createWebHashHistory(),
   routes,
+})
+
+// 全局 auth 守卫：未登录访问 protected 路由 → 跳 /login?redirect=<path>。
+// 不在这里 import useAuthStore（router 在 main.js 里 use(pinia) 之前已经
+// 实例化），改成读 localStorage —— 跟 api.js 一致的 SoT。
+router.beforeEach((to, from, next) => {
+  if (to.meta.public) return next()
+  const token = localStorage.getItem('dataops.token') || ''
+  if (!token) {
+    return next({ path: '/login', query: { redirect: to.fullPath } })
+  }
+  // adminOnly 守卫：非 admin 访问 admin 页面 → 跳数据源页（接口侧也会 403 兜底）
+  if (to.meta.adminOnly) {
+    let role = ''
+    try {
+      const raw = localStorage.getItem('dataops.user') || ''
+      role = raw ? JSON.parse(raw).role : ''
+    } catch {
+      role = ''
+    }
+    if (role !== 'admin') return next({ path: '/datasources' })
+  }
+  next()
 })
 
 export default router

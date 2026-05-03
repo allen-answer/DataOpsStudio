@@ -371,3 +371,104 @@ def test_workflow_run_openlineage_endpoint_404(client, isolated_storage):
     response = client.get("/api/workflow-runs/missing/openlineage")
 
     assert response.status_code == 404
+
+
+# ─── Marquez / DataHub target 类型（Phase 7 H） ────────────────────────────────
+
+
+def test_marquez_target_appends_default_path(monkeypatch):
+    """Marquez target：URL base 自动补 /api/v1/lineage 端点。"""
+    captured: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        captured.append({
+            "url": request.full_url,
+            "headers": dict(request.headers),
+        })
+        return _FakeResponse()
+
+    monkeypatch.setattr("app.services.openlineage_emitter.urllib.request.urlopen", fake_urlopen)
+    workflow = _workflow().model_copy(update={
+        "notifications": [{
+            "type": "marquez",
+            "url": "http://marquez:5000",  # base URL 不带 path
+            "events": ["all"],
+        }]
+    })
+    emit_workflow_run_openlineage(workflow, _run_with_artifact())
+
+    assert {item["url"] for item in captured} == {"http://marquez:5000/api/v1/lineage"}
+
+
+def test_marquez_target_keeps_explicit_path(monkeypatch):
+    captured: list[str] = []
+    monkeypatch.setattr(
+        "app.services.openlineage_emitter.urllib.request.urlopen",
+        lambda request, timeout: captured.append(request.full_url) or _FakeResponse(),
+    )
+    workflow = _workflow().model_copy(update={
+        "notifications": [{
+            "type": "marquez",
+            "url": "http://marquez:5000/api/v1/lineage",  # 已带 path
+            "events": ["all"],
+        }]
+    })
+    emit_workflow_run_openlineage(workflow, _run_with_artifact())
+
+    # 不应重复追加
+    assert captured and all(url == "http://marquez:5000/api/v1/lineage" for url in captured)
+
+
+def test_datahub_target_includes_bearer_token(monkeypatch):
+    captured: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        captured.append({
+            "url": request.full_url,
+            "auth": request.headers.get("Authorization"),
+        })
+        return _FakeResponse()
+
+    monkeypatch.setattr("app.services.openlineage_emitter.urllib.request.urlopen", fake_urlopen)
+    workflow = _workflow().model_copy(update={
+        "notifications": [{
+            "type": "datahub",
+            "url": "http://datahub-gms:8080",
+            "token": "secret-token-xyz",
+            "events": ["all"],
+        }]
+    })
+    emit_workflow_run_openlineage(workflow, _run_with_artifact())
+
+    # URL 自动补全 datahub OpenLineage 端点
+    assert all("/openapi/v1/relationships/lineage" in item["url"] for item in captured)
+    # Authorization Bearer 头
+    assert all(item["auth"] == "Bearer secret-token-xyz" for item in captured)
+
+
+def test_env_marquez_url_creates_target(monkeypatch):
+    """DATAOPS_MARQUEZ_URL env 自动加 marquez target。"""
+    captured: list[str] = []
+    monkeypatch.setenv("DATAOPS_MARQUEZ_URL", "http://marquez:5000")
+    monkeypatch.setattr(
+        "app.services.openlineage_emitter.urllib.request.urlopen",
+        lambda request, timeout: captured.append(request.full_url) or _FakeResponse(),
+    )
+    workflow = _workflow()  # 不挂任何 notifications
+    emit_workflow_run_openlineage(workflow, _run_with_artifact())
+
+    assert any("marquez:5000/api/v1/lineage" in url for url in captured)
+
+
+def test_env_datahub_url_includes_token(monkeypatch):
+    captured: list[dict[str, str]] = []
+    monkeypatch.setenv("DATAOPS_DATAHUB_URL", "http://datahub:8080")
+    monkeypatch.setenv("DATAOPS_DATAHUB_TOKEN", "from-env")
+    monkeypatch.setattr(
+        "app.services.openlineage_emitter.urllib.request.urlopen",
+        lambda request, timeout: captured.append({"auth": request.headers.get("Authorization") or ""}) or _FakeResponse(),
+    )
+    workflow = _workflow()
+    emit_workflow_run_openlineage(workflow, _run_with_artifact())
+
+    assert any("Bearer from-env" in item["auth"] for item in captured)

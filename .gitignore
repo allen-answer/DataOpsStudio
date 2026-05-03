@@ -53,6 +53,9 @@ config/datasources.json
 config/tasks.json
 config/jobs.json
 config/workflows.json
+config/workflow_templates.json
+config/users.json
+config/projects.json
 # Lineage 业务分组规则，每个 clone 自己 cp example 改造；example 仍跟踪。
 config/lineage_group_rules.yml
 config/lineage_group_rules.json

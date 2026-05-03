@@ -55,8 +55,11 @@ def _template_payload(payload: WorkflowTemplateCreate) -> WorkflowTemplateCreate
 
 
 @router.get("/api/workflows", response_model=list[Workflow])
-def list_workflows():
-    return workflow_store.list()
+def list_workflows(project_id: str = ""):
+    items = workflow_store.list()
+    if project_id:
+        items = [w for w in items if w.project_id == project_id or not w.project_id]
+    return items
 
 
 @router.post("/api/workflows", response_model=Workflow)

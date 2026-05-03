@@ -14,6 +14,8 @@ import { useLineageStore } from './stores/lineage'
 import { useBatchStore } from './stores/batch'
 import { useHistoryStore } from './stores/history'
 import { useBootstrapStore } from './stores/bootstrap'
+import { useAuthStore } from './stores/auth'
+import { useProjectStore } from './stores/project'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -35,6 +37,8 @@ const lineageStore = useLineageStore()
 const batchStore = useBatchStore()
 const historyStore = useHistoryStore()
 const bootstrapStore = useBootstrapStore()
+const authStore = useAuthStore()
+const projectStore = useProjectStore()
 const { state } = bootstrapStore
 const { notice } = storeToRefs(noticeStore)
 const { actionStatus, setNotice, setActionStatus } = noticeStore
@@ -239,7 +243,15 @@ const confirmIncludePasswords = (event) => {
 
 // 切路由时停掉所有轮询定时器，避免离开页面后还在打 API
 watch(() => route.path, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
-onMounted(loadBootstrap)
+// 已登录才拉 bootstrap 数据 + refresh user；未登录走 LoginView 全屏（router 守卫已跳）
+onMounted(async () => {
+  if (!authStore.isLoggedIn) return
+  await authStore.refreshMe()  // 验证 token + 刷新 user 信息（过期则 401 自动跳 login）
+  if (authStore.isLoggedIn) {
+    await projectStore.reload()  // 项目列表先就位 —— sidebar dropdown / bootstrap 过滤都靠它
+    await loadBootstrap()
+  }
+})
 onUnmounted(() => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
 
 // Shared context for view components. Reactive objects (state, lineage, batch, ...)
@@ -289,7 +301,9 @@ provide('app', {
 </script>
 
 <template>
-  <AppShell :loading="loading" @confirm-include-passwords="confirmIncludePasswords">
+  <!-- 登录页全屏渲染，不套 sidebar / topbar 壳 -->
+  <router-view v-if="route.meta.public" />
+  <AppShell v-else :loading="loading" @confirm-include-passwords="confirmIncludePasswords">
     <div class="px-6 py-6">
       <router-view />
     </div>

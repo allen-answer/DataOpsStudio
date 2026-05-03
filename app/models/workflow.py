@@ -72,12 +72,16 @@ class Workflow(BaseModel):
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     schedule_cron: str = ""   # 留空 = 仅手动触发
-    project: str = ""         # 所属项目分组，UI 列表筛选用
+    project: str = ""         # 所属项目分组（自由文本 tag），UI 列表筛选用
+    project_id: str = ""      # 关联 Project.id（D-MVP 项目空间）
     status: WorkflowStatus = WorkflowStatus.DRAFT
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
     sensors: list[dict[str, Any]] = Field(default_factory=list)
+    # Sensor 触发器：每项 {type: "file"|"workflow_success", config: {...}, enabled, name}
+    # 调度器轮询 evaluate；命中即提交 workflow run
+    triggers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkflowCreate(BaseModel):
@@ -89,11 +93,13 @@ class WorkflowCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
     schedule_cron: str = ""
     project: str = ""
+    project_id: str = ""
     status: WorkflowStatus = WorkflowStatus.DRAFT
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
     sensors: list[dict[str, Any]] = Field(default_factory=list)
+    triggers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # --- 运行状态 ---

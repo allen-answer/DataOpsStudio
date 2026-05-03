@@ -15,6 +15,7 @@ import { defineStore } from 'pinia'
 import { apiJson } from '../api'
 import { useNoticeStore } from './notice'
 import { useBootstrapStore } from './bootstrap'
+import { useProjectStore } from './project'
 
 function _toErrorMessage(error) {
   return error?.message || String(error || '未知错误')
@@ -35,6 +36,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
   const editDraft = reactive({
     name: '', db_type: '', host: '', port: 3306,
     database: '', username: '', password: '',
+    project_id: '',
   })
 
   function startEditDatasource(item) {
@@ -47,6 +49,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
       database: item.database,
       username: item.username,
       password: '',
+      project_id: item.project_id || '',
     })
   }
 
@@ -67,8 +70,11 @@ export const useDatasourceStore = defineStore('datasource', () => {
   async function createDatasource() {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
+    const project = useProjectStore()
+    // 当前选中项目 → 新建资源自动归属该项目（"全部"模式 = 不指定 project_id）
+    const payload = { ...datasourceDraft, project_id: project.currentProjectId || '' }
     try {
-      const created = await apiJson('/api/datasources', 'POST', { ...datasourceDraft })
+      const created = await apiJson('/api/datasources', 'POST', payload)
       bootstrap.state.datasources.push(created)
       resetDatasourceDraft()
       notice.setNotice('数据源已创建')

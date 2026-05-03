@@ -85,15 +85,106 @@ def analysis_statements(statement: Any) -> list[Any]:
 
 
 def transform_type(expression: Any) -> str:
-    """字段表达式分类：聚合 / 直接映射 / 表达式（含函数 / 计算）。"""
+    """字段表达式分类。Phase 7 G：从 3 类细化到 11 类，让前端 / report 能看清"这个
+    输出列是 CASE 条件还是窗口函数还是 CAST"，避免一律打 "表达式" 兜底。
+
+    优先级（外层语义优先）：
+        WINDOW > 聚合 > CASE > CAST > COALESCE > 算术 > 字符串/日期/数值函数 > UDF > 字面量 > 直接映射 > 表达式
+    """
     e = exp()
+    inner = expression.this if isinstance(expression, e.Alias) else expression
+
+    # 窗口 / 聚合 —— 外层语义；用 find_all 是因为 sqlglot 经常把 AggFunc 包在 Alias / Window 里
+    if any(True for _ in expression.find_all(e.Window)):
+        return "窗口"
     if any(True for _ in expression.find_all(e.AggFunc)):
         return "聚合"
-    if isinstance(expression, e.Column):
+
+    # CASE / 条件 / CAST / COALESCE 类
+    if isinstance(inner, e.Case) or any(True for _ in expression.find_all(e.Case)):
+        return "条件"
+    if isinstance(inner, (e.Cast, e.TryCast)):
+        return "类型转换"
+    coalesce_types = tuple(
+        cls for cls in (
+            getattr(e, "Coalesce", None),
+            getattr(e, "Nvl", None),
+            getattr(e, "Nvl2", None),
+            getattr(e, "Nullif", None),
+            getattr(e, "If", None),
+        ) if cls is not None
+    )
+    if coalesce_types and isinstance(inner, coalesce_types):
+        return "空值兜底"
+
+    # 算术（Add / Sub / Mul / Div / Mod）
+    arithmetic_types = tuple(
+        cls for cls in (
+            getattr(e, "Add", None), getattr(e, "Sub", None), getattr(e, "Mul", None),
+            getattr(e, "Div", None), getattr(e, "Mod", None), getattr(e, "Neg", None),
+        ) if cls is not None
+    )
+    if arithmetic_types and isinstance(inner, arithmetic_types):
+        return "算术"
+
+    # 字符串 / 日期 / 数值函数家族（按类名前缀简单分类，覆盖各方言）
+    string_funcs = {"Concat", "Lower", "Upper", "Substring", "Substr", "Trim", "LTrim",
+                    "RTrim", "Length", "Replace", "Repeat", "Reverse", "Left", "Right", "Pad"}
+    date_funcs = {"CurrentDate", "CurrentTimestamp", "CurrentTime", "DateAdd", "DateDiff",
+                  "DateSub", "DateTrunc", "DateFromParts", "DatetimeAdd", "DatetimeDiff",
+                  "Extract", "Year", "Month", "Day", "Hour", "Minute", "Second",
+                  "ToDate", "TimeStr", "StrToDate", "FromUnixtime", "UnixToTime"}
+    numeric_funcs = {"Round", "Ceil", "Floor", "Abs", "Mod", "Power", "Sqrt", "Exp", "Ln", "Log"}
+    cls_name = type(inner).__name__
+    if cls_name in string_funcs:
+        return "字符串函数"
+    if cls_name in date_funcs:
+        return "日期函数"
+    if cls_name in numeric_funcs:
+        return "数值函数"
+
+    # 字面量常量（无 column 来源）
+    if isinstance(inner, e.Literal):
+        return "字面量"
+
+    # UDF / 未知函数：sqlglot 用 Anonymous 表示无 builtin 映射的函数；带 . 的 column-style
+    # 函数（Oracle pkg.fn）也算 UDF
+    if isinstance(inner, getattr(e, "Anonymous", tuple())):
+        return "UDF"
+    if isinstance(inner, e.Func) and not any(True for _ in inner.find_all(e.Column)):
+        # 没列引用、纯参数函数（CURRENT_DATE / RAND() 等）
+        return "字面量"
+    if isinstance(inner, e.Func):
+        return "函数"
+
+    # 直接映射（Column 或 Alias(Column)）
+    if isinstance(inner, e.Column):
         return "直接映射"
-    if isinstance(expression, e.Alias) and isinstance(expression.this, e.Column):
-        return "直接映射"
+
     return "表达式"
+
+
+def window_partition_columns(expression: Any) -> dict[str, list[str]]:
+    """把表达式里所有 Window 节点的 PARTITION BY / ORDER BY 列名抽出来。
+
+    为窗口函数提供"分组依赖"的额外可见性 —— 这些列虽然也被 source_info 当作普通源列
+    收进 source_columns，但前端通常想单独标"这是 partition / 排序键"。
+    """
+    e = exp()
+    partition_columns: list[str] = []
+    order_columns: list[str] = []
+    for window in expression.find_all(e.Window):
+        for partition in window.args.get("partition_by") or []:
+            for column in partition.find_all(e.Column):
+                partition_columns.append(sql(column))
+        order = window.args.get("order")
+        if order is not None:
+            for column in order.find_all(e.Column):
+                order_columns.append(sql(column))
+    return {
+        "partition_by": _unique_strings(partition_columns),
+        "order_by": _unique_strings(order_columns),
+    }
 
 
 def variables_in_expression(expression: Any, script_variables: list[dict[str, str]]) -> list[str]:

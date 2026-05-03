@@ -7,7 +7,13 @@ import {
   Workflow,
   GitBranch,
   History as HistoryIcon,
+  FolderOpen,
+  Users,
+  ScrollText,
 } from 'lucide-vue-next'
+import { storeToRefs } from 'pinia'
+import { useAuthStore } from '../stores/auth'
+import { useProjectStore } from '../stores/project'
 
 // 导航项：order 决定 sidebar 上下顺序，icon 来自 lucide。
 // matchPaths 用于 active 高亮 —— 当前 route 以这些前缀任一开头即认为命中。
@@ -21,7 +27,18 @@ const NAV_ITEMS = [
   { id: 'history',       label: '执行历史',     icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
 ]
 
+// admin-only nav 项：仅 admin role 可见
+const ADMIN_NAV_ITEMS = [
+  { id: 'users',     label: '用户管理',  icon: Users,        path: '/admin/users',     matchPaths: ['/admin/users'] },
+  { id: 'audit',     label: '审计日志',  icon: ScrollText,   path: '/admin/audit',     matchPaths: ['/admin/audit'] },
+  { id: 'projects',  label: '项目管理',  icon: FolderOpen,   path: '/admin/projects',  matchPaths: ['/admin/projects'] },
+]
+
 const route = useRoute()
+const authStore = useAuthStore()
+const projectStore = useProjectStore()
+const { isAdmin } = storeToRefs(authStore)
+const { currentProjectId, projects } = storeToRefs(projectStore)
 
 // app context（driverItems 是 App.vue 暴露的 computed ref，模板自动解包；
 // loadBootstrap 是 async 函数）
@@ -29,6 +46,12 @@ const { driverItems, loadBootstrap } = inject('app', { driverItems: [], loadBoot
 
 function isActive(item) {
   return item.matchPaths.some(p => route.path === p || route.path.startsWith(p + '/'))
+}
+
+async function onProjectChange(event) {
+  projectStore.setProject(event.target.value || '')
+  // 切项目后重新拉 bootstrap —— 列表都按当前项目过滤
+  await loadBootstrap()
 }
 </script>
 
@@ -45,6 +68,22 @@ function isActive(item) {
       </div>
     </div>
 
+    <!-- 项目切换 dropdown：值为空 = "全部项目（包括未关联）" -->
+    <div class="border-b border-sidebar-border px-3 py-3">
+      <label class="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-sidebar-fg/50">
+        <FolderOpen class="h-3 w-3" />
+        当前项目
+      </label>
+      <select
+        :value="currentProjectId"
+        class="w-full rounded-lg border-0 bg-sidebar-accent px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-primary"
+        @change="onProjectChange"
+      >
+        <option value="">全部项目</option>
+        <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </select>
+    </div>
+
     <!-- Nav -->
     <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-4">
       <router-link
@@ -59,6 +98,25 @@ function isActive(item) {
         <component :is="item.icon" class="h-5 w-5 shrink-0" :class="isActive(item) ? 'text-white' : 'text-sidebar-fg/60 group-hover:text-white'" />
         <span class="truncate">{{ item.label }}</span>
       </router-link>
+
+      <!-- Admin nav 区段（仅 admin） -->
+      <template v-if="isAdmin">
+        <div class="mt-4 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sidebar-fg/40">
+          管理
+        </div>
+        <router-link
+          v-for="item in ADMIN_NAV_ITEMS"
+          :key="item.id"
+          :to="item.path"
+          class="group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition"
+          :class="isActive(item)
+            ? 'bg-primary text-white shadow-sm'
+            : 'text-sidebar-fg/80 hover:bg-sidebar-accent hover:text-white'"
+        >
+          <component :is="item.icon" class="h-5 w-5 shrink-0" :class="isActive(item) ? 'text-white' : 'text-sidebar-fg/60 group-hover:text-white'" />
+          <span class="truncate">{{ item.label }}</span>
+        </router-link>
+      </template>
     </nav>
 
     <!-- Driver detection -->
