@@ -114,4 +114,5 @@ def rerun_workflow_run_api(run_id: str, payload: dict[str, object] | None = Body
         resume_from=previous_run,
         from_node_id=from_node_id,
         max_retries=payload.get("max_retries"),
+        trigger="rerun",
     )

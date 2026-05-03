@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import mimetypes
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.services.scheduler import DEFAULT_ENABLED, start_scheduler, stop_scheduler
 from app.utils.logging_config import setup_logging
 from app.utils.paths import BASE_DIR, ensure_dirs
 
@@ -25,6 +27,17 @@ mimetypes.add_type("application/json", ".json")
 ensure_dirs()
 setup_logging()
 
-app = FastAPI(title="Lightweight Data Compare Tool", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if DEFAULT_ENABLED:
+        start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
+
+app = FastAPI(title="Lightweight Data Compare Tool", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(router)

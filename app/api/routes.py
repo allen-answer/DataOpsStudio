@@ -15,6 +15,7 @@ from app.api import (
     history,
     lineage,
     runs,
+    scheduler,
     system,
     tasks,
     uploads,
@@ -30,6 +31,7 @@ router.include_router(system.router)
 router.include_router(datasources.router)
 router.include_router(tasks.router)
 router.include_router(runs.router)
+router.include_router(scheduler.router)
 router.include_router(workflows.router)
 router.include_router(workflow_runs.router)
 router.include_router(history.router)

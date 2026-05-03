@@ -116,6 +116,14 @@ def test_create_workflow_rejects_compare_partial_sql_override(client, isolated_s
     assert "select/with" in response.json()["detail"].lower() or "WHERE" in response.json()["detail"]
 
 
+def test_scheduler_status_endpoint(client, isolated_storage):
+    response = client.get("/api/scheduler/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "running" in payload
+    assert "entries" in payload
+
+
 # --- excel_export 链路 + artifact 下载 ---
 
 def test_workflow_with_excel_export_produces_artifact_and_downloads(client, isolated_storage):

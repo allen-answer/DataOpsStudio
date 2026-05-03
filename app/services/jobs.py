@@ -12,6 +12,7 @@ from uuid import uuid4
 from app.models import WorkflowRun
 from app.services.repositories import workflow_store
 from app.services.runner import run_task
+from app.services.notifier import notify_workflow_run
 from app.services.workflow_engine import run_workflow
 from app.services.workflow_history import persist_workflow_run
 from app.utils.paths import JOBS_FILE
@@ -68,6 +69,7 @@ def submit_workflow_run(
     resume_from: WorkflowRun | None = None,
     from_node_id: str | None = None,
     max_retries: int | None = None,
+    trigger: str = "manual",
 ) -> dict[str, Any]:
     cleanup_jobs()
     job_id = uuid4().hex
@@ -77,6 +79,7 @@ def submit_workflow_run(
         "kind": "workflow",
         "workflow_id": workflow_id,
         "variables": dict(variables or {}),
+        "trigger": trigger,
         "status": "queued",
         "stage": "queued",
         "message": "queued",
@@ -102,6 +105,7 @@ def submit_workflow_run(
         dict(variables or {}),
         resume_from,
         from_node_id,
+        trigger,
     )
     with _lock:
         _futures[job_id] = future
@@ -225,6 +229,7 @@ def _run_workflow_job(
     variables: dict[str, str],
     resume_from: WorkflowRun | None = None,
     from_node_id: str | None = None,
+    trigger: str = "manual",
 ) -> None:
     max_retries = _job_max_retries(job_id)
     try:
@@ -253,6 +258,7 @@ def _run_workflow_job(
                     from_node_id=from_node_id,
                 )
                 persist_workflow_run(run)
+                notify_workflow_run(workflow, run, trigger=trigger, job_id=job_id)
                 result = run.model_dump(mode="json")
                 if run.error == "cancelled":
                     _patch_job(

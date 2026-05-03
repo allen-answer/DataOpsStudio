@@ -76,6 +76,7 @@ class Workflow(BaseModel):
     status: WorkflowStatus = WorkflowStatus.DRAFT
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
+    notifications: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkflowCreate(BaseModel):
@@ -90,6 +91,7 @@ class WorkflowCreate(BaseModel):
     status: WorkflowStatus = WorkflowStatus.DRAFT
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
+    notifications: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # --- 运行状态 ---
