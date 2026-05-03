@@ -185,7 +185,15 @@ def select_columns(
     schema: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     """SELECT 的 expressions list 拆成字段级血缘条目。star 展开优先；其它
-    表达式走 source_info 推断。"""
+    表达式走 source_info 推断。
+
+    schema-aware 降级（参考 DataHub 实践）：
+    - SELECT * 缺 schema → 单条 medium-confidence 占位 + warning（不当 high
+      可信，因为我们没法静态知道真实列）
+    - SELECT t.* 但 schema 没该表 → 同上
+    - 多表 unqualified column 缺 schema → source_info 已降 low + warning
+    """
+    e = exp()
     result: list[dict[str, Any]] = []
     default_tables = select_direct_source_tables(select)
     for expression in select.expressions:
@@ -205,6 +213,33 @@ def select_columns(
                 }
                 for item in expanded_star
             )
+            continue
+        # SELECT * / SELECT t.* 但 expanded_star 为空 → schema 元数据缺该表列
+        # 定义。给一个降级占位（confidence=medium + warning），让前端 / report
+        # 能标"通配符未展开，列级关系仅按表级假设"。
+        stars = list(expression.find_all(e.Star))
+        if stars:
+            star_target = ""
+            for star in stars:
+                parent = star.parent
+                if isinstance(parent, e.Column) and parent.table:
+                    star_target = alias_map.get(parent.table, parent.table)
+                    break
+            star_tables = [star_target] if star_target else list(default_tables)
+            result.append({
+                "select_index": select_index,
+                "output_column": expression.alias_or_name or sql(expression),
+                "expression": sql(expression),
+                "source_columns": [sql(expression)],
+                "source_tables": star_tables,
+                "variables": variables_in_expression(expression, script_variables),
+                "transform": "星号展开（未解析）",
+                "confidence": "medium",
+                "warnings": [{
+                    "type": "通配符未展开",
+                    "message": "SELECT * 缺少 Schema 元数据，无法静态展开真实列；列级关系仅按表级假设",
+                }],
+            })
             continue
         info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
         result.append(

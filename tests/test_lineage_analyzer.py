@@ -177,6 +177,37 @@ def test_star_expansion_with_schema():
     assert "age" in output_cols
 
 
+def test_select_star_without_schema_downgrades_to_medium():
+    """SELECT * 缺 schema 时 confidence 应降到 medium，并出"通配符未展开" warning。
+    不能装作 high 可信度——我们没法静态知道真实列表。"""
+    sql = "INSERT INTO t SELECT * FROM s"
+    result = analyze_sql_lineage(sql)  # 没传 schema
+    assert result["columns"], "SELECT * 缺 schema 应至少出一条占位 column 条目"
+    star_col = result["columns"][0]
+    assert star_col["confidence"] == "medium"
+    assert star_col["transform"] == "星号展开（未解析）"
+    assert "s" in star_col["source_tables"]
+    assert any(w["type"] == "通配符未展开" for w in star_col["warnings"])
+
+
+def test_select_t_star_without_schema_downgrades():
+    """SELECT t.* 缺 schema —— 同 SELECT * 一样降级，但 source_tables 锁定到 t。"""
+    sql = "INSERT INTO target SELECT a.* FROM orders a JOIN users u ON a.uid = u.id"
+    result = analyze_sql_lineage(sql)  # 没传 schema，alias a → orders
+    star_cols = [c for c in result["columns"] if c["transform"] == "星号展开（未解析）"]
+    assert star_cols, "SELECT a.* 应触发降级占位"
+    assert star_cols[0]["confidence"] == "medium"
+    assert "orders" in star_cols[0]["source_tables"]
+
+
+def test_select_star_with_schema_stays_high():
+    """既有行为不破坏：传了 schema 时 SELECT * 仍展开为 high。"""
+    sql = "INSERT INTO t SELECT * FROM s"
+    result = analyze_sql_lineage(sql, schema={"s": ["id", "name"]})
+    assert all(c["confidence"] == "high" for c in result["columns"])
+    assert all(c["transform"] == "星号展开" for c in result["columns"])
+
+
 def test_unqualified_column_resolves_unique_schema_table():
     sql = "INSERT INTO rpt SELECT amount FROM orders o JOIN users u ON o.user_id = u.id"
     result = analyze_sql_lineage(sql, schema={"orders": ["id", "amount", "user_id"], "users": ["id", "name"]})
