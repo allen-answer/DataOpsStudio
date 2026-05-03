@@ -273,7 +273,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - 任务系统增强（job TTL、失败重试）
 - 调度器（cron/sensor）+ 通知（企业微信 / 邮件 / Webhook）
 - 多项目空间 + 用户权限 + 审计日志
-- 数据源连接池
+- ~~数据源连接池~~ ✅ —— `app/dbclients/pool.py`：每 datasource_id 一个 LIFO 池，`max_size` 默认 4，`idle_seconds` 默认 600（连接空闲超时丢弃）。`fetch_rows` / `fetch_columns` / `iter_rows` 改走 `pool.borrow(source, factory)` context manager；MySQL 路径 acquire 时 `SELECT 1` ping 验活，失败弃池重建。`extra.disable_pool=true` / 改 host/port 等关键字段时池自动失效（`_datasource_fingerprint`）。datasource API `update` / `delete` 同步调 `pool.invalidate(id)`。新增 7 个 test case 覆盖复用 / TTL 过期 / ping 失败 / 异常 broken / fingerprint change / disable_pool。
 - ~~CSV / Parquet 数据对比~~ ✅ —— `app/readers/csv_reader.py`（stdlib csv，UTF-8/GBK 编码 + 自定义 delimiter + header_row 跳元数据）+ `app/readers/parquet_reader.py`（pyarrow 后端，支持 columns subset）。`SourceKind` 加 `csv / parquet`，`CompareTask` 加 `source_file_path / source_file_encoding / source_csv_delimiter`（CSV 用）通用文件路径字段，Parquet 复用 file_path。`/api/uploads/csv` + `/api/uploads/parquet` 两个 endpoint，`/api/preview/columns` 同步加 csv / parquet kind。`stream_compare` 互斥规则扩展到所有文件源（Excel / CSV / Parquet）。`pyarrow>=14.0` 加进 requirements。23 个 reader 测试（含 11 新增）全过。
 - ~~字段级血缘 schema-aware 降级~~ ✅ —— `app/lineage/columns.py:select_columns` 加规则：SELECT * / SELECT t.* 在缺 schema 元数据时不再走 `source_info`（会输出空源表、伪 high），改为生成单条 `confidence='medium' + transform='星号展开（未解析）' + warning '通配符未展开'` 的占位条目，`source_tables` 锁定到 SELECT 所属表（按 alias map 解 t.*）。带 schema 时仍 high 展开，行为不变。多表 unqualified column 缺 schema 已经走 source_info 降 low+warning（既有）。新增 4 个 test case 覆盖。
 - 字段级血缘（column-level lineage 独立深化，Phase 7 双轨之外）

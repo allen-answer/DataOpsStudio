@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from app.dbclients.drivers import add_db2_dll_directories, first_available_module
+from app.dbclients import pool as _pool
 from app.models import DataSource, DatabaseType
 
 
@@ -40,8 +41,8 @@ def fetch_rows(
         _short_sql(sql),
     )
     try:
-        connection = _connect(source, module_name)
-        rows = _fetch_with_dbapi(connection, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
+        with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
+            rows = _fetch_with_dbapi(connection, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
         logger.info(
             "query success datasource=%s db_type=%s rows=%s elapsed=%.3fs",
             source.name,
@@ -112,10 +113,7 @@ def _fetch_with_dbapi(
                 cursor.close()
             except Exception:
                 pass
-        try:
-            connection.close()
-        except Exception:
-            pass
+        # connection 由 pool.borrow context manager 接管 release/close
 
 
 def fetch_columns(source: DataSource, sql: str) -> list[str]:
@@ -124,25 +122,21 @@ def fetch_columns(source: DataSource, sql: str) -> list[str]:
     module_name = first_available_module(source.db_type)
     if not module_name:
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
-    connection = _connect(source, module_name)
-    cursor = None
-    try:
-        cursor = connection.cursor()
+    with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
+        cursor = None
         try:
-            cursor.execute(sql)
-        except Exception as exc:
-            raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
-        return [desc[0] for desc in cursor.description or []]
-    finally:
-        if cursor is not None:
+            cursor = connection.cursor()
             try:
-                cursor.close()
-            except Exception:
-                pass
-        try:
-            connection.close()
-        except Exception:
-            pass
+                cursor.execute(sql)
+            except Exception as exc:
+                raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
+            return [desc[0] for desc in cursor.description or []]
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
 
 def iter_rows(
@@ -155,8 +149,21 @@ def iter_rows(
     module_name = first_available_module(source.db_type)
     if not module_name:
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
-    connection = _connect(source, module_name)
-    yield from _iter_with_dbapi(connection, sql, max_rows, chunk_size, progress_callback)
+    # iter_rows 是 generator —— 用 contextmanager 手动 enter/exit 让 yield 能跨
+    # 上下文边界正确管理 connection 归还。pool.borrow 内部 except 抓 broken=True
+    # 自动弃池；正常 generator close（StopIteration / GC）走 else 分支正常 release。
+    cm = _pool.borrow(source, lambda: _connect(source, module_name))
+    connection = cm.__enter__()
+    success = False
+    try:
+        yield from _iter_with_dbapi(connection, sql, max_rows, chunk_size, progress_callback)
+        success = True
+    finally:
+        if success:
+            cm.__exit__(None, None, None)
+        else:
+            import sys
+            cm.__exit__(*sys.exc_info())
 
 
 def _connect(source: DataSource, module_name: str) -> Any:
@@ -253,10 +260,7 @@ def _iter_with_dbapi(
                 cursor.close()
             except Exception:
                 pass
-        try:
-            connection.close()
-        except Exception:
-            pass
+        # connection 由 pool.borrow 接管 release/close
 
 
 def _short_sql(sql: str) -> str:

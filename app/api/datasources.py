@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from app.dbclients import pool as _pool
 from app.dbclients.factory import test_connection
 from app.models import ConnectionTestResult, DataSource, DataSourceCreate, OkResponse
 from app.services.repositories import datasource_store
@@ -40,9 +41,12 @@ def update_datasource(datasource_id: str, payload: DataSourceCreate):
             raise HTTPException(status_code=404, detail="Datasource not found")
         payload = payload.model_copy(update={"password": existing.password})
     try:
-        return _redact(datasource_store.update(datasource_id, payload))
+        updated = datasource_store.update(datasource_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Datasource not found") from exc
+    # 改 host / 密码 / db_type 后旧池连接全失效，清掉避免后续查询打到旧凭证
+    _pool.invalidate(datasource_id)
+    return _redact(updated)
 
 
 @router.delete("/api/datasources/{datasource_id}", response_model=OkResponse)
@@ -51,6 +55,7 @@ def delete_datasource(datasource_id: str):
         datasource_store.delete(datasource_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Datasource not found") from exc
+    _pool.invalidate(datasource_id)
     return {"ok": True}
 
 
