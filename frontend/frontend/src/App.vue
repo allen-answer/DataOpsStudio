@@ -12,6 +12,7 @@ import { useTaskStore } from './stores/task'
 import { useWorkflowStore } from './stores/workflow'
 import { useLineageStore } from './stores/lineage'
 import { useBatchStore } from './stores/batch'
+import { useHistoryStore } from './stores/history'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -31,6 +32,7 @@ const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const lineageStore = useLineageStore()
 const batchStore = useBatchStore()
+const historyStore = useHistoryStore()
 const { notice } = storeToRefs(noticeStore)
 const { actionStatus, setNotice, setActionStatus } = noticeStore
 const { editingDatasourceId } = storeToRefs(datasourceStore)
@@ -69,13 +71,15 @@ const {
 const { lineage } = lineageStore
 const { batchActiveTab, batchSelectedFileNames } = storeToRefs(batchStore)
 const { batch, batchTabs } = batchStore
+// history store —— 选择 + tab + 任务过滤
+const {
+  selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
+} = storeToRefs(historyStore)
 
 const route = useRoute()
 const loading = ref(false)
-// selectedWorkflowId / workflowResult / workflow async job state / workflowRunHistory /
-// allWorkflowRuns 已迁到 useWorkflowStore；batchActiveTab 已迁到 useBatchStore
-const selectedHistoryTaskId = ref('')
-const historyActiveTab = ref('compare')
+// selectedWorkflowId / workflow* 迁到 useWorkflowStore；batchActiveTab 迁到 useBatchStore；
+// selectedHistoryTaskId / historyActiveTab / selectedHistory / selectedSheets 迁到 useHistoryStore
 
 const state = reactive({
   datasources: [],
@@ -100,8 +104,7 @@ const state = reactive({
 // list 还没迁；isSavedWorkflow 已在 useWorkflowStore。
 const currentTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value))
 const currentWorkflow = computed(() => state.workflows.find((wf) => wf.id === selectedWorkflowId.value))
-const selectedHistory = ref(new Set())
-const selectedSheets = ref(new Set(['汇总对照']))
+// selectedHistory / selectedSheets 已迁到 useHistoryStore
 const historyTaskOptions = computed(() => {
   const options = state.tasks.map((task) => ({ id: task.id, name: task.name }))
   const seen = new Set(options.map((item) => item.id))
