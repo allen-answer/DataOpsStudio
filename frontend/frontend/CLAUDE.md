@@ -193,7 +193,7 @@ If a Figma design touches the workflow editor, follow the existing split documen
 
 - One `Workflow<Type>NodeEditor.vue` per node type — added via `v-if` dispatch in `WorkflowDetailView.vue`.
 - DAG visualization → `WorkflowDagCanvas.vue` (SVG + auto layout, props: `nodes / latestRun / v-model:selectedNodeId`).
-- Don't reach for a third-party DAG library — `@antv/g6` exists but is reserved for the **lineage** graph (`components/LineageGraph.vue`), not workflows.
+- Don't reach for a third-party DAG library — `@antv/g6` and `cytoscape` exist but are reserved for the **lineage** graph (`components/LineageGraph.vue` G6 + `components/LineageGraphCytoscape.vue` 实验中), not workflows. 数据派生在 `composables/useLineageGraphData.js`，两个引擎共享。
 
 ---
 
@@ -204,7 +204,7 @@ If a Figma design touches the workflow editor, follow the existing split documen
 | Framework       | Vue 3.5 (`<script setup>`)                                            |
 | Build / bundler | Vite 8 (`@vitejs/plugin-vue`)                                         |
 | Styling         | Tailwind CSS 3.4 + autoprefixer + postcss                             |
-| Graph viz       | `@antv/g6` 5 — lineage only                                           |
+| Graph viz       | `@antv/g6` 5（稳定） + `cytoscape` 3 + `cytoscape-dagre` 2（实验）—— lineage only |
 | Code editor     | `@codemirror/*` 6 — SQL editor                                        |
 | Utilities       | `@vueuse/core` (clipboard etc.); `@tanstack/vue-virtual` for big lists |
 | Icons           | `lucide-vue-next` — controlled use only. See §5.                      |

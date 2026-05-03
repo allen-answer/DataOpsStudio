@@ -278,12 +278,24 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 4. **DataCompare 预览样例 mojibake** —— `[MySQL] 用户表对比` 任务预览出 `name="å¼ ä¸‰"`（"张三" GBK→UTF-8 mojibake）。检查 init_db/01_init.sql 的字符集声明 + dbclients 连接串 `charset=utf8mb4`。
 5. **Excel/SQL 混合输入逻辑** —— Phase 2 把 DataCompare 拆成步骤式工作台，但 SQL vs Excel / Excel vs SQL / Excel vs Excel 三种交叉模式的字段映射、主键推荐、流式对比限制还没专门校验。下一轮先做交互校验，不再继续 UI 美化。
 
-## 血缘图设计（LineageGraph.vue）
+### Phase 8（血缘图引擎双轨：G6 稳定 + Cytoscape 实验，待真实大图验证）
+
+抽 `composables/useLineageGraphData.js` 之后，G6 / Cytoscape 共享同一份数据派生（filter / focal / BFS / 适用于 G6 的 combo 投影 / 适用于 Cytoscape 的 cyData）。`LineageGraphPanel.vue` 顶部切换器让用户在两个引擎之间切，prefs 持久化在 `localStorage.lineage-graph-prefs-v1.engine`。
+
+- **G6 稳定**：现有所有交互（搜索 / 跳数 / 角色 + 边类型 + 可信度 + 脚本 + Schema 筛选 / 表视图 / combo 折叠 / 大图 300 截断）保持不变。
+- **Cytoscape 实验**：差异化卖点是 compound parent 节点 —— 每个 schema 是一个 dashed 紫色容器，table 节点 `data.parent` 落入容器，比 combo 折叠更直观。可关闭 "Schema 容器" 开关回退平铺。
+- **Cytoscape 暂未实现**：表视图（图谱 > 100 节点的逃生通道）、minimap、combo aggregated edge 的 `×N` 标签（compound 不需要）。
+- **真实大图验证**：等用户拿真实 Oracle 多脚本 lineage 结果（300+ 节点）跑两个引擎对比筛选 / 聚焦 / compound 容器表现，再决定是否把 Cytoscape 升为默认 / 替换 G6。
+- **不替换 G6**：路径稳定，先共存。Cytoscape 失败 / 大图卡顿，用户可一键切回 G6。
+
+## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 
 参考 DataHub / Dagster / dbt Explorer / Atlan 的可扩展模式，避免 dagre 在 50+ 节点时把图压成一列：
 
 - **默认 focal + N 跳 BFS**：`focusMode = neighborhood`，`hopDepth = 1`；节点数 > 30 时 `autoFocalId` 自动取最高度数的非 combo 节点为聚焦点；用户点击任一节点会更新 `clickedFocalId`，搜索命中也作为聚焦候选。
-- **Schema 折成 combo 节点**：`projectedBase` computed 把 `collapsedSchemas` 中的所有表投射成一个 `__combo:<schema>` 虚拟节点，跨 schema 的多条边聚合为单条粗边并加 `×N` 标签。点击 combo 节点切换展开。搜索命中折叠 schema 内的表会自动展开该 schema。
-- **布局/间距**：`layoutDir`（LR/TB）+ `spacingPreset`（compact/normal/relaxed）写入 `localStorage` key `lineage-graph-prefs-v1`。
-- **逃生通道**：`viewMode = 'graph' | 'table'`；表视图按上游/下游 BFS 分组，每行可点击重新聚焦。节点 > 100 时显示推荐切表横幅。
-- **状态层级**：`allGraphData` → `filteredBase`（角色/边类型/可信度/脚本过滤）→ `projectedBase`（schema combo 投射）→ `graphData`（focal+hop BFS）。所有下游 computed 链在 `projectedBase` 之上。
+- **Schema 折成 combo 节点**（G6 模式）：`projectedBase` computed 把 `collapsedSchemas` 中的所有表投射成一个 `__combo:<schema>` 虚拟节点，跨 schema 的多条边聚合为单条粗边并加 `×N` 标签。点击 combo 节点切换展开。搜索命中折叠 schema 内的表会自动展开该 schema。
+- **Schema 用 compound parent 表达**（Cytoscape 模式）：每个 schema 出一个 dashed 紫色容器节点，table 节点 `data.parent = 'schema:<name>'` 自动落入容器。比 combo 折叠更直观，是 Cytoscape 的差异化卖点。可在工具栏关闭"Schema 容器"开关回退到平铺。
+- **布局/间距**：`layoutDir`（LR/TB）+ `spacingPreset`（compact/normal/relaxed）+ `engine`（g6/cytoscape）+ `compoundBySchema` 全部写入 `localStorage` key `lineage-graph-prefs-v1`。
+- **逃生通道**：`viewMode = 'graph' | 'table'`（仅 G6 实现）；表视图按上游/下游 BFS 分组，每行可点击重新聚焦。节点 > 100 时显示推荐切表横幅。
+- **数据层抽到 composable**：`composables/useLineageGraphData.js` —— `allGraphData` → `filteredBase`（角色/边类型/可信度/脚本过滤）→ `projectedBase`（schema combo 投射，仅 G6）→ `graphData / cyData`（focal+hop BFS）。两个引擎共享同一份数据派生，只是渲染层不同。
+- **引擎切换**：`LineageGraphPanel.vue` 顶部 G6 / Cytoscape 切换器，两个组件通过 `defineAsyncComponent` 懒加载（用户只在切换时才付 cytoscape 的 ~534KB；G6 主体 ~1.4MB）。G6 是当前稳定实现，Cytoscape 处于实验阶段，待真实大图验证后再决定是否替换。

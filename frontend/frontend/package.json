@@ -15,6 +15,8 @@
     "@tanstack/vue-virtual": "^3.13.24",
     "@vueuse/core": "^14.2.1",
     "codemirror": "^6.0.2",
+    "cytoscape": "^3.33.3",
+    "cytoscape-dagre": "^2.5.0",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^3.0.4",
     "vue": "^3.5.32",
