@@ -2,17 +2,34 @@
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useClipboard } from '@vueuse/core'
+import { storeToRefs } from 'pinia'
 import { apiForm, apiGet, apiJson } from './api'
 import AppShell from './layouts/AppShell.vue'
 import { validateTaskDraft } from './utils/taskValidation'
+import { useNoticeStore } from './stores/notice'
+import { useDatasourceStore } from './stores/datasource'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
 
+// Pinia stores —— 渐进式拆分，notice / datasource 这两块独立性最强先抽。
+// 其它 state（task / workflow / lineage / batch / history）后续轮次再拆。
+// inject('app') 仍 backward compat，把 store 暴露的 ref / reactive / 方法平铺过去。
+//
+// 解构规则：
+//   - ref 字段（notice / editingDatasourceId）必须经 storeToRefs 才能保持响应
+//   - reactive 字段（actionStatus / datasourceDraft / editDraft）直接解构即可，
+//     reactive 对象 destructure 后还是同一个 proxy。混用 storeToRefs 反而会
+//     把 reactive 包成 ref，破坏 view 的 `obj.field = x` 直接赋值用法
+const noticeStore = useNoticeStore()
+const datasourceStore = useDatasourceStore()
+const { notice } = storeToRefs(noticeStore)
+const { actionStatus, setNotice, setActionStatus } = noticeStore
+const { editingDatasourceId } = storeToRefs(datasourceStore)
+const { datasourceDraft, editDraft } = datasourceStore
+
 const route = useRoute()
 const loading = ref(false)
-const notice = ref('')
-const noticeTimer = ref(null)
 const asyncPollTimer = ref(null)
 const selectedTaskId = ref('new')
 const previewOutput = ref('')
@@ -33,11 +50,6 @@ const allWorkflowRuns = ref([])       // all runs across workflows, used by the 
 const batchActiveTab = ref('overview')
 const selectedHistoryTaskId = ref('')
 const historyActiveTab = ref('compare')
-const actionStatus = reactive({
-  type: 'idle',
-  title: '等待操作',
-  message: '保存任务后可执行对比、预览、后台执行或复制任务。',
-})
 
 const state = reactive({
   datasources: [],
@@ -84,15 +96,8 @@ const taskDraft = reactive({
   stream_compare: false,
 })
 
-const datasourceDraft = reactive({
-  name: '',
-  db_type: 'mysql',
-  host: '',
-  port: 3306,
-  database: '',
-  username: '',
-  password: '',
-})
+// datasourceDraft / editDraft / editingDatasourceId 已迁移到 useDatasourceStore
+// （顶部 storeToRefs 暴露），下面的 startEdit/cancelEdit 也走 store。
 
 const workflowDraft = reactive({
   name: '',
@@ -108,9 +113,6 @@ const workflowDraft = reactive({
   runtime_variables: '',
   nodes: [],
 })
-
-const editingDatasourceId = ref('')
-const editDraft = reactive({ name: '', db_type: '', host: '', port: 3306, database: '', username: '', password: '' })
 
 const lineage = reactive({
   sql: '',
@@ -253,7 +255,7 @@ const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
     state.dbTypes = data.db_types || []
     state.history = data.history || []
     state.historySheets = data.history_sheets || []
-    if (state.dbTypes.length) datasourceDraft.db_type = state.dbTypes[0]
+    if (state.dbTypes.length) datasourceDraft.value.db_type = state.dbTypes[0]
     if (state.datasources.length) {
       taskDraft.source_id = state.datasources[0].id
       taskDraft.target_id = state.datasources[0].id
@@ -284,17 +286,8 @@ const parseMappings = (value) => {
   return result
 }
 
-const setActionStatus = (type, title, message = '') => {
-  actionStatus.type = type
-  actionStatus.title = title
-  actionStatus.message = message
-}
-
-const setNotice = (msg) => {
-  notice.value = msg
-  if (noticeTimer.value) clearTimeout(noticeTimer.value)
-  if (msg) noticeTimer.value = setTimeout(() => { notice.value = '' }, 4000)
-}
+// setActionStatus / setNotice 已迁移到 useNoticeStore —— App.vue 顶部 import 后
+// 重新通过 provide('app') 暴露同名给 inject('app') 的 view 用（backward compat）
 
 const stopAsyncPoll = () => {
   if (asyncPollTimer.value) {
@@ -1163,16 +1156,13 @@ const cancelWorkflowAsync = async () => {
   }
 }
 
-const startEditDatasource = (item) => {
-  editingDatasourceId.value = item.id
-  Object.assign(editDraft, { name: item.name, db_type: item.db_type, host: item.host, port: item.port, database: item.database, username: item.username, password: '' })
-}
-
-const cancelEditDatasource = () => { editingDatasourceId.value = '' }
+// startEdit/cancelEdit 直接走 store 方法（暴露在 provide('app')）
+const startEditDatasource = datasourceStore.startEditDatasource
+const cancelEditDatasource = datasourceStore.cancelEditDatasource
 
 const updateDatasource = async (id) => {
   try {
-    const updated = await apiJson(`/api/datasources/${id}`, 'PUT', editDraft)
+    const updated = await apiJson(`/api/datasources/${id}`, 'PUT', editDraft.value)
     const idx = state.datasources.findIndex(d => d.id === id)
     if (idx !== -1) state.datasources[idx] = updated
     editingDatasourceId.value = ''
@@ -1193,8 +1183,8 @@ const deleteDatasource = async (id) => {
 }
 
 const createDatasource = async () => {
-  await apiJson('/api/datasources', 'POST', datasourceDraft)
-  Object.assign(datasourceDraft, { name: '', host: '', database: '', username: '', password: '' })
+  await apiJson('/api/datasources', 'POST', datasourceDraft.value)
+  datasourceStore.resetDatasourceDraft()
   await loadBootstrap()
 }
 
