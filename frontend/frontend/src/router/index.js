@@ -13,8 +13,9 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import DatasourceView from '../views/DatasourceView.vue'
 import WorkbenchView from '../views/WorkbenchView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
-import LineageView from '../views/LineageView.vue'
-import BatchView from '../views/BatchView.vue'
+// Phase 4：合并入口 LineageWorkbenchView 接管 /lineage 和 /batch-lineage 两条路径
+// 旧 LineageView / BatchView 文件保留在 views/ 但路由不再引用（git 历史可回滚）
+import LineageWorkbenchView from '../views/LineageWorkbenchView.vue'
 import HistoryView from '../views/HistoryView.vue'
 
 const routes = [
@@ -27,8 +28,10 @@ const routes = [
   { path: '/workflows/:id',             name: 'workflow-detail',  component: WorkflowView, props: true },
   { path: '/workflow-runs/:runId',      name: 'workflow-run',     component: WorkflowView, props: true },
 
-  { path: '/lineage',       name: 'lineage',       component: LineageView },
-  { path: '/batch-lineage', name: 'batch-lineage', component: BatchView },
+  // Phase 4：两个 path 共用 LineageWorkbenchView，view 内部根据 route.path
+  // 决定默认 mode（/lineage → paste，/batch-lineage → multi）
+  { path: '/lineage',       name: 'lineage',       component: LineageWorkbenchView },
+  { path: '/batch-lineage', name: 'batch-lineage', component: LineageWorkbenchView },
   { path: '/history',       name: 'history',       component: HistoryView },
 
   // Catch-all → 数据源（首屏）

@@ -1,0 +1,205 @@
+<script setup>
+import { defineAsyncComponent, ref, computed, inject, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { Code2, FileText, Files, Archive, Sparkles } from 'lucide-vue-next'
+import SchemaPanel from '../components/SchemaPanel.vue'
+import LineageReportView from './LineageReportView.vue'
+
+// Phase 4：合并"单脚本血缘"和"多脚本分析"为统一血缘分析工作台。
+// 4 种输入模式：粘贴 SQL / 上传单文件 / 上传多文件 / 上传 ZIP
+// 前两种走 analyzeLineage（单脚本路径），后两种走 analyzeBatch（多脚本路径）。
+// 结果区统一用 LineageReportView 消费 result.report。
+
+const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
+
+const {
+  lineage, batch, batchSelectedFileNames,
+  analyzeLineage, analyzeBatch,
+} = inject('app')
+
+const route = useRoute()
+
+const MODES = [
+  { id: 'paste',     label: '粘贴 SQL',     icon: Code2,   pipeline: 'single', hint: '直接粘贴 SQL 文本（推荐快速调试）' },
+  { id: 'file',      label: '上传单文件',   icon: FileText,pipeline: 'single', hint: '单个 .sql / .txt 文件' },
+  { id: 'multi',     label: '上传多文件',   icon: Files,   pipeline: 'batch',  hint: '多个 .sql / .txt（跨脚本血缘 + 影响传递）' },
+  { id: 'zip',       label: '上传 ZIP 包',  icon: Archive, pipeline: 'batch',  hint: '一个 .zip 项目包（自动解压全部 .sql/.txt）' },
+]
+
+// 默认 mode 由 route.path 决定：/lineage → paste；/batch-lineage → multi
+function defaultModeFromRoute(path) {
+  if (path === '/batch-lineage' || path.startsWith('/batch-lineage')) return 'multi'
+  return 'paste'
+}
+
+const mode = ref(defaultModeFromRoute(route.path))
+watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
+onMounted(() => { mode.value = defaultModeFromRoute(route.path) })
+
+const currentModeMeta = computed(() => MODES.find(m => m.id === mode.value))
+const isSinglePipeline = computed(() => currentModeMeta.value?.pipeline === 'single')
+
+// 当前 mode 对应的 state（lineage 或 batch）和分析 handler
+const inputState = computed(() => isSinglePipeline.value ? lineage : batch)
+const result = computed(() => inputState.value?.result || null)
+const error = computed(() => inputState.value?.error || '')
+const report = computed(() => result.value?.report || null)
+
+function runAnalyze() {
+  if (isSinglePipeline.value) {
+    analyzeLineage()
+  } else {
+    analyzeBatch()
+  }
+}
+
+// "上传脚本包" / "导出 Excel" 仅多脚本有 batch.exports
+const batchExports = computed(() => batch.exports)
+
+// 单文件模式：用 lineage.sqlFile 但前端 SqlEditor 隐藏；后端 analyzeLineage 优先取 sqlFile
+function onSingleFileChange(e) {
+  const f = e.target.files[0]
+  lineage.sqlFile = f
+  // 触发 mode hint 显示文件名
+}
+
+function onMultiFilesChange(e) {
+  batch.files = Array.from(e.target.files)
+}
+
+function onZipChange(e) {
+  // ZIP 仍走 batch.files；只是 accept 限制
+  const f = e.target.files[0]
+  batch.files = f ? [f] : []
+}
+</script>
+
+<template>
+  <section class="space-y-4">
+    <!-- 头部 + 模式切换 -->
+    <div class="card">
+      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 class="text-2xl font-bold text-slate-800">血缘分析工作台</h2>
+          <p class="muted text-sm">单脚本 / 多脚本 / ZIP 项目包统一入口；9 维报告（输入 / 输出 / 处理 / 影响 / 风险）</p>
+        </div>
+        <button class="btn btn-primary" @click="runAnalyze">
+          <Sparkles class="h-4 w-4" /> {{ isSinglePipeline ? '分析血缘' : '分析脚本包' }}
+        </button>
+      </div>
+
+      <!-- 4 模式 tab -->
+      <div class="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <button
+          v-for="m in MODES" :key="m.id"
+          type="button"
+          class="flex items-center gap-2 rounded-lg border-2 p-3 text-left transition"
+          :class="mode === m.id
+            ? 'border-primary bg-primary-light'
+            : 'border-slate-200 bg-white hover:border-primary/40'"
+          @click="mode = m.id"
+        >
+          <component :is="m.icon" class="h-5 w-5 shrink-0"
+            :class="mode === m.id ? 'text-primary' : 'text-slate-400'" />
+          <div class="min-w-0">
+            <div class="text-sm font-semibold"
+              :class="mode === m.id ? 'text-primary' : 'text-slate-700'">{{ m.label }}</div>
+            <div class="muted truncate text-[11px]">{{ m.hint }}</div>
+          </div>
+        </button>
+      </div>
+
+      <!-- 输入区：按 mode 渲染 -->
+      <div v-if="mode === 'paste'">
+        <SqlEditor v-model="lineage.sql" placeholder="粘贴 SQL，多条语句用分号分隔" />
+      </div>
+
+      <div v-else-if="mode === 'file'" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+        <FileText class="mx-auto mb-2 h-8 w-8 text-slate-400" />
+        <input
+          type="file" accept=".sql,.txt"
+          class="mx-auto block w-fit"
+          @change="onSingleFileChange"
+        >
+        <p v-if="lineage.sqlFile" class="mt-2 text-sm text-slate-700">
+          已选择：<strong>{{ lineage.sqlFile.name }}</strong>
+        </p>
+        <p v-else class="muted mt-2 text-xs">支持 .sql / .txt；上传后用单脚本路径分析</p>
+      </div>
+
+      <div v-else-if="mode === 'multi'" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+        <Files class="mx-auto mb-2 h-8 w-8 text-slate-400" />
+        <input
+          type="file" accept=".sql,.txt" multiple
+          class="mx-auto block w-fit"
+          @change="onMultiFilesChange"
+        >
+        <p v-if="batchSelectedFileNames.length" class="mt-3 flex flex-wrap justify-center gap-1.5">
+          <span v-for="n in batchSelectedFileNames" :key="n" class="rounded-full bg-primary-light px-2.5 py-1 text-xs font-semibold text-primary sql-font">{{ n }}</span>
+        </p>
+        <p v-else class="muted mt-2 text-xs">多脚本路径：跨文件血缘 + 影响传递闭包</p>
+      </div>
+
+      <div v-else-if="mode === 'zip'" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+        <Archive class="mx-auto mb-2 h-8 w-8 text-slate-400" />
+        <input
+          type="file" accept=".zip"
+          class="mx-auto block w-fit"
+          @change="onZipChange"
+        >
+        <p v-if="batch.files?.[0]" class="mt-2 text-sm text-slate-700">
+          已选择：<strong>{{ batch.files[0].name }}</strong>
+        </p>
+        <p v-else class="muted mt-2 text-xs">后端自动解压所有 .sql/.txt 后批量分析</p>
+      </div>
+
+      <!-- Schema 配置（共用两侧 state） -->
+      <div class="mt-4">
+        <SchemaPanel
+          :target="inputState"
+          :sql-tables-label="isSinglePipeline ? '只拉 SQL 中出现的表' : '只拉脚本中出现的表'"
+        >
+          <template #prefix>
+            <label>
+              <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">SQL 方言</span>
+              <select v-model="inputState.dialect" class="bg-slate-50">
+                <option value="">自动</option>
+                <option>mysql</option>
+                <option>oracle</option>
+                <option>tsql</option>
+                <option>postgres</option>
+                <option>dm</option>
+                <option>ob_mysql</option>
+                <option>ob_oracle</option>
+              </select>
+            </label>
+          </template>
+        </SchemaPanel>
+      </div>
+    </div>
+
+    <!-- 错误条 -->
+    <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 text-status-error">
+      {{ error }}
+    </div>
+
+    <!-- 多脚本导出条 -->
+    <div v-if="!isSinglePipeline && batchExports?.excel_filename" class="card flex flex-wrap items-center justify-between gap-3">
+      <span class="muted text-xs">分析完成，可下载完整报告：</span>
+      <div class="flex gap-2">
+        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batchExports.excel_filename}`">下载 Excel</a>
+        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batchExports.json_filename}`">下载 JSON</a>
+      </div>
+    </div>
+
+    <!-- 9-tab 报告 -->
+    <LineageReportView
+      v-if="report"
+      :report="report"
+      :graph-groups="isSinglePipeline ? (result.graph_groups || []) : (result.table_groups || [])"
+      :graph-edges="isSinglePipeline ? (result.graph_edges || []) : (result.table_edges || [])"
+      :columns="isSinglePipeline ? (result.columns || []) : []"
+      :insert-mappings="isSinglePipeline ? (result.insert_mappings || []) : (result.field_mappings || [])"
+    />
+  </section>
+</template>

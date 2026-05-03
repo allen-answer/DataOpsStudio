@@ -18,8 +18,8 @@ const ROUTE_LABELS = {
   '/datasources': '数据源',
   '/data-compare': '数据对比',
   '/workflows': '作业流',
-  '/lineage': '单脚本血缘',
-  '/batch-lineage': '多脚本分析',
+  '/lineage': '血缘分析',
+  '/batch-lineage': '血缘分析',
   '/history': '执行历史',
 }
 

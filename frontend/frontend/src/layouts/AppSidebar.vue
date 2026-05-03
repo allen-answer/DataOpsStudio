@@ -6,18 +6,18 @@ import {
   GitCompareArrows,
   Workflow,
   GitBranch,
-  Layers,
   History as HistoryIcon,
 } from 'lucide-vue-next'
 
 // 导航项：order 决定 sidebar 上下顺序，icon 来自 lucide。
 // matchPaths 用于 active 高亮 —— 当前 route 以这些前缀任一开头即认为命中。
+// Phase 4：单脚本血缘 + 多脚本分析合并为"血缘分析"，path 默认 /lineage；
+// /batch-lineage 仍是合法路径（保留外部链接兼容），同样高亮该项。
 const NAV_ITEMS = [
   { id: 'datasources',   label: '数据源',       icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
   { id: 'data-compare',  label: '数据对比',     icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
   { id: 'workflows',     label: '作业流',       icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
-  { id: 'lineage',       label: '单脚本血缘',   icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage'] },
-  { id: 'batch-lineage', label: '多脚本分析',   icon: Layers,           path: '/batch-lineage', matchPaths: ['/batch-lineage'] },
+  { id: 'lineage',       label: '血缘分析',     icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
   { id: 'history',       label: '执行历史',     icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
 ]
 
