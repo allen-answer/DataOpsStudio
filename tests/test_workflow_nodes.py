@@ -181,6 +181,82 @@ def test_excel_export_writes_real_xlsx_with_compare_dataset_shorthand(tmp_path, 
     assert rows[2] == (2, "x", "y")
 
 
+def test_excel_export_prefers_compare_excel_workbook_for_report_sheets(tmp_path, monkeypatch):
+    """compare 节点已经产出标准 Excel 时，excel_export 应复制原 workbook sheet。
+
+    JSON 里的 summary 只有计数、samples 也只是抽样；作业流导出的「汇总对照」和
+    diff 等 sheet 应和数据对比自身 Excel 保持一致。
+    """
+    import openpyxl
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    monkeypatch.setattr("app.utils.paths.RESULTS_DIR", tmp_path)
+    source_book = Workbook()
+    summary = source_book.active
+    summary.title = "汇总对照"
+    summary["A1"] = "源数据源"
+    summary["C1"] = "对比结果"
+    summary.merge_cells("A1:B1")
+    summary["A2"] = "id"
+    summary["B2"] = "name"
+    summary["C2"] = "是否存在"
+    summary["D2"] = "差异字段"
+    summary.append([1, "张三", "两边都有", "name"])
+    summary.append([2, "李四", "仅目标存在", ""])
+    summary["A1"].font = Font(bold=True)
+    summary["A1"].fill = PatternFill("solid", fgColor="DCEBFF")
+    summary.freeze_panes = "A3"
+    summary.auto_filter.ref = "A2:D4"
+
+    diff = source_book.create_sheet("diff")
+    diff.append(["id", "old", "new"])
+    diff.append([1, "a", "b"])
+    diff.append([2, "c", "d"])
+    diff.append([3, "e", "f"])
+    source_book.save(tmp_path / "compare-run.xlsx")
+
+    upstream = {
+        "compare1": {
+            "excel_filename": "compare-run.xlsx",
+            "summary": {"only_source": 0, "only_target": 0, "diff": 999, "same": 0},
+            "samples": {"diff": [{"id": "sample-only"}]},
+        },
+    }
+    out = run_excel_export_node({
+        "sheets": [
+            {"id": "summary", "enabled": True, "sheet_name": "汇总对照",
+             "source_type": "node_output", "node_id": "compare1", "dataset": "summary"},
+            {"id": "diff", "enabled": True, "sheet_name": "差异明细",
+             "source_type": "node_output", "node_id": "compare1", "dataset": "diff", "max_rows": 2},
+        ],
+    }, {}, outputs=upstream, run_id="run-report")
+
+    assert out["sheet_count"] == 2
+    assert out["sheets"][0]["rows_written"] == 2
+    assert out["sheets"][0]["truncated"] is False
+    assert out["sheets"][1]["rows_written"] == 2
+    assert out["sheets"][1]["truncated"] is True
+    assert out["total_rows_written"] == 4
+
+    book = openpyxl.load_workbook(tmp_path / "workflow_runs" / "run-report" / "exports" / out["filename"])
+    assert book.sheetnames == ["汇总对照", "差异明细"]
+    exported_summary = book["汇总对照"]
+    assert "A1:B1" in [str(rng) for rng in exported_summary.merged_cells.ranges]
+    assert exported_summary.freeze_panes == "A3"
+    assert exported_summary.auto_filter.ref == "A2:D4"
+    assert exported_summary["A1"].font.bold is True
+    assert exported_summary["A1"].fill.fgColor.rgb == "00DCEBFF"
+    assert exported_summary["D4"].value is None
+
+    exported_diff = book["差异明细"]
+    assert list(exported_diff.values) == [
+        ("id", "old", "new"),
+        (1, "a", "b"),
+        (2, "c", "d"),
+    ]
+
+
 def test_excel_export_emits_artifact_with_metadata(tmp_path, monkeypatch):
     """runner 输出 artifacts 列表，每个 artifact 携带前端拼下载链接所需
     的 relative_path / size / type 等字段。node_id 由 engine 层回填，

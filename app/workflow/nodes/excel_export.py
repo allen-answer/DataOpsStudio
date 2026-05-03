@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import copy
+from pathlib import Path
 from typing import Any
 
 
@@ -21,6 +23,20 @@ _COMPARE_DATASET_PATHS = {
     "only_source": "samples.only_source",
     "only_target": "samples.only_target",
     "same":        "samples.same",
+}
+_COMPARE_DATASET_EXCEL_SHEETS = {
+    "summary": "汇总对照",
+    "diff": "diff",
+    "only_source": "only_source",
+    "only_target": "only_target",
+    "same": "same",
+}
+_COMPARE_EXCEL_HEADER_ROWS = {
+    "summary": 2,
+    "diff": 1,
+    "only_source": 1,
+    "only_target": 1,
+    "same": 1,
 }
 
 
@@ -51,7 +67,7 @@ def run_excel_export_node(
     （仅单元测试场景）。
     """
     from datetime import datetime as _dt
-    from openpyxl import Workbook
+    from openpyxl import Workbook, load_workbook
     from app.utils.paths import RESULTS_DIR
     from app.services import workflow_history
 
@@ -109,6 +125,33 @@ def run_excel_export_node(
             source_outputs = outputs
             if not node_id:
                 node_id = default_source_node
+
+        if not unresolved_reason:
+            copied = _copy_compare_excel_sheet_if_available(
+                book=book,
+                source_outputs=source_outputs or {},
+                node_id=node_id,
+                dataset=dataset,
+                target_sheet_name=sheet_name_raw,
+                used_names=used_names,
+                max_rows=max_rows,
+                load_workbook=load_workbook,
+                results_dir=RESULTS_DIR,
+            )
+            if copied is not None:
+                sheet_results.append({
+                    "name": copied["sheet_name"],
+                    "source_type": source_type,
+                    "node_id": node_id,
+                    "dataset": dataset,
+                    "run_id": history_target_run if source_type == "history_run" else "",
+                    "source_resolved": True,
+                    "unresolved_reason": "",
+                    "rows_written": copied["rows_written"],
+                    "truncated": copied["truncated"],
+                    "max_rows": max_rows,
+                })
+                continue
 
         if unresolved_reason:
             rows_data, source_resolved = [], False
@@ -200,6 +243,129 @@ def _load_historical_outputs(workflow_history_module, target_run_id: str) -> dic
         if node_id and isinstance(node_out, dict):
             out[node_id] = node_out
     return out
+
+
+def _copy_compare_excel_sheet_if_available(
+    *,
+    book,
+    source_outputs: dict[str, dict[str, Any]],
+    node_id: str,
+    dataset: str,
+    target_sheet_name: str,
+    used_names: set[str],
+    max_rows: int,
+    load_workbook,
+    results_dir: Path,
+) -> dict[str, Any] | None:
+    """Prefer the compare node's real Excel sheet over JSON summary/samples.
+
+    Compare JSON only exposes `summary` counters and sample rows, while the
+    generated Excel contains the full exported report with formatting. Workflow
+    excel_export should therefore copy the source workbook when it is available.
+    """
+    source_sheet_name = _COMPARE_DATASET_EXCEL_SHEETS.get(dataset)
+    if not source_sheet_name:
+        return None
+    node_out = source_outputs.get(node_id)
+    if not isinstance(node_out, dict):
+        return None
+    source_path = _compare_excel_path(node_out, results_dir)
+    if not source_path or not source_path.exists():
+        return None
+
+    source_book = load_workbook(source_path)
+    try:
+        if source_sheet_name not in source_book.sheetnames:
+            return None
+        target = book.create_sheet(_unique_excel_sheet_name(target_sheet_name, used_names))
+        header_rows = _COMPARE_EXCEL_HEADER_ROWS.get(dataset, 1)
+        rows_written, truncated = _copy_sheet_to_sheet(
+            source_book[source_sheet_name],
+            target,
+            header_rows=header_rows,
+            max_rows=max_rows,
+        )
+        return {
+            "sheet_name": target.title,
+            "rows_written": rows_written,
+            "truncated": truncated,
+        }
+    finally:
+        source_book.close()
+
+
+def _compare_excel_path(node_out: dict[str, Any], results_dir: Path) -> Path | None:
+    excel_path = str(node_out.get("excel_path") or "").strip()
+    if excel_path:
+        candidate = Path(excel_path)
+        if candidate.exists():
+            return candidate
+    excel_filename = str(node_out.get("excel_filename") or "").strip()
+    if excel_filename:
+        return results_dir / excel_filename
+    return None
+
+
+def _copy_sheet_to_sheet(source, target, *, header_rows: int, max_rows: int) -> tuple[int, bool]:
+    max_rows = max(max_rows, 0)
+    source_data_rows = _sheet_data_rows(source, header_rows)
+    rows_written = min(source_data_rows, max_rows)
+    truncated = source_data_rows > rows_written
+    last_row_to_copy = min(source.max_row, header_rows + rows_written)
+
+    for row in source.iter_rows(min_row=1, max_row=last_row_to_copy):
+        for cell in row:
+            target_cell = target.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                target_cell.font = copy(cell.font)
+                target_cell.fill = copy(cell.fill)
+                target_cell.border = copy(cell.border)
+                target_cell.alignment = copy(cell.alignment)
+                target_cell.protection = copy(cell.protection)
+            target_cell.number_format = cell.number_format
+            target_cell.hyperlink = copy(cell.hyperlink) if cell.hyperlink else None
+            target_cell.comment = copy(cell.comment) if cell.comment else None
+
+    for merged_range in source.merged_cells.ranges:
+        if merged_range.max_row <= last_row_to_copy:
+            target.merge_cells(str(merged_range))
+
+    for column_letter, dimension in source.column_dimensions.items():
+        target.column_dimensions[column_letter].width = dimension.width
+        target.column_dimensions[column_letter].hidden = dimension.hidden
+
+    for row_index, dimension in source.row_dimensions.items():
+        if row_index <= last_row_to_copy:
+            target.row_dimensions[row_index].height = dimension.height
+            target.row_dimensions[row_index].hidden = dimension.hidden
+
+    if source.freeze_panes:
+        target.freeze_panes = source.freeze_panes
+    if source.auto_filter and source.auto_filter.ref:
+        target.auto_filter.ref = (
+            source.auto_filter.ref
+            if not truncated
+            else _sheet_filter_ref(source.auto_filter.ref, last_row_to_copy)
+        )
+    target.sheet_view.showGridLines = source.sheet_view.showGridLines
+    return rows_written, truncated
+
+
+def _sheet_data_rows(source, header_rows: int) -> int:
+    if source.max_row <= header_rows:
+        return 0
+    data_rows = 0
+    for row in source.iter_rows(min_row=header_rows + 1, max_row=source.max_row, values_only=True):
+        if any(value is not None for value in row):
+            data_rows += 1
+    return data_rows
+
+
+def _sheet_filter_ref(source_ref: str, last_row: int) -> str:
+    from openpyxl.utils import get_column_letter, range_boundaries
+
+    min_col, min_row, max_col, _ = range_boundaries(source_ref)
+    return f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max(last_row, min_row)}"
 
 
 def _resolve_sheet_source(

@@ -61,6 +61,25 @@ const latestRun = computed(() => workflowResult.value || null)
 // 状态），直接 healthMeta[health].pill 会炸渲染。统一走 healthDisplay 取兜底值。
 const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null) || 'none')
 const healthDisplay = computed(() => healthMeta[health.value] || healthMeta.none)
+const workflowAsyncTerminal = computed(() => ['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value?.status))
+const workflowAsyncTone = computed(() => {
+  const status = workflowAsyncStatus.value?.status
+  if (status === 'success') return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+  if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-800'
+  if (status === 'cancelled') return 'border-slate-200 bg-slate-50 text-slate-700'
+  return 'border-blue-200 bg-blue-50 text-blue-800'
+})
+const workflowAsyncLabel = computed(() => {
+  const status = workflowAsyncStatus.value?.status || 'queued'
+  return {
+    queued: '排队中',
+    running: '运行中',
+    cancelling: '取消中',
+    success: '执行完成',
+    failed: '执行失败',
+    cancelled: '已取消',
+  }[status] || status
+})
 
 const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
 
@@ -68,6 +87,13 @@ const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter(
 const handleAddNodeFromCanvas = () => {
   activeTab.value = 'config'
   addWorkflowNode()
+}
+
+const openAsyncRun = async () => {
+  const runId = workflowAsyncStatus.value?.result?.run_id
+  if (!runId) return
+  await loadWorkflowRunDetail(runId)
+  emit('open-run', runId)
 }
 
 const tabs = [
@@ -166,6 +192,33 @@ watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
           </button>
           <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-rose-700 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" @click="deleteWorkflow">
             删除
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="workflowAsyncJob && workflowAsyncStatus"
+         class="rounded-xl border px-4 py-3 shadow-sm"
+         :class="workflowAsyncTone">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset ring-current/10">{{ workflowAsyncLabel }}</span>
+            <span class="font-mono text-[11px] opacity-70">job {{ workflowAsyncJob.job_id?.slice(0, 8) }}</span>
+          </div>
+          <p class="mt-1 text-sm font-semibold">{{ workflowAsyncStatus.message || '后台任务已提交' }}</p>
+          <p v-if="workflowAsyncStatus.error" class="mt-1 break-words text-xs opacity-80">{{ workflowAsyncStatus.error }}</p>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <button v-if="workflowAsyncStatus.result?.run_id"
+                  class="rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 text-xs font-semibold transition hover:bg-white"
+                  @click="openAsyncRun">
+            查看本次运行
+          </button>
+          <button v-if="!workflowAsyncTerminal"
+                  class="rounded-lg border border-rose-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-white"
+                  @click="cancelWorkflowAsync">
+            取消
           </button>
         </div>
       </div>

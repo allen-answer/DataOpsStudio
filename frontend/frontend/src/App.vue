@@ -1048,18 +1048,25 @@ const runWorkflow = async () => {
 
 const runWorkflowAsync = async () => {
   if (selectedWorkflowId.value === 'new') return
+  stopWorkflowAsyncPoll()
   workflowResult.value = null
+  workflowAsyncJob.value = null
   workflowAsyncStatus.value = null
   try {
     const variables = parseVariables(workflowDraft.runtime_variables)
     workflowAsyncJob.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run-async`, 'POST', { variables })
     workflowAsyncStatus.value = workflowAsyncJob.value
+    setNotice(`后台执行已提交：${workflowAsyncJob.value.job_id?.slice(0, 8) || ''}`)
     workflowAsyncPollTimer.value = setInterval(async () => {
       try {
         workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
         if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
           stopWorkflowAsyncPoll()
+          if (workflowAsyncStatus.value.result) workflowResult.value = workflowAsyncStatus.value.result
           loadWorkflowRunHistory(selectedWorkflowId.value)
+          loadAllWorkflowRuns()
+          const statusText = workflowAsyncStatus.value.status === 'success' ? '完成' : workflowAsyncStatus.value.status === 'cancelled' ? '已取消' : '失败'
+          setNotice(`后台执行${statusText}`)
         }
       } catch (error) {
         stopWorkflowAsyncPoll()
@@ -1077,7 +1084,9 @@ const runWorkflowAsync = async () => {
 // 仍然刷新 selectedWorkflowId 的 history 列表（同一个工作流的话就刚好）。
 const runWorkflowAsyncWith = async (workflowId, variables = {}) => {
   if (!workflowId) return null
+  stopWorkflowAsyncPoll()
   workflowResult.value = null
+  workflowAsyncJob.value = null
   workflowAsyncStatus.value = null
   try {
     workflowAsyncJob.value = await apiJson(`/api/workflows/${workflowId}/run-async`, 'POST', { variables: variables || {} })
@@ -1088,8 +1097,11 @@ const runWorkflowAsyncWith = async (workflowId, variables = {}) => {
         workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
         if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
           stopWorkflowAsyncPoll()
+          if (workflowAsyncStatus.value.result) workflowResult.value = workflowAsyncStatus.value.result
           if (selectedWorkflowId.value === workflowId) loadWorkflowRunHistory(workflowId)
           loadAllWorkflowRuns()
+          const statusText = workflowAsyncStatus.value.status === 'success' ? '完成' : workflowAsyncStatus.value.status === 'cancelled' ? '已取消' : '失败'
+          setNotice(`后台执行${statusText}`)
         }
       } catch (error) {
         stopWorkflowAsyncPoll()
@@ -1108,7 +1120,9 @@ const runWorkflowAsyncWith = async (workflowId, variables = {}) => {
 // 起好后挂到 workflowAsyncJob/Status，跑完自动刷新历史。
 const rerunWorkflowFromNode = async (runId, fromNodeId, variables = null) => {
   if (!runId || !fromNodeId) return null
+  stopWorkflowAsyncPoll()
   workflowResult.value = null
+  workflowAsyncJob.value = null
   workflowAsyncStatus.value = null
   try {
     const body = { from_node_id: fromNodeId }
@@ -1121,9 +1135,12 @@ const rerunWorkflowFromNode = async (runId, fromNodeId, variables = null) => {
         workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
         if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
           stopWorkflowAsyncPoll()
+          if (workflowAsyncStatus.value.result) workflowResult.value = workflowAsyncStatus.value.result
           const wfId = workflowAsyncJob.value.workflow_id
           if (selectedWorkflowId.value === wfId) loadWorkflowRunHistory(wfId)
           loadAllWorkflowRuns()
+          const statusText = workflowAsyncStatus.value.status === 'success' ? '完成' : workflowAsyncStatus.value.status === 'cancelled' ? '已取消' : '失败'
+          setNotice(`局部重跑${statusText}`)
         }
       } catch (error) {
         stopWorkflowAsyncPoll()

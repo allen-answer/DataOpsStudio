@@ -75,28 +75,28 @@ const {
             </div>
           </div>
 
-          <table v-else-if="historyActiveTab === 'compare'" class="min-w-[1080px] w-full table-fixed border-collapse text-left text-sm text-slate-700">
+          <table v-else-if="historyActiveTab === 'compare'" class="w-full min-w-[1180px] table-fixed border-collapse text-left text-sm text-slate-700">
             <colgroup>
-              <col class="w-11">
-              <col class="w-40">
-              <col class="w-[230px]">
-              <col class="w-20">
-              <col class="w-20">
-              <col class="w-24">
-              <col class="w-24">
-              <col class="w-36">
-              <col class="w-11">
+              <col style="width: 44px;">
+              <col style="width: 260px;">
+              <col>
+              <col style="width: 88px;">
+              <col style="width: 88px;">
+              <col style="width: 100px;">
+              <col style="width: 100px;">
+              <col style="width: 132px;">
+              <col style="width: 44px;">
             </colgroup>
             <thead class="sticky top-0 z-10 bg-slate-50 text-xs font-black uppercase tracking-wider text-slate-400">
               <tr>
                 <th class="px-3 py-3"></th>
-                <th class="px-3 py-3">运行 ID</th>
-                <th class="px-3 py-3">任务</th>
-                <th class="px-3 py-3 text-right">Diff</th>
-                <th class="px-3 py-3 text-right">Same</th>
-                <th class="px-3 py-3 text-right">源行数</th>
-                <th class="px-3 py-3 text-right">目标行数</th>
-                <th class="px-3 py-3">下载</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">运行 ID</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">任务</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">Diff</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">Same</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">源行数</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">目标行数</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">下载</th>
                 <th class="px-3 py-3"></th>
               </tr>
             </thead>
@@ -105,12 +105,12 @@ const {
                 <td class="px-3 py-3 align-top">
                   <input class="w-auto" type="checkbox" :value="item.run_id" :checked="selectedHistory.has(item.run_id)" @change="$event.target.checked ? selectedHistory.add(item.run_id) : selectedHistory.delete(item.run_id)">
                 </td>
-                <td class="px-3 py-3 align-top"><code class="block break-all text-[12px] leading-5 text-slate-700">{{ item.run_id }}</code></td>
+                <td class="px-3 py-3 align-top"><code class="block truncate text-[12px] leading-5 text-slate-700" :title="item.run_id">{{ item.run_id }}</code></td>
                 <td class="px-3 py-3 align-top"><span class="line-clamp-2">{{ historyItemTaskLabel(item) }}</span></td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'diff') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'same') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ item.source_rows }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ item.target_rows }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'diff') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'same') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ item.source_rows }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ item.target_rows }}</td>
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
                     <a v-if="item.excel_filename" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
@@ -124,46 +124,46 @@ const {
             </tbody>
           </table>
 
-          <table v-else class="min-w-[1180px] w-full table-fixed border-collapse text-left text-sm text-slate-700">
+          <table v-else class="w-full min-w-[1220px] table-fixed border-collapse text-left text-sm text-slate-700">
             <colgroup>
-              <col class="w-44">
-              <col class="w-48">
-              <col class="w-20">
-              <col class="w-24">
-              <col class="w-20">
-              <col class="w-20">
-              <col class="w-20">
-              <col class="w-24">
-              <col class="w-20">
-              <col class="w-36">
-              <col class="w-11">
+              <col style="width: 240px;">
+              <col style="width: 180px;">
+              <col style="width: 86px;">
+              <col style="width: 108px;">
+              <col style="width: 86px;">
+              <col style="width: 86px;">
+              <col style="width: 86px;">
+              <col style="width: 98px;">
+              <col style="width: 86px;">
+              <col style="width: 132px;">
+              <col style="width: 44px;">
             </colgroup>
             <thead class="sticky top-0 z-10 bg-slate-50 text-xs font-black uppercase tracking-wider text-slate-400">
               <tr>
-                <th class="px-3 py-3">运行 ID</th>
-                <th class="px-3 py-3">时间</th>
-                <th class="px-3 py-3 text-right">文件数</th>
-                <th class="px-3 py-3 text-right">成功/失败</th>
-                <th class="px-3 py-3 text-right">读表</th>
-                <th class="px-3 py-3 text-right">写表</th>
-                <th class="px-3 py-3 text-right">表边</th>
-                <th class="px-3 py-3 text-right">脚本边</th>
-                <th class="px-3 py-3 text-right">警告</th>
-                <th class="px-3 py-3">下载</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">运行 ID</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">时间</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">文件数</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">成功/失败</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">读表</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">写表</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">表边</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">脚本边</th>
+                <th class="whitespace-nowrap px-3 py-3 text-right tabular-nums">警告</th>
+                <th class="whitespace-nowrap px-3 py-3 text-left">下载</th>
                 <th class="px-3 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="border-t border-slate-100 transition hover:bg-slate-50">
-                <td class="px-3 py-3 align-top"><code class="block break-all text-[12px] leading-5 text-slate-700">{{ item.run_id }}</code></td>
+                <td class="px-3 py-3 align-top"><code class="block truncate text-[12px] leading-5 text-slate-700" :title="item.run_id">{{ item.run_id }}</code></td>
                 <td class="px-3 py-3 align-top text-xs text-slate-500">{{ item.started_at }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'files') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'success_files') }} / {{ summaryValue(item, 'failed_files') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'read_tables') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'write_tables') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'table_edges') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'script_edges') }}</td>
-                <td class="px-3 py-3 text-right align-top font-mono">{{ summaryValue(item, 'warnings') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'files') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'success_files') }} / {{ summaryValue(item, 'failed_files') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'read_tables') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'write_tables') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'table_edges') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'script_edges') }}</td>
+                <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'warnings') }}</td>
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
                     <a v-if="item.excel_filename" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
