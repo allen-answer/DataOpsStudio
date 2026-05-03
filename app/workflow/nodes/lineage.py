@@ -28,14 +28,14 @@ def run_lineage_node(config: dict[str, Any], variables: dict[str, str], **_: Any
             raise ValueError("lineage node requires config.script_path")
         payload["script_path"] = script_path
         payload["script_filename"] = str(config.get("script_filename") or "")
-        return _normalize_output(analyze_stored_script(payload))
+        return _normalize_output(analyze_stored_script(payload, ai_async=False))
 
     if mode != "inline_sql":
         raise ValueError(f"unsupported lineage input_mode: {mode}")
     if not sql:
         raise ValueError("lineage node requires config.sql")
     payload["sql"] = _interpolate_sql(sql, variables)
-    return _normalize_output(analyze_json(payload))
+    return _normalize_output(analyze_json(payload, ai_async=False))
 
 
 def _payload(config: dict[str, Any]) -> dict[str, str]:

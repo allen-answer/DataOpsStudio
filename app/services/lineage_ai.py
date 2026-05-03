@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+import uuid
 from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 from dataclasses import dataclass
@@ -11,6 +13,10 @@ from typing import Any, Protocol
 
 
 logger = logging.getLogger(__name__)
+
+_AI_JOB_LOCK = threading.Lock()
+_AI_JOBS: dict[str, dict[str, Any]] = {}
+_MAX_AI_JOBS = 200
 
 
 @dataclass(frozen=True)
@@ -169,6 +175,115 @@ def enrich_lineage_result(
     return result
 
 
+def enqueue_lineage_ai_enrichment(
+    result: dict[str, Any],
+    *,
+    sql_text: str = "",
+    dialect: str | None = None,
+    scope: str = "single",
+    scripts: list[dict[str, str]] | None = None,
+    enabled: bool = False,
+) -> dict[str, Any]:
+    """Attach a pending AI job and run provider enrichment in the background."""
+    config = _config()
+    if not enabled:
+        result["ai_enrichment"] = _disabled_enrichment()
+        return result
+
+    provider = _provider_for(config.provider)
+    if provider is None:
+        if config.provider in {"off", "disabled", "none", ""}:
+            result["ai_enrichment"] = _disabled_enrichment()
+        else:
+            result["ai_enrichment"] = _error_enrichment(
+                provider=config.provider,
+                model=config.model,
+                error=f"unsupported provider: {config.provider}",
+            )
+        return result
+
+    payload = _compact_payload_for_provider(
+        _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
+    )
+    job_id = uuid.uuid4().hex
+    pending = {
+        "enabled": True,
+        "status": "pending",
+        "job_id": job_id,
+        "provider": provider.name,
+        "model": config.model,
+        "elapsed_seconds": 0,
+        "summary": "",
+        "suggestions": [],
+        "risks": [],
+        "column_hints": [],
+    }
+    _store_ai_job(job_id, pending)
+    thread = threading.Thread(
+        target=_run_ai_job,
+        args=(job_id, provider, config, payload),
+        name=f"lineage-ai-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    result["ai_enrichment"] = pending
+    return result
+
+
+def get_lineage_ai_job(job_id: str) -> dict[str, Any] | None:
+    with _AI_JOB_LOCK:
+        item = _AI_JOBS.get(job_id)
+        return dict(item) if item else None
+
+
+def _run_ai_job(
+    job_id: str,
+    provider: LineageAIProvider,
+    config: LineageAIConfig,
+    payload: dict[str, Any],
+) -> None:
+    started = time.perf_counter()
+    try:
+        payload_chars = len(json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "lineage AI async enrichment start job_id=%s provider=%s model=%s payload_chars=%s timeout=%ss",
+            job_id,
+            config.provider,
+            config.model,
+            payload_chars,
+            config.timeout_seconds,
+        )
+        enrichment = provider.enrich(payload, config)
+        if not isinstance(enrichment, dict):
+            raise ValueError("provider returned non-object enrichment")
+        result = _normalize_enrichment(
+            enrichment,
+            provider=provider.name,
+            model=config.model,
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+        )
+        result["job_id"] = job_id
+        _store_ai_job(job_id, result)
+    except Exception as exc:
+        logger.exception("lineage AI async enrichment failed job_id=%s provider=%s", job_id, config.provider)
+        result = _error_enrichment(
+            provider=config.provider,
+            model=config.model,
+            error=str(exc),
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+        )
+        result["job_id"] = job_id
+        _store_ai_job(job_id, result)
+
+
+def _store_ai_job(job_id: str, payload: dict[str, Any]) -> None:
+    with _AI_JOB_LOCK:
+        if len(_AI_JOBS) >= _MAX_AI_JOBS:
+            for stale_id in list(_AI_JOBS)[: max(1, _MAX_AI_JOBS // 5)]:
+                _AI_JOBS.pop(stale_id, None)
+        _AI_JOBS[job_id] = dict(payload)
+
+
 class MockLineageAIProvider:
     name = "mock"
 
@@ -203,8 +318,7 @@ class OpenAICompatibleLineageAIProvider:
         base_url = config.base_url.rstrip("/") or "https://api.openai.com/v1"
         body = {
             "model": config.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
+            "max_tokens": 1200,
             "messages": [
                 {
                     "role": "system",
@@ -217,6 +331,8 @@ class OpenAICompatibleLineageAIProvider:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
+        if _should_disable_kimi_thinking(config):
+            body["thinking"] = {"type": "disabled"}
         data = _post_json(
             _chat_completions_url(base_url),
             body,
@@ -356,6 +472,12 @@ def _chat_completions_url(base_url: str) -> str:
     else:
         path = f"{path}/chat/completions"
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _should_disable_kimi_thinking(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    base_url = (config.base_url or "").lower()
+    return model.startswith(("kimi-k2.6", "kimi-k2.5")) or "moonshot." in base_url or "kimi." in base_url
 
 
 def _anthropic_messages_url(base_url: str) -> str:

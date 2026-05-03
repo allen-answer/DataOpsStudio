@@ -41,6 +41,14 @@ def test_lineage_ai_config_api(
     return lineage_ai.test_lineage_ai_connection(payload)
 
 
+@router.get("/api/lineage/ai/jobs/{job_id}")
+def lineage_ai_job_api(job_id: str):
+    result = lineage_ai.get_lineage_ai_job(job_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="AI job not found")
+    return result
+
+
 @router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
 def lineage_api(payload: dict[str, str] = Body(...)):
     try:

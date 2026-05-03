@@ -18,7 +18,9 @@ const list = (value) => Array.isArray(value) ? value : []
         :class="enrichment.enabled
           ? enrichment.status === 'success'
             ? 'bg-violet-50 text-violet-700 ring-violet-200'
-            : 'bg-rose-50 text-rose-700 ring-rose-200'
+            : enrichment.status === 'pending'
+              ? 'bg-amber-50 text-amber-700 ring-amber-200'
+              : 'bg-rose-50 text-rose-700 ring-rose-200'
           : 'bg-slate-100 text-slate-500 ring-slate-200'"
       >
         {{ enrichment.enabled ? enrichment.status : 'disabled' }}
@@ -28,6 +30,14 @@ const list = (value) => Array.isArray(value) ? value : []
     <div v-if="!enrichment.enabled" class="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
       <p class="text-sm font-semibold text-slate-600">AI 未启用</p>
       <p class="mt-1 text-xs text-slate-500">离线规则分析仍会正常输出；需要时在分析入口勾选“AI 辅助分析”，并配置 provider 环境变量。</p>
+    </div>
+
+    <div v-else-if="enrichment.status === 'pending'" class="rounded-xl border border-amber-200 bg-amber-50 p-4">
+      <p class="text-sm font-semibold text-amber-800">AI 辅助分析正在后台执行</p>
+      <p class="mt-1 text-xs text-amber-700">规则血缘结果已经可用，AI 完成后本页会自动刷新。</p>
+      <div class="mt-3 h-2 overflow-hidden rounded-full bg-white">
+        <div class="h-full w-1/2 rounded-full bg-amber-500 motion-safe:animate-pulse"></div>
+      </div>
     </div>
 
     <div v-else-if="enrichment.status === 'error'" class="rounded-xl border border-rose-200 bg-rose-50 p-4">

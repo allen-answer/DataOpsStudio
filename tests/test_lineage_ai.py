@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -175,6 +176,42 @@ def test_lineage_ai_accepts_full_or_bare_openai_compatible_urls(monkeypatch):
         "https://api.moonshot.ai/v1/chat/completions",
         "https://api.moonshot.ai/v1/chat/completions",
     ]
+
+
+def test_lineage_ai_disables_kimi_thinking_for_moonshot(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {"content": json.dumps({"summary": "kimi ok"})}
+                }]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "openai")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_BASE_URL", "https://api.moonshot.cn/v1")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MODEL", "kimi-k2.6")
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_API_KEY", "secret")
+    monkeypatch.setattr(lineage_ai.urllib.request, "urlopen", fake_urlopen)
+
+    result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
+
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert captured["payload"]["max_tokens"] == 1200
+    assert "temperature" not in captured["payload"]
+    assert "response_format" not in captured["payload"]
+    assert result["ai_enrichment"]["summary"] == "kimi ok"
 
 
 def test_lineage_ai_anthropic_compatible_provider(monkeypatch):
@@ -354,8 +391,18 @@ def test_lineage_service_can_enable_mock_ai(monkeypatch):
         "ai_enabled": "true",
     })
 
-    assert result["ai_enrichment"]["status"] == "success"
+    assert result["ai_enrichment"]["status"] == "pending"
     assert result["ai_enrichment"]["provider"] == "mock"
+
+    job_id = result["ai_enrichment"]["job_id"]
+    for _ in range(20):
+        job = lineage_ai.get_lineage_ai_job(job_id)
+        if job and job["status"] != "pending":
+            break
+        time.sleep(0.05)
+
+    assert job["status"] == "success"
+    assert job["provider"] == "mock"
 
 
 def test_lineage_ai_config_encrypts_saved_api_key():

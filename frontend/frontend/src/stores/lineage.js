@@ -23,8 +23,12 @@ function makeLineageDraft() {
     aiEnabled: false,
     result: null,
     error: '',
+    isAnalyzing: false,
+    aiPolling: false,
   })
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 export const useLineageStore = defineStore('lineage', () => {
@@ -39,6 +43,7 @@ export const useLineageStore = defineStore('lineage', () => {
   async function analyzeLineage() {
     lineage.error = ''
     lineage.result = null
+    lineage.isAnalyzing = true
     try {
       if (lineage.sqlFile || lineage.schemaFiles.length) {
         const form = new FormData()
@@ -66,8 +71,43 @@ export const useLineageStore = defineStore('lineage', () => {
           schema: '',
         })
       }
+      pollLineageAIJob(lineage)
     } catch (error) {
       lineage.error = error.message
+    } finally {
+      lineage.isAnalyzing = false
+    }
+  }
+
+  async function pollLineageAIJob(target) {
+    const jobId = target.result?.ai_enrichment?.job_id
+    if (!jobId || target.result?.ai_enrichment?.status !== 'pending') return
+    target.aiPolling = true
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        await sleep(2000)
+        const enrichment = await apiGet(`/api/lineage/ai/jobs/${jobId}`)
+        if (target.result?.ai_enrichment?.job_id !== jobId) return
+        target.result.ai_enrichment = enrichment
+        if (enrichment.status !== 'pending') return
+      }
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: 'AI 辅助分析仍未完成，请稍后刷新或提高超时时间',
+        }
+      }
+    } catch (error) {
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: error.message,
+        }
+      }
+    } finally {
+      target.aiPolling = false
     }
   }
 
