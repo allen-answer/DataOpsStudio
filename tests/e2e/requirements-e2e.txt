@@ -1,0 +1,5 @@
+# e2e（Playwright）专用依赖，不混进主 requirements.txt
+# 主 image 不装 chromium —— prod 用不到。
+pytest>=8
+pytest-playwright>=0.5
+playwright>=1.40

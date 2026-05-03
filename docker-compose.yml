@@ -37,3 +37,28 @@ services:
       mysql8:
         condition: service_healthy
     restart: unless-stopped
+
+  # 浏览器 e2e（可选 profile，默认 docker compose up 不启动）
+  # 跑法：docker compose --profile e2e run --rm e2e
+  # 主 image 不装 chromium（prod 不需要），单独 build tests/e2e/Dockerfile。
+  e2e:
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: tests/e2e/Dockerfile
+    # 用 host network：chromium 对自定义 hostname (`app`) 会触发 HTTPS Upgrade
+    # 把 http://app:8010 自动改成 https → SSL 错。从 localhost 访问就跳过这套。
+    network_mode: host
+    # 宿主 tests/ bind-mount 进容器，改测试不用 rebuild image
+    volumes:
+      - ./tests:/app/tests:ro
+    environment:
+      E2E_BASE_URL: http://localhost:8010
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
+    # network_mode: host 时 docker-compose 不让用 depends_on 加 condition；
+    # 跑前确保 app 已经 up。
