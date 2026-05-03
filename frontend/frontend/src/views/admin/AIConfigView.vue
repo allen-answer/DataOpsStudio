@@ -19,6 +19,7 @@ const draft = reactive({
   api_key: '',
   timeout_seconds: 60,
   include_raw: false,
+  enable_inference: false,
   clear_api_key: false,
 })
 
@@ -71,6 +72,7 @@ function hydrate(nextConfig) {
   draft.api_key = ''
   draft.timeout_seconds = Number(nextConfig.timeout_seconds || 20)
   draft.include_raw = Boolean(nextConfig.include_raw)
+  draft.enable_inference = Boolean(nextConfig.enable_inference)
   draft.clear_api_key = false
 }
 
@@ -92,6 +94,7 @@ function payload({ includeKey = true } = {}) {
     base_url: draft.base_url.trim(),
     timeout_seconds: Number(draft.timeout_seconds || 20),
     include_raw: Boolean(draft.include_raw),
+    enable_inference: Boolean(draft.enable_inference),
   }
   if (includeKey && draft.api_key.trim()) body.api_key = draft.api_key
   if (includeKey && draft.clear_api_key) body.clear_api_key = true
@@ -207,6 +210,17 @@ onMounted(() => {
             <label class="flex items-center gap-2 text-sm text-slate-700">
               <input v-model="draft.include_raw" type="checkbox" />
               保存 AI 原始响应到报告
+            </label>
+            <label class="flex items-start gap-2 text-sm text-slate-700">
+              <input v-model="draft.enable_inference" type="checkbox" class="mt-0.5" />
+              <span>
+                <span class="font-medium">启用 AI 解析失败兜底</span>
+                <span class="muted block text-[11px] leading-relaxed">
+                  对静态解析失败（parse_errors）的片段调 AI 推断 source/target 表，输出独立
+                  <code class="rounded bg-slate-200 px-1 font-mono text-[10.5px]">ai_inferred</code>
+                  字段（不替代规则结论；前端虚线 + AI 徽章区分）。白名单约束保证 AI 只能从脚本里出现过的表名 / 字段名挑，避免 hallucination。
+                </span>
+              </span>
             </label>
             <label class="flex items-center gap-2 text-sm text-rose-700">
               <input v-model="draft.clear_api_key" type="checkbox" :disabled="!config?.api_key_set" />

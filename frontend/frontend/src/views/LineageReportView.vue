@@ -12,6 +12,7 @@ import LineageSemanticPanel from '../components/lineage/LineageSemanticPanel.vue
 import LineageImpactPanel from '../components/lineage/LineageImpactPanel.vue'
 import LineageRiskPanel from '../components/lineage/LineageRiskPanel.vue'
 import LineageAIEnrichmentPanel from '../components/lineage/LineageAIEnrichmentPanel.vue'
+import LineageAIInferredPanel from '../components/lineage/LineageAIInferredPanel.vue'
 import ColumnLineageGraph from '../components/lineage/ColumnLineageGraph.vue'
 import LineageMappings from '../components/LineageMappings.vue'
 
@@ -27,6 +28,8 @@ const props = defineProps({
   columns: { type: Array, default: () => [] },
   insertMappings: { type: Array, default: () => [] },
   aiEnrichment: { type: Object, default: () => ({}) },
+  aiInferred: { type: Object, default: () => ({}) },
+  parseErrors: { type: Array, default: () => [] },
 })
 
 const TABS = [
@@ -39,7 +42,8 @@ const TABS = [
   { id: 'semantic',label: '语义血缘', icon: Sparkles },
   { id: 'impact',  label: '影响分析', icon: GitBranch },
   { id: 'risks',   label: '风险',     icon: AlertTriangle },
-  { id: 'ai',      label: 'AI 辅助',  icon: Bot },
+  { id: 'ai',         label: 'AI 辅助',     icon: Bot },
+  { id: 'ai_inferred',label: 'AI 兜底推断', icon: Sparkles },
 ]
 
 const activeTab = ref('summary')
@@ -83,6 +87,11 @@ const tabBadgeCount = computed(() => ({
   impact:  Object.keys(props.report.impact_analysis?.downstream || {}).length,
   risks:   props.report.risks?.length || 0,
   ai:      props.aiEnrichment?.enabled ? 1 : 0,
+  ai_inferred: (props.aiInferred?.edges?.length || 0)
+              + (props.aiInferred?.warnings?.length || 0)
+              + (props.parseErrors?.length || 0)
+              ? Math.max(1, props.aiInferred?.edges?.length || 0)
+              : 0,
 }))
 </script>
 
@@ -203,6 +212,12 @@ const tabBadgeCount = computed(() => ({
     <LineageAIEnrichmentPanel
       v-else-if="activeTab === 'ai'"
       :enrichment="aiEnrichment"
+    />
+
+    <LineageAIInferredPanel
+      v-else-if="activeTab === 'ai_inferred'"
+      :inferred="aiInferred"
+      :parse-errors="parseErrors"
     />
   </div>
 </template>

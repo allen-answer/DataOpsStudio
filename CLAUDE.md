@@ -214,7 +214,29 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - **默认关闭** ✅：通过 env 启用：`DATAOPS_LINEAGE_AI_PROVIDER`、`DATAOPS_LINEAGE_AI_MODEL`、`DATAOPS_LINEAGE_AI_BASE_URL`、`DATAOPS_LINEAGE_AI_API_KEY`、`DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS`。前端 `/api/lineage/ai/status` 只返回 provider/model/configured 等非敏感状态，不返回 key。
 - **AI 只做语义增强，不作为血缘事实来源** ✅：AI 输入基于确定性解析结果；输出只落 `ai_enrichment`，不覆盖 graph_edges / column_edges / report。
 - **AI 异常不能影响普通血缘分析** ✅：provider 调用失败时返回 `ai_enrichment.status='error'`，规则结果照常输出。
-- **前端明确标识"AI 辅助判断"** ✅：统一血缘入口可勾选“AI 辅助分析”，报告页新增“AI 辅助”tab，展示 summary / suggestions / risks / column_hints。
+- **前端明确标识"AI 辅助判断"** ✅：统一血缘入口可勾选"AI 辅助分析"，报告页新增"AI 辅助"tab，展示 summary / suggestions / risks / column_hints。
+
+##### 轨道 A 增量：AI 解析失败兜底（Phase 1 ✅）
+
+针对静态解析直接 fail 的片段（`result.parse_errors`，常见于 Oracle PL/SQL 控制流 / 复杂动态 SQL）—— 这些段血缘**完全丢失**，AI 从 0 加价值，幻觉风险通过 6 条不变量控制：
+
+1. **不动已解析的** `graph_edges` / `insert_mappings` / `column_edges`，AI 永远不重写它们
+2. **输出落独立字段** `result.ai_inferred = {edges, warnings, trigger_count, filtered_count}`，跟原始结果并列；前端独立 tab + 紫色徽章区分
+3. **白名单约束**：prompt 强制 AI 只能从"脚本里实际出现过的表名 / 字段名"集合里挑；返回结果 post-filter 一遍，不在白名单的条目记 `filtered_count` 丢弃
+4. **每条 inferred edge 必带** `confidence` (low/medium，**不允许 high**) + `reason`（中文人话）+ `evidence`（引自 SQL 片段）+ `fragment_index`（指向 parse_errors 哪一条）
+5. **前端虚线 + AI 徽章**：报告页"AI 兜底推断"tab 渲染卡片列表（`components/lineage/LineageAIInferredPanel.vue`）；G6 / Cytoscape 主图保持纯静态解析结果不污染
+6. **可选启用**：`LineageAIConfig.enable_inference: bool=False` + admin AI 配置页 toggle "启用 AI 解析失败兜底"。env `DATAOPS_LINEAGE_AI_ENABLE_INFERENCE` 也可启
+
+实现位置：
+- `app/services/lineage_ai_inference.py` —— `infer_from_parse_errors()` 直接走 HTTP（绕开 enrich() provider 抽象，因为本场景 system prompt 截然不同）。复用 lineage_ai 的 URL / max_tokens / Kimi thinking 关闭 / Bearer token / Anthropic header 等 helper
+- `app/services/lineage_service._attach_ai_inference()` —— 在 `_attach_ai_enrichment()` 之前同步执行；`enable_inference=False` 时 short-circuit 不调
+- 默认 `max_fragments=10`（防 API 滥用）+ `max_fragment_chars=8000`（防 token 爆）
+- 14 个 test case（`tests/test_lineage_ai_inference.py`）：白名单过滤 / hallucination dml_type / confidence=high 强制降到 low / source 不在白名单则保留 target / column 字段过滤 / provider exception 降级 / 非 dict response 降级 / max_fragments 截断 / 端到端
+
+后续阶段（Phase 2-4，未排期）：
+- **Phase 2** `dynamic_sql_segments`（confidence=var_concat/unresolved）：跟踪变量赋值 + 注释推断目标表
+- **Phase 3** 多表 unqualified column 缺 schema 时的归属推荐
+- **Phase 4** procedure 语义模式（refresh mode / 数据流向）
 
 #### 轨道 B：离线确定性分析增强（无 AI 也能用）
 

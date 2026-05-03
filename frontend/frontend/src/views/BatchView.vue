@@ -74,6 +74,9 @@ const report = computed(() => batch.result?.report || null)
       :graph-edges="batch.result.table_edges || []"
       :columns="[]"
       :insert-mappings="batch.result.field_mappings || []"
+      :ai-enrichment="batch.result.ai_enrichment || {}"
+      :ai-inferred="batch.result.ai_inferred || {}"
+      :parse-errors="batch.result.parse_errors || []"
     />
   </section>
 </template>

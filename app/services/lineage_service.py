@@ -211,6 +211,9 @@ def _attach_ai_enrichment(
     scripts: list[dict[str, str]] | None = None,
     ai_async: bool = True,
 ) -> dict[str, object]:
+    # Phase 7 双轨 A：AI 解析失败兜底 —— 先做（同步、快速、独立字段），再做 enrichment
+    # 兜底针对 result["parse_errors"]：调 AI 推断 source/target 表，输出 result["ai_inferred"]
+    _attach_ai_inference(result, dialect=dialect, enabled=enabled)
     attach = enqueue_lineage_ai_enrichment if ai_async else enrich_lineage_result
     return attach(
         result,
@@ -220,6 +223,73 @@ def _attach_ai_enrichment(
         scripts=scripts or [],
         enabled=enabled,
     )
+
+
+def _attach_ai_inference(
+    result: dict[str, object],
+    *,
+    dialect: str | None,
+    enabled: bool,
+) -> None:
+    """对 result.parse_errors 调 AI 兜底推断（同步、best-effort、不阻塞主流程）。
+
+    结果落 result["ai_inferred"]：edges/columns 列表 + warnings + trigger_count 等。
+    要求 LineageAIConfig.enable_inference=True 才执行；任一失败默默降级，不抛错。
+    """
+    parse_errors = result.get("parse_errors") or []
+    if not enabled or not parse_errors:
+        return
+    try:
+        # lazy import 避免 lineage_service ↔ lineage_ai_inference 循环
+        from app.services.lineage_ai import _config as _ai_config
+        from app.services.lineage_ai_inference import infer_from_parse_errors
+
+        config = _ai_config()
+        if not getattr(config, "enable_inference", False):
+            return
+        # 白名单：从已识别的 tables / columns 取（这些是规则解析的事实，安全）
+        tables_field = result.get("tables") or []
+        table_names: set[str] = set()
+        for t in tables_field:
+            if isinstance(t, dict):
+                name = t.get("name") or t.get("table") or ""
+                if name:
+                    table_names.add(name)
+            elif isinstance(t, str) and t:
+                table_names.add(t)
+        column_names: set[str] = set()
+        for col in result.get("columns") or []:
+            if isinstance(col, dict):
+                name = col.get("output_column") or ""
+                if name:
+                    column_names.add(name)
+        for mapping in result.get("insert_mappings") or []:
+            if isinstance(mapping, dict):
+                for sc in mapping.get("source_columns") or []:
+                    if isinstance(sc, str):
+                        column_names.add(sc.split(".")[-1])
+                for tc in mapping.get("target_columns") or []:
+                    if isinstance(tc, str):
+                        column_names.add(tc)
+
+        inferred = infer_from_parse_errors(
+            parse_errors,
+            table_whitelist=table_names,
+            column_whitelist=column_names,
+            dialect=dialect or "",
+            config=config,
+            max_fragment_chars=config.inference_max_fragment_chars,
+            max_fragments=config.inference_max_fragments,
+        )
+        result["ai_inferred"] = inferred
+    except Exception as exc:
+        logger.warning("AI inference fallback failed: %s", exc)
+        result["ai_inferred"] = {
+            "edges": [],
+            "warnings": [{"type": "ai_inference_pipeline_error", "message": str(exc)}],
+            "trigger_count": 0,
+            "filtered_count": 0,
+        }
 
 
 def _sql_text(sql: str, sql_file: UploadFile | None) -> str:

@@ -26,6 +26,11 @@ class LineageAIConfig:
     base_url: str = ""
     api_key: str = ""
     timeout_seconds: float = 60.0
+    # Phase 7 双轨 A AI 兜底：解析失败 / 低置信片段调 AI 补充推断（默认关）
+    # 不替代静态解析；输出独立 result["ai_inferred"] 字段，前端虚线 + 徽章区分
+    enable_inference: bool = False
+    inference_max_fragment_chars: int = 8000
+    inference_max_fragments: int = 10
 
 
 class LineageAIProvider(Protocol):
@@ -452,6 +457,9 @@ def _config() -> LineageAIConfig:
         base_url=str(effective.get("base_url") or "").strip(),
         api_key=str(effective.get("api_key") or "").strip(),
         timeout_seconds=float(effective.get("timeout_seconds") or 60),
+        enable_inference=bool(effective.get("enable_inference") or False),
+        inference_max_fragment_chars=int(effective.get("inference_max_fragment_chars") or 8000),
+        inference_max_fragments=int(effective.get("inference_max_fragments") or 10),
     )
 
 
@@ -469,6 +477,13 @@ def _config_with_override(override: dict[str, Any]) -> LineageAIConfig:
         base_url=str(override.get("base_url") if override.get("base_url") is not None else base.base_url).strip(),
         api_key=str(override.get("api_key") or base.api_key).strip(),
         timeout_seconds=timeout_seconds,
+        enable_inference=bool(
+            override.get("enable_inference")
+            if override.get("enable_inference") is not None
+            else base.enable_inference
+        ),
+        inference_max_fragment_chars=base.inference_max_fragment_chars,
+        inference_max_fragments=base.inference_max_fragments,
     )
 
 

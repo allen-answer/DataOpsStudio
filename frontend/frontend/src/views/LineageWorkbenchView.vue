@@ -285,6 +285,8 @@ function onZipChange(e) {
       :columns="isSinglePipeline ? (result.columns || []) : []"
       :insert-mappings="isSinglePipeline ? (result.insert_mappings || []) : (result.field_mappings || [])"
       :ai-enrichment="result.ai_enrichment || {}"
+      :ai-inferred="result.ai_inferred || {}"
+      :parse-errors="result.parse_errors || []"
     />
   </section>
 </template>

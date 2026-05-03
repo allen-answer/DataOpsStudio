@@ -64,6 +64,9 @@ const report = computed(() => lineage.result?.report || null)
       :graph-edges="lineage.result.graph_edges || []"
       :columns="lineage.result.columns || []"
       :insert-mappings="lineage.result.insert_mappings || []"
+      :ai-enrichment="lineage.result.ai_enrichment || {}"
+      :ai-inferred="lineage.result.ai_inferred || {}"
+      :parse-errors="lineage.result.parse_errors || []"
     />
   </section>
 </template>
