@@ -53,6 +53,8 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(paths_module, "WORKFLOWS_FILE", cfg / "workflows.json")
     monkeypatch.setattr(paths_module, "WORKFLOW_TEMPLATES_FILE", cfg / "workflow_templates.json")
     monkeypatch.setattr(paths_module, "JOBS_FILE", cfg / "jobs.json")
+    monkeypatch.setattr(paths_module, "LINEAGE_AI_CONFIG_FILE", cfg / "lineage_ai.json")
+    monkeypatch.setattr(paths_module, "LOCAL_SECRET_KEY_FILE", cfg / ".dataops_secret.key")
 
     # 3. 已经在 import 顶层绑住 path 的模块 —— 必须各自 patch
     from app.services import workflow_history, history as history_svc, history_exporter, excel_uploads, jobs, config_io as config_io_svc
@@ -75,10 +77,13 @@ def isolated_storage(tmp_path, monkeypatch):
 
     # 5. user / project / audit store —— D-MVP 多项目空间相关
     from app.services import auth as auth_svc, audit as audit_svc
+    from app.services import lineage_ai_config as lineage_ai_config_svc, secret_crypto as secret_crypto_svc
     from app.api import projects as projects_api
     monkeypatch.setattr(auth_svc.user_store, "path", cfg / "users.json")
     monkeypatch.setattr(projects_api.project_store, "path", cfg / "projects.json")
     monkeypatch.setattr(audit_svc, "AUDIT_LOG_FILE", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(lineage_ai_config_svc, "LINEAGE_AI_CONFIG_FILE", cfg / "lineage_ai.json")
+    monkeypatch.setattr(secret_crypto_svc, "LOCAL_SECRET_KEY_FILE", cfg / ".dataops_secret.key")
     monkeypatch.setattr(paths_module, "USERS_FILE", cfg / "users.json")
     monkeypatch.setattr(paths_module, "PROJECTS_FILE", cfg / "projects.json")
     auth_svc.user_store.invalidate_cache()

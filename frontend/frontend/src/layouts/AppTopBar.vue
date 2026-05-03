@@ -38,6 +38,7 @@ onBeforeUnmount(() => {
 
 // 默认面包屑：从 route.matched 反推，失败回退路由 path
 const ROUTE_LABELS = {
+  '/admin/ai': 'AI 配置',
   '/datasources': '数据源',
   '/data-compare': '数据对比',
   '/workflows': '作业流',

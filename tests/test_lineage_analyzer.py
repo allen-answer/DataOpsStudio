@@ -215,6 +215,8 @@ def test_unqualified_column_resolves_unique_schema_table():
     assert mapping["source_tables"] == ["orders"]
     assert mapping["source_columns"] == ["orders.amount"]
     assert mapping["confidence"] == "medium"
+    assert mapping["reason"] == "Schema 唯一匹配"
+    assert mapping["source_type"] == "column"
 
 
 def test_unqualified_column_warns_when_schema_ambiguous():
@@ -223,7 +225,39 @@ def test_unqualified_column_warns_when_schema_ambiguous():
     mapping = result["insert_mappings"][0]
     assert set(mapping["source_tables"]) == {"orders", "users"}
     assert mapping["confidence"] == "low"
+    assert mapping["source_type"] == "ambiguous"
     assert any(w["type"] == "字段歧义" for w in result["warnings"])
+
+
+def test_expression_mapping_collects_case_and_coalesce_sources():
+    sql = """
+    INSERT INTO rpt (label, amount)
+    SELECT CASE WHEN o.status = 'A' THEN u.name ELSE COALESCE(o.name, u.alias_name) END,
+           COALESCE(o.amount, 0) + u.bonus
+    FROM orders o JOIN users u ON o.user_id = u.id
+    """
+    result = analyze_sql_lineage(sql)
+
+    label = result["insert_mappings"][0]
+    amount = result["insert_mappings"][1]
+
+    assert set(label["source_tables"]) == {"orders", "users"}
+    assert {"o.status", "u.name", "o.name", "u.alias_name"}.issubset(set(label["source_columns"]))
+    assert set(amount["source_tables"]) == {"orders", "users"}
+    assert {"o.amount", "u.bonus"}.issubset(set(amount["source_columns"]))
+    # Phase 7 G transform 11 类细化后 CASE 归为"条件"（之前是兜底"表达式"）
+    assert label["transform"] == "条件"
+
+
+def test_constant_mapping_has_source_type_constant():
+    result = analyze_sql_lineage("INSERT INTO rpt (flag) SELECT 'Y' FROM orders")
+    mapping = result["insert_mappings"][0]
+
+    assert mapping["source_columns"] == []
+    assert mapping["source_tables"] == []
+    assert mapping["source_type"] == "constant"
+    assert "常量" in mapping["reason"]
+    assert result["report"]["column_edges"][0]["source_type"] == "constant"
 
 
 def test_graph_edges_include_context():

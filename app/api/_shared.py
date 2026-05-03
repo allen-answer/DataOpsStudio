@@ -70,8 +70,19 @@ def ensure_workflow_node_targets(payload: WorkflowCreate) -> None:
                             ),
                         ) from exc
         elif kind == "lineage":
-            if not str(node.config.get("sql") or "").strip():
-                raise HTTPException(status_code=400, detail=f"node {node.id}: lineage requires config.sql")
+            mode = str(node.config.get("input_mode") or "").strip().lower()
+            script_path = str(node.config.get("script_path") or node.config.get("file_path") or "").strip()
+            sql = str(node.config.get("sql") or "").strip()
+            if not mode:
+                mode = "uploaded_file" if script_path else "inline_sql"
+            if mode == "inline_sql":
+                if not sql:
+                    raise HTTPException(status_code=400, detail=f"node {node.id}: lineage requires config.sql")
+            elif mode in {"uploaded_file", "uploaded_zip", "file", "zip"}:
+                if not script_path:
+                    raise HTTPException(status_code=400, detail=f"node {node.id}: lineage requires config.script_path")
+            else:
+                raise HTTPException(status_code=400, detail=f"node {node.id}: unsupported lineage input_mode {mode}")
         elif kind == "http":
             url = str(node.config.get("url") or "").strip()
             if not url:

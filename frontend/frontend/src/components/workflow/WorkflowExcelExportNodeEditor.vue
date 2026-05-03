@@ -29,7 +29,7 @@ const sheetSourceLabel = {
 // 节点可能想拿 'tables' / 'edges' 等顶层字段）。
 const datasetPresetsByType = {
   compare: ['summary', 'diff', 'only_source', 'only_target', 'same'],
-  lineage: ['sources', 'targets', 'edges', 'warnings', 'field_mappings'],
+  lineage: ['sources', 'targets', 'edges', 'table_edges', 'table_groups', 'warnings', 'field_mappings', 'insert_mappings', 'report.summary'],
   params:  [],
   http:    ['body', 'json', 'headers'],
 }

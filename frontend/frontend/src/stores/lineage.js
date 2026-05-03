@@ -4,9 +4,9 @@
  * 跟 batch store 拆开是因为 LineageWorkbenchView 同时支持单脚本 / 多脚本 /
  * ZIP 模式，每种模式有自己的本地状态（result + error + 上传文件）。
  */
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { apiForm, apiJson } from '../api'
+import { apiForm, apiGet, apiJson } from '../api'
 
 
 function makeLineageDraft() {
@@ -20,14 +20,20 @@ function makeLineageDraft() {
     schemaDialect: '',
     schemaFiles: [],
     sqlFile: null,
+    aiEnabled: false,
     result: null,
     error: '',
+    isAnalyzing: false,
+    aiPolling: false,
   })
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 export const useLineageStore = defineStore('lineage', () => {
   const lineage = makeLineageDraft()
+  const lineageAIStatus = ref(null)
 
   function resetResult() {
     lineage.result = null
@@ -37,6 +43,7 @@ export const useLineageStore = defineStore('lineage', () => {
   async function analyzeLineage() {
     lineage.error = ''
     lineage.result = null
+    lineage.isAnalyzing = true
     try {
       if (lineage.sqlFile || lineage.schemaFiles.length) {
         const form = new FormData()
@@ -47,6 +54,7 @@ export const useLineageStore = defineStore('lineage', () => {
         form.append('schema_table_filter', lineage.schemaTableFilter)
         form.append('schema_only_sql_tables', lineage.schemaOnlySqlTables ? 'true' : '')
         form.append('schema_dialect', lineage.schemaDialect)
+        form.append('ai_enabled', lineage.aiEnabled ? 'true' : '')
         if (lineage.sqlFile) form.append('sql_file', lineage.sqlFile)
         lineage.schemaFiles.forEach((file) => form.append('schema_file', file))
         lineage.result = await apiForm('/api/lineage/analyze-form', form)
@@ -59,13 +67,54 @@ export const useLineageStore = defineStore('lineage', () => {
           schema_table_filter: lineage.schemaTableFilter,
           schema_only_sql_tables: lineage.schemaOnlySqlTables ? 'true' : '',
           schema_dialect: lineage.schemaDialect,
+          ai_enabled: lineage.aiEnabled ? 'true' : '',
           schema: '',
         })
       }
+      pollLineageAIJob(lineage)
     } catch (error) {
       lineage.error = error.message
+    } finally {
+      lineage.isAnalyzing = false
     }
   }
 
-  return { lineage, resetResult, analyzeLineage }
+  async function pollLineageAIJob(target) {
+    const jobId = target.result?.ai_enrichment?.job_id
+    if (!jobId || target.result?.ai_enrichment?.status !== 'pending') return
+    target.aiPolling = true
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        await sleep(2000)
+        const enrichment = await apiGet(`/api/lineage/ai/jobs/${jobId}`)
+        if (target.result?.ai_enrichment?.job_id !== jobId) return
+        target.result.ai_enrichment = enrichment
+        if (enrichment.status !== 'pending') return
+      }
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: 'AI 辅助分析仍未完成，请稍后刷新或提高超时时间',
+        }
+      }
+    } catch (error) {
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: error.message,
+        }
+      }
+    } finally {
+      target.aiPolling = false
+    }
+  }
+
+  async function loadLineageAIStatus() {
+    lineageAIStatus.value = await apiGet('/api/lineage/ai/status')
+    return lineageAIStatus.value
+  }
+
+  return { lineage, lineageAIStatus, resetResult, analyzeLineage, loadLineageAIStatus }
 })

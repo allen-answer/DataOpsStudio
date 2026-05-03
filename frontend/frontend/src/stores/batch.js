@@ -5,7 +5,7 @@
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { apiForm } from '../api'
+import { apiForm, apiGet } from '../api'
 
 
 function makeBatchDraft() {
@@ -18,11 +18,16 @@ function makeBatchDraft() {
     schemaDialect: '',
     schemaFiles: [],
     files: [],
+    aiEnabled: false,
     result: null,
     exports: null,
     error: '',
+    isAnalyzing: false,
+    aiPolling: false,
   })
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 const BATCH_TABS = [
@@ -51,6 +56,7 @@ export const useBatchStore = defineStore('batch', () => {
   async function analyzeBatch() {
     batch.error = ''
     batch.result = null
+    batch.isAnalyzing = true
     const form = new FormData()
     form.append('dialect', batch.dialect)
     form.append('schema_datasource_id', batch.schemaDatasourceId)
@@ -58,14 +64,50 @@ export const useBatchStore = defineStore('batch', () => {
     form.append('schema_table_filter', batch.schemaTableFilter)
     form.append('schema_only_sql_tables', batch.schemaOnlySqlTables ? 'true' : '')
     form.append('schema_dialect', batch.schemaDialect)
+    form.append('ai_enabled', batch.aiEnabled ? 'true' : '')
     batch.files.forEach((file) => form.append('sql_files', file))
     batch.schemaFiles.forEach((file) => form.append('schema_file', file))
     try {
       const payload = await apiForm('/api/lineage/batch/analyze', form)
       batch.result = payload.result
       batch.exports = payload.exports
+      pollBatchAIJob(batch)
     } catch (error) {
       batch.error = error.message
+    } finally {
+      batch.isAnalyzing = false
+    }
+  }
+
+  async function pollBatchAIJob(target) {
+    const jobId = target.result?.ai_enrichment?.job_id
+    if (!jobId || target.result?.ai_enrichment?.status !== 'pending') return
+    target.aiPolling = true
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        await sleep(2000)
+        const enrichment = await apiGet(`/api/lineage/ai/jobs/${jobId}`)
+        if (target.result?.ai_enrichment?.job_id !== jobId) return
+        target.result.ai_enrichment = enrichment
+        if (enrichment.status !== 'pending') return
+      }
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: 'AI 辅助分析仍未完成，请稍后刷新或提高超时时间',
+        }
+      }
+    } catch (error) {
+      if (target.result?.ai_enrichment?.job_id === jobId) {
+        target.result.ai_enrichment = {
+          ...target.result.ai_enrichment,
+          status: 'error',
+          error: error.message,
+        }
+      }
+    } finally {
+      target.aiPolling = false
     }
   }
 

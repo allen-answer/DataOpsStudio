@@ -14,6 +14,7 @@ const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue
 
 const {
   lineage, batch, batchSelectedFileNames,
+  lineageAIStatus, loadLineageAIStatus,
   analyzeLineage, analyzeBatch,
 } = inject('app')
 
@@ -34,7 +35,10 @@ function defaultModeFromRoute(path) {
 
 const mode = ref(defaultModeFromRoute(route.path))
 watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
-onMounted(() => { mode.value = defaultModeFromRoute(route.path) })
+onMounted(() => {
+  mode.value = defaultModeFromRoute(route.path)
+  loadLineageAIStatus?.()
+})
 
 const currentModeMeta = computed(() => MODES.find(m => m.id === mode.value))
 const isSinglePipeline = computed(() => currentModeMeta.value?.pipeline === 'single')
@@ -44,6 +48,19 @@ const inputState = computed(() => isSinglePipeline.value ? lineage : batch)
 const result = computed(() => inputState.value?.result || null)
 const error = computed(() => inputState.value?.error || '')
 const report = computed(() => result.value?.report || null)
+const isAnalyzing = computed(() => Boolean(inputState.value?.isAnalyzing))
+const aiPending = computed(() => result.value?.ai_enrichment?.status === 'pending')
+const progressVisible = computed(() => isAnalyzing.value || aiPending.value)
+const progressLabel = computed(() => {
+  if (isAnalyzing.value) return '规则血缘解析中'
+  if (aiPending.value) return 'AI 辅助分析中'
+  return ''
+})
+const progressHint = computed(() => {
+  if (isAnalyzing.value) return '正在读取 SQL / 文件并生成确定性血缘结果'
+  if (aiPending.value) return '规则血缘已返回，AI 结果完成后会自动补充到 AI 辅助页'
+  return ''
+})
 
 function runAnalyze() {
   if (isSinglePipeline.value) {
@@ -83,9 +100,24 @@ function onZipChange(e) {
           <h2 class="text-2xl font-bold text-slate-800">血缘分析工作台</h2>
           <p class="muted text-sm">单脚本 / 多脚本 / ZIP 项目包统一入口；9 维报告（输入 / 输出 / 处理 / 影响 / 风险）</p>
         </div>
-        <button class="btn btn-primary" @click="runAnalyze">
+        <button class="btn btn-primary" :disabled="progressVisible" @click="runAnalyze">
           <Sparkles class="h-4 w-4" /> {{ isSinglePipeline ? '分析血缘' : '分析脚本包' }}
         </button>
+      </div>
+
+      <div v-if="progressVisible" class="mb-4 rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-violet-800">{{ progressLabel }}</p>
+            <p class="mt-1 text-xs text-violet-600">{{ progressHint }}</p>
+          </div>
+          <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-700 ring-1 ring-violet-200">
+            {{ isAnalyzing ? '解析' : 'AI' }}
+          </span>
+        </div>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-white">
+          <div class="h-full w-1/2 rounded-full bg-violet-600 motion-safe:animate-pulse"></div>
+        </div>
       </div>
 
       <!-- 4 模式 tab -->
@@ -176,9 +208,41 @@ function onZipChange(e) {
           </template>
         </SchemaPanel>
       </div>
+
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2">
+        <label class="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <input v-model="inputState.aiEnabled" type="checkbox" class="h-4 w-4 rounded border-violet-300 text-violet-600">
+          AI 辅助分析
+        </label>
+        <p class="text-xs text-slate-500">
+          <span v-if="lineageAIStatus?.enabled && lineageAIStatus?.configured">
+            provider: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.provider }}</code>
+            <span v-if="lineageAIStatus.model"> · model: <code class="rounded bg-white px-1 font-mono">{{ lineageAIStatus.model }}</code></span>
+          </span>
+          <span v-else-if="lineageAIStatus?.enabled">
+            AI provider 已设置但配置不完整，普通离线分析不受影响
+          </span>
+          <span v-else>默认关闭；只追加 ai_enrichment，不覆盖规则血缘</span>
+        </p>
+      </div>
     </div>
 
     <!-- 错误条 -->
+    <div v-if="progressVisible" class="card border-violet-100 bg-violet-50/60">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-violet-800">{{ progressLabel }}</p>
+          <p class="mt-1 text-xs text-violet-600">{{ progressHint }}</p>
+        </div>
+        <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-700 ring-1 ring-violet-200">
+          {{ isAnalyzing ? '解析' : 'AI' }}
+        </span>
+      </div>
+      <div class="mt-3 h-2 overflow-hidden rounded-full bg-white">
+        <div class="h-full w-1/2 rounded-full bg-violet-600 motion-safe:animate-pulse"></div>
+      </div>
+    </div>
+
     <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 text-status-error">
       {{ error }}
     </div>
@@ -200,6 +264,7 @@ function onZipChange(e) {
       :graph-edges="isSinglePipeline ? (result.graph_edges || []) : (result.table_edges || [])"
       :columns="isSinglePipeline ? (result.columns || []) : []"
       :insert-mappings="isSinglePipeline ? (result.insert_mappings || []) : (result.field_mappings || [])"
+      :ai-enrichment="result.ai_enrichment || {}"
     />
   </section>
 </template>

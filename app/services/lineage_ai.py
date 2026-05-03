@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+import uuid
+from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 
 logger = logging.getLogger(__name__)
+
+_AI_JOB_LOCK = threading.Lock()
+_AI_JOBS: dict[str, dict[str, Any]] = {}
+_MAX_AI_JOBS = 200
 
 
 @dataclass(frozen=True)
@@ -18,12 +25,7 @@ class LineageAIConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
-    timeout_seconds: float = 20.0
-    # 采样温度。Kimi K2.6 等模型不接受 0（会 400），必须 > 0。默认 0.2 兼顾稳定 + 兼容
-    temperature: float = 0.2
-    # 关闭 thinking（仅 Kimi K2.6 等支持 thinking 的模型有用）。默认 True 避免
-    # reasoning_content 吃掉输出 token 让 content 长时间为空。
-    disable_thinking: bool = True
+    timeout_seconds: float = 60.0
 
 
 class LineageAIProvider(Protocol):
@@ -31,6 +33,82 @@ class LineageAIProvider(Protocol):
 
     def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
         ...
+
+
+def lineage_ai_status() -> dict[str, Any]:
+    """Return non-sensitive AI provider state for the frontend."""
+    from app.services.lineage_ai_config import get_public_lineage_ai_config
+
+    status = get_public_lineage_ai_config()
+    return {
+        **status,
+        "base_url_configured": bool(status.get("base_url")),
+        "base_url": "",
+    }
+
+
+def test_lineage_ai_connection(override: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Probe the configured provider with a tiny payload.
+
+    The optional override is in-memory only. It lets the admin UI test a new
+    key/base URL before saving, while persisted secrets remain encrypted.
+    """
+    config = _config_with_override(override or {})
+    provider = _provider_for(config.provider)
+    if provider is None:
+        return {
+            "ok": False,
+            "status": "disabled",
+            "provider": config.provider or "off",
+            "model": config.model,
+            "error": "AI provider is disabled",
+        }
+
+    started = time.perf_counter()
+    try:
+        request_payload = _compact_payload_for_provider({
+            "scope": "connection-test",
+            "dialect": "",
+            "sql_excerpt": "select 1",
+            "scripts": [],
+            "summary": {"table_edge_count": 0, "column_edge_count": 0},
+            "inputs": [],
+            "outputs": [],
+            "table_edges": [],
+            "column_edges": [],
+            "warnings": [],
+            "parse_errors": [],
+            "risks": [],
+        }, config=config)
+        logger.info(
+            "lineage AI connection test provider=%s model=%s payload_chars=%s timeout=%ss",
+            config.provider,
+            config.model,
+            len(json.dumps(request_payload, ensure_ascii=False)),
+            config.timeout_seconds,
+        )
+        enrichment = provider.enrich(
+            request_payload,
+            config,
+        )
+        return {
+            "ok": True,
+            "status": "success",
+            "provider": provider.name,
+            "model": config.model,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "summary": str((enrichment or {}).get("summary") or ""),
+        }
+    except Exception as exc:
+        logger.warning("lineage AI connection test failed provider=%s error=%s", config.provider, exc)
+        return {
+            "ok": False,
+            "status": "error",
+            "provider": config.provider,
+            "model": config.model,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "error": str(exc),
+        }
 
 
 def enrich_lineage_result(
@@ -49,22 +127,34 @@ def enrich_lineage_result(
     the static analyzer.
     """
     config = _config()
-    if not enabled and config.provider == "off":
+    if not enabled:
         result["ai_enrichment"] = _disabled_enrichment()
         return result
 
     provider = _provider_for(config.provider)
     if provider is None:
-        result["ai_enrichment"] = _error_enrichment(
-            provider=config.provider,
-            model=config.model,
-            error=f"unsupported provider: {config.provider}",
-        )
+        if config.provider in {"off", "disabled", "none", ""}:
+            result["ai_enrichment"] = _disabled_enrichment()
+        else:
+            result["ai_enrichment"] = _error_enrichment(
+                provider=config.provider,
+                model=config.model,
+                error=f"unsupported provider: {config.provider}",
+            )
         return result
 
     payload = _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])
+    payload = _compact_payload_for_provider(payload, config=config)
     started = time.perf_counter()
     try:
+        payload_chars = len(json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "lineage AI enrichment start provider=%s model=%s payload_chars=%s timeout=%ss",
+            config.provider,
+            config.model,
+            payload_chars,
+            config.timeout_seconds,
+        )
         enrichment = provider.enrich(payload, config)
         if not isinstance(enrichment, dict):
             raise ValueError("provider returned non-object enrichment")
@@ -83,6 +173,116 @@ def enrich_lineage_result(
             elapsed_seconds=round(time.perf_counter() - started, 3),
         )
     return result
+
+
+def enqueue_lineage_ai_enrichment(
+    result: dict[str, Any],
+    *,
+    sql_text: str = "",
+    dialect: str | None = None,
+    scope: str = "single",
+    scripts: list[dict[str, str]] | None = None,
+    enabled: bool = False,
+) -> dict[str, Any]:
+    """Attach a pending AI job and run provider enrichment in the background."""
+    config = _config()
+    if not enabled:
+        result["ai_enrichment"] = _disabled_enrichment()
+        return result
+
+    provider = _provider_for(config.provider)
+    if provider is None:
+        if config.provider in {"off", "disabled", "none", ""}:
+            result["ai_enrichment"] = _disabled_enrichment()
+        else:
+            result["ai_enrichment"] = _error_enrichment(
+                provider=config.provider,
+                model=config.model,
+                error=f"unsupported provider: {config.provider}",
+            )
+        return result
+
+    payload = _compact_payload_for_provider(
+        _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or []),
+        config=config,
+    )
+    job_id = uuid.uuid4().hex
+    pending = {
+        "enabled": True,
+        "status": "pending",
+        "job_id": job_id,
+        "provider": provider.name,
+        "model": config.model,
+        "elapsed_seconds": 0,
+        "summary": "",
+        "suggestions": [],
+        "risks": [],
+        "column_hints": [],
+    }
+    _store_ai_job(job_id, pending)
+    thread = threading.Thread(
+        target=_run_ai_job,
+        args=(job_id, provider, config, payload),
+        name=f"lineage-ai-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    result["ai_enrichment"] = pending
+    return result
+
+
+def get_lineage_ai_job(job_id: str) -> dict[str, Any] | None:
+    with _AI_JOB_LOCK:
+        item = _AI_JOBS.get(job_id)
+        return dict(item) if item else None
+
+
+def _run_ai_job(
+    job_id: str,
+    provider: LineageAIProvider,
+    config: LineageAIConfig,
+    payload: dict[str, Any],
+) -> None:
+    started = time.perf_counter()
+    try:
+        payload_chars = len(json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "lineage AI async enrichment start job_id=%s provider=%s model=%s payload_chars=%s timeout=%ss",
+            job_id,
+            config.provider,
+            config.model,
+            payload_chars,
+            config.timeout_seconds,
+        )
+        enrichment = provider.enrich(payload, config)
+        if not isinstance(enrichment, dict):
+            raise ValueError("provider returned non-object enrichment")
+        result = _normalize_enrichment(
+            enrichment,
+            provider=provider.name,
+            model=config.model,
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+        )
+        result["job_id"] = job_id
+        _store_ai_job(job_id, result)
+    except Exception as exc:
+        logger.exception("lineage AI async enrichment failed job_id=%s provider=%s", job_id, config.provider)
+        result = _error_enrichment(
+            provider=config.provider,
+            model=config.model,
+            error=str(exc),
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+        )
+        result["job_id"] = job_id
+        _store_ai_job(job_id, result)
+
+
+def _store_ai_job(job_id: str, payload: dict[str, Any]) -> None:
+    with _AI_JOB_LOCK:
+        if len(_AI_JOBS) >= _MAX_AI_JOBS:
+            for stale_id in list(_AI_JOBS)[: max(1, _MAX_AI_JOBS // 5)]:
+                _AI_JOBS.pop(stale_id, None)
+        _AI_JOBS[job_id] = dict(payload)
 
 
 class MockLineageAIProvider:
@@ -113,43 +313,81 @@ class OpenAICompatibleLineageAIProvider:
 
     def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
         if not config.api_key:
-            raise ValueError("DATAOPS_LINEAGE_AI_API_KEY is required")
+            raise ValueError("AI API key is required")
         if not config.model:
-            raise ValueError("DATAOPS_LINEAGE_AI_MODEL is required")
+            raise ValueError("AI model is required")
         base_url = config.base_url.rstrip("/") or "https://api.openai.com/v1"
-        body: dict[str, Any] = {
+        body = {
             "model": config.model,
-            # Kimi K2.6 不接受 temperature=0（直接 400）。默认 0.2 兼容；可由 env 覆盖
-            "temperature": max(config.temperature, 0.01),
-            "response_format": {"type": "json_object"},
+            "max_tokens": _openai_compatible_max_tokens(config),
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are a SQL lineage reviewer. Return compact JSON with keys "
-                        "summary, suggestions, risks, column_hints. Do not invent tables "
-                        "or overwrite deterministic lineage; cite evidence ids when possible."
+                        "You are a SQL lineage reviewer. Return compact JSON only with keys "
+                        "summary, suggestions, risks, column_hints. Example JSON: "
+                        "{\"summary\":\"...\",\"suggestions\":[],\"risks\":[],\"column_hints\":[]}. "
+                        "Do not invent tables or overwrite deterministic lineage; cite evidence ids when possible."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
-        # Kimi K2.6 / 月之暗面默认开启 thinking，reasoning_content 会先吃掉输出 token
-        # → content 长时间为空。显式 enable_thinking=false 让它直接吐 content。
-        # 不支持该字段的服务（OpenAI / 其它兼容 API）忽略未知字段，对它们无副作用。
-        if config.disable_thinking:
-            body["enable_thinking"] = False
+        if _should_use_json_object_response_format(config):
+            body["response_format"] = {"type": "json_object"}
+        if _should_disable_kimi_thinking(config):
+            body["thinking"] = {"type": "disabled"}
         data = _post_json(
-            f"{base_url}/chat/completions",
+            _chat_completions_url(base_url),
             body,
             headers={"Authorization": f"Bearer {config.api_key}"},
             timeout=config.timeout_seconds,
         )
-        message = (data.get("choices") or [{}])[0].get("message") or {}
-        # content 优先；空时 fallback 到 reasoning_content（thinking 模式下模型把 JSON 写在
-        # reasoning 而不是 content；某些 Kimi 配置下也会出现）
-        content = message.get("content") or message.get("reasoning_content") or "{}"
-        return _loads_json_object(content)
+        return _loads_json_object(_openai_compatible_content(data))
+
+
+class AnthropicCompatibleLineageAIProvider:
+    name = "anthropic"
+
+    def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
+        if not config.api_key:
+            raise ValueError("AI API key is required")
+        if not config.model:
+            raise ValueError("AI model is required")
+        base_url = config.base_url.rstrip("/") or "https://api.anthropic.com"
+        body = {
+            "model": config.model,
+            "max_tokens": 2048,
+            "system": (
+                "You are a SQL lineage reviewer. Return only a compact JSON object with keys "
+                "summary, suggestions, risks, column_hints. Do not invent tables or overwrite "
+                "deterministic lineage; cite evidence ids when possible."
+            ),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Review this static SQL lineage result and respond with JSON only:\n"
+                                + json.dumps(payload, ensure_ascii=False)
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        data = _post_json(
+            _anthropic_messages_url(base_url),
+            body,
+            headers={
+                "x-api-key": config.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=config.timeout_seconds,
+        )
+        return _loads_json_object(_anthropic_text_content(data))
 
 
 class OllamaLineageAIProvider:
@@ -157,7 +395,7 @@ class OllamaLineageAIProvider:
 
     def enrich(self, payload: dict[str, Any], config: LineageAIConfig) -> dict[str, Any]:
         if not config.model:
-            raise ValueError("DATAOPS_LINEAGE_AI_MODEL is required")
+            raise ValueError("AI model is required")
         base_url = config.base_url.rstrip("/") or "http://localhost:11434"
         body = {
             "model": config.model,
@@ -174,16 +412,33 @@ class OllamaLineageAIProvider:
 
 
 def _config() -> LineageAIConfig:
-    provider = os.getenv("DATAOPS_LINEAGE_AI_PROVIDER", "off").strip().lower() or "off"
-    disable_thinking = os.getenv("DATAOPS_LINEAGE_AI_DISABLE_THINKING", "true").strip().lower() not in {"0", "false", "no"}
+    from app.services.lineage_ai_config import get_effective_lineage_ai_config
+
+    effective = get_effective_lineage_ai_config()
+    provider = str(effective.get("provider") or "off").strip().lower() or "off"
     return LineageAIConfig(
         provider=provider,
-        model=os.getenv("DATAOPS_LINEAGE_AI_MODEL", "").strip(),
-        base_url=os.getenv("DATAOPS_LINEAGE_AI_BASE_URL", "").strip(),
-        api_key=os.getenv("DATAOPS_LINEAGE_AI_API_KEY", "").strip(),
-        timeout_seconds=float(os.getenv("DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS", "20")),
-        temperature=float(os.getenv("DATAOPS_LINEAGE_AI_TEMPERATURE", "0.2")),
-        disable_thinking=disable_thinking,
+        model=str(effective.get("model") or "").strip(),
+        base_url=str(effective.get("base_url") or "").strip(),
+        api_key=str(effective.get("api_key") or "").strip(),
+        timeout_seconds=float(effective.get("timeout_seconds") or 60),
+    )
+
+
+def _config_with_override(override: dict[str, Any]) -> LineageAIConfig:
+    base = _config()
+    provider = str(override.get("provider") or base.provider or "off").strip().lower() or "off"
+    timeout = override.get("timeout_seconds", base.timeout_seconds)
+    try:
+        timeout_seconds = float(timeout if timeout not in (None, "") else base.timeout_seconds)
+    except (TypeError, ValueError):
+        timeout_seconds = base.timeout_seconds
+    return LineageAIConfig(
+        provider=provider,
+        model=str(override.get("model") if override.get("model") is not None else base.model).strip(),
+        base_url=str(override.get("base_url") if override.get("base_url") is not None else base.base_url).strip(),
+        api_key=str(override.get("api_key") or base.api_key).strip(),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -195,9 +450,109 @@ def _provider_for(name: str) -> LineageAIProvider | None:
         return MockLineageAIProvider()
     if normalized in {"openai", "azure", "http", "openai-compatible"}:
         return OpenAICompatibleLineageAIProvider()
+    if normalized in {"anthropic", "anthropic-compatible", "claude"}:
+        return AnthropicCompatibleLineageAIProvider()
     if normalized == "ollama":
         return OllamaLineageAIProvider()
     return None
+
+
+def _chat_completions_url(base_url: str) -> str:
+    """Accept common OpenAI-compatible URL shapes.
+
+    Users often copy either the SDK base URL (`.../v1`), the bare service URL,
+    or the full endpoint (`.../v1/chat/completions`). Normalize all of them to
+    a single chat completions endpoint to avoid accidental 404s.
+    """
+    raw = (base_url or "").strip().rstrip("/") or "https://api.openai.com/v1"
+    if raw.endswith("/chat/completions"):
+        return raw
+
+    parts = urlsplit(raw)
+    path = parts.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/v1/chat/completions"
+    else:
+        path = f"{path}/chat/completions"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _should_disable_kimi_thinking(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    base_url = (config.base_url or "").lower()
+    return model.startswith(("kimi-k2.6", "kimi-k2.5")) or "moonshot." in base_url or "kimi." in base_url
+
+
+def _is_deepseek_compatible(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    base_url = (config.base_url or "").lower()
+    return model.startswith("deepseek-") or "deepseek." in base_url
+
+
+def _is_deepseek_reasoning_model(config: LineageAIConfig) -> bool:
+    model = (config.model or "").lower()
+    return model in {"deepseek-reasoner"} or "reasoner" in model or model.endswith("-pro")
+
+
+def _should_use_json_object_response_format(config: LineageAIConfig) -> bool:
+    if _should_disable_kimi_thinking(config):
+        return False
+    base_url = (config.base_url or "").lower()
+    return _is_deepseek_compatible(config) or "api.openai.com" in base_url
+
+
+def _openai_compatible_max_tokens(config: LineageAIConfig) -> int:
+    # DeepSeek reasoning content shares the max_tokens budget with final content.
+    return 4096 if _is_deepseek_reasoning_model(config) else 1200
+
+
+def _openai_compatible_content(data: dict[str, Any]) -> str:
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = str(message.get("content") or "").strip()
+    if content:
+        return content
+    finish_reason = choice.get("finish_reason") or ""
+    reasoning = str(message.get("reasoning_content") or "")
+    if reasoning:
+        raise ValueError(
+            "provider returned empty content while reasoning_content was present"
+            + (f" (finish_reason={finish_reason})" if finish_reason else "")
+        )
+    raise ValueError("provider returned empty content" + (f" (finish_reason={finish_reason})" if finish_reason else ""))
+
+
+def _anthropic_messages_url(base_url: str) -> str:
+    """Accept Anthropic SDK base URLs and full Messages API endpoints."""
+    raw = (base_url or "").strip().rstrip("/") or "https://api.anthropic.com"
+    if raw.endswith("/messages"):
+        return raw
+
+    parts = urlsplit(raw)
+    path = parts.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = f"{path}/messages"
+    elif path in {"", "/"}:
+        path = "/v1/messages"
+    else:
+        path = f"{path}/v1/messages"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _anthropic_text_content(data: dict[str, Any]) -> str:
+    content = data.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                chunks.append(block["text"])
+        if chunks:
+            return "\n".join(chunks)
+    # Some proxies return OpenAI-like envelopes even for Anthropic-compatible
+    # routes; accepting this keeps the adapter useful behind gateways.
+    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
 
 
 def _build_payload(
@@ -213,20 +568,91 @@ def _build_payload(
     return {
         "scope": scope,
         "dialect": dialect or "",
-        "sql_excerpt": _truncate(sql_text, 4000),
+        "sql_excerpt": _truncate(sql_text, 1500),
         "scripts": [
-            {"file_name": item.get("file_name", ""), "sql_excerpt": _truncate(item.get("sql", ""), 1500)}
-            for item in scripts[:20]
+            {"file_name": item.get("file_name", ""), "sql_excerpt": _truncate(item.get("sql", ""), 600)}
+            for item in scripts[:8]
         ],
         "summary": summary or _fallback_summary(result),
-        "inputs": (report.get("inputs") if isinstance(report, dict) else []) or [],
-        "outputs": (report.get("outputs") if isinstance(report, dict) else []) or [],
-        "table_edges": _limit_list((report.get("table_edges") if isinstance(report, dict) else []) or result.get("graph_edges", []), 80),
-        "column_edges": _limit_list((report.get("column_edges") if isinstance(report, dict) else []) or result.get("insert_mappings", []), 120),
-        "warnings": _limit_list(result.get("warnings", []), 80),
-        "parse_errors": _limit_list(result.get("parse_errors", []), 80),
-        "risks": _limit_list((report.get("risks") if isinstance(report, dict) else []) or [], 80),
+        "inputs": _limit_list((report.get("inputs") if isinstance(report, dict) else []) or [], 20),
+        "outputs": _limit_list((report.get("outputs") if isinstance(report, dict) else []) or [], 20),
+        "table_edges": _limit_list((report.get("table_edges") if isinstance(report, dict) else []) or result.get("graph_edges", []), 25),
+        "column_edges": _limit_list((report.get("column_edges") if isinstance(report, dict) else []) or result.get("insert_mappings", []), 30),
+        "warnings": _limit_list(result.get("warnings", []), 15),
+        "parse_errors": _limit_list(result.get("parse_errors", []), 10),
+        "risks": _limit_list((report.get("risks") if isinstance(report, dict) else []) or [], 15),
     }
+
+
+def _compact_payload_for_provider(payload: dict[str, Any], *, config: LineageAIConfig | None = None) -> dict[str, Any]:
+    limits = _payload_limits(config)
+    compact = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    compact["sql_excerpt"] = _truncate(str(compact.get("sql_excerpt") or ""), limits["sql_excerpt"])
+    compact["scripts"] = [
+        {
+            "file_name": item.get("file_name", ""),
+            "sql_excerpt": _truncate(str(item.get("sql_excerpt") or ""), limits["script_excerpt"]),
+        }
+        for item in _limit_list(compact.get("scripts"), limits["scripts"])
+        if isinstance(item, dict)
+    ]
+    compact["inputs"] = _compact_items(compact.get("inputs"), limits["inputs"], string_limit=limits["item_string"])
+    compact["outputs"] = _compact_items(compact.get("outputs"), limits["outputs"], string_limit=limits["item_string"])
+    compact["table_edges"] = _compact_items(compact.get("table_edges"), limits["table_edges"], string_limit=limits["item_string"])
+    compact["column_edges"] = _compact_items(compact.get("column_edges"), limits["column_edges"], string_limit=limits["item_string"])
+    compact["warnings"] = _compact_items(compact.get("warnings"), limits["warnings"], string_limit=limits["item_string"])
+    compact["parse_errors"] = _compact_items(compact.get("parse_errors"), limits["parse_errors"], string_limit=limits["item_string"])
+    compact["risks"] = _compact_items(compact.get("risks"), limits["risks"], string_limit=limits["item_string"])
+    return compact
+
+
+def _payload_limits(config: LineageAIConfig | None) -> dict[str, int]:
+    if config and (_should_disable_kimi_thinking(config) or _is_deepseek_reasoning_model(config)):
+        return {
+            "sql_excerpt": 900,
+            "script_excerpt": 360,
+            "scripts": 4,
+            "inputs": 12,
+            "outputs": 12,
+            "table_edges": 14,
+            "column_edges": 18,
+            "warnings": 8,
+            "parse_errors": 6,
+            "risks": 8,
+            "item_string": 160,
+        }
+    return {
+        "sql_excerpt": 1500,
+        "script_excerpt": 600,
+        "scripts": 8,
+        "inputs": 20,
+        "outputs": 20,
+        "table_edges": 25,
+        "column_edges": 30,
+        "warnings": 15,
+        "parse_errors": 10,
+        "risks": 15,
+        "item_string": 240,
+    }
+
+
+def _compact_items(value: Any, limit: int, *, string_limit: int = 240) -> list[Any]:
+    items = _limit_list(value, limit)
+    return [_compact_value(item, depth=0, string_limit=string_limit) for item in items]
+
+
+def _compact_value(value: Any, *, depth: int, string_limit: int = 240) -> Any:
+    if isinstance(value, str):
+        return _truncate(value, string_limit)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_compact_value(item, depth=depth + 1, string_limit=string_limit) for item in value[:8]]
+    if isinstance(value, dict):
+        if depth >= 2:
+            return {str(k): _truncate(str(v), max(80, string_limit // 2)) for k, v in list(value.items())[:10]}
+        return {str(k): _compact_value(v, depth=depth + 1, string_limit=string_limit) for k, v in list(value.items())[:16]}
+    return _truncate(str(value), 160)
 
 
 def _normalize_enrichment(
@@ -236,17 +662,28 @@ def _normalize_enrichment(
     model: str,
     elapsed_seconds: float,
 ) -> dict[str, Any]:
+    suggestions = _list_of_dicts(value.get("suggestions"))
+    risks = _list_of_dicts(value.get("risks"))
+    column_hints = _list_of_dicts(value.get("column_hints"))
+    summary = str(value.get("summary") or "").strip()
+    if not summary and not suggestions and not risks and not column_hints:
+        return _error_enrichment(
+            provider=provider,
+            model=model,
+            error="provider returned empty AI enrichment",
+            elapsed_seconds=elapsed_seconds,
+        )
     return {
         "enabled": True,
         "status": "success",
         "provider": provider,
         "model": model,
         "elapsed_seconds": elapsed_seconds,
-        "summary": str(value.get("summary") or ""),
-        "suggestions": _list_of_dicts(value.get("suggestions")),
-        "risks": _list_of_dicts(value.get("risks")),
-        "column_hints": _list_of_dicts(value.get("column_hints")),
-        "raw": value if os.getenv("DATAOPS_LINEAGE_AI_INCLUDE_RAW", "false").lower() in {"1", "true", "yes"} else {},
+        "summary": summary,
+        "suggestions": suggestions,
+        "risks": risks,
+        "column_hints": column_hints,
+        "raw": value if _include_raw_enabled() else {},
     }
 
 
@@ -285,6 +722,15 @@ def _error_enrichment(
     }
 
 
+def _include_raw_enabled() -> bool:
+    try:
+        from app.services.lineage_ai_config import get_effective_lineage_ai_config
+
+        return bool(get_effective_lineage_ai_config().get("include_raw"))
+    except Exception:
+        return os.getenv("DATAOPS_LINEAGE_AI_INCLUDE_RAW", "false").lower() in {"1", "true", "yes"}
+
+
 def _post_json(
     url: str,
     body: dict[str, Any],
@@ -303,7 +749,22 @@ def _post_json(
 
 
 def _loads_json_object(content: str) -> dict[str, Any]:
-    data = json.loads(content)
+    text = (content or "{}").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        data = json.loads(text[start:end + 1])
     if not isinstance(data, dict):
         raise ValueError("provider JSON response must be an object")
     return data
@@ -325,7 +786,13 @@ def _limit_list(value: Any, limit: int) -> list[Any]:
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [dict(item) for item in value if isinstance(item, dict)]
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+        elif isinstance(item, str) and item.strip():
+            normalized.append({"message": item.strip()})
+    return normalized
 
 
 def _truncate(value: str, limit: int) -> str:

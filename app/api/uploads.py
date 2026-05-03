@@ -115,3 +115,8 @@ def upload_csv_api(file: UploadFile = File(...)):
 @router.post("/api/uploads/parquet")
 def upload_parquet_api(file: UploadFile = File(...)):
     return file_uploads.save_uploaded_parquet(file)
+
+
+@router.post("/api/uploads/lineage-script")
+def upload_lineage_script_api(file: UploadFile = File(...)):
+    return file_uploads.save_uploaded_lineage_script(file)

@@ -308,6 +308,43 @@ def test_sync_workflow_run_calls_openlineage_emitter(client, isolated_storage, m
     }]
 
 
+def test_sync_workflow_run_persists_openlineage_emit_results(client, isolated_storage, monkeypatch):
+    def fake_emit(workflow, run, *, trigger="", job_id=""):
+        return [{"type": "openlineage", "target": "http://lineage.local", "event_type": "COMPLETE", "ok": True}]
+
+    monkeypatch.setattr("app.api.workflows.emit_workflow_run_openlineage", fake_emit)
+    workflow = client.post("/api/workflows", json={
+        "name": "sync-openlineage-result",
+        "nodes": [{"id": "p", "type": "params", "config": {"parameters": [{"name": "x", "default": "1"}]}}],
+    }).json()
+    run = client.post(f"/api/workflows/{workflow['id']}/run", json={"variables": {}}).json()
+
+    detail = client.get(f"/api/workflow-runs/{run['run_id']}").json()
+
+    assert detail["integrations"]["openlineage"][0]["ok"] is True
+    assert detail["integrations"]["openlineage"][0]["target"] == "http://lineage.local"
+
+
+def test_workflow_run_openlineage_reemit_endpoint(client, isolated_storage, monkeypatch):
+    def fake_emit(workflow, run, *, trigger="", job_id=""):
+        assert trigger == "manual_reemit"
+        return [{"type": "openlineage", "target": "http://lineage.local", "event_type": "START", "ok": True}]
+
+    monkeypatch.setattr("app.api.workflow_runs.emit_workflow_run_openlineage", fake_emit)
+    workflow = client.post("/api/workflows", json={
+        "name": "reemit-openlineage",
+        "nodes": [{"id": "p", "type": "params", "config": {"parameters": [{"name": "x", "default": "1"}]}}],
+    }).json()
+    run = client.post(f"/api/workflows/{workflow['id']}/run", json={"variables": {}}).json()
+
+    response = client.post(f"/api/workflow-runs/{run['run_id']}/openlineage/emit")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    detail = client.get(f"/api/workflow-runs/{run['run_id']}").json()
+    assert detail["integrations"]["openlineage"][0]["event_type"] == "START"
+
+
 def test_async_workflow_run_calls_openlineage_emitter(client, isolated_storage, monkeypatch):
     calls: list[dict[str, object]] = []
 

@@ -45,6 +45,8 @@ const baseEdges = computed(() => {
       target,
       confidence: edge.confidence || 'high',
       transform: edge.transform || '',
+      reason: edge.reason || '',
+      source_type: edge.source_type || 'column',
       statement_index: edge.statement_index || '',
       file_name: edge.file_name || '',
       warnings: edge.warnings || [],
@@ -93,8 +95,8 @@ const visibleEdges = computed(() => {
   return baseEdges.value.filter((edge) => {
     if (confidenceFilter.value !== 'all' && edge.confidence !== confidenceFilter.value) return false
     if (onlyLowConfidence.value && edge.confidence === 'high') return false
-    if (onlyAmbiguous.value && !edge.source.startsWith('unknown.')) return false
-    if (kw && !`${edge.source} ${edge.target} ${edge.transform} ${edge.file_name}`.toLowerCase().includes(kw)) return false
+    if (onlyAmbiguous.value && edge.source_type !== 'ambiguous' && edge.source_type !== 'unknown' && !edge.source.startsWith('unknown.')) return false
+    if (kw && !`${edge.source} ${edge.target} ${edge.transform} ${edge.reason} ${edge.file_name}`.toLowerCase().includes(kw)) return false
     if (hopSet.value && (!hopSet.value.has(edge.source) || !hopSet.value.has(edge.target))) return false
     return true
   })
@@ -200,7 +202,7 @@ watch(
       </label>
       <label class="inline-flex items-center gap-1 text-[11px] text-slate-600">
         <input v-model="onlyAmbiguous" type="checkbox" class="h-3.5 w-3.5">
-        仅未知来源
+        仅歧义/未知
       </label>
     </div>
 
@@ -249,8 +251,12 @@ watch(
           <div class="mt-3 space-y-2">
             <div v-for="edge in selectedEdges" :key="edge.id" class="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
               <p class="break-all font-mono text-[11px] text-slate-700">{{ edge.source }} → {{ edge.target }}</p>
-              <p class="mt-1 text-[11px] text-slate-500">{{ edge.confidence }} · 语句 {{ edge.statement_index || '-' }}</p>
+              <p class="mt-1 text-[11px] text-slate-500">{{ edge.confidence }} · {{ edge.source_type }} · 语句 {{ edge.statement_index || '-' }}</p>
+              <p v-if="edge.reason" class="mt-1 text-[11px] text-slate-500">{{ edge.reason }}</p>
               <p v-if="edge.transform" class="mt-1 break-all font-mono text-[11px] text-slate-500">{{ edge.transform }}</p>
+              <ul v-if="edge.warnings?.length" class="mt-1 list-disc pl-4 text-[11px] text-amber-700">
+                <li v-for="(warning, i) in edge.warnings" :key="i">{{ warning.message || warning.type || warning }}</li>
+              </ul>
             </div>
           </div>
         </div>

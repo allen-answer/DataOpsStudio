@@ -111,6 +111,7 @@ def source_info(
     source_columns: list[str] = []
     source_tables: list[str] = []
     warnings: list[dict[str, str]] = []
+    reasons: list[str] = []
     confidence = "high"
     default_tables = default_tables or []
     schema = schema or {}
@@ -128,6 +129,7 @@ def source_info(
                 continue
             source_columns.append(sql(column))
             source_tables.append(alias_map.get(column.table, column.table))
+            reasons.append("显式表别名/表名")
             continue
 
         source_columns.append(sql(column))
@@ -140,8 +142,10 @@ def source_info(
                 source_tables.extend(expanded["source_tables"])
             elif default_table in subquery_tables:
                 source_tables.extend(subquery_tables[default_table])
+                reasons.append("子查询来源表展开")
             else:
                 source_tables.append(default_table)
+                reasons.append("单来源表自动归属")
         elif len(default_tables) > 1:
             matched_tables = tables_with_column(schema, default_tables, column.name)
             if len(matched_tables) == 1:
@@ -149,9 +153,11 @@ def source_info(
                 source_columns[-1] = f"{matched_table}.{column.name}"
                 source_tables.append(matched_table)
                 confidence = _weaker_confidence(confidence, "medium")
+                reasons.append("Schema 唯一匹配")
             elif len(matched_tables) > 1:
                 source_tables.extend(matched_tables)
                 confidence = _weaker_confidence(confidence, "low")
+                reasons.append("多表同名字段，来源歧义")
                 warnings.append(
                     {
                         "type": "字段歧义",
@@ -160,6 +166,7 @@ def source_info(
                 )
             else:
                 confidence = _weaker_confidence(confidence, "low")
+                reasons.append("缺少可归属的 Schema 字段")
                 warnings.append(
                     {
                         "type": "字段来源未知",
@@ -167,11 +174,22 @@ def source_info(
                     }
                 )
 
+    source_type = "column"
+    if not source_columns and not source_tables:
+        source_type = "constant"
+        reasons.append("常量/无字段来源")
+    elif any(item.get("type") == "字段歧义" for item in warnings):
+        source_type = "ambiguous"
+    elif any(item.get("type") == "字段来源未知" for item in warnings):
+        source_type = "unknown"
+
     return {
         "source_columns": _unique_strings(source_columns),
         "source_tables": _unique_strings(source_tables),
         "confidence": confidence,
         "warnings": _unique_warning_dicts(warnings),
+        "reason": "；".join(_unique_strings(reasons)),
+        "source_type": source_type,
     }
 
 
@@ -209,6 +227,8 @@ def select_columns(
                     "variables": variables_in_expression(expression, script_variables),
                     "transform": "星号展开",
                     "confidence": "high",
+                    "reason": "Schema 星号展开",
+                    "source_type": "column",
                     "warnings": [],
                 }
                 for item in expanded_star
@@ -235,6 +255,8 @@ def select_columns(
                 "variables": variables_in_expression(expression, script_variables),
                 "transform": "星号展开（未解析）",
                 "confidence": "medium",
+                "reason": "缺少 Schema 元数据，通配符未展开",
+                "source_type": "wildcard",
                 "warnings": [{
                     "type": "通配符未展开",
                     "message": "SELECT * 缺少 Schema 元数据，无法静态展开真实列；列级关系仅按表级假设",
@@ -251,6 +273,8 @@ def select_columns(
             "variables": variables_in_expression(expression, script_variables),
             "transform": transform_type(expression),
             "confidence": info["confidence"],
+            "reason": info["reason"],
+            "source_type": info["source_type"],
             "warnings": info["warnings"],
         }
         # 窗口函数额外暴露 partition_by / order_by 列（让前端能区分"分组依赖" vs 普通源）

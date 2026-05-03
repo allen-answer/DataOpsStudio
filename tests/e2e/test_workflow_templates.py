@@ -35,6 +35,7 @@ def test_templates_tab_renders_without_errors(page_with_error_capture, base_url)
     _open_templates_tab(page)
     body = page.locator("body").inner_text()
     assert ("作业流模板" in body), f"模板 tab 切换后未渲染:\n{body[:300]}"
+    assert ("模板总数" in body or "可复用作业流定义" in body), f"模板页中文文案疑似乱码或未渲染:\n{body[:500]}"
     # 至少有一个标志元素：空态文案、刷新按钮、或模板卡片
     has_marker = (
         "还没有模板" in body

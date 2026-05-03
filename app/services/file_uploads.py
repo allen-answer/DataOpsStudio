@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,13 @@ from fastapi import HTTPException, UploadFile
 
 from app.readers.csv_reader import list_columns as read_csv_columns
 from app.readers.parquet_reader import list_columns as read_parquet_columns
+from app.services._io_utils import check_zip_safety, decode_sql_content
 from app.services import excel_uploads
 
 
 _CSV_SUFFIXES = {".csv", ".tsv", ".txt"}
 _PARQUET_SUFFIXES = {".parquet", ".pq"}
+_LINEAGE_SCRIPT_SUFFIXES = {".sql", ".txt", ".zip"}
 
 
 def save_uploaded_csv(file: UploadFile) -> dict[str, Any]:
@@ -87,6 +90,56 @@ def save_uploaded_parquet(file: UploadFile) -> dict[str, Any]:
         "filename": Path(file.filename).name,
         "columns": columns,
     }
+
+
+def save_uploaded_lineage_script(file: UploadFile) -> dict[str, Any]:
+    """Persist a SQL/TXT/ZIP lineage input for workflow nodes.
+
+    Workflow definitions cannot keep a browser File object. They store the
+    returned relative path and the runner resolves it later for manual,
+    async, rerun, scheduler, and sensor-triggered executions.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Lineage script filename is required")
+    filename = Path(file.filename).name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _LINEAGE_SCRIPT_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Only .sql, .txt and .zip lineage files are supported")
+
+    saved_path = _save_upload_streaming(file, suffix)
+    try:
+        result: dict[str, Any] = {
+            "path": str(saved_path.relative_to(excel_uploads.RESULTS_DIR.parent)),
+            "filename": filename,
+            "suffix": suffix,
+            "kind": "zip" if suffix == ".zip" else "file",
+            "size_bytes": saved_path.stat().st_size,
+        }
+        if suffix == ".zip":
+            with zipfile.ZipFile(saved_path) as archive:
+                check_zip_safety(archive)
+                scripts = [
+                    item.filename.replace("\\", "/")
+                    for item in archive.infolist()
+                    if not item.is_dir() and Path(item.filename).suffix.lower() in {".sql", ".txt"}
+                ]
+            if not scripts:
+                raise HTTPException(status_code=400, detail="Zip file does not contain .sql or .txt files")
+            result["script_count"] = len(scripts)
+            result["script_names"] = scripts[:50]
+        else:
+            text = decode_sql_content(saved_path.read_bytes(), filename)
+            result["preview"] = text[:300]
+        return result
+    except HTTPException:
+        saved_path.unlink(missing_ok=True)
+        raise
+    except zipfile.BadZipFile as exc:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Invalid zip file") from exc
+    except Exception as exc:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Invalid lineage file: {exc}") from exc
 
 
 def _save_upload_streaming(file: UploadFile, suffix: str) -> Path:

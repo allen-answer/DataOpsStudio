@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models import Workflow, WorkflowStatus
+from app.models import DataSource, DatabaseType, Workflow, WorkflowStatus
 from app.services import scheduler
 
 
@@ -143,3 +143,104 @@ def test_scheduled_job_submit_uses_schedule_trigger(monkeypatch):
     }]
     entry = scheduler.scheduler_status()["entries"][0]
     assert entry["last_job_id"] == "job-1"
+
+
+def test_active_sql_sensor_registers_without_cron(monkeypatch):
+    workflow = _workflow(schedule_cron="", sensors=[{
+        "id": "ready",
+        "type": "sql",
+        "datasource_id": "ds-1",
+        "sql": "select 1 as ready",
+        "interval_seconds": 30,
+    }])
+    monkeypatch.setattr(scheduler.workflow_store, "list", lambda: [workflow])
+
+    result = scheduler.tick(datetime(2026, 5, 3, 2, 0))
+
+    assert result["status"]["entries"] == []
+    assert len(result["status"]["sensors"]) == 1
+    assert result["status"]["sensors"][0]["sensor_id"] == "ready"
+    assert result["status"]["sensors"][0]["interval_seconds"] == 30
+
+
+def test_sql_sensor_truthy_submits_workflow(monkeypatch):
+    submissions: list[dict] = []
+    workflow = _workflow(schedule_cron="", sensors=[{
+        "id": "ready",
+        "type": "sql",
+        "datasource_id": "ds-1",
+        "sql": "select 1 as ready",
+        "cooldown_seconds": 300,
+    }])
+    datasource = DataSource(
+        id="ds-1",
+        name="local",
+        db_type=DatabaseType.MYSQL,
+        host="localhost",
+        port=3306,
+    )
+    monkeypatch.setattr(scheduler.workflow_store, "get", lambda workflow_id: workflow)
+    monkeypatch.setattr(scheduler.datasource_store, "get", lambda datasource_id: datasource)
+    monkeypatch.setattr(scheduler, "fetch_rows", lambda *_args, **_kwargs: [{"ready": 1}])
+
+    def fake_submit(workflow_id, variables=None, max_retries=None, trigger="manual", **_):
+        submissions.append({
+            "workflow_id": workflow_id,
+            "variables": variables,
+            "max_retries": max_retries,
+            "trigger": trigger,
+        })
+        return {"job_id": "job-sensor", "status": "queued"}
+
+    monkeypatch.setattr(scheduler, "submit_workflow_run", fake_submit)
+
+    scheduler._run_sensor_workflow("wf-1", "ready")
+
+    assert submissions == [{
+        "workflow_id": "wf-1",
+        "variables": {},
+        "max_retries": scheduler.DEFAULT_MAX_RETRIES,
+        "trigger": "sensor",
+    }]
+    sensor_status = scheduler.scheduler_status()["sensors"][0]
+    assert sensor_status["last_job_id"] == "job-sensor"
+    assert sensor_status["last_value"] == "1"
+
+
+def test_sql_sensor_falsy_does_not_submit(monkeypatch):
+    workflow = _workflow(schedule_cron="", sensors=[{"id": "ready", "type": "sql", "datasource_id": "ds-1", "sql": "select 0"}])
+    datasource = DataSource(id="ds-1", name="local", db_type=DatabaseType.MYSQL, host="localhost", port=3306)
+    monkeypatch.setattr(scheduler.datasource_store, "get", lambda datasource_id: datasource)
+    monkeypatch.setattr(scheduler, "fetch_rows", lambda *_args, **_kwargs: [{"ready": 0}])
+    monkeypatch.setattr(scheduler, "submit_workflow_run", lambda *_, **__: (_ for _ in ()).throw(AssertionError("no submit")))
+
+    job = scheduler._evaluate_sensor_and_maybe_submit(workflow, workflow.sensors[0], datetime(2026, 5, 3, 2, 0))
+
+    assert job is None
+    assert scheduler.scheduler_status()["sensors"][0]["last_value"] == "0"
+
+
+def test_http_sensor_json_path_triggers(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, *_):
+            return b'{"ready": true}'
+
+    monkeypatch.setattr(scheduler.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+
+    matched, value = scheduler._evaluate_http_sensor({
+        "id": "api",
+        "type": "http",
+        "url": "http://sensor.local/ready",
+        "json_path": "$.ready",
+    })
+
+    assert matched is True
+    assert value is True

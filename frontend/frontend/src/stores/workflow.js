@@ -33,6 +33,8 @@ const DEFAULT_DRAFT = () => ({
   status: 'draft',           // draft | active | paused | archived
   input_assets: [],          // [{key, kind, description}]
   output_assets: [],
+  notifications: [],
+  sensors: [],
   default_variables: '',
   runtime_variables: '',
   nodes: [],
@@ -100,6 +102,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowDraft.output_assets = Array.isArray(wf?.output_assets)
       ? wf.output_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
       : []
+    workflowDraft.notifications = Array.isArray(wf?.notifications)
+      ? wf.notifications.map((item) => ({ ...item }))
+      : []
+    workflowDraft.sensors = Array.isArray(wf?.sensors)
+      ? wf.sensors.map((item) => ({ ...item }))
+      : []
     workflowDraft.default_variables = _stringifyVariables(wf?.default_variables)
     workflowDraft.runtime_variables = ''
     workflowDraft.nodes = (wf?.nodes || []).map((node) => ({
@@ -111,6 +119,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
       target_sql_override: node.config?.target_sql_override || '',
       sql: node.config?.sql || '',
       dialect: node.config?.dialect || '',
+      input_mode: node.config?.input_mode || (node.config?.script_path
+        ? (String(node.config?.script_filename || node.config?.script_path).toLowerCase().endsWith('.zip') ? 'uploaded_zip' : 'uploaded_file')
+        : 'inline_sql'),
+      script_path: node.config?.script_path || '',
+      script_filename: node.config?.script_filename || '',
+      script_kind: node.config?.script_kind || '',
+      ai_enabled: Boolean(node.config?.ai_enabled),
       method: node.config?.method || 'GET',
       url: node.config?.url || '',
       body: node.config?.body || '',
@@ -163,9 +178,21 @@ export const useWorkflowStore = defineStore('workflow', () => {
       ...(node.source_sql_override ? { source_sql_override: node.source_sql_override } : {}),
       ...(node.target_sql_override ? { target_sql_override: node.target_sql_override } : {}),
     }
-    if (node.type === 'lineage') return {
-      sql: node.sql,
-      ...(node.dialect ? { dialect: node.dialect } : {}),
+    if (node.type === 'lineage') {
+      const mode = node.input_mode || 'inline_sql'
+      const config = {
+        input_mode: mode,
+        ...(node.dialect ? { dialect: node.dialect } : {}),
+      }
+      if (node.ai_enabled) config.ai_enabled = true
+      if (mode === 'inline_sql') {
+        config.sql = node.sql || ''
+      } else {
+        config.script_path = node.script_path || ''
+        config.script_filename = node.script_filename || ''
+        config.script_kind = node.script_kind || (mode === 'uploaded_zip' ? 'zip' : 'file')
+      }
+      return config
     }
     if (node.type === 'http') return {
       url: node.url,
@@ -204,6 +231,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       output_assets: (workflowDraft.output_assets || [])
         .filter((a) => a.key && a.key.trim())
         .map((a) => ({ key: a.key.trim(), kind: a.kind || 'table', description: a.description || '' })),
+      notifications: (workflowDraft.notifications || []).map((item) => ({ ...item })),
+      sensors: (workflowDraft.sensors || []).map((item) => ({ ...item })),
       default_variables: _parseVariables(workflowDraft.default_variables),
       nodes: workflowDraft.nodes.map((node) => ({
         id: node.id,
@@ -257,7 +286,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowDraft.nodes.push({
       id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
       task_id: '', source_sql_override: '', target_sql_override: '',
-      sql: '', dialect: '',
+      sql: '', dialect: '', input_mode: 'inline_sql', script_path: '', script_filename: '', script_kind: '',
       method: 'GET', url: '', body: '', expect_status: '',
       sheets: [
         { id: 'summary', enabled: true, sheet_name: '汇总对照', source_type: 'node_output', node_id: '', dataset: 'summary', run_id: '', max_rows: 100000 },
@@ -344,6 +373,99 @@ export const useWorkflowStore = defineStore('workflow', () => {
       notice.setNotice(`已加载历史运行 ${runId.slice(0, 8)}`)
     } catch (error) {
       notice.setNotice(`加载失败：${_toErrorMessage(error)}`)
+    }
+  }
+
+  async function reemitWorkflowRunOpenLineage(runId) {
+    const notice = useNoticeStore()
+    if (!runId) return null
+    try {
+      const payload = await apiJson(`/api/workflow-runs/${runId}/openlineage/emit`, 'POST', {})
+      if (workflowResult.value?.run_id === runId) {
+        workflowResult.value.integrations = workflowResult.value.integrations || {}
+        workflowResult.value.integrations.openlineage = payload.results || []
+      }
+      notice.setNotice(payload.ok ? 'OpenLineage 已重发' : 'OpenLineage 重发完成，但存在失败项')
+      return payload
+    } catch (error) {
+      notice.setNotice(`OpenLineage 重发失败：${_toErrorMessage(error)}`)
+      return null
+    }
+  }
+
+  async function loadWorkflowTemplates() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    try {
+      workflowTemplates.value = await apiGet('/api/workflow-templates')
+      bootstrap.state.workflowTemplates = workflowTemplates.value
+    } catch (error) {
+      notice.setNotice(`加载模板失败：${_toErrorMessage(error)}`)
+    }
+  }
+
+  async function saveWorkflowAsTemplate() {
+    const notice = useNoticeStore()
+    if (selectedWorkflowId.value === 'new') {
+      notice.setNotice('请先保存作业流，再沉淀为模板')
+      return null
+    }
+    const defaultName = `${workflowDraft.name || currentWorkflow.value?.name || 'workflow'} 模板`
+    const name = prompt('模板名称', defaultName)
+    if (!name) return null
+    try {
+      const template = await apiJson(`/api/workflows/${selectedWorkflowId.value}/template`, 'POST', {
+        name,
+        description: workflowDraft.description || currentWorkflow.value?.description || '',
+        category: workflowDraft.project || currentWorkflow.value?.project || '',
+        tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags : [],
+      })
+      const bootstrap = useBootstrapStore()
+      workflowTemplates.value = [template, ...workflowTemplates.value.filter((item) => item.id !== template.id)]
+      bootstrap.state.workflowTemplates = workflowTemplates.value
+      notice.setNotice('作业流模板已保存')
+      return template
+    } catch (error) {
+      notice.setNotice(`保存模板失败：${_toErrorMessage(error)}`)
+      return null
+    }
+  }
+
+  async function createWorkflowFromTemplate(templateId, options = {}) {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    const template = workflowTemplates.value.find((item) => item.id === templateId)
+    const defaultName = options.name || `${template?.workflow?.name || template?.name || 'workflow'} 副本`
+    const name = options.skipPrompt ? defaultName : prompt('新作业流名称', defaultName)
+    if (!name) return null
+    try {
+      const workflow = await apiJson(`/api/workflow-templates/${templateId}/instantiate`, 'POST', {
+        name,
+        project: options.project || '',
+        owner: options.owner || '',
+        status: options.status || 'draft',
+      })
+      bootstrap.state.workflows.unshift(workflow)
+      selectWorkflow(workflow.id)
+      notice.setNotice('已从模板创建作业流')
+      return workflow
+    } catch (error) {
+      notice.setNotice(`从模板创建失败：${_toErrorMessage(error)}`)
+      return null
+    }
+  }
+
+  async function deleteWorkflowTemplate(templateId) {
+    const notice = useNoticeStore()
+    if (!confirm('确认删除这个作业流模板？不会影响已创建的作业流。')) return
+    try {
+      await apiJson(`/api/workflow-templates/${templateId}`, 'DELETE')
+      const bootstrap = useBootstrapStore()
+      workflowTemplates.value = workflowTemplates.value.filter((item) => item.id !== templateId)
+      bootstrap.state.workflowTemplates = workflowTemplates.value
+      notice.setNotice('模板已删除')
+    } catch (error) {
+      notice.setNotice(`删除模板失败：${_toErrorMessage(error)}`)
     }
   }
 
@@ -534,7 +656,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     addParameter, removeParameter,
     SHEET_TEMPLATES,
     // run history
-    loadWorkflowRunHistory, loadAllWorkflowRuns, loadWorkflowRunDetail,
+    loadWorkflowRunHistory, loadAllWorkflowRuns, loadWorkflowRunDetail, reemitWorkflowRunOpenLineage,
+    loadWorkflowTemplates, saveWorkflowAsTemplate, createWorkflowFromTemplate, deleteWorkflowTemplate,
     // CRUD + run handlers
     selectWorkflow, saveWorkflow, deleteWorkflow,
     runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,

@@ -207,12 +207,11 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 目标：用户有 AI 能力时，提升语义理解和展示质量。
 
-- **Provider 抽象**：不绑定具体厂商，统一 `LineageAIProvider` 接口。支持 OpenAI / Azure OpenAI / 私有大模型 / Ollama / 本地模型。
-- **默认关闭**：通过配置（`config/lineage_ai.json` 或 env）启用。
-- **AI 只做语义增强，不作为血缘事实来源**。AI 输入必须基于系统确定性解析结果 + SQL 注释 + 表名/字段名；AI 输出落到 `ai_enrichment` 字段，不覆盖原始 lineage。
-- **每条 AI 结论必须有** `confidence` / `reason` / `evidence` 三元组。
-- **AI 异常不能影响普通血缘分析**——provider 调用失败时静默降级，规则结果照常输出。
-- **前端明确标识"AI 辅助判断"**——徽章 + 颜色区分规则结论与 AI 结论。
+- **Provider 抽象** ✅：不绑定具体厂商，统一 `LineageAIProvider` 接口。支持 `mock` / OpenAI-compatible（含 Azure / 私有大模型）/ Ollama。
+- **默认关闭** ✅：通过 env 启用：`DATAOPS_LINEAGE_AI_PROVIDER`、`DATAOPS_LINEAGE_AI_MODEL`、`DATAOPS_LINEAGE_AI_BASE_URL`、`DATAOPS_LINEAGE_AI_API_KEY`、`DATAOPS_LINEAGE_AI_TIMEOUT_SECONDS`。前端 `/api/lineage/ai/status` 只返回 provider/model/configured 等非敏感状态，不返回 key。
+- **AI 只做语义增强，不作为血缘事实来源** ✅：AI 输入基于确定性解析结果；输出只落 `ai_enrichment`，不覆盖 graph_edges / column_edges / report。
+- **AI 异常不能影响普通血缘分析** ✅：provider 调用失败时返回 `ai_enrichment.status='error'`，规则结果照常输出。
+- **前端明确标识"AI 辅助判断"** ✅：统一血缘入口可勾选“AI 辅助分析”，报告页新增“AI 辅助”tab，展示 summary / suggestions / risks / column_hints。
 
 #### 轨道 B：离线确定性分析增强（无 AI 也能用）
 
@@ -270,6 +269,15 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 ### 还可以做（未排期）
 
 - ~~前端状态管理（视情况引入 Pinia）~~ 渐进引入中：8 个 store 已上 —— `notice / datasource / task / workflow / lineage / batch / history / bootstrap`。`App.vue` 顶部 `useXxxStore() + storeToRefs`，`provide('app')` 仍 backward compat 把 store 字段平铺给 inject('app')。`useBootstrapStore.state` 是全局列表（datasources/tasks/workflows/drivers/dbTypes/history/historySheets）单一数据源。handlers（saveTask / runTask / saveWorkflow / loadBootstrap 业务联动 等）仍在 App.vue —— 它们跨 store 协调（默认 datasource / task selection / fillDraft 联动），后续可继续迁。
+- ~~任务系统增强（job TTL、失败重试）~~ ✅ —— `services/jobs.py` 支持 TTL 清理、失败重试、取消。
+- ~~调度器（cron/sensor）+ 通知（企业微信 / 邮件 / Webhook）~~ ✅ —— cron 已接 APScheduler；sensor MVP 支持 SQL sensor（只读 SELECT/WITH，首行首列 truthy 触发）和 HTTP sensor（status/json_path 条件触发），状态在 `/api/scheduler/status.sensors`；通知含普通 webhook/企微/email，OpenLineage webhook 见下。
+- 多项目空间 + 用户权限 + 审计日志
+- ~~数据源连接池~~ ✅ —— `app/dbclients/pool.py`：每 datasource_id 一个 LIFO 池，`max_size` 默认 4，`idle_seconds` 默认 600（连接空闲超时丢弃）。`fetch_rows` / `fetch_columns` / `iter_rows` 改走 `pool.borrow(source, factory)` context manager；MySQL 路径 acquire 时 `SELECT 1` ping 验活，失败弃池重建。`extra.disable_pool=true` / 改 host/port 等关键字段时池自动失效（`_datasource_fingerprint`）。datasource API `update` / `delete` 同步调 `pool.invalidate(id)`。新增 7 个 test case 覆盖复用 / TTL 过期 / ping 失败 / 异常 broken / fingerprint change / disable_pool。
+- ~~CSV / Parquet 数据对比~~ ✅ —— `app/readers/csv_reader.py`（stdlib csv，UTF-8/GBK 编码 + 自定义 delimiter + header_row 跳元数据）+ `app/readers/parquet_reader.py`（pyarrow 后端，支持 columns subset）。`SourceKind` 加 `csv / parquet`，`CompareTask` 加 `source_file_path / source_file_encoding / source_csv_delimiter`（CSV 用）通用文件路径字段，Parquet 复用 file_path。`/api/uploads/csv` + `/api/uploads/parquet` 两个 endpoint，`/api/preview/columns` 同步加 csv / parquet kind。`stream_compare` 互斥规则扩展到所有文件源（Excel / CSV / Parquet）。`pyarrow>=14.0` 加进 requirements。23 个 reader 测试（含 11 新增）全过。
+- ~~字段级血缘 schema-aware 降级~~ ✅ —— `app/lineage/columns.py:select_columns` 加规则：SELECT * / SELECT t.* 在缺 schema 元数据时不再走 `source_info`（会输出空源表、伪 high），改为生成单条 `confidence='medium' + transform='星号展开（未解析）' + warning '通配符未展开'` 的占位条目，`source_tables` 锁定到 SELECT 所属表（按 alias map 解 t.*）。带 schema 时仍 high 展开，行为不变。多表 unqualified column 缺 schema 已经走 source_info 降 low+warning（既有）。新增 4 个 test case 覆盖。
+- 字段级血缘（column-level lineage 独立深化，Phase 7 双轨之外）
+- ~~workflow 模板能力 + 端到端测试 + 乱码清理~~ ✅ —— 模板 CRUD / 保存现有作业流为模板 / 从模板实例化 / 前端模板页 / e2e 中文文案回归均已覆盖。
+- ~~OpenLineage event 输出 + webhook emitter~~ ✅ —— `build_workflow_run_events()` 纯函数保留；workflow run 完成后可按 `Workflow.notifications` 中 `type=openlineage|openlineage_webhook` 或 `DATAOPS_OPENLINEAGE_WEBHOOK_URL` 自动逐 event POST。配置字段：`url` / `events` / `namespace` / `timeout_seconds`。运行详情记录 `run.integrations.openlineage`，并支持 `/api/workflow-runs/{run_id}/openlineage/emit` 手动重发。
 - 任务系统增强（job TTL、失败重试）
 - ~~调度器 cron + 通知（企业微信 / 邮件 / Webhook）~~ ✅ —— `app/services/scheduler.py` 接 APScheduler `BackgroundScheduler`：每个 `status=active` 且 `schedule_cron` 非空的 workflow 自动注册 `CronTrigger`，定时 sync 任务重读 `workflow_store` 增 / 删 / 改 cron，APScheduler 不在环境时回落到原 polling loop（老 image / 离线测试可继续跑）。`app/services/notifier.py` 三类 channel 已上：`webhook` / `wecom` / `email`（SMTP），workflow run finish 自动 dispatch。
 - ~~调度器 sensor / 事件触发器~~ ✅ —— `app/services/sensors.py`：`file`（exists / newer_than + check_size 防 touch）+ `workflow_success`（监听上游 workflow 成功 run，按 run_id 去重避免重复 fire）两类。`Workflow.triggers: list[dict]` 配置，`scheduler._tick_sensors()` 每个 interval 轮询 + active workflow 命中即提交 `submit_workflow_run(trigger="sensor:<type>")`。12 个新 test case（`tests/test_sensors.py`）+ 调度器集成回归。

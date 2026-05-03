@@ -78,6 +78,7 @@ class Workflow(BaseModel):
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
+    sensors: list[dict[str, Any]] = Field(default_factory=list)
     # Sensor 触发器：每项 {type: "file"|"workflow_success", config: {...}, enabled, name}
     # 调度器轮询 evaluate；命中即提交 workflow run
     triggers: list[dict[str, Any]] = Field(default_factory=list)
@@ -97,6 +98,7 @@ class WorkflowCreate(BaseModel):
     input_assets: list[AssetRef] = Field(default_factory=list)
     output_assets: list[AssetRef] = Field(default_factory=list)
     notifications: list[dict[str, Any]] = Field(default_factory=list)
+    sensors: list[dict[str, Any]] = Field(default_factory=list)
     triggers: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -198,6 +200,8 @@ class WorkflowRun(BaseModel):
     error: str = ""
     # 局部重跑：记录起源。None = 全量执行；否则指向上一次 run + 起跑节点。
     resumed_from: dict[str, str] | None = None
+    # 外部集成的发送/回调结果。例：OpenLineage webhook emit result。
+    integrations: dict[str, Any] = Field(default_factory=dict)
 
     @computed_field
     @property
