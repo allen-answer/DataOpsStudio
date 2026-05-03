@@ -82,10 +82,10 @@ def run_task_api(task_id: str):
 
 
 @router.post("/api/tasks/{task_id}/run-async", response_model=JobInfo)
-def run_task_async_api(task_id: str):
+def run_task_async_api(task_id: str, payload: dict[str, object] | None = Body(None)):
     if task_store.get(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return submit_task_run(task_id)
+    return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
 
 
 @router.post("/api/tasks/{task_id}/preview", response_model=PreviewRowsResponse)

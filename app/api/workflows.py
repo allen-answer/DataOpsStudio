@@ -68,8 +68,9 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
 def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
     if workflow_store.get(workflow_id) is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    variables = coerce_string_dict((payload or {}).get("variables"))
-    return submit_workflow_run(workflow_id, variables)
+    payload = payload or {}
+    variables = coerce_string_dict(payload.get("variables"))
+    return submit_workflow_run(workflow_id, variables, max_retries=payload.get("max_retries"))
 
 
 @router.get("/api/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])

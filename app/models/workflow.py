@@ -191,14 +191,18 @@ class JobInfo(BaseModel):
     """异步任务（compare 或 workflow run）的运行时状态。和 jobs.py 内部
     dict 结构保持对齐 —— 改字段记得两处一起改。"""
     job_id: str
-    kind: Literal["task", "workflow"]
+    kind: Literal["compare", "task", "workflow"]
     task_id: str = ""
     workflow_id: str = ""
     variables: dict[str, str] = Field(default_factory=dict)
     status: Literal["queued", "running", "cancelling", "success", "failed", "cancelled"]
+    stage: str = ""
     message: str = ""
     created_at: str = ""
     updated_at: str = ""
+    expires_at: str = ""
+    retry_count: int = 0
+    max_retries: int = 0
     result: dict[str, Any] | None = None
     error: str = ""
     cancel_requested: bool = False
