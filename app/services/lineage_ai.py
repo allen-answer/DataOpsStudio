@@ -66,17 +66,20 @@ def enrich_lineage_result(
     the static analyzer.
     """
     config = _config()
-    if not enabled and config.provider == "off":
+    if not enabled:
         result["ai_enrichment"] = _disabled_enrichment()
         return result
 
     provider = _provider_for(config.provider)
     if provider is None:
-        result["ai_enrichment"] = _error_enrichment(
-            provider=config.provider,
-            model=config.model,
-            error=f"unsupported provider: {config.provider}",
-        )
+        if config.provider in {"off", "disabled", "none", ""}:
+            result["ai_enrichment"] = _disabled_enrichment()
+        else:
+            result["ai_enrichment"] = _error_enrichment(
+                provider=config.provider,
+                model=config.model,
+                error=f"unsupported provider: {config.provider}",
+            )
         return result
 
     payload = _build_payload(result, sql_text=sql_text, dialect=dialect, scope=scope, scripts=scripts or [])

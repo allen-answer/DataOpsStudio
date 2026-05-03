@@ -43,6 +43,26 @@ def test_lineage_ai_mock_provider_is_additive(monkeypatch):
     assert enriched["ai_enrichment"]["suggestions"]
 
 
+def test_lineage_ai_provider_configured_but_ui_switch_off(monkeypatch):
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "mock")
+    result = analyze_sql_lineage("insert into dwd.t select id from ods.s", dialect="mysql")
+
+    enriched = lineage_ai.enrich_lineage_result(result, sql_text="select 1", enabled=False)
+
+    assert enriched["ai_enrichment"]["enabled"] is False
+    assert enriched["ai_enrichment"]["status"] == "disabled"
+
+
+def test_lineage_ai_ui_switch_on_but_provider_off(monkeypatch):
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_PROVIDER", "off")
+    result = analyze_sql_lineage("insert into dwd.t select id from ods.s", dialect="mysql")
+
+    enriched = lineage_ai.enrich_lineage_result(result, sql_text="select 1", enabled=True)
+
+    assert enriched["ai_enrichment"]["enabled"] is False
+    assert enriched["ai_enrichment"]["status"] == "disabled"
+
+
 def test_lineage_ai_openai_compatible_provider(monkeypatch):
     captured: dict[str, object] = {}
 
