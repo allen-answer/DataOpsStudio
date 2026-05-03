@@ -300,7 +300,8 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 - **G6 稳定**：现有所有交互（搜索 / 跳数 / 角色 + 边类型 + 可信度 + 脚本 + Schema 筛选 / 表视图 / combo 折叠 / 大图 300 截断）保持不变。
 - **Cytoscape 实验**：差异化卖点是 compound parent 节点 —— 每个 schema 是一个 dashed 紫色容器，table 节点 `data.parent` 落入容器，比 combo 折叠更直观。可关闭 "Schema 容器" 开关回退平铺。
-- **Cytoscape 暂未实现**：表视图（图谱 > 100 节点的逃生通道）、minimap、combo aggregated edge 的 `×N` 标签（compound 不需要）。
+- **Cytoscape 已补完**：表视图（>100 节点逃生通道，复用 composable 的 `tableRows`，行可点击回跳到 graph 视图聚焦该节点） + 路径高亮（toggle 进路径模式 → 依次点选 from/to → BFS 算最短路径，路径上节点 / 边紫色高亮，其余 opacity=0.18 半透明，无路径时 from 红框提示）。
+- **Cytoscape 暂未实现**：minimap、combo aggregated edge 的 `×N` 标签（compound 不需要）。
 - **真实大图验证**：等用户拿真实 Oracle 多脚本 lineage 结果（300+ 节点）跑两个引擎对比筛选 / 聚焦 / compound 容器表现，再决定是否把 Cytoscape 升为默认 / 替换 G6。
 - **不替换 G6**：路径稳定，先共存。Cytoscape 失败 / 大图卡顿，用户可一键切回 G6。
 

@@ -40,8 +40,8 @@ const {
   schemas, scripts, edgeTypes, confidences,
   schemaCounts, scriptCounts,
   searchMatches, filteredScriptList,
-  largeGraphLimited,
-  effectiveFocalId, cyData,
+  largeGraphLimited, tableSuggested, tableRows,
+  effectiveFocalId, cyData, cyAdjacency,
   selectedNodeDetails, selectedEdgeDetails,
   toggleSet, nextMatch, clearCollapsedScripts, basename,
 } = lineage
@@ -51,6 +51,10 @@ const layoutDir = ref(initialPrefs.layoutDir === 'TB' ? 'TB' : 'LR')
 const spacingPreset = ref(SPACING_PRESETS[initialPrefs.spacingPreset] ? initialPrefs.spacingPreset : 'normal')
 const compoundBySchema = ref(initialPrefs.compoundBySchema !== false) // 默认开启 compound
 const scriptListOpen = ref(false)
+const viewMode = ref('graph')          // 'graph' | 'table' —— >100 节点逃生通道
+const pathMode = ref(false)            // 路径高亮模式：选 from / to 两节点
+const pathFrom = ref('')
+const pathTo = ref('')
 let cy = null
 
 // 把 cyData 转成 cytoscape elements 格式：
@@ -177,6 +181,11 @@ const cyStyle = [
       'line-style': 'dashed',
     },
   },
+  // 路径模式：路径上 nodes/edges 高亮，其它半透明
+  { selector: '.path-dim',       style: { 'opacity': 0.18 } },
+  { selector: '.path-highlight', style: { 'border-color': '#7c3aed', 'border-width': 3 } },
+  { selector: 'edge.path-highlight', style: { 'line-color': '#7c3aed', 'target-arrow-color': '#7c3aed', 'width': 3 } },
+  { selector: '.path-endpoint',  style: { 'border-color': '#ef4444', 'border-width': 4 } },
 ]
 
 const layoutConfig = computed(() => ({
@@ -196,6 +205,8 @@ const renderCy = async () => {
     cy.destroy()
     cy = null
   }
+  // 表视图模式不需要 cytoscape graph 实例
+  if (viewMode.value !== 'graph') return
   if (!cyElements.value.length) return
   cy = cytoscape({
     container: cyEl.value,
@@ -208,14 +219,97 @@ const renderCy = async () => {
   })
   cy.on('tap', 'node[!isParent]', (evt) => {
     const id = evt.target.id()
+    if (pathMode.value) {
+      // 路径模式：第一次点选 from，第二次点选 to，再点重置
+      if (!pathFrom.value) {
+        pathFrom.value = id
+      } else if (!pathTo.value && id !== pathFrom.value) {
+        pathTo.value = id
+        applyPathHighlight()
+      } else {
+        resetPathHighlight()
+        pathFrom.value = id
+      }
+      return
+    }
     selectedItem.value = { type: 'node', id }
     clickedFocalId.value = id
   })
   cy.on('tap', 'edge', (evt) => {
+    if (pathMode.value) return
     const id = evt.target.id()
     selectedItem.value = { type: 'edge', id }
   })
 }
+
+// 路径高亮：从 cyAdjacency 里 BFS 算最短路径，避开 cytoscape elements
+// 因为 compound parent 节点会干扰内置 BFS 的"邻居"语义。算出节点链后
+// 用 cy.$id 拿元素再 addClass。
+function shortestPath(from, to) {
+  const { out } = cyAdjacency.value
+  if (from === to) return [from]
+  const prev = new Map()
+  const visited = new Set([from])
+  const queue = [from]
+  while (queue.length) {
+    const cur = queue.shift()
+    if (cur === to) {
+      const chain = [to]
+      let walker = to
+      while (prev.has(walker)) {
+        walker = prev.get(walker)
+        chain.unshift(walker)
+      }
+      return chain
+    }
+    for (const nb of out.get(cur) || []) {
+      if (visited.has(nb)) continue
+      visited.add(nb)
+      prev.set(nb, cur)
+      queue.push(nb)
+    }
+  }
+  return null
+}
+
+function applyPathHighlight() {
+  if (!cy || !pathFrom.value || !pathTo.value) return
+  const chain = shortestPath(pathFrom.value, pathTo.value)
+  cy.elements().removeClass('path-dim path-highlight path-endpoint')
+  if (!chain) {
+    // 没有路径：from 标 endpoint 红框，其它什么都不做
+    const fromEl = cy.$id(pathFrom.value)
+    if (fromEl.nonempty()) fromEl.addClass('path-endpoint')
+    return
+  }
+  cy.elements().addClass('path-dim')
+  for (let i = 0; i < chain.length; i++) {
+    const node = cy.$id(chain[i])
+    if (node.nonempty()) node.removeClass('path-dim').addClass('path-highlight')
+    if (i + 1 < chain.length) {
+      const edge = cy.edges(`[source = "${chain[i]}"][target = "${chain[i + 1]}"]`)
+      if (edge.nonempty()) edge.removeClass('path-dim').addClass('path-highlight')
+    }
+  }
+  cy.$id(pathFrom.value).addClass('path-endpoint')
+  cy.$id(pathTo.value).addClass('path-endpoint')
+}
+
+function resetPathHighlight() {
+  pathFrom.value = ''
+  pathTo.value = ''
+  if (cy) cy.elements().removeClass('path-dim path-highlight path-endpoint')
+}
+
+function togglePathMode() {
+  pathMode.value = !pathMode.value
+  if (!pathMode.value) resetPathHighlight()
+}
+
+const pathChainNames = computed(() => {
+  if (!pathFrom.value || !pathTo.value) return null
+  return shortestPath(pathFrom.value, pathTo.value)
+})
 
 const exportPng = () => {
   if (!cy) return
@@ -261,6 +355,22 @@ onBeforeUnmount(() => cy?.destroy())
         <input v-model="searchText" class="min-w-[220px] flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="搜索表名">
         <button class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50" @click="nextMatch">
           下一个 {{ searchMatches.length ? `${(matchIndex % searchMatches.length) + 1}/${searchMatches.length}` : '' }}
+        </button>
+        <div class="flex rounded-lg bg-slate-100 p-1 text-sm font-semibold text-slate-600" title="视图模式">
+          <button class="rounded-md px-3 py-1.5" :class="viewMode === 'graph' ? 'bg-white text-violet-600 shadow-sm' : ''" @click="viewMode = 'graph'">图</button>
+          <button class="rounded-md px-3 py-1.5" :class="viewMode === 'table' ? 'bg-white text-violet-600 shadow-sm' : ''" @click="viewMode = 'table'">表</button>
+        </div>
+        <button
+          v-if="viewMode === 'graph'"
+          type="button"
+          class="rounded-lg border px-3 py-2 text-sm font-bold transition"
+          :class="pathMode
+            ? 'border-violet-300 bg-violet-50 text-violet-700'
+            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
+          :title="pathMode ? '路径模式：依次选 from / to 节点' : '开启路径高亮模式'"
+          @click="togglePathMode"
+        >
+          路径高亮 {{ pathMode ? 'ON' : 'OFF' }}
         </button>
         <div class="flex rounded-lg bg-slate-100 p-1 text-sm font-semibold text-slate-600">
           <button class="rounded-md px-3 py-1.5" :class="focusMode === 'neighborhood' ? 'bg-white text-violet-600 shadow-sm' : ''" @click="focusMode = 'neighborhood'">周边</button>
@@ -363,14 +473,82 @@ onBeforeUnmount(() => cy?.destroy())
         <span>当前图超过 300 个节点，已先渲染前 300 个节点；可搜索或展开全图。</span>
         <button class="font-bold text-amber-900" @click="largeGraphExpanded = true">展开全图</button>
       </div>
+      <div v-if="tableSuggested && viewMode === 'graph'" class="flex items-center justify-between rounded-lg bg-violet-50 px-3 py-2 text-sm text-violet-800">
+        <span>节点超过 100，建议切到「表」视图做影响分析更清晰。</span>
+        <button class="font-bold text-violet-900 hover:underline" @click="viewMode = 'table'">切到表视图</button>
+      </div>
+      <!-- 路径模式状态提示 -->
+      <div v-if="pathMode" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-violet-50 px-3 py-2 text-sm text-violet-800">
+        <span>
+          <strong>路径模式</strong> ·
+          <template v-if="!pathFrom">点选起点节点</template>
+          <template v-else-if="!pathTo">起点：<code class="rounded bg-white px-1.5 py-0.5 font-mono">{{ pathFrom }}</code> · 再点选终点</template>
+          <template v-else-if="pathChainNames">
+            <code class="rounded bg-white px-1.5 py-0.5 font-mono">{{ pathFrom }}</code>
+            →
+            <code class="rounded bg-white px-1.5 py-0.5 font-mono">{{ pathTo }}</code>
+            · 经过 {{ pathChainNames.length - 1 }} 跳
+          </template>
+          <template v-else>
+            <code class="rounded bg-white px-1.5 py-0.5 font-mono">{{ pathFrom }}</code>
+            到
+            <code class="rounded bg-white px-1.5 py-0.5 font-mono">{{ pathTo }}</code>
+            <span class="ml-1 text-rose-700">无可达路径</span>
+          </template>
+        </span>
+        <button v-if="pathFrom" class="font-bold text-violet-900 hover:underline" @click="resetPathHighlight">重置选择</button>
+      </div>
     </div>
     <div class="grid lg:grid-cols-[minmax(0,1fr)_340px]">
       <div>
-        <div v-if="!cyElements.length" class="p-6 text-center text-sm text-slate-500">
-          <p>当前过滤条件下没有可绘制的血缘边</p>
-          <p class="mt-1 text-[12px] text-slate-400">放宽顶部的角色 / 边类型 / 可信度筛选，或清空搜索词后重试。</p>
+        <!-- Graph 视图 -->
+        <div v-if="viewMode === 'graph'">
+          <div v-if="!cyElements.length" class="p-6 text-center text-sm text-slate-500">
+            <p>当前过滤条件下没有可绘制的血缘边</p>
+            <p class="mt-1 text-[12px] text-slate-400">放宽顶部的角色 / 边类型 / 可信度筛选，或清空搜索词后重试。</p>
+          </div>
+          <div ref="cyEl" class="h-[520px] w-full"></div>
         </div>
-        <div ref="cyEl" class="h-[520px] w-full"></div>
+        <!-- 表视图（>100 节点逃生通道）—— 复用 composable 的 tableRows -->
+        <div v-else class="max-h-[520px] overflow-auto">
+          <table class="w-full text-sm">
+            <thead class="sticky top-0 bg-slate-100 text-left text-xs font-bold uppercase tracking-wider text-slate-600">
+              <tr>
+                <th class="px-3 py-2">表</th>
+                <th class="px-3 py-2">Schema</th>
+                <th class="px-3 py-2">方向</th>
+                <th class="px-3 py-2">跳数</th>
+                <th class="px-3 py-2 text-right">上游</th>
+                <th class="px-3 py-2 text-right">下游</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in tableRows" :key="row.id"
+                class="cursor-pointer border-b border-slate-100 hover:bg-violet-50/40"
+                @click="clickedFocalId = row.id; selectedItem = { type: 'node', id: row.id }; viewMode = 'graph'"
+              >
+                <td class="px-3 py-2 font-mono text-slate-800">{{ row.id }}</td>
+                <td class="px-3 py-2 text-slate-600">{{ row.schema }}</td>
+                <td class="px-3 py-2">
+                  <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold"
+                    :class="row.direction === '聚焦' ? 'bg-violet-100 text-violet-700'
+                          : row.direction === '上游' ? 'bg-emerald-100 text-emerald-700'
+                          : row.direction === '下游' ? 'bg-amber-100 text-amber-700'
+                          : 'text-slate-600'">{{ row.direction }}</span>
+                </td>
+                <td class="px-3 py-2 text-slate-600">{{ row.hops }}</td>
+                <td class="px-3 py-2 text-right text-slate-600">{{ row.upstream }}</td>
+                <td class="px-3 py-2 text-right text-slate-600">{{ row.downstream }}</td>
+              </tr>
+              <tr v-if="!tableRows.length">
+                <td colspan="6" class="p-6 text-center text-slate-500">
+                  没有命中节点 — 调整左上角的过滤条件，或在顶部搜索框输入表名重试
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <aside class="border-t border-slate-200 bg-white p-4 text-sm lg:border-l lg:border-t-0">
         <h3 class="mb-3 font-bold text-slate-800">详情</h3>
