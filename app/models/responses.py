@@ -118,6 +118,7 @@ class LineageAnalyzeResult(BaseModel):
     parse_errors: list[dict[str, str]] = Field(default_factory=list)
     warnings: list[Any] = Field(default_factory=list)
     statements: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_lineage: dict[str, Any] = Field(default_factory=dict)
 
 
 class LineageBatchSummary(BaseModel):

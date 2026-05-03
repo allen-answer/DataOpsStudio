@@ -23,6 +23,7 @@ from app.lineage.aggregation import (
 )
 from app.lineage.clauses import filters, group_by, joins, unions
 from app.lineage.roles import identify_table_roles as _identify_table_roles
+from app.lineage.semantic import build_semantic_lineage as _build_semantic_lineage
 from app.lineage.columns import (
     derived_column_map, derived_table_map, select_columns,
 )
@@ -96,7 +97,7 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     flat_tables = unique_items(item for analysis in analyses for item in analysis["tables"])
     flat_insert_mappings = statement_indexed_items(analyses, "insert_mappings")
     table_roles = _identify_table_roles(flat_tables, target_summary, flat_insert_mappings)
-    return {
+    base_result = {
         "statement_count": len(analyses),
         "tables": flat_tables,
         "columns": [column for analysis in analyses for column in analysis["columns"]],
@@ -118,6 +119,8 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
         "warnings": warnings,
         "statements": analyses,
     }
+    base_result["semantic_lineage"] = _build_semantic_lineage(base_result)
+    return base_result
 
 
 def _analyze_statement(

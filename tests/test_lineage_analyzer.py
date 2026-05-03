@@ -997,3 +997,113 @@ def test_target_summary_titles_empty_when_no_comments():
     result = analyze_sql_lineage(sql, dialect="mysql")
     summary = _summary_by(result["target_summary"], "dwd.f")
     assert summary["titles"] == []
+
+
+# ─── semantic_lineage 收口（Phase 7 Track B 第 7 项）──────────────────────────
+
+def _semantic_target(semantic, table):
+    matches = [t for t in semantic["targets"] if t["table"].lower() == table.lower()]
+    assert matches, f"未在 semantic.targets 找到 {table}"
+    return matches[0]
+
+
+def test_semantic_lineage_top_level_keys():
+    sql = "INSERT INTO dw.f SELECT * FROM ods.x;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    sem = result["semantic_lineage"]
+    assert set(sem.keys()) == {
+        "procedures", "targets", "business_groups",
+        "grouped_edges", "observations", "risks",
+    }
+
+
+def test_semantic_lineage_targets_merge_role_and_refresh():
+    sql = """
+    TRUNCATE TABLE dim.user_snapshot;
+    INSERT INTO dim.user_snapshot SELECT * FROM ods.user;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    target = _semantic_target(result["semantic_lineage"], "dim.user_snapshot")
+    assert target["refresh_mode"] == "truncate_insert"
+    assert target["counts"]["insert"] == 1
+    assert target["counts"]["truncate"] == 1
+    # role: target + dimension（dim. schema），primary 取 target
+    assert "dimension" in target["roles"]
+    assert target["primary_role"] == "target"
+
+
+def test_semantic_lineage_observations_count_targets_and_full_refresh():
+    sql = """
+    TRUNCATE TABLE a;
+    INSERT INTO a SELECT * FROM ods.x;
+    DELETE FROM b;
+    INSERT INTO b SELECT * FROM ods.y;
+    INSERT INTO c SELECT * FROM ods.z;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    obs = result["semantic_lineage"]["observations"]
+    text = " | ".join(obs)
+    assert "3 张目标表" in text
+    assert "全量重刷" in text  # a (truncate_insert) + b (delete_insert)
+
+
+def test_semantic_lineage_observations_intermediate():
+    sql = """
+    INSERT INTO tmp_stage SELECT * FROM ods.raw;
+    INSERT INTO dw.final SELECT * FROM tmp_stage;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    obs = " | ".join(result["semantic_lineage"]["observations"])
+    assert "中转表" in obs
+
+
+def test_semantic_lineage_observations_dynamic_sql():
+    # SET / PREPARE 走动态 SQL 路径 → observations 提到段数
+    sql = """
+    SET @s = 'INSERT INTO dw.f SELECT * FROM ods.a';
+    PREPARE stmt FROM @s;
+    EXECUTE stmt;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    obs = " | ".join(result["semantic_lineage"]["observations"])
+    assert "动态 SQL" in obs
+
+
+def test_semantic_lineage_risks_low_confidence_dynamic_sql():
+    # 字符串字面量识别 (medium confidence) → 落 risks，level=low
+    sql = """
+    SELECT 'INSERT INTO dw.f SELECT * FROM ods.a' AS dummy_sql FROM dual;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    risks = result["semantic_lineage"]["risks"]
+    types = {r["type"] for r in risks}
+    assert "dynamic_sql_low_confidence" in types
+    levels = {r["level"] for r in risks if r["type"] == "dynamic_sql_low_confidence"}
+    assert "low" in levels  # medium confidence → low risk level
+
+
+def test_semantic_lineage_procedures_grouped_by_name():
+    sql = """
+    CREATE OR REPLACE PROCEDURE sync_orders AS
+    BEGIN
+        INSERT INTO dw.a SELECT * FROM ods.x;
+        INSERT INTO dw.b SELECT * FROM ods.y;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    procs = result["semantic_lineage"]["procedures"]
+    assert len(procs) == 1
+    assert procs[0]["name"] == "sync_orders"
+    assert procs[0]["segment_count"] >= 2
+
+
+def test_semantic_lineage_empty_for_select_only():
+    sql = "SELECT * FROM ods.x;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    sem = result["semantic_lineage"]
+    assert sem["targets"] == []
+    assert sem["procedures"] == []
+    assert sem["risks"] == []
+    # observations 也应该没东西（没目标表也没存储过程也没动态 SQL）
+    assert sem["observations"] == []
