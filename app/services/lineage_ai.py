@@ -502,17 +502,49 @@ def _should_use_json_object_response_format(config: LineageAIConfig) -> bool:
 
 
 def _openai_compatible_max_tokens(config: LineageAIConfig) -> int:
-    # DeepSeek reasoning content shares the max_tokens budget with final content.
-    return 4096 if _is_deepseek_reasoning_model(config) else 1200
+    """Provider 输出 token 上限。
+    Kimi K2.6 / Anthropic / DeepSeek reasoning 等都需要足够大的 budget 才能完整
+    返回 JSON；之前默认 1200 在 payload>20K chars 场景下被截断（content 半截 →
+    JSONDecodeError）。env DATAOPS_LINEAGE_AI_MAX_TOKENS 可全局覆盖。
+    """
+    env_value = os.getenv("DATAOPS_LINEAGE_AI_MAX_TOKENS", "").strip()
+    if env_value:
+        try:
+            value = int(env_value)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    if _is_deepseek_reasoning_model(config):
+        return 4096
+    if _should_disable_kimi_thinking(config):
+        # Kimi K2.6 输出 lineage enrichment 经常 2~3K tokens；4096 兜底
+        return 4096
+    return 2048
+
+
+def _openai_compatible_max_tokens_hint() -> str:
+    """日志提示用：当前 env / 默认值。"""
+    return os.getenv("DATAOPS_LINEAGE_AI_MAX_TOKENS", "").strip() or "default"
 
 
 def _openai_compatible_content(data: dict[str, Any]) -> str:
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = str(message.get("content") or "").strip()
-    if content:
-        return content
     finish_reason = choice.get("finish_reason") or ""
+    if content:
+        # finish_reason=length 表示 max_tokens 不够，content 是半截 JSON。
+        # 仍返回 —— 让 _loads_json_object 的容错（找 { ... }）尝试救一下；
+        # 救不了再抛清晰错误（错误会包含 finish_reason），用户能看到要调大 max_tokens。
+        if finish_reason == "length":
+            logger.warning(
+                "lineage AI content truncated by max_tokens; consider raising "
+                "DATAOPS_LINEAGE_AI_MAX_TOKENS (current=%s, payload=%s chars)",
+                _openai_compatible_max_tokens_hint(),
+                len(content),
+            )
+        return content
     reasoning = str(message.get("reasoning_content") or "")
     if reasoning:
         raise ValueError(
@@ -761,12 +793,76 @@ def _loads_json_object(content: str) -> dict[str, Any]:
         data = json.loads(text)
     except json.JSONDecodeError:
         start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
+        if start < 0:
             raise
-        data = json.loads(text[start:end + 1])
+        # 1) 优先：内容完整，尾部有匹配的 }
+        end = text.rfind("}")
+        if end > start:
+            try:
+                data = json.loads(text[start:end + 1])
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        # 2) 兜底：truncate 到一半的 JSON。从 start 起逐字符走，收集
+        #    "summary" / "suggestions" / "risks" / "column_hints" 4 个 top-level
+        #    字段已经写完整的部分，给前端一个降级视图而不是完全空。
+        salvaged = _salvage_truncated_json_object(text[start:])
+        if salvaged is not None:
+            return salvaged
+        raise
     if not isinstance(data, dict):
         raise ValueError("provider JSON response must be an object")
+    return data
+
+
+def _salvage_truncated_json_object(text: str) -> dict[str, Any] | None:
+    """从被截断的 JSON 串里抢救 top-level 完整 key-value pair。
+
+    Kimi 等模型在 max_tokens 不够时给出半截 JSON：开头 `{"summary":"已完成...","suggestions":[{...},{...},...`
+    末尾停在某个 escape 序列里。普通 json.loads 必失败。
+    这里做精简的 brace/bracket/quote 平衡扫，沿途记录"上一个 ',' 之前已平衡的位置"
+    最后用那个安全切点 + `}` 闭合再 loads。
+
+    成功返回 dict，失败返回 None。
+    """
+    in_str = False
+    escape = False
+    depth_brace = 0
+    depth_bracket = 0
+    last_safe_end = -1  # 上一次顶层 brace 内 ',' 的位置（到该位置为止 JSON 是 well-formed 的去掉末尾 ',' 后）
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_str:
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket -= 1
+        elif ch == "," and depth_brace == 1 and depth_bracket == 0:
+            last_safe_end = i  # 截在这个 ',' → 去掉 + 补 '}'
+    if last_safe_end < 0:
+        return None
+    candidate = text[:last_safe_end] + "}"
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    data["_truncated"] = True
     return data
 
 

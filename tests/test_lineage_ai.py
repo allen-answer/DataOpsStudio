@@ -208,7 +208,8 @@ def test_lineage_ai_disables_kimi_thinking_for_moonshot(monkeypatch):
     result = lineage_ai.enrich_lineage_result({"graph_edges": [], "report": {"summary": {}}}, enabled=True)
 
     assert captured["payload"]["thinking"] == {"type": "disabled"}
-    assert captured["payload"]["max_tokens"] == 1200
+    # Kimi K2.6 大 payload 容易被截断，max_tokens 默认提到 4096（之前 1200 不够）
+    assert captured["payload"]["max_tokens"] >= 4096
     assert "temperature" not in captured["payload"]
     assert "response_format" not in captured["payload"]
     assert result["ai_enrichment"]["summary"] == "kimi ok"
@@ -595,3 +596,51 @@ def test_lineage_ai_config_api_is_admin_only_and_non_sensitive(isolated_storage)
     assert status["api_key_set"] is True
     assert "api_key" not in status
     assert "api-secret" not in json.dumps(status)
+
+
+# ─── max_tokens + truncation 救援（Kimi K2.6 大 payload 场景） ─────────────────
+
+
+def test_max_tokens_default_for_kimi_4096(monkeypatch):
+    """Kimi K2.6 默认 max_tokens 必须够大（不能是 1200）。"""
+    from app.services.lineage_ai import _openai_compatible_max_tokens, LineageAIConfig
+    monkeypatch.delenv("DATAOPS_LINEAGE_AI_MAX_TOKENS", raising=False)
+    config = LineageAIConfig(provider="openai", model="kimi-k2.6", base_url="https://api.moonshot.cn/v1")
+    assert _openai_compatible_max_tokens(config) >= 4096
+
+
+def test_max_tokens_env_override(monkeypatch):
+    from app.services.lineage_ai import _openai_compatible_max_tokens, LineageAIConfig
+    monkeypatch.setenv("DATAOPS_LINEAGE_AI_MAX_TOKENS", "8000")
+    config = LineageAIConfig(provider="openai", model="gpt-4o-mini")
+    assert _openai_compatible_max_tokens(config) == 8000
+
+
+def test_loads_json_object_salvages_truncated_payload():
+    """Kimi 输出被 max_tokens 截断 → 兜底救出已完整的 top-level 字段。"""
+    from app.services.lineage_ai import _loads_json_object
+    truncated = (
+        '{"summary":"this is a partial summary",'
+        '"suggestions":[{"message":"do X"}],'
+        '"risks":[{"level":"low","message":"watch dynamic SQL'  # 尾部断在字符串里
+    )
+    data = _loads_json_object(truncated)
+    assert data["summary"] == "this is a partial summary"
+    assert data["suggestions"] == [{"message": "do X"}]
+    assert data.get("_truncated") is True
+
+
+def test_loads_json_object_complete_json_unchanged():
+    """完整 JSON 走快路径，不打 _truncated 标记。"""
+    from app.services.lineage_ai import _loads_json_object
+    data = _loads_json_object('{"summary":"ok","suggestions":[]}')
+    assert data["summary"] == "ok"
+    assert "_truncated" not in data
+
+
+def test_loads_json_object_completely_garbled_raises():
+    """整串无法 salvage 时仍抛错。"""
+    import pytest
+    from app.services.lineage_ai import _loads_json_object
+    with pytest.raises(json.JSONDecodeError):
+        _loads_json_object("not json at all 中文 zzz")
