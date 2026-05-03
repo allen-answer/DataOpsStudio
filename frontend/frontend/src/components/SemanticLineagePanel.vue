@@ -1,10 +1,16 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import LineageFilterBar from './lineage/LineageFilterBar.vue'
+
+// 业务分组 DAG 视图懒加载（用 G6，会进 g6-vendor chunk —— 已经在血缘图模块加载了）
+const BusinessGroupDag = defineAsyncComponent(() => import('./BusinessGroupDag.vue'))
 
 const props = defineProps({
   semantic: { type: Object, default: () => ({}) },
 })
+
+// 业务分组的两种视图：卡片（适合少量分组浏览）/ 图（适合"哪些业务流向哪些业务"）
+const groupViewMode = ref('cards') // 'cards' | 'graph'
 
 // ---------------- 目标表 / 存储过程的筛选 ----------------
 const targetSearch = ref('')
@@ -182,10 +188,32 @@ const PARSE_STATUS_LABEL = {
     </div>
 
     <div v-if="semantic.business_groups?.length" class="mb-6">
-      <h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-        业务分组 ({{ semantic.business_groups.length }})
-      </h3>
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+      <div class="mb-2 flex items-center justify-between">
+        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">
+          业务分组 ({{ semantic.business_groups.length }})
+        </h3>
+        <div class="flex rounded-md bg-slate-100 p-0.5 text-xs font-medium text-slate-600">
+          <button
+            class="rounded px-2 py-1"
+            :class="groupViewMode === 'cards' ? 'bg-white text-violet-600 shadow-sm' : ''"
+            @click="groupViewMode = 'cards'"
+          >卡片</button>
+          <button
+            class="rounded px-2 py-1"
+            :class="groupViewMode === 'graph' ? 'bg-white text-violet-600 shadow-sm' : ''"
+            @click="groupViewMode = 'graph'"
+            title="DAG 视图：业务分组级数据流向"
+          >图</button>
+        </div>
+      </div>
+
+      <BusinessGroupDag
+        v-if="groupViewMode === 'graph'"
+        :groups="semantic.business_groups"
+        :grouped-edges="semantic.grouped_edges || []"
+      />
+
+      <div v-else class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
         <div
           v-for="(group, gi) in semantic.business_groups"
           :key="group.name"
@@ -214,7 +242,7 @@ const PARSE_STATUS_LABEL = {
         </div>
       </div>
 
-      <div v-if="semantic.grouped_edges?.length" class="mt-3">
+      <div v-if="groupViewMode === 'cards' && semantic.grouped_edges?.length" class="mt-3">
         <h4 class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
           跨分组依赖
         </h4>
