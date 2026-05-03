@@ -21,6 +21,7 @@ LineageAnalysisReport schema：
   "column_edges":    [{source_table, source_column, target_table, target_column, ...}, ...],
   "semantic_lineage": dict | None,
   "impact_analysis": {downstream: {table: [tbl,...]}} | None,
+  "column_impact_analysis": {downstream: {"table.column": ["table.column", ...]}} | None,
   "risks":           [{level, type, message, file_name?}, ...],
   "files":           [{file_name, status, input_count, output_count, error?}, ...],
   "exports":         None,
@@ -131,6 +132,7 @@ def _build_single_report(result: dict[str, Any]) -> dict[str, Any]:
         "column_edges": column_edges,
         "semantic_lineage": semantic or None,
         "impact_analysis": _impact_from_edges(table_edges),
+        "column_impact_analysis": _column_impact_from_edges(column_edges),
         "risks": risks,
         "files": files,
         "exports": None,
@@ -228,6 +230,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
         "column_edges": column_edges,
         "semantic_lineage": None,
         "impact_analysis": {"downstream": result.get("impact_analysis", {}) or {}},
+        "column_impact_analysis": _column_impact_from_edges(column_edges),
         "risks": risks,
         "files": files_out,
         "exports": None,
@@ -333,6 +336,8 @@ def _column_edges_from_insert_mappings(insert_mappings: list[dict[str, Any]]) ->
         if not target_table or not target_column:
             continue
         sources = m.get("source_columns", []) or []
+        source_tables = m.get("source_tables", []) or []
+        source_table = source_tables[0] if len(source_tables) == 1 else ""
         if not sources:
             edges.append({
                 "source_table": "", "source_column": "",
@@ -345,7 +350,7 @@ def _column_edges_from_insert_mappings(insert_mappings: list[dict[str, Any]]) ->
         for src in sources:
             # source_columns 可能是 ["t.col"] 或 ["col"] 形式；不强行拆 schema/table，前端再处理
             edges.append({
-                "source_table": "", "source_column": src,
+                "source_table": source_table, "source_column": src,
                 "target_table": target_table, "target_column": target_column,
                 "transform": m.get("expression", "") or m.get("transform", ""),
                 "confidence": m.get("confidence", "high"),
@@ -430,3 +435,45 @@ def _impact_from_edges(table_edges: list[dict[str, Any]]) -> dict[str, Any]:
         if queue:
             downstream[start] = queue
     return {"downstream": downstream}
+
+
+def _column_impact_from_edges(column_edges: list[dict[str, Any]]) -> dict[str, Any]:
+    """Column-level downstream closure derived from report.column_edges."""
+    adj: dict[str, list[str]] = {}
+    for edge in column_edges:
+        source = _column_node_id(edge.get("source_table", ""), edge.get("source_column", ""))
+        target = _column_node_id(edge.get("target_table", ""), edge.get("target_column", ""))
+        if not source or not target:
+            continue
+        adj.setdefault(source, [])
+        if target not in adj[source]:
+            adj[source].append(target)
+
+    downstream: dict[str, list[str]] = {}
+    for start in list(adj.keys()):
+        seen = {start}
+        queue = list(adj[start])
+        i = 0
+        while i < len(queue):
+            current = queue[i]
+            i += 1
+            seen.add(current)
+            for nxt in adj.get(current, []):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+        if queue:
+            downstream[start] = queue
+    return {"downstream": downstream}
+
+
+def _column_node_id(table: Any, column: Any) -> str:
+    column_text = str(column or "").strip()
+    table_text = str(table or "").strip()
+    if not column_text:
+        return ""
+    if not table_text and "." in column_text:
+        table_text, _, column_text = column_text.rpartition(".")
+    table_text = table_text or "unknown"
+    column_text = column_text or "unknown"
+    return f"{table_text}.{column_text}".lower()

@@ -7,6 +7,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+try:  # APScheduler is the production scheduler; fallback keeps old images testable.
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    APSCHEDULER_AVAILABLE = True
+except Exception:  # pragma: no cover - exercised only in environments without the dependency
+    BackgroundScheduler = None  # type: ignore[assignment]
+    CronTrigger = None  # type: ignore[assignment]
+    IntervalTrigger = None  # type: ignore[assignment]
+    APSCHEDULER_AVAILABLE = False
+
 from app.models import Workflow, WorkflowStatus
 from app.services.jobs import get_job, submit_workflow_run
 from app.services.repositories import workflow_store
@@ -18,6 +30,7 @@ DEFAULT_INTERVAL_SECONDS = int(os.getenv("DATAOPS_SCHEDULER_INTERVAL_SECONDS", "
 DEFAULT_ENABLED = os.getenv("DATAOPS_SCHEDULER_ENABLED", "true").lower() not in {"0", "false", "no"}
 DEFAULT_MAX_RETRIES = int(os.getenv("DATAOPS_SCHEDULER_MAX_RETRIES", "0"))
 _ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
+_SYNC_JOB_ID = "__dataops_scheduler_sync__"
 
 
 @dataclass
@@ -37,6 +50,7 @@ class SchedulerState:
     enabled: bool = DEFAULT_ENABLED
     running: bool = False
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS
+    backend: str = "apscheduler" if APSCHEDULER_AVAILABLE else "fallback"
     entries: dict[str, ScheduleEntry] = field(default_factory=dict)
 
 
@@ -44,25 +58,56 @@ _state = SchedulerState()
 _lock = threading.RLock()
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None
+_scheduler: Any | None = None
 
 
 def start_scheduler(interval_seconds: int | None = None) -> dict[str, Any]:
-    global _thread
+    """Start scheduler service and sync workflow cron definitions.
+
+    With APScheduler installed this creates one cron job per active workflow and
+    one interval sync job. In old/offline images without APScheduler, it falls
+    back to the previous lightweight polling loop so tests and local dev still
+    work before dependencies are rebuilt.
+    """
+    global _thread, _scheduler
     with _lock:
         if interval_seconds is not None:
             _state.interval_seconds = max(1, int(interval_seconds))
         _state.enabled = True
+        if APSCHEDULER_AVAILABLE:
+            if _scheduler is None:
+                _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+            _state.backend = "apscheduler"
+            _state.running = True
+            _ensure_sync_job()
+            tick()
+            if not _scheduler.running:
+                _scheduler.start()
+            return scheduler_status()
+
+        _state.backend = "fallback"
         if _state.running and _thread and _thread.is_alive():
             return scheduler_status()
         _stop_event.clear()
-        _thread = threading.Thread(target=_loop, name="dataops-scheduler", daemon=True)
+        tick()
+        _thread = threading.Thread(target=_fallback_loop, name="dataops-scheduler", daemon=True)
         _state.running = True
         _thread.start()
     return scheduler_status()
 
 
 def stop_scheduler() -> dict[str, Any]:
-    global _thread
+    global _thread, _scheduler
+    if APSCHEDULER_AVAILABLE:
+        with _lock:
+            scheduler = _scheduler
+            _scheduler = None
+            _state.running = False
+            _state.entries.clear()
+        if scheduler is not None and scheduler.running:
+            scheduler.shutdown(wait=False)
+        return scheduler_status()
+
     _stop_event.set()
     thread = _thread
     if thread and thread.is_alive():
@@ -70,21 +115,24 @@ def stop_scheduler() -> dict[str, Any]:
     with _lock:
         _state.running = False
         _thread = None
+        _state.entries.clear()
     return scheduler_status()
 
 
 def scheduler_status() -> dict[str, Any]:
     with _lock:
+        running = bool(_scheduler and _scheduler.running) if APSCHEDULER_AVAILABLE else _state.running
         return {
             "enabled": _state.enabled,
-            "running": _state.running,
+            "running": running,
+            "backend": _state.backend,
             "interval_seconds": _state.interval_seconds,
             "entries": [
                 {
                     "workflow_id": entry.workflow_id,
                     "workflow_name": entry.workflow_name,
                     "cron": entry.cron,
-                    "next_run_at": entry.next_run_at,
+                    "next_run_at": _job_next_run_at(entry.workflow_id) or entry.next_run_at,
                     "last_run_at": entry.last_run_at,
                     "last_job_id": entry.last_job_id,
                     "last_error": entry.last_error,
@@ -96,6 +144,147 @@ def scheduler_status() -> dict[str, Any]:
 
 
 def tick(now: datetime | None = None) -> dict[str, Any]:
+    """Synchronize scheduler jobs with current workflow definitions.
+
+    APScheduler handles actual cron firing. The fallback path keeps the previous
+    manual due-check behavior for environments where APScheduler is not yet
+    installed.
+    """
+    if APSCHEDULER_AVAILABLE:
+        errors = _sync_jobs(now or datetime.now())
+        return {"submitted": [], "errors": errors, "status": scheduler_status()}
+    return _fallback_tick(now)
+
+
+def next_run_after(expression: str, after: datetime) -> datetime:
+    """Compatibility helper used by tests and fallback mode."""
+    schedule = CronSchedule.parse(expression)
+    candidate = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    max_minutes = 366 * 24 * 60 * 5
+    for _ in range(max_minutes):
+        if schedule.matches(candidate):
+            return candidate
+        candidate += timedelta(minutes=1)
+    raise ValueError(f"cron expression has no run in the next 5 years: {expression}")
+
+
+def reset_scheduler_state_for_tests() -> None:
+    stop_scheduler()
+    with _lock:
+        _state.enabled = DEFAULT_ENABLED
+        _state.interval_seconds = DEFAULT_INTERVAL_SECONDS
+        _state.backend = "apscheduler" if APSCHEDULER_AVAILABLE else "fallback"
+        _state.entries.clear()
+
+
+def _ensure_sync_job() -> None:
+    if not APSCHEDULER_AVAILABLE or _scheduler is None:
+        return
+    if _scheduler.get_job(_SYNC_JOB_ID):
+        _scheduler.reschedule_job(
+            _SYNC_JOB_ID,
+            trigger=IntervalTrigger(seconds=max(1, _state.interval_seconds)),
+        )
+        return
+    _scheduler.add_job(
+        tick,
+        trigger=IntervalTrigger(seconds=max(1, _state.interval_seconds)),
+        id=_SYNC_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def _sync_jobs(now: datetime) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    workflows = workflow_store.list()
+    active = {workflow.id: workflow for workflow in workflows if _is_schedulable(workflow)}
+
+    with _lock:
+        for stale_id in list(_state.entries):
+            if stale_id not in active:
+                _remove_job_locked(stale_id)
+                _state.entries.pop(stale_id, None)
+
+    for workflow in active.values():
+        try:
+            _entry_for(workflow, now)
+            _upsert_job(workflow)
+        except Exception as exc:
+            logger.exception("workflow schedule sync failed workflow_id=%s", workflow.id)
+            errors.append({"workflow_id": workflow.id, "error": str(exc)})
+            with _lock:
+                entry = _state.entries.get(workflow.id)
+                if entry is not None:
+                    entry.last_error = str(exc)
+    return errors
+
+
+def _upsert_job(workflow: Workflow) -> None:
+    if not APSCHEDULER_AVAILABLE or _scheduler is None:
+        return
+    job_id = _job_id(workflow.id)
+    trigger = CronTrigger.from_crontab(workflow.schedule_cron, timezone="Asia/Shanghai")
+    existing = _scheduler.get_job(job_id)
+    if existing is None:
+        _scheduler.add_job(
+            _run_scheduled_workflow,
+            trigger=trigger,
+            args=[workflow.id],
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    else:
+        _scheduler.reschedule_job(job_id, trigger=trigger)
+    with _lock:
+        entry = _state.entries.get(workflow.id)
+        if entry is not None:
+            entry.next_run_at = _job_next_run_at(workflow.id) or entry.next_run_at
+
+
+def _run_scheduled_workflow(workflow_id: str) -> None:
+    workflow = workflow_store.get(workflow_id)
+    if workflow is None or not _is_schedulable(workflow):
+        tick()
+        return
+    with _lock:
+        entry = _entry_for(workflow, datetime.now())
+        if entry.last_job_id and _is_active_job(entry.last_job_id):
+            entry.skipped_overlap += 1
+            entry.last_error = "previous scheduled job still running"
+            return
+    try:
+        job = submit_workflow_run(
+            workflow.id,
+            {},
+            max_retries=DEFAULT_MAX_RETRIES,
+            trigger="schedule",
+        )
+        with _lock:
+            entry = _entry_for(workflow, datetime.now())
+            entry.last_run_at = _iso(datetime.now())
+            entry.last_job_id = str(job.get("job_id") or "")
+            entry.last_error = ""
+            entry.next_run_at = _job_next_run_at(workflow.id) or entry.next_run_at
+    except Exception as exc:
+        logger.exception("workflow scheduled submit failed workflow_id=%s", workflow.id)
+        with _lock:
+            entry = _entry_for(workflow, datetime.now())
+            entry.last_error = str(exc)
+
+
+def _fallback_loop() -> None:
+    while not _stop_event.wait(_state.interval_seconds):
+        if _state.enabled:
+            tick()
+    with _lock:
+        _state.running = False
+
+
+def _fallback_tick(now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now()
     submitted: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -140,25 +329,6 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
     return {"submitted": submitted, "errors": errors, "status": scheduler_status()}
 
 
-def next_run_after(expression: str, after: datetime) -> datetime:
-    schedule = CronSchedule.parse(expression)
-    candidate = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    max_minutes = 366 * 24 * 60 * 5
-    for _ in range(max_minutes):
-        if schedule.matches(candidate):
-            return candidate
-        candidate += timedelta(minutes=1)
-    raise ValueError(f"cron expression has no run in the next 5 years: {expression}")
-
-
-def _loop() -> None:
-    while not _stop_event.wait(_state.interval_seconds):
-        if _state.enabled:
-            tick()
-    with _lock:
-        _state.running = False
-
-
 def _entry_for(workflow: Workflow, now: datetime) -> ScheduleEntry:
     with _lock:
         existing = _state.entries.get(workflow.id)
@@ -186,6 +356,30 @@ def _is_active_job(job_id: str) -> bool:
     except KeyError:
         return False
     return str(job.get("status") or "") in _ACTIVE_JOB_STATUSES
+
+
+def _job_id(workflow_id: str) -> str:
+    return f"workflow:{workflow_id}"
+
+
+def _job_next_run_at(workflow_id: str) -> str:
+    if not APSCHEDULER_AVAILABLE or _scheduler is None:
+        return ""
+    job = _scheduler.get_job(_job_id(workflow_id))
+    next_run = getattr(job, "next_run_time", None) if job is not None else None
+    if next_run is None:
+        return ""
+    if getattr(next_run, "tzinfo", None) is not None:
+        next_run = next_run.replace(tzinfo=None)
+    return _iso(next_run)
+
+
+def _remove_job_locked(workflow_id: str) -> None:
+    if not APSCHEDULER_AVAILABLE or _scheduler is None:
+        return
+    job_id = _job_id(workflow_id)
+    if _scheduler.get_job(job_id):
+        _scheduler.remove_job(job_id)
 
 
 def _iso(value: datetime) -> str:
@@ -285,11 +479,3 @@ def _parse_field(
     if normalize_7_to_0:
         result.discard(7)
     return result, wildcard
-
-
-def reset_scheduler_state_for_tests() -> None:
-    stop_scheduler()
-    with _lock:
-        _state.enabled = DEFAULT_ENABLED
-        _state.interval_seconds = DEFAULT_INTERVAL_SECONDS
-        _state.entries.clear()

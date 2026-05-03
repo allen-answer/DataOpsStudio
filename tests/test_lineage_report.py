@@ -23,7 +23,7 @@ def test_single_report_has_all_top_level_fields():
     expected_keys = {
         "scope", "summary", "inputs", "outputs", "process_steps",
         "table_edges", "column_edges", "semantic_lineage",
-        "impact_analysis", "risks", "files", "exports",
+        "impact_analysis", "column_impact_analysis", "risks", "files", "exports",
     }
     assert set(report.keys()) == expected_keys
     assert report["scope"] == "single"
@@ -99,6 +99,19 @@ def test_single_report_impact_analysis_from_edges():
     assert "dw.c" in a_downstream
 
 
+def test_single_report_column_impact_analysis_from_column_edges():
+    sql = """
+    INSERT INTO dw.b (id, name) SELECT id, name FROM ods.a;
+    INSERT INTO dw.c (id) SELECT id FROM dw.b;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    downstream = result["report"]["column_impact_analysis"]["downstream"]
+
+    assert "ods.a.id" in downstream
+    assert "dw.b.id" in downstream["ods.a.id"]
+    assert "dw.c.id" in downstream["dw.b.id"]
+
+
 def test_single_report_risks_from_semantic_lineage():
     """semantic_lineage.risks 应该被规范化进 report.risks。"""
     sql = "this is not valid sql at all xxxxxx;"
@@ -127,7 +140,7 @@ def test_batch_report_has_same_top_level_keys():
     expected_keys = {
         "scope", "summary", "inputs", "outputs", "process_steps",
         "table_edges", "column_edges", "semantic_lineage",
-        "impact_analysis", "risks", "files", "exports",
+        "impact_analysis", "column_impact_analysis", "risks", "files", "exports",
     }
     assert set(report.keys()) == expected_keys
     assert report["scope"] == "batch"
@@ -174,6 +187,19 @@ def test_batch_report_impact_analysis_carried_through():
     a_chain = downstream.get("ods.a", [])
     assert "dw.b" in a_chain
     assert "dw.c" in a_chain
+
+
+def test_batch_report_column_impact_analysis_from_field_mappings():
+    scripts = [
+        ScriptInput("a.sql", "INSERT INTO dw.b (id) SELECT id FROM ods.a;"),
+        ScriptInput("b.sql", "INSERT INTO dw.c (id) SELECT id FROM dw.b;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    downstream = result["report"]["column_impact_analysis"]["downstream"]
+
+    assert "ods.a.id" in downstream
+    assert "dw.b.id" in downstream["ods.a.id"]
+    assert "dw.c.id" in downstream["dw.b.id"]
 
 
 def test_batch_report_summary_consistency():

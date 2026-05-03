@@ -11,6 +11,7 @@ import LineageGraphPanel from '../components/lineage/LineageGraphPanel.vue'
 import LineageSemanticPanel from '../components/lineage/LineageSemanticPanel.vue'
 import LineageImpactPanel from '../components/lineage/LineageImpactPanel.vue'
 import LineageRiskPanel from '../components/lineage/LineageRiskPanel.vue'
+import ColumnLineageGraph from '../components/lineage/ColumnLineageGraph.vue'
 import LineageMappings from '../components/LineageMappings.vue'
 
 // 9-tab 统一血缘报告视图。
@@ -39,6 +40,8 @@ const TABS = [
 ]
 
 const activeTab = ref('summary')
+const columnView = ref('table')
+const focusedColumnNodeId = ref('')
 
 // 总览卡片"点风险点 5"会 emit('navigate', {tab:'risks', preset:{levelFilter:'high'}})
 // —— 这里把 tab 切过去，preset 透给目标 panel（一次性，view 后续 watch tab 会清掉）
@@ -50,6 +53,12 @@ function navigateTo(payload) {
   if (payload.preset) {
     tabPresets.value = { ...tabPresets.value, [payload.tab]: payload.preset }
   }
+}
+
+function focusColumn(payload) {
+  focusedColumnNodeId.value = payload?.nodeId || ''
+  columnView.value = 'graph'
+  activeTab.value = 'column'
 }
 
 // 用户手动切 tab 时清掉对应 preset，避免预设干扰用户重新筛选
@@ -135,8 +144,34 @@ const tabBadgeCount = computed(() => ({
     </div>
 
     <section v-else-if="activeTab === 'column'" class="card">
-      <h3 class="mb-3 text-base font-semibold text-slate-800">字段血缘</h3>
-      <LineageMappings :columns="columns" :insert-mappings="insertMappings" :preset="tabPresets.column" />
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-base font-semibold text-slate-800">字段血缘</h3>
+        <div class="rounded-lg border border-slate-200 bg-slate-50 p-1">
+          <button
+            class="rounded-md px-3 py-1.5 text-xs font-semibold transition"
+            :class="columnView === 'table' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            @click="columnView = 'table'"
+          >表格</button>
+          <button
+            class="rounded-md px-3 py-1.5 text-xs font-semibold transition"
+            :class="columnView === 'graph' ? 'bg-white text-primary shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            @click="columnView = 'graph'"
+          >字段图</button>
+        </div>
+      </div>
+      <LineageMappings
+        v-if="columnView === 'table'"
+        :columns="columns"
+        :insert-mappings="insertMappings"
+        :preset="tabPresets.column"
+        @focus-column="focusColumn"
+      />
+      <ColumnLineageGraph
+        v-else
+        :edges="report.column_edges"
+        :impact="report.column_impact_analysis"
+        :focus-node-id="focusedColumnNodeId"
+      />
     </section>
 
     <LineageSemanticPanel

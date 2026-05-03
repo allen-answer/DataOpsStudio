@@ -13,6 +13,7 @@ from app.models import WorkflowRun
 from app.services.repositories import workflow_store
 from app.services.runner import run_task
 from app.services.notifier import notify_workflow_run
+from app.services.openlineage_emitter import emit_workflow_run_openlineage
 from app.services.workflow_engine import run_workflow
 from app.services.workflow_history import persist_workflow_run
 from app.utils.paths import JOBS_FILE
@@ -259,6 +260,7 @@ def _run_workflow_job(
                 )
                 persist_workflow_run(run)
                 notify_workflow_run(workflow, run, trigger=trigger, job_id=job_id)
+                emit_workflow_run_openlineage(workflow, run, trigger=trigger, job_id=job_id)
                 result = run.model_dump(mode="json")
                 if run.error == "cancelled":
                     _patch_job(
