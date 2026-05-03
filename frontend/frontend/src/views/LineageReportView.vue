@@ -40,6 +40,28 @@ const TABS = [
 
 const activeTab = ref('summary')
 
+// 总览卡片"点风险点 5"会 emit('navigate', {tab:'risks', preset:{levelFilter:'high'}})
+// —— 这里把 tab 切过去，preset 透给目标 panel（一次性，view 后续 watch tab 会清掉）
+const tabPresets = ref({})
+
+function navigateTo(payload) {
+  if (!payload || !payload.tab) return
+  activeTab.value = payload.tab
+  if (payload.preset) {
+    tabPresets.value = { ...tabPresets.value, [payload.tab]: payload.preset }
+  }
+}
+
+// 用户手动切 tab 时清掉对应 preset，避免预设干扰用户重新筛选
+function onManualTabSwitch(tab) {
+  activeTab.value = tab
+  if (tabPresets.value[tab]) {
+    const next = { ...tabPresets.value }
+    delete next[tab]
+    tabPresets.value = next
+  }
+}
+
 const tabBadgeCount = computed(() => ({
   inputs:  props.report.inputs?.length || 0,
   outputs: props.report.outputs?.length || 0,
@@ -62,7 +84,7 @@ const tabBadgeCount = computed(() => ({
         :class="activeTab === tab.id
           ? 'bg-primary text-white shadow-sm'
           : 'text-slate-600 hover:bg-slate-100'"
-        @click="activeTab = tab.id"
+        @click="onManualTabSwitch(tab.id)"
       >
         <component :is="tab.icon" class="h-3.5 w-3.5" />
         <span>{{ tab.label }}</span>
@@ -76,24 +98,27 @@ const tabBadgeCount = computed(() => ({
 
     <!-- Tab panels -->
     <div v-if="activeTab === 'summary'">
-      <LineageSummaryPanel :report="report" />
+      <LineageSummaryPanel :report="report" @navigate="navigateTo" />
     </div>
 
     <LineageAssetPanel
       v-else-if="activeTab === 'inputs'"
       kind="inputs"
       :assets="report.inputs"
+      :preset="tabPresets.inputs"
     />
 
     <LineageAssetPanel
       v-else-if="activeTab === 'outputs'"
       kind="outputs"
       :assets="report.outputs"
+      :preset="tabPresets.outputs"
     />
 
     <LineageStepsPanel
       v-else-if="activeTab === 'process'"
       :steps="report.process_steps"
+      :preset="tabPresets.process"
     />
 
     <div v-else-if="activeTab === 'table'">
@@ -111,7 +136,7 @@ const tabBadgeCount = computed(() => ({
 
     <section v-else-if="activeTab === 'column'" class="card">
       <h3 class="mb-3 text-base font-semibold text-slate-800">字段血缘</h3>
-      <LineageMappings :columns="columns" :insert-mappings="insertMappings" />
+      <LineageMappings :columns="columns" :insert-mappings="insertMappings" :preset="tabPresets.column" />
     </section>
 
     <LineageSemanticPanel
@@ -126,11 +151,14 @@ const tabBadgeCount = computed(() => ({
     <LineageImpactPanel
       v-else-if="activeTab === 'impact'"
       :impact="report.impact_analysis"
+      :edges="report.table_edges"
+      :preset="tabPresets.impact"
     />
 
     <LineageRiskPanel
       v-else-if="activeTab === 'risks'"
       :risks="report.risks"
+      :preset="tabPresets.risks"
     />
   </div>
 </template>

@@ -1,10 +1,13 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ShieldCheck, AlertTriangle, AlertCircle } from 'lucide-vue-next'
 import LineageFilterBar from './LineageFilterBar.vue'
 
 const props = defineProps({
   risks: { type: Array, default: () => [] },
+  // 上游 LineageReportView 透传：从总览卡片跳过来时把 levelFilter / typeFilter
+  // 等预设到这里。watch 进内部 ref 再照常工作，用户后续可手动修改。
+  preset: { type: Object, default: null },
 })
 
 const RISK_TONE = {
@@ -70,6 +73,19 @@ function resetFilters() {
   typeFilter.value = 'all'
   fileFilter.value = 'all'
 }
+
+// 接收外部预设（一次性）：mount 时和 preset 变化时都跑一次
+watch(
+  () => props.preset,
+  (val) => {
+    if (!val) return
+    if (val.search != null) search.value = val.search
+    if (val.levelFilter != null) levelFilter.value = val.levelFilter
+    if (val.typeFilter != null) typeFilter.value = val.typeFilter
+    if (val.fileFilter != null) fileFilter.value = val.fileFilter
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

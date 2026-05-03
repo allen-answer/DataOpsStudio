@@ -1,15 +1,18 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import LineageFilterBar from './lineage/LineageFilterBar.vue'
 
 const props = defineProps({
   columns: { type: Array, default: () => [] },
   insertMappings: { type: Array, default: () => [] },
+  preset: { type: Object, default: null },
 })
 
 // ---------------- 筛选：上半部分（columns）----------------
 const colSearch = ref('')
 const colConfidence = ref('all')
+const colOnlyLowConfidence = ref(false)
+const colOnlyAmbiguous = ref(false)
 
 const colConfidences = computed(() => {
   const s = new Set()
@@ -25,17 +28,31 @@ const filteredColumns = computed(() => {
       if (!hay.includes(kw)) return false
     }
     if (colConfidence.value !== 'all' && (c.confidence || 'high') !== colConfidence.value) return false
+    if (colOnlyLowConfidence.value && (c.confidence || 'high') === 'high') return false
+    if (colOnlyAmbiguous.value && !(c.warnings && c.warnings.length)) return false
     return true
   })
 })
 
-const colFilterActive = computed(() => !!colSearch.value || colConfidence.value !== 'all')
-const resetColFilters = () => { colSearch.value = ''; colConfidence.value = 'all' }
+const colFilterActive = computed(
+  () => !!colSearch.value
+    || colConfidence.value !== 'all'
+    || colOnlyLowConfidence.value
+    || colOnlyAmbiguous.value
+)
+const resetColFilters = () => {
+  colSearch.value = ''
+  colConfidence.value = 'all'
+  colOnlyLowConfidence.value = false
+  colOnlyAmbiguous.value = false
+}
 
 // ---------------- 筛选：下半部分（insertMappings）----------------
 const mapSearch = ref('')
 const mapConfidence = ref('all')
 const mapTargetTable = ref('all')
+const mapOnlyLowConfidence = ref(false)
+const mapOnlyAmbiguous = ref(false)
 
 const mapConfidences = computed(() => {
   const s = new Set()
@@ -57,12 +74,43 @@ const filteredMappings = computed(() => {
     }
     if (mapConfidence.value !== 'all' && (c.confidence || 'high') !== mapConfidence.value) return false
     if (mapTargetTable.value !== 'all' && c.target_table !== mapTargetTable.value) return false
+    if (mapOnlyLowConfidence.value && (c.confidence || 'high') === 'high') return false
+    if (mapOnlyAmbiguous.value && !(c.warnings && c.warnings.length)) return false
     return true
   })
 })
 
-const mapFilterActive = computed(() => !!mapSearch.value || mapConfidence.value !== 'all' || mapTargetTable.value !== 'all')
-const resetMapFilters = () => { mapSearch.value = ''; mapConfidence.value = 'all'; mapTargetTable.value = 'all' }
+const mapFilterActive = computed(
+  () => !!mapSearch.value
+    || mapConfidence.value !== 'all'
+    || mapTargetTable.value !== 'all'
+    || mapOnlyLowConfidence.value
+    || mapOnlyAmbiguous.value
+)
+const resetMapFilters = () => {
+  mapSearch.value = ''
+  mapConfidence.value = 'all'
+  mapTargetTable.value = 'all'
+  mapOnlyLowConfidence.value = false
+  mapOnlyAmbiguous.value = false
+}
+
+watch(
+  () => props.preset,
+  (val) => {
+    if (!val) return
+    if (val.colSearch != null) colSearch.value = val.colSearch
+    if (val.colConfidence != null) colConfidence.value = val.colConfidence
+    if (val.colOnlyLowConfidence != null) colOnlyLowConfidence.value = val.colOnlyLowConfidence
+    if (val.colOnlyAmbiguous != null) colOnlyAmbiguous.value = val.colOnlyAmbiguous
+    if (val.mapSearch != null) mapSearch.value = val.mapSearch
+    if (val.mapConfidence != null) mapConfidence.value = val.mapConfidence
+    if (val.mapTargetTable != null) mapTargetTable.value = val.mapTargetTable
+    if (val.mapOnlyLowConfidence != null) mapOnlyLowConfidence.value = val.mapOnlyLowConfidence
+    if (val.mapOnlyAmbiguous != null) mapOnlyAmbiguous.value = val.mapOnlyAmbiguous
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -85,6 +133,14 @@ const resetMapFilters = () => { mapSearch.value = ''; mapConfidence.value = 'all
             <option value="all">全部可信度</option>
             <option v-for="c in colConfidences" :key="c" :value="c">{{ c }}</option>
           </select>
+          <label class="inline-flex items-center gap-1 text-[11px] text-slate-600">
+            <input v-model="colOnlyLowConfidence" type="checkbox" class="h-3.5 w-3.5">
+            仅低可信度
+          </label>
+          <label class="inline-flex items-center gap-1 text-[11px] text-slate-600" title="warnings 非空 —— 来源表或字段无法静态确定">
+            <input v-model="colOnlyAmbiguous" type="checkbox" class="h-3.5 w-3.5">
+            仅歧义字段
+          </label>
         </template>
       </LineageFilterBar>
       <div v-if="!columns.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
@@ -135,6 +191,14 @@ const resetMapFilters = () => { mapSearch.value = ''; mapConfidence.value = 'all
             <option value="all">全部可信度</option>
             <option v-for="c in mapConfidences" :key="c" :value="c">{{ c }}</option>
           </select>
+          <label class="inline-flex items-center gap-1 text-[11px] text-slate-600">
+            <input v-model="mapOnlyLowConfidence" type="checkbox" class="h-3.5 w-3.5">
+            仅低可信度
+          </label>
+          <label class="inline-flex items-center gap-1 text-[11px] text-slate-600" title="warnings 非空 —— 来源未识别 / 转换不确定">
+            <input v-model="mapOnlyAmbiguous" type="checkbox" class="h-3.5 w-3.5">
+            仅歧义字段
+          </label>
         </template>
       </LineageFilterBar>
       <div v-if="!insertMappings.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">

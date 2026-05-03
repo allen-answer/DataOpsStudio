@@ -1,10 +1,11 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Workflow, FileText } from 'lucide-vue-next'
 import LineageFilterBar from './LineageFilterBar.vue'
 
 const props = defineProps({
   steps: { type: Array, default: () => [] },
+  preset: { type: Object, default: null },
 })
 
 const DML_PILL = {
@@ -113,6 +114,19 @@ function resetFilters() {
   dmlFilter.value = 'all'
   parseFilter.value = 'all'
 }
+
+watch(
+  () => props.preset,
+  (val) => {
+    if (!val) return
+    if (val.search != null) search.value = val.search
+    if (val.fileFilter != null) fileFilter.value = val.fileFilter
+    if (val.procFilter != null) procFilter.value = val.procFilter
+    if (val.dmlFilter != null) dmlFilter.value = val.dmlFilter
+    if (val.parseFilter != null) parseFilter.value = val.parseFilter
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

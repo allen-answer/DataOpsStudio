@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Inbox } from 'lucide-vue-next'
 import LineageFilterBar from './LineageFilterBar.vue'
 
@@ -7,6 +7,7 @@ import LineageFilterBar from './LineageFilterBar.vue'
 const props = defineProps({
   kind: { type: String, required: true }, // 'inputs' | 'outputs'
   assets: { type: Array, default: () => [] },
+  preset: { type: Object, default: null },  // 外部跳转时预设筛选
 })
 
 const isOutput = computed(() => props.kind === 'outputs')
@@ -90,6 +91,18 @@ function resetFilters() {
   roleFilter.value = 'all'
   groupFilter.value = 'all'
 }
+
+watch(
+  () => props.preset,
+  (val) => {
+    if (!val) return
+    if (val.search != null) search.value = val.search
+    if (val.schemaFilter != null) schemaFilter.value = val.schemaFilter
+    if (val.roleFilter != null) roleFilter.value = val.roleFilter
+    if (val.groupFilter != null) groupFilter.value = val.groupFilter
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
