@@ -612,12 +612,57 @@ const extractFields = async (side) => {
   }
 }
 
+// 主键名称启发式：xxx_id / xxx_no / xxx_code / xxx_key 优先；id / pk / no 也算。
+// 跨模式（Excel ↔ SQL）共用此规则——SQL/Excel 字段名通常都遵循类似命名约定。
+function pickKeyCandidatesFromFields(fields) {
+  const ID_LIKE = /(^|_)(id|pk|key|no|code|sn|uuid|guid)$/i
+  return fields.filter(c => ID_LIKE.test(c))
+}
+
 const recommendKey = async () => {
   setActionStatus('running', '正在推荐主键')
   try {
-    const data = await apiJson('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
-    if (data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
-    setActionStatus('success', '主键推荐完成', `推荐：${data.key_candidates?.join(', ') || '无候选'}`)
+    // 当两侧字段都已提取，按"两侧交集 + id-like 命名"推荐，能覆盖 Excel↔SQL 三种交叉模式。
+    // 否则回退到 SQL 端的 sqlglot key_candidates（仅 source 是 SQL 时可用）。
+    const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
+    const targetSet = new Set(targetFields.value.map(normalizeColumn))
+    if (sourceSet.size && targetSet.size) {
+      const intersect = sourceFields.value.filter(c => targetSet.has(normalizeColumn(c)))
+      const candidates = pickKeyCandidatesFromFields(intersect)
+      if (candidates.length) {
+        taskDraft.key_columns = candidates.join(', ')
+        setActionStatus('success', '主键推荐完成', `从两侧交集挑选：${candidates.join(', ')}`)
+        return
+      }
+      // 交集里没有 id-like 列 —— 提示用户手动看，但仍给个降级建议（交集第一列）
+      if (intersect.length) {
+        taskDraft.key_columns = intersect[0]
+        setActionStatus('warning', '主键候选有限',
+          `两侧字段交集中未识别到 id 类命名；已临时填入 ${intersect[0]}，请确认后修改`)
+        return
+      }
+      setActionStatus('error', '无法推荐主键',
+        '源字段与目标字段没有交集；先在「字段映射」做列对齐，或检查两侧 schema')
+      return
+    }
+    // 退回旧路径：source 是 SQL 时让 sqlglot 抽
+    if (taskDraft.source_kind === 'sql' && taskDraft.source_sql) {
+      const data = await apiJson('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
+      if (data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
+      setActionStatus('success', '主键推荐完成', `推荐：${data.key_candidates?.join(', ') || '无候选'}`)
+      return
+    }
+    // Excel 端但还没提取字段：先用启发式过 sourceFields（如果已提取）
+    if (sourceFields.value.length) {
+      const candidates = pickKeyCandidatesFromFields(sourceFields.value)
+      if (candidates.length) {
+        taskDraft.key_columns = candidates.join(', ')
+        setActionStatus('success', '主键推荐完成', `从源字段挑选：${candidates.join(', ')}`)
+        return
+      }
+    }
+    setActionStatus('error', '无法推荐主键',
+      '请先在「数据来源」点击两侧的「提取字段」加载列名，或手动填主键')
   } catch (error) {
     setActionStatus('error', '主键推荐失败', toErrorMessage(error))
   }
