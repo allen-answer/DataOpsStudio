@@ -9,8 +9,23 @@ const hasContent = computed(() =>
   (props.semantic.targets?.length || 0)
   + (props.semantic.observations?.length || 0)
   + (props.semantic.risks?.length || 0)
-  + (props.semantic.procedures?.length || 0) > 0
+  + (props.semantic.procedures?.length || 0)
+  + (props.semantic.business_groups?.length || 0) > 0
 )
+
+const GROUP_PALETTE = [
+  'border-blue-200 bg-blue-50',
+  'border-emerald-200 bg-emerald-50',
+  'border-violet-200 bg-violet-50',
+  'border-amber-200 bg-amber-50',
+  'border-cyan-200 bg-cyan-50',
+  'border-rose-200 bg-rose-50',
+  'border-slate-200 bg-slate-50',
+]
+
+function groupTone(index) {
+  return GROUP_PALETTE[index % GROUP_PALETTE.length]
+}
 
 const ROLE_PILL = {
   target: 'bg-blue-100 text-blue-700',
@@ -96,6 +111,58 @@ const RISK_BADGE = {
           <p class="mt-1 break-words">{{ risk.message }}</p>
         </li>
       </ul>
+    </div>
+
+    <div v-if="semantic.business_groups?.length" class="mb-6">
+      <h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+        业务分组 ({{ semantic.business_groups.length }})
+      </h3>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+        <div
+          v-for="(group, gi) in semantic.business_groups"
+          :key="group.name"
+          class="rounded-lg border p-3"
+          :class="groupTone(gi)"
+        >
+          <div class="flex items-baseline justify-between gap-2">
+            <div class="font-bold text-slate-800">{{ group.name }}</div>
+            <div class="text-xs text-slate-600 whitespace-nowrap">
+              {{ group.table_count }} 张
+              <span v-if="group.target_count" class="text-slate-700">/ {{ group.target_count }} 写入</span>
+            </div>
+          </div>
+          <p v-if="group.description" class="mt-1 text-xs text-slate-500">{{ group.description }}</p>
+          <div class="mt-2 flex flex-wrap gap-1">
+            <span
+              v-for="t in group.tables.slice(0, 6)"
+              :key="t"
+              class="rounded bg-white/70 px-1.5 py-0.5 text-[11px] sql-font text-slate-700"
+            >{{ t }}</span>
+            <span
+              v-if="group.tables.length > 6"
+              class="rounded bg-white/70 px-1.5 py-0.5 text-[11px] text-slate-500"
+            >+{{ group.tables.length - 6 }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="semantic.grouped_edges?.length" class="mt-3">
+        <h4 class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+          跨分组依赖
+        </h4>
+        <ul class="flex flex-wrap gap-1.5">
+          <li
+            v-for="ge in semantic.grouped_edges"
+            :key="`${ge.source_group}__${ge.target_group}`"
+            class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
+          >
+            <span class="font-medium">{{ ge.source_group }}</span>
+            <span class="mx-1 text-slate-400">→</span>
+            <span class="font-medium">{{ ge.target_group }}</span>
+            <span class="ml-1.5 text-slate-500">×{{ ge.edge_count }}</span>
+          </li>
+        </ul>
+      </div>
     </div>
 
     <div v-if="semantic.targets?.length" class="mb-6">

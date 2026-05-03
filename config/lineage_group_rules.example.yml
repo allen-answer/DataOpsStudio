@@ -1,0 +1,57 @@
+# Phase 7 Track B 第 5 项：业务分组规则
+#
+# 把 SQL 脚本里出现的表按业务模块分组，让 semantic_lineage.business_groups 不再为空。
+# 拷贝成 lineage_group_rules.yml 即可生效（lineage_group_rules.json 也支持）。
+# 文件不存在时静默降级为不分组，不影响其他血缘分析。
+#
+# 每个 group 挂一个或多个 match 规则，命中任意一条即归入该组。一张表可同时归多组。
+# 所有匹配大小写不敏感。schema 指 schema.tablename 的前段；无 schema 的表 schema 规则不生效。
+
+groups:
+  - name: 集中交易
+    description: 集中交易系统（cispnew schema）相关表
+    match:
+      - schema_prefix: cisp
+      - title_keyword: 集中交易
+
+  - name: 融资融券
+    description: 两融业务表（a_ks_r_*）
+    match:
+      - schema_prefix: a_ks_r_
+      - basename_prefix: a_ks_r_
+
+  - name: 期权
+    match:
+      - schema_prefix: a_ks_qq_
+      - basename_prefix: a_ks_qq_
+
+  - name: 机构客户
+    match:
+      - schema_prefix: a_ks_jg_
+      - basename_prefix: a_ks_jg_
+
+  - name: 持仓市值
+    description: 客户持仓 / 市值快照
+    match:
+      - basename_suffix: _stock
+      - basename_contains: stock_position
+      - title_keyword: 托管市值
+
+  - name: 配置
+    match:
+      - basename_exact: t_config
+      - basename_exact: bbq
+      - schema_exact: config
+
+  - name: 过滤排除
+    description: 黑名单 / 排除客户清单
+    match:
+      - basename_prefix: pcyy
+      - basename_regex: ^cust_base_info$
+      - basename_prefix: exclude_
+
+  # 支持的全部 match 字段速查：
+  #   schema_prefix / schema_exact / schema_contains
+  #   basename_prefix / basename_suffix / basename_exact / basename_contains / basename_regex
+  #   title_keyword
+  # 'basename' 指去掉 schema/owner 后的纯表名；'title' 指 target_summary[*].titles 里的业务标题。

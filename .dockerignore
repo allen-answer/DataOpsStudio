@@ -28,6 +28,8 @@ config/datasources.json
 config/tasks.json
 config/jobs.json
 config/workflows.json
+config/lineage_group_rules.yml
+config/lineage_group_rules.json
 
 # 编辑器 / 助手元数据
 .git/

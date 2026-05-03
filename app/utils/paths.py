@@ -12,6 +12,8 @@ TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 WORKFLOWS_FILE = CONFIG_DIR / "workflows.json"
 WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
+LINEAGE_GROUP_RULES_YAML = CONFIG_DIR / "lineage_group_rules.yml"
+LINEAGE_GROUP_RULES_JSON = CONFIG_DIR / "lineage_group_rules.json"
 
 
 def ensure_dirs() -> None:
