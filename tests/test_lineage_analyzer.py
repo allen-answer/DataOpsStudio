@@ -924,3 +924,76 @@ def test_table_roles_does_not_match_partial_word():
     lookup = _roles_by(result["table_roles"], "ods.decode_lookup")
     assert "dimension" not in dimsum["roles"]
     assert "reference" in lookup["roles"]
+
+
+# ─── 注释 → statement_title（Phase 7 Track B 第 6 项）─────────────────────────
+
+def test_statement_title_from_line_comment():
+    sql = """
+    -- 同步集中交易订单
+    INSERT INTO dwd.fact_order SELECT * FROM ods.order_log;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    insert = next(s for s in result["statements"] if s["type"] == "INSERT")
+    assert insert["title"] == "同步集中交易订单"
+
+
+def test_statement_title_from_block_comment():
+    sql = """
+    /* 维表更新 —— 客户基础信息 */
+    INSERT INTO dim.cust SELECT * FROM stg.cust;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    insert = next(s for s in result["statements"] if s["type"] == "INSERT")
+    assert insert["title"] == "维表更新 —— 客户基础信息"
+
+
+def test_statement_title_multiline_takes_first_nonempty_line():
+    sql = """
+    /* 全量刷新
+       说明：每周三跑
+       详见 wiki: foo */
+    INSERT INTO dim.x SELECT * FROM stg.x;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    insert = next(s for s in result["statements"] if s["type"] == "INSERT")
+    assert insert["title"] == "全量刷新"
+
+
+def test_statement_title_empty_when_no_comment():
+    sql = "INSERT INTO dim.x SELECT * FROM stg.x;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    insert = next(s for s in result["statements"] if s["type"] == "INSERT")
+    assert insert["title"] == ""
+
+
+def test_target_summary_titles_collect_all_writes_in_order():
+    sql = """
+    -- 集中交易表全量刷新
+    TRUNCATE TABLE dwd.fact_order;
+
+    -- 同步订单数据
+    INSERT INTO dwd.fact_order SELECT * FROM ods.order_log;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.fact_order")
+    assert summary["titles"] == ["集中交易表全量刷新", "同步订单数据"]
+
+
+def test_target_summary_titles_dedupes_same_comment():
+    sql = """
+    -- 同步订单数据
+    INSERT INTO dwd.f SELECT * FROM ods.a;
+    -- 同步订单数据
+    INSERT INTO dwd.f SELECT * FROM ods.b;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.f")
+    assert summary["titles"] == ["同步订单数据"]
+
+
+def test_target_summary_titles_empty_when_no_comments():
+    sql = "INSERT INTO dwd.f SELECT * FROM ods.a;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.f")
+    assert summary["titles"] == []

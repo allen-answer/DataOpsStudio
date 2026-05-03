@@ -19,6 +19,7 @@ from app.lineage._common import unique_strings as _unique_strings
 from app.lineage.aggregation import (
     aggregate_target_summary as _aggregate_target_summary,
     collect_target_operations as _collect_target_operations,
+    extract_statement_title as _extract_statement_title,
 )
 from app.lineage.clauses import filters, group_by, joins, unions
 from app.lineage.roles import identify_table_roles as _identify_table_roles
@@ -169,4 +170,5 @@ def _analyze_statement(
         "unions": unions(statement),
         "variables": variables_in_expression(statement, script_vars or []),
         "sql": sql(statement),
+        "title": _extract_statement_title(statement),
     }

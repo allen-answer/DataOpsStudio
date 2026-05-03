@@ -207,7 +207,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 3. **Oracle 方言增强**——正确处理 `/*+ parallel(...) */` hint、`table@dblink` DB Link、`SELECT ... INTO variable`、包/过程/变量赋值/游标/动态 SQL 片段；对无法静态解析的 `EXECUTE IMMEDIATE` 输出风险提示。
 4. **表角色识别** ✅ —— `app/lineage/roles.py`：结构角色（`target` / `intermediate` / `source_fact` / `remote_dblink`）+ 命名角色（`config` / `reference` / `dimension` / `filter`）。schema 段（`dim.cust` / `ref.code` / `config.t_config` / `filter.exclude_*`）和 basename（`dim_user` / `code_status` / `t_config` / `exclude_cust`）都会扫一遍，多 role 共存时 `primary_role` 按 `remote_dblink > intermediate > target > config > reference > dimension > filter > source_fact` 取一个。Oracle DB Link 表（`tab@dblink`）单独识别。输出在 `analyze_sql_lineage()` 顶层 `table_roles` 字段。
 5. **业务分组规则**——可配置规则文件 `lineage_group_rules.yml`，按表名 / schema / 注释关键词分组。示例：`a_ks_jg_*` → 机构、`a_ks_r_*` → 融资融券、`a_ks_qq_*` → 期权、`*_stock` → 持仓/市值、`t_config` / `bbq` → 配置、`pcyyyb` / `cust_base_info` → 过滤/排除。
-6. **注释利用**——提取 INSERT 前最近的中文注释作为 `statement_title`；用注释辅助业务分组和节点标签（"集中交易" / "机构柜台" / "融资融券" / "期权" / "A股主板股票"等）。
+6. **注释利用** ✅ —— `aggregation.extract_statement_title()` 从 sqlglot 节点的 `.comments` 列表里取第一段非空文本作为业务标题（截断 200 字符）。`result["statements"][i].title` 是单语句标题；`target_summary[i].titles` 是这张目标表所有写操作的标题（去重保序）。TRUNCATE 也覆盖（虽然不进 `analyses` 列表，但走 `collect_target_operations` 直扫拿 title）。后续业务分组（第 5 项）可以基于 titles 关键词匹配。
 7. **语义血缘结构** `semantic_lineage`——即使没有 AI 也输出：`procedure` / `target_summary` / `table_roles` / `business_groups` / `grouped_edges` / `observations` / `risks`。
 8. **前端两个视图**——原始血缘图（详细表/字段关系） + 语义血缘图（业务分组 → 目标中间表 → 下游消费）。AI 开启时展示 AI 增强标签；AI 关闭时展示规则分析标签。
 

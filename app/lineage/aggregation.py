@@ -28,51 +28,71 @@ _INSERT_FAMILY = frozenset({
 })
 
 
+def extract_statement_title(statement: Any) -> str:
+    """从 sqlglot 节点的 .comments 列表里挑出第一段非空文本作为业务标题。
+
+    sqlglot 把语句先行注释（行内 `--` 和 块 `/* */`）自动挂到节点的
+    `comments` 属性上；这个 helper 取第一条注释里第一行非空文本，截断
+    到 200 字符内（标题再长就不是标题了）。"""
+    comments = getattr(statement, "comments", None) or []
+    for raw in comments:
+        if raw is None:
+            continue
+        for line in str(raw).splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped[:200]
+    return ""
+
+
 def collect_target_operations(statements: list[Any]) -> list[dict[str, Any]]:
     """按 statement 顺序扫一遍，每个 DML 产出一条 op 记录。
 
     返回字段：order（脚本里的顺序，1-based）、target_table、dml_type、
-    has_where（DELETE 没 WHERE 视为全表重置）。CREATE TEMP 跳过——临时表
-    不应进 target_summary 业务视图。
+    has_where（DELETE 没 WHERE 视为全表重置）、title（前置注释第一段，
+    没注释则空）。CREATE TEMP 跳过——临时表不应进 target_summary 业务视图。
     """
     e = exp()
     ops: list[dict[str, Any]] = []
     for index, statement in enumerate(statements, start=1):
         if statement is None:
             continue
+        title = extract_statement_title(statement)
         if isinstance(statement, e.Insert):
             target = insert_target_table(statement.this)
             if target:
-                ops.append(_make_op(index, target, insert_dml_type(statement)))
+                ops.append(_make_op(index, target, insert_dml_type(statement), title=title))
         elif isinstance(statement, e.Update):
             target = _table_target(statement.this, e)
             if target:
                 ops.append(_make_op(
                     index, target, "UPDATE",
                     has_where=statement.args.get("where") is not None,
+                    title=title,
                 ))
         elif isinstance(statement, e.Merge):
             target = _table_target(statement.this, e)
             if target:
-                ops.append(_make_op(index, target, "MERGE"))
+                ops.append(_make_op(index, target, "MERGE", title=title))
         elif isinstance(statement, e.Delete):
             target = _table_target(statement.this, e)
             if target:
                 ops.append(_make_op(
                     index, target, "DELETE",
                     has_where=statement.args.get("where") is not None,
+                    title=title,
                 ))
         elif isinstance(statement, e.Create):
             if is_temp_create(statement):
                 continue
             target = create_target_table(statement)
             if target and statement.args.get("expression") is not None:
-                ops.append(_make_op(index, target, create_dml_type(statement)))
+                ops.append(_make_op(index, target, create_dml_type(statement), title=title))
         elif type(statement).__name__ == "TruncateTable":
             for table in statement.expressions or []:
                 target = _table_target(table, e)
                 if target:
-                    ops.append(_make_op(index, target, "TRUNCATE"))
+                    ops.append(_make_op(index, target, "TRUNCATE", title=title))
     return ops
 
 
@@ -109,6 +129,15 @@ def aggregate_target_summary(operations: list[dict[str, Any]]) -> list[dict[str,
             o["dml_type"] == "DELETE" and not o.get("has_where") for o in ops
         )
 
+        # 收集本目标表所有写操作的 title（去重保序，给前端展示业务含义）。
+        titles: list[str] = []
+        seen_titles: set[str] = set()
+        for op in sorted(ops, key=lambda o: o["order"]):
+            title = op.get("title") or ""
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                titles.append(title)
+
         summaries.append({
             "target_table": bucket["target_table"],
             "insert_count": insert_count,
@@ -122,16 +151,18 @@ def aggregate_target_summary(operations: list[dict[str, Any]]) -> list[dict[str,
                 insert_count, update_count, merge_count,
                 delete_before_insert, truncate_before_insert, has_full_delete,
             ),
+            "titles": titles,
         })
     return summaries
 
 
-def _make_op(order: int, target: str, dml_type: str, has_where: bool = False) -> dict[str, Any]:
+def _make_op(order: int, target: str, dml_type: str, has_where: bool = False, title: str = "") -> dict[str, Any]:
     return {
         "order": order,
         "target_table": target,
         "dml_type": dml_type,
         "has_where": has_where,
+        "title": title,
     }
 
 
