@@ -15,7 +15,7 @@ httpx>=0.27   # TestClient 依赖：starlette.testclient 通过 httpx 驱动
 APScheduler>=3.10
 
 # Optional database drivers. Install only the drivers needed by your environment.
-# dmPython
+dmPython
 pymysql
 cryptography  # Required by PyMySQL for MySQL 8 caching_sha2_password authentication.
 # oracledb

@@ -24,6 +24,7 @@ RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels
 
 FROM python:3.12-slim
 WORKDIR /app
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.12/site-packages/dmssl:/usr/local/lib/python3.12/site-packages/dmpython.libs:${LD_LIBRARY_PATH}"
 
 COPY --from=python-builder /wheels /wheels
 COPY requirements.txt .

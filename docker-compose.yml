@@ -25,6 +25,8 @@ services:
   app:
     build: .
     container_name: dataops-studio
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/dmssl:/usr/local/lib/python3.12/site-packages/dmpython.libs
     ports:
       - "8010:8010"
     volumes:
