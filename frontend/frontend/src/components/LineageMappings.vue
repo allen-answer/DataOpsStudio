@@ -7,6 +7,28 @@ const props = defineProps({
   insertMappings: { type: Array, default: () => [] },
   preset: { type: Object, default: null },
 })
+const emit = defineEmits(['focus-column'])
+
+const columnNodeId = (table, column) => {
+  let col = String(column || '').trim()
+  let tbl = String(table || '').trim()
+  if (!col) return ''
+  if (!tbl && col.includes('.')) {
+    const parts = col.split('.')
+    col = parts.pop()
+    tbl = parts.join('.')
+  }
+  return `${tbl || 'unknown'}.${col || 'unknown'}`.toLowerCase()
+}
+
+const focusColumnRow = (item) => {
+  const sourceColumn = (item.source_columns || [])[0] || ''
+  const sourceTable = (item.source_tables || [])[0] || ''
+  const nodeId = columnNodeId(item.target_table, item.target_column)
+    || columnNodeId(sourceTable, sourceColumn)
+  if (!nodeId) return
+  emit('focus-column', { nodeId, item })
+}
 
 // ---------------- 筛选：上半部分（columns）----------------
 const colSearch = ref('')
@@ -153,7 +175,7 @@ watch(
         <table>
           <thead><tr><th>输出字段</th><th>来源字段</th><th>来源表</th><th>可信度</th><th>变量</th><th>表达式</th></tr></thead>
           <tbody>
-            <tr v-for="item in filteredColumns" :key="item.output_column + item.expression">
+            <tr v-for="item in filteredColumns" :key="item.output_column + item.expression" class="cursor-pointer hover:bg-violet-50/60" @click="focusColumnRow(item)">
               <td>{{ item.output_column }}</td>
               <td>{{ item.source_columns.join(', ') }}</td>
               <td>{{ item.source_tables.join(', ') }}</td>
@@ -211,7 +233,7 @@ watch(
         <table>
           <thead><tr><th>目标表</th><th>目标字段</th><th>来源字段</th><th>来源表</th><th>可信度</th><th>处理逻辑</th></tr></thead>
           <tbody>
-            <tr v-for="item in filteredMappings" :key="item.target_table + item.target_column + item.position">
+            <tr v-for="item in filteredMappings" :key="item.target_table + item.target_column + item.position" class="cursor-pointer hover:bg-violet-50/60" @click="focusColumnRow(item)">
               <td>{{ item.target_table }}</td>
               <td>{{ item.target_column }}</td>
               <td>{{ item.source_columns.join(', ') }}</td>
