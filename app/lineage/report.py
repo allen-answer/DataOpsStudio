@@ -143,8 +143,11 @@ def _build_single_report(result: dict[str, Any]) -> dict[str, Any]:
 def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
     """多脚本：从 analyze_lineage_batch 的 result 抽出统一报告。
 
-    没有 procedure_segments / semantic_lineage —— batch 走的是文件粒度聚合，
-    process_steps 暂为空（后续可从每个文件的子 result 累加）。
+    process_steps 按脚本聚合：
+    - 文件含 procedure_segments → 每段一条 step（带行号 + 业务标题 + parse_status）
+    - 否则从 statements 派生（顶层 INSERT/UPDATE/MERGE/DELETE/TRUNCATE 等也出 step，
+      不带行号，但带 statement_index + 业务标题）
+    解析失败的文件没有 segments / statements，自然不出现 —— 不影响其它文件。
     """
     files_in = result.get("files", []) or []
     table_edges = list(result.get("table_edges", []) or [])
@@ -192,6 +195,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
 
     column_edges = _column_edges_from_field_mappings(field_mappings)
     risks = _risks_from_warnings(result.get("warnings", []) or [])
+    process_steps = _process_steps_from_files(files_in)
 
     files_out = [
         {
@@ -209,7 +213,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             "input_count": len(inputs),
             "output_count": len(outputs),
-            "process_step_count": 0,  # batch 暂未做 step 累加
+            "process_step_count": len(process_steps),
             "table_edge_count": len(table_edges),
             "column_edge_count": len(column_edges),
             "risk_count": len(risks),
@@ -219,7 +223,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
         },
         "inputs": inputs,
         "outputs": outputs,
-        "process_steps": [],
+        "process_steps": process_steps,
         "table_edges": table_edges,
         "column_edges": column_edges,
         "semantic_lineage": None,
@@ -252,6 +256,42 @@ def _groups_for_table(name: str, business_groups: list[dict[str, Any]]) -> list[
         if name.lower() in tables:
             out.append(g.get("name", ""))
     return [n for n in out if n]
+
+
+def _process_steps_from_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """多脚本：每个文件的 procedure_segments + 顶层 statements 转成统一 step 列表。
+
+    优先级：文件有 procedure_segments → 全部走 segments（带行号 + parse_status 更准）；
+    否则用 statements 兜底（顶层 INSERT/UPDATE/etc 一条一条来）。
+    file_name 一定带上，前端 LineageStepsPanel 按它分组 / 过滤。
+    """
+    DML_TYPES = {"INSERT", "UPDATE", "MERGE", "DELETE", "TRUNCATE", "SELECT", "WITH", "REPLACE", "CREATE"}
+    steps: list[dict[str, Any]] = []
+    for f in files:
+        if f.get("status") != "成功":
+            # 解析失败的文件没有可信的 step；warning 已经在 risks 里了
+            continue
+        segs = f.get("procedure_segments", []) or []
+        if segs:
+            steps.extend(_process_steps_from_segments(segs))
+            continue
+        file_name = f.get("file_name", "") or ""
+        for st in f.get("statements", []) or []:
+            stype = (st.get("type", "") or "").upper()
+            if stype not in DML_TYPES:
+                continue
+            steps.append({
+                "file_name": file_name,
+                "procedure_name": "",
+                "kind": "",
+                "segment_index": st.get("statement_index", ""),
+                "dml_keyword": stype,
+                "line_start": None,
+                "line_end": None,
+                "preceding_comment": st.get("title", "") or "",
+                "parse_status": "parsed",
+            })
+    return steps
 
 
 def _process_steps_from_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:

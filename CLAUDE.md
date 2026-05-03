@@ -274,7 +274,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 
 1. **LineageGraph chunk 拆包** —— 当前 `LineageGraph-*.js` 1.4 MB / gzip 409 KB（`@antv/g6` 主体）。已用 `defineAsyncComponent` 懒加载，但仍是单个大 chunk。考虑 G6 按需 import（不要全量拉 `@antv/g6`），或拆 worker。
 2. **TopBar 搜索 / 通知占位按钮** —— 当前仅图标 + tooltip "暂未实现"。产品化时三选一：(a) 隐藏；(b) 禁用置灰；(c) 补真实功能（如 sidebar 项搜索 / 异步任务通知中心）。
-3. **多脚本 report.process_steps 当前为空** —— `_build_batch_report()` 没把每个文件的 `procedure_segments` 累加进 `process_steps`。改 `batch_analyzer` 在调 `analyze_sql_lineage` 后保留 `procedure_segments` 进 file 子结果，再在 `report.py` 聚合。
+3. ~~**多脚本 report.process_steps 当前为空**~~ ✅ —— `batch_analyzer` 在每个文件 file 子结果里保留 `procedure_segments`（注入 `file_name`）+ `statements`（精简版：type/title/statement_index）。`report._build_batch_report` 优先消费 procedure_segments（有行号），否则从 statements 兜底，让顶层 INSERT/UPDATE 也出 step。`summary.process_step_count` 与 list 长度同步。
 4. **DataCompare 预览样例 mojibake** —— `[MySQL] 用户表对比` 任务预览出 `name="å¼ ä¸‰"`（"张三" GBK→UTF-8 mojibake）。检查 init_db/01_init.sql 的字符集声明 + dbclients 连接串 `charset=utf8mb4`。
 5. **Excel/SQL 混合输入逻辑** —— Phase 2 把 DataCompare 拆成步骤式工作台，但 SQL vs Excel / Excel vs SQL / Excel vs Excel 三种交叉模式的字段映射、主键推荐、流式对比限制还没专门校验。下一轮先做交互校验，不再继续 UI 美化。
 6. **e2e 浏览器 smoke 缺 fixture** —— Docker 镜像里 `tests/e2e/` 跑不起来，原因是 `pytest-playwright` 的 `page` fixture 没注册（基础镜像没装 playwright + 没装浏览器内核）。CI / 本地 Docker 想跑浏览器 smoke 需要在 Dockerfile 加 `pip install playwright pytest-playwright && playwright install chromium`，或者只在 Linux runner 上有条件执行。当前 e2e 框架代码已落地，只是没启用。

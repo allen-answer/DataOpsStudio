@@ -64,6 +64,22 @@ def analyze_lineage_batch(
         mappings = result.get("insert_mappings", [])
         file_warnings.extend(_lineage_warnings(result))
 
+        # 给 procedure_segments 注入 file_name —— 下游 report.process_steps 需要按
+        # 脚本聚合，前端 LineageStepsPanel 也按 file_name 过滤。
+        file_procedure_segments = [
+            {**seg, "file_name": script.file_name}
+            for seg in (result.get("procedure_segments", []) or [])
+        ]
+        # statements 派生 step 兜底 —— 顶层 SQL（非 procedure 包裹）也要在"处理过程"
+        # tab 里能看到。只保留类型/标题/索引，避免把整个 analysis dict 塞进 batch result。
+        file_statements = [
+            {
+                "statement_index": idx + 1,
+                "type": (st.get("type", "") or "").upper(),
+                "title": st.get("title", "") or "",
+            }
+            for idx, st in enumerate(result.get("statements", []) or [])
+        ]
         files.append(
             {
                 "file_name": script.file_name,
@@ -75,6 +91,8 @@ def analyze_lineage_batch(
                 "status": "成功",
                 "error": "",
                 "warnings": file_warnings,
+                "procedure_segments": file_procedure_segments,
+                "statements": file_statements,
             }
         )
         warnings.extend({"file_name": script.file_name, **item} for item in file_warnings)

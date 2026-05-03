@@ -188,6 +188,101 @@ def test_batch_report_summary_consistency():
     assert s["output_count"] == len(result["report"]["outputs"])
 
 
+# ─── 多脚本 process_steps 聚合测试 ───────────────────────────────────────────
+
+
+def test_batch_report_aggregates_process_steps_from_top_level_inserts():
+    """普通 INSERT（非 procedure）也应出现在 process_steps，并带 file_name。"""
+    scripts = [
+        ScriptInput("ingest_a.sql", "INSERT INTO dw.t1 SELECT id, name FROM ods.x;"),
+        ScriptInput("ingest_b.sql", "INSERT INTO dw.t2 SELECT a, b FROM ods.y; UPDATE dw.t2 SET a = a + 1;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    steps = result["report"]["process_steps"]
+    assert steps, "顶层 INSERT 应该派生 step"
+    file_names = {s["file_name"] for s in steps}
+    assert "ingest_a.sql" in file_names
+    assert "ingest_b.sql" in file_names
+    keywords_a = [s["dml_keyword"] for s in steps if s["file_name"] == "ingest_a.sql"]
+    assert "INSERT" in keywords_a
+    keywords_b = [s["dml_keyword"] for s in steps if s["file_name"] == "ingest_b.sql"]
+    assert "INSERT" in keywords_b
+    assert "UPDATE" in keywords_b
+    # 顶层 step 不带 line_start，但字段应存在（None）
+    for s in steps:
+        assert "line_start" in s
+        assert "line_end" in s
+        assert s["parse_status"] == "parsed"
+
+
+def test_batch_report_preserves_procedure_segments_with_file_name_and_lines():
+    """Oracle procedure 的 step 必须保留 file_name + 行号 + 业务标题。"""
+    proc_sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  -- 集中交易
+  INSERT INTO cispnew.t_jy SELECT * FROM stg.jy;
+  -- 资金流水
+  INSERT INTO cispnew.t_zj SELECT * FROM stg.zj;
+END;
+"""
+    scripts = [
+        ScriptInput("pkg_etl.sql", proc_sql),
+        ScriptInput("plain.sql", "INSERT INTO dw.flat SELECT * FROM stg.flat;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="oracle")
+    steps = result["report"]["process_steps"]
+    proc_steps = [s for s in steps if s["file_name"] == "pkg_etl.sql"]
+    assert len(proc_steps) >= 2, "procedure 内的两条 INSERT 都应出 step"
+    assert all(s["line_start"] for s in proc_steps), "procedure step 要带行号"
+    titles = [s["preceding_comment"] for s in proc_steps if s["preceding_comment"]]
+    assert any("集中交易" in t for t in titles)
+    assert any("资金流水" in t for t in titles)
+    # 顶层文件 plain.sql 也得在
+    plain_steps = [s for s in steps if s["file_name"] == "plain.sql"]
+    assert plain_steps and plain_steps[0]["dml_keyword"] == "INSERT"
+
+
+def test_batch_report_parse_failure_does_not_swallow_other_files():
+    """一个文件解析失败，不应影响其它文件的 process_steps。"""
+    scripts = [
+        ScriptInput("bad.sql", "totally not valid SQL with !@#$%^&*();"),
+        ScriptInput("good.sql", "INSERT INTO dw.ok SELECT id FROM ods.src;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    steps = result["report"]["process_steps"]
+    file_names = {s["file_name"] for s in steps}
+    # 失败文件不出 step
+    assert "bad.sql" not in file_names
+    # 成功文件仍出 step
+    assert "good.sql" in file_names
+
+
+def test_batch_report_process_step_count_matches_list_length():
+    scripts = [
+        ScriptInput("a.sql", "INSERT INTO dw.t SELECT * FROM ods.s; UPDATE dw.t SET a = 1;"),
+        ScriptInput("b.sql", "DELETE FROM dw.t WHERE x = 1;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    report = result["report"]
+    assert report["summary"]["process_step_count"] == len(report["process_steps"])
+
+
+def test_batch_result_field_compat_unchanged():
+    """新增字段不能破坏既有顶层字段（table_edges / script_edges / impact_analysis）。"""
+    scripts = [
+        ScriptInput("a.sql", "INSERT INTO dw.t1 SELECT id, name FROM ods.x;"),
+        ScriptInput("b.sql", "INSERT INTO dw.t2 SELECT id FROM dw.t1;"),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="mysql")
+    # 既有顶层字段都还在
+    for key in ("table_edges", "script_edges", "impact_analysis", "files", "summary", "warnings"):
+        assert key in result, f"既有字段 {key} 不应丢失"
+    assert result["table_edges"]
+    assert any(e["table"] == "dw.t1" for e in result["script_edges"])
+    assert "ods.x" in result["impact_analysis"]
+
+
 # ─── 真实 fixture 回归 ────────────────────────────────────────────────────────
 
 
