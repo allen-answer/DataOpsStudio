@@ -1,23 +1,31 @@
 /**
- * Compare task store —— Pinia 化第三步。
+ * Compare task store —— task workbench 完整状态 + handlers。
  *
- * 持有"task workbench 自己的"那一块状态：
- *   - taskDraft（保存按钮前的表单）
- *   - selectedTaskId / 异步执行状态（asyncJob / asyncStatus）
- *   - 字段选择器（sourceFields / targetFields → fieldPickerRows）
- *   - 单次执行结果 + preview cache
+ * 状态：
+ *   - taskDraft / selectedTaskId / 字段选择器 / preview cache / 异步 job
+ *   - currentTask / isSavedTask / taskValidation / canSaveTask computed
  *
- * 不持有：
- *   - state.tasks（task 列表）、state.datasources —— 仍由 App.vue 顶层 state
- *     reactive 持有。本轮先把"工作台 state"抽出，list 来源后续轮次再迁。
- *
- * Handler（saveTask / runTask / selectTask 等）暂留在 App.vue —— 它们依赖
- * loadBootstrap / state.tasks，搬过来要把整个 bootstrap 流也迁。这一轮只做
- * "drop 状态 + utility"，handler 调 store 暴露的 fillDraft / taskPayload。
+ * Handlers（saveTask / runTask / runAsync / etc.）：
+ *   - 跨 store 通过 useNoticeStore + useBootstrapStore 协调
+ *   - apiJson/apiGet/apiForm 在 store 内 import
+ *   - 不再依赖 App.vue 注入的回调
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { apiForm, apiGet, apiJson } from '../api'
 import { validateTaskDraft } from '../utils/taskValidation'
+import { useBootstrapStore } from './bootstrap'
+import { useNoticeStore } from './notice'
+
+function _toErrorMessage(error) {
+  return error?.message || String(error || '未知错误')
+}
+
+// 主键名称启发式：xxx_id / xxx_no / xxx_code / xxx_key 优先；id / pk / no 也算
+const ID_LIKE_RE = /(^|_)(id|pk|key|no|code|sn|uuid|guid)$/i
+function _pickKeyCandidates(fields) {
+  return fields.filter(c => ID_LIKE_RE.test(c))
+}
 
 
 const DEFAULT_DRAFT = () => ({
@@ -248,6 +256,308 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  // currentTask 依赖 bootstrap.state.tasks
+  const currentTask = computed(() => {
+    const bootstrap = useBootstrapStore()
+    return bootstrap.state.tasks.find((task) => task.id === selectedTaskId.value)
+  })
+
+  // ─── Handlers（跨 store 协调） ───────────────────────────────────────────────
+
+  function selectTask(id) {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    stopAsyncPoll()
+    selectedTaskId.value = id
+    resetSelectionState()
+    notice.setActionStatus(
+      id === 'new' ? 'idle' : 'ready',
+      id === 'new' ? '新建任务' : '任务已载入',
+      id === 'new' ? '填写任务信息后点击保存任务。' : '可以执行、预览、后台执行或复制当前任务。',
+    )
+    const datasourcesFallback = bootstrap.state.datasources[0]?.id || ''
+    const targetTask = id === 'new' ? null : bootstrap.state.tasks.find((task) => task.id === id)
+    fillDraft(targetTask, datasourcesFallback)
+  }
+
+  async function saveTask() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    if (!canSaveTask.value) {
+      const errs = taskValidationIssues.value.filter(i => i.level === 'error')
+      const head = errs[0]?.message || '配置不完整'
+      const more = errs.length > 1 ? `（共 ${errs.length} 项问题）` : ''
+      notice.setNotice(`保存被拦截：${head}${more}`)
+      notice.setActionStatus('error', '保存被拦截', `${head}${more}`)
+      return
+    }
+    notice.setNotice('保存中...')
+    notice.setActionStatus('running', '正在保存任务', '正在校验数据源、SQL 和主键配置。')
+    try {
+      if (selectedTaskId.value === 'new') {
+        const created = await apiJson('/api/tasks', 'POST', taskPayload())
+        bootstrap.state.tasks.unshift(created)
+        selectTask(created.id)
+      } else {
+        const updated = await apiJson(`/api/tasks/${selectedTaskId.value}`, 'PUT', taskPayload())
+        const index = bootstrap.state.tasks.findIndex((task) => task.id === selectedTaskId.value)
+        if (index !== -1) bootstrap.state.tasks[index] = updated
+      }
+      notice.setNotice('任务已保存')
+      notice.setActionStatus('success', '任务已保存', '现在可以执行对比、预览或后台执行。')
+    } catch (error) {
+      notice.setNotice('保存失败')
+      previewOutput.value = _toErrorMessage(error)
+      notice.setActionStatus('error', '保存失败', _toErrorMessage(error))
+    }
+  }
+
+  async function deleteTask() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    if (selectedTaskId.value === 'new') return
+    notice.setActionStatus('running', '正在删除任务')
+    try {
+      await apiJson(`/api/tasks/${selectedTaskId.value}`, 'DELETE')
+      bootstrap.state.tasks = bootstrap.state.tasks.filter((task) => task.id !== selectedTaskId.value)
+      selectTask(bootstrap.state.tasks[0]?.id || 'new')
+      notice.setActionStatus('success', '任务已删除')
+    } catch (error) {
+      previewOutput.value = _toErrorMessage(error)
+      notice.setActionStatus('error', '删除失败', _toErrorMessage(error))
+    }
+  }
+
+  async function copyTask() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    if (selectedTaskId.value === 'new') return
+    notice.setActionStatus('running', '正在复制任务', currentTask.value?.name || '')
+    try {
+      const copied = await apiJson(`/api/tasks/${selectedTaskId.value}/copy`, 'POST')
+      bootstrap.state.tasks.unshift(copied)
+      selectTask(copied.id)
+      notice.setActionStatus('success', '任务已复制', `已创建：${copied.name}`)
+    } catch (error) {
+      previewOutput.value = _toErrorMessage(error)
+      notice.setActionStatus('error', '复制失败', _toErrorMessage(error))
+    }
+  }
+
+  async function uploadExcel(side, file) {
+    const notice = useNoticeStore()
+    if (!file) return
+    notice.setActionStatus('running', `上传 ${side === 'source' ? '源' : '目标'} Excel`, file.name)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await apiForm('/api/uploads/excel', form)
+      const prefix = side === 'source' ? 'source' : 'target'
+      taskDraft[`${prefix}_excel_path`] = response.path
+      taskDraft[`${prefix}_excel_filename`] = response.filename
+      taskDraft[`${prefix}_excel_sheets`] = response.sheets
+      if (!taskDraft[`${prefix}_sheet`] && response.sheets.length) {
+        taskDraft[`${prefix}_sheet`] = response.sheets[0]
+      }
+      notice.setActionStatus('success', 'Excel 已上传', `${response.filename} · ${response.sheets.length} 个 sheet`)
+    } catch (error) {
+      notice.setActionStatus('error', 'Excel 上传失败', _toErrorMessage(error))
+    }
+  }
+
+  async function runTask() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    if (selectedTaskId.value === 'new') return
+    asyncStatus.value = null
+    previewOutput.value = '执行中...'
+    notice.setActionStatus('running', '正在执行对比', '查询源/目标数据并生成 JSON、Excel 结果。')
+    try {
+      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/run`, 'POST')
+      compareResult.value = result
+      previewOutput.value = JSON.stringify(result, null, 2)
+      const s = result.summary || {}
+      notice.setActionStatus(
+        'success', '对比完成',
+        `only_source=${s.only_source ?? 0}，only_target=${s.only_target ?? 0}，diff=${s.diff ?? 0}，same=${s.same ?? 0}`,
+      )
+      // 历史列表刷新（保留当前 task 选择）
+      await bootstrap.reload()
+    } catch (error) {
+      previewOutput.value = _toErrorMessage(error)
+      notice.setActionStatus('error', '执行失败', _toErrorMessage(error))
+    }
+  }
+
+  async function runAsync() {
+    const notice = useNoticeStore()
+    const bootstrap = useBootstrapStore()
+    if (selectedTaskId.value === 'new') return
+    previewOutput.value = ''
+    notice.setActionStatus('running', '正在提交后台任务')
+    try {
+      asyncJob.value = await apiJson(`/api/tasks/${selectedTaskId.value}/run-async`, 'POST')
+      asyncStatus.value = asyncJob.value
+      notice.setActionStatus('running', '后台任务已提交', `任务号：${asyncJob.value.job_id}`)
+      asyncPollTimer.value = setInterval(async () => {
+        try {
+          asyncStatus.value = await apiGet(`/api/runs/${asyncJob.value.job_id}`)
+          if (asyncStatus.value.status === 'success' && asyncStatus.value.result) {
+            compareResult.value = asyncStatus.value.result
+          }
+          const terminal = ['success', 'failed', 'cancelled'].includes(asyncStatus.value.status)
+          notice.setActionStatus(
+            terminal ? (asyncStatus.value.status === 'success' ? 'success' : 'error') : 'running',
+            `后台任务状态：${asyncStatus.value.status}`,
+            asyncStatus.value.error || `阶段：${asyncStatus.value.stage || '运行中'}`,
+          )
+          if (terminal) {
+            stopAsyncPoll()
+            await bootstrap.reload()
+          }
+        } catch (error) {
+          stopAsyncPoll()
+          notice.setActionStatus('error', '后台状态查询失败', _toErrorMessage(error))
+        }
+      }, 1200)
+    } catch (error) {
+      asyncStatus.value = null
+      notice.setActionStatus('error', '后台任务提交失败', _toErrorMessage(error))
+    }
+  }
+
+  async function cancelAsync() {
+    const notice = useNoticeStore()
+    if (!asyncJob.value) return
+    notice.setActionStatus('running', '正在取消后台任务')
+    try {
+      asyncStatus.value = await apiJson(`/api/runs/${asyncJob.value.job_id}/cancel`, 'POST')
+      notice.setActionStatus('success', '已发送取消请求', '后台任务会在当前安全阶段结束后停止。')
+    } catch (error) {
+      notice.setActionStatus('error', '取消失败', _toErrorMessage(error))
+    }
+  }
+
+  async function previewTask(side) {
+    const notice = useNoticeStore()
+    if (selectedTaskId.value === 'new') return
+    const previewRef = side === 'source' ? sourcePreviewData : targetPreviewData
+    previewRef.value = { loading: true }
+    const sql = side === 'target' && taskDraft.sql_mode === 'double' ? taskDraft.target_sql : taskDraft.source_sql
+    const datasourceId = side === 'target' ? taskDraft.target_id : taskDraft.source_id
+    notice.setActionStatus('running', side === 'target' ? '正在预览目标数据' : '正在预览源数据')
+    try {
+      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/preview`, 'POST',
+        { side, sql, datasource_id: datasourceId, limit: 3 })
+      previewRef.value = result
+      notice.setActionStatus('success', '预览完成', `返回 ${result.rows?.length ?? 0} 行`)
+    } catch (error) {
+      previewRef.value = { error: _toErrorMessage(error) }
+      notice.setActionStatus('error', '预览失败', _toErrorMessage(error))
+    }
+  }
+
+  async function extractFields(side) {
+    const notice = useNoticeStore()
+    const kind = taskDraft[`${side}_kind`] || 'sql'
+    notice.setActionStatus('running', '正在提取字段')
+    try {
+      let columns = []
+      if (kind === 'excel') {
+        const result = await apiJson('/api/preview/columns', 'POST', {
+          kind: 'excel',
+          excel_path: taskDraft[`${side}_excel_path`],
+          sheet: taskDraft[`${side}_sheet`],
+          header_row: Number(taskDraft[`${side}_header_row`]) || 1,
+        })
+        columns = result.columns || []
+      } else {
+        const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
+        const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
+        columns = (data.output_columns || []).filter(c => !c.includes('*'))
+        if (columns.length === 0) {
+          notice.setActionStatus('running', 'SELECT * 检测到，正在查询数据库获取字段...')
+          const result = await apiJson('/api/preview/columns', 'POST', {
+            kind: 'sql',
+            datasource_id: side === 'source' ? taskDraft.source_id : taskDraft.target_id,
+            sql,
+          })
+          columns = result.columns || []
+        }
+      }
+      if (side === 'source') sourceFields.value = columns
+      else targetFields.value = columns
+      notice.setActionStatus('success', '字段提取完成', `识别字段 ${columns.length} 个`)
+    } catch (error) {
+      notice.setActionStatus('error', '字段提取失败', _toErrorMessage(error))
+    }
+  }
+
+  async function recommendKey() {
+    const notice = useNoticeStore()
+    notice.setActionStatus('running', '正在推荐主键')
+    try {
+      const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
+      const targetSet = new Set(targetFields.value.map(normalizeColumn))
+      if (sourceSet.size && targetSet.size) {
+        const intersect = sourceFields.value.filter(c => targetSet.has(normalizeColumn(c)))
+        const candidates = _pickKeyCandidates(intersect)
+        if (candidates.length) {
+          taskDraft.key_columns = candidates.join(', ')
+          notice.setActionStatus('success', '主键推荐完成', `从两侧交集挑选：${candidates.join(', ')}`)
+          return
+        }
+        if (intersect.length) {
+          taskDraft.key_columns = intersect[0]
+          notice.setActionStatus('warning', '主键候选有限',
+            `两侧字段交集中未识别到 id 类命名；已临时填入 ${intersect[0]}，请确认后修改`)
+          return
+        }
+        notice.setActionStatus('error', '无法推荐主键',
+          '源字段与目标字段没有交集；先在「字段映射」做列对齐，或检查两侧 schema')
+        return
+      }
+      // 退回旧路径：source 是 SQL 时让 sqlglot 抽
+      if (taskDraft.source_kind === 'sql' && taskDraft.source_sql) {
+        const data = await apiJson('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
+        if (data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
+        notice.setActionStatus('success', '主键推荐完成', `推荐：${data.key_candidates?.join(', ') || '无候选'}`)
+        return
+      }
+      if (sourceFields.value.length) {
+        const candidates = _pickKeyCandidates(sourceFields.value)
+        if (candidates.length) {
+          taskDraft.key_columns = candidates.join(', ')
+          notice.setActionStatus('success', '主键推荐完成', `从源字段挑选：${candidates.join(', ')}`)
+          return
+        }
+      }
+      notice.setActionStatus('error', '无法推荐主键',
+        '请先在「数据来源」点击两侧的「提取字段」加载列名，或手动填主键')
+    } catch (error) {
+      notice.setActionStatus('error', '主键推荐失败', _toErrorMessage(error))
+    }
+  }
+
+  async function formatSql(side) {
+    const notice = useNoticeStore()
+    const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
+    notice.setActionStatus('running', '正在格式化 SQL')
+    try {
+      const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
+      if (side === 'source') {
+        taskDraft.source_sql = data.formatted_sql || taskDraft.source_sql
+      } else {
+        taskDraft.target_sql = data.formatted_sql || taskDraft.target_sql
+      }
+      previewOutput.value = JSON.stringify(data, null, 2)
+      notice.setActionStatus('success', 'SQL 已格式化')
+    } catch (error) {
+      previewOutput.value = _toErrorMessage(error)
+      notice.setActionStatus('error', 'SQL 格式化失败', _toErrorMessage(error))
+    }
+  }
+
   return {
     // state
     taskDraft, selectedTaskId,
@@ -257,10 +567,17 @@ export const useTaskStore = defineStore('task', () => {
     // computed
     ignoredColumnSet, fieldPickerRows, fieldPickerHasFields,
     taskValidation, taskValidationIssues, canSaveTask, isSavedTask,
+    currentTask,
     // utility
     normalizeColumn, parseCsv, parseMappings,
-    // actions
+    // field picker actions
     toggleFieldIncluded, fieldPickerSelectAll, fieldPickerExcludeOneSided,
+    // draft helpers
     fillDraft, taskPayload, resetSelectionState, stopAsyncPoll,
+    // workbench handlers
+    selectTask, saveTask, deleteTask, copyTask,
+    runTask, runAsync, cancelAsync, previewTask,
+    extractFields, recommendKey, formatSql,
+    uploadExcel,
   }
 })
