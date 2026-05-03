@@ -1,9 +1,11 @@
 /**
  * Batch lineage store —— 多脚本血缘分析工作台 state（batch reactive）+
- * batchActiveTab + batchTabs 元数据 + batchSelectedFileNames computed。
+ * batchActiveTab + batchTabs 元数据 + batchSelectedFileNames computed +
+ * analyzeBatch handler（form upload）。
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { apiForm } from '../api'
 
 
 function makeBatchDraft() {
@@ -46,9 +48,30 @@ export const useBatchStore = defineStore('batch', () => {
     batch.error = ''
   }
 
+  async function analyzeBatch() {
+    batch.error = ''
+    batch.result = null
+    const form = new FormData()
+    form.append('dialect', batch.dialect)
+    form.append('schema_datasource_id', batch.schemaDatasourceId)
+    form.append('schema_name', batch.schemaName)
+    form.append('schema_table_filter', batch.schemaTableFilter)
+    form.append('schema_only_sql_tables', batch.schemaOnlySqlTables ? 'true' : '')
+    form.append('schema_dialect', batch.schemaDialect)
+    batch.files.forEach((file) => form.append('sql_files', file))
+    batch.schemaFiles.forEach((file) => form.append('schema_file', file))
+    try {
+      const payload = await apiForm('/api/lineage/batch/analyze', form)
+      batch.result = payload.result
+      batch.exports = payload.exports
+    } catch (error) {
+      batch.error = error.message
+    }
+  }
+
   return {
     batch, batchActiveTab, batchTabs: BATCH_TABS,
     batchSelectedFileNames,
-    resetResult,
+    resetResult, analyzeBatch,
   }
 })

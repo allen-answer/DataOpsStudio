@@ -191,15 +191,9 @@ const loadHistory = async () => {
   selectedHistory.value = new Set()
 }
 
-const deleteHistory = async (runId) => {
-  try {
-    await apiJson(`/api/history/${runId}`, 'DELETE')
-    state.history = state.history.filter(h => h.run_id !== runId)
-    selectedHistory.value.delete(runId)
-  } catch (error) {
-    setNotice(`删除失败：${toErrorMessage(error)}`)
-  }
-}
+// deleteHistory / exportHistory 已迁到 useHistoryStore
+const deleteHistory = historyStore.deleteHistory
+const exportHistory = historyStore.exportHistory
 
 // taskPayload / fillDraft 已迁到 useTaskStore；fillDraft 接受 fallbackDatasourceId
 // 用于"任务里 source_id 为空时退回首个数据源"。
@@ -963,96 +957,16 @@ const cancelWorkflowAsync = async () => {
 const startEditDatasource = datasourceStore.startEditDatasource
 const cancelEditDatasource = datasourceStore.cancelEditDatasource
 
-const updateDatasource = async (id) => {
-  try {
-    const updated = await apiJson(`/api/datasources/${id}`, 'PUT', editDraft.value)
-    const idx = state.datasources.findIndex(d => d.id === id)
-    if (idx !== -1) state.datasources[idx] = updated
-    editingDatasourceId.value = ''
-    setNotice('数据源已更新')
-  } catch (error) {
-    setNotice(`更新失败：${toErrorMessage(error)}`)
-  }
-}
+// datasource CRUD handlers 已迁到 useDatasourceStore（顶部解构）。createDatasource
+// 不再触发 loadBootstrap → 修复了"创建数据源会跳转到第一个任务"的副作用。
+const createDatasource = datasourceStore.createDatasource
+const updateDatasource = datasourceStore.updateDatasource
+const deleteDatasource = datasourceStore.deleteDatasource
+const testDatasource = datasourceStore.testDatasource
 
-const deleteDatasource = async (id) => {
-  try {
-    await apiJson(`/api/datasources/${id}`, 'DELETE')
-    state.datasources = state.datasources.filter(d => d.id !== id)
-    setNotice('数据源已删除')
-  } catch (error) {
-    setNotice(`删除失败：${toErrorMessage(error)}`)
-  }
-}
-
-const createDatasource = async () => {
-  await apiJson('/api/datasources', 'POST', datasourceDraft.value)
-  datasourceStore.resetDatasourceDraft()
-  await loadBootstrap()
-}
-
-const testDatasource = async (id) => {
-  try {
-    await apiJson(`/api/datasources/${id}/test`, 'POST')
-    setNotice('连接成功')
-  } catch (error) {
-    setNotice(`连接失败：${toErrorMessage(error)}`)
-  }
-}
-
-const analyzeLineage = async () => {
-  lineage.error = ''
-  lineage.result = null
-  try {
-    if (lineage.sqlFile || lineage.schemaFiles.length) {
-      const form = new FormData()
-      form.append('sql', lineage.sql)
-      form.append('dialect', lineage.dialect)
-      form.append('schema_datasource_id', lineage.schemaDatasourceId)
-      form.append('schema_name', lineage.schemaName)
-      form.append('schema_table_filter', lineage.schemaTableFilter)
-      form.append('schema_only_sql_tables', lineage.schemaOnlySqlTables ? 'true' : '')
-      form.append('schema_dialect', lineage.schemaDialect)
-      if (lineage.sqlFile) form.append('sql_file', lineage.sqlFile)
-      lineage.schemaFiles.forEach((file) => form.append('schema_file', file))
-      lineage.result = await apiForm('/api/lineage/analyze-form', form)
-    } else {
-      lineage.result = await apiJson('/api/lineage/analyze', 'POST', {
-        sql: lineage.sql,
-        dialect: lineage.dialect,
-        schema_datasource_id: lineage.schemaDatasourceId,
-        schema_name: lineage.schemaName,
-        schema_table_filter: lineage.schemaTableFilter,
-        schema_only_sql_tables: lineage.schemaOnlySqlTables ? 'true' : '',
-        schema_dialect: lineage.schemaDialect,
-        schema: '',
-      })
-    }
-  } catch (error) {
-    lineage.error = error.message
-  }
-}
-
-const analyzeBatch = async () => {
-  batch.error = ''
-  batch.result = null
-  const form = new FormData()
-  form.append('dialect', batch.dialect)
-  form.append('schema_datasource_id', batch.schemaDatasourceId)
-  form.append('schema_name', batch.schemaName)
-  form.append('schema_table_filter', batch.schemaTableFilter)
-  form.append('schema_only_sql_tables', batch.schemaOnlySqlTables ? 'true' : '')
-  form.append('schema_dialect', batch.schemaDialect)
-  batch.files.forEach((file) => form.append('sql_files', file))
-  batch.schemaFiles.forEach((file) => form.append('schema_file', file))
-  try {
-    const payload = await apiForm('/api/lineage/batch/analyze', form)
-    batch.result = payload.result
-    batch.exports = payload.exports
-  } catch (error) {
-    batch.error = error.message
-  }
-}
+// analyzeLineage / analyzeBatch 已迁到对应 store
+const analyzeLineage = lineageStore.analyzeLineage
+const analyzeBatch = batchStore.analyzeBatch
 
 // 含密码导出 —— 二次确认弹窗，避免误点把明文密码导出去。
 const confirmIncludePasswords = (event) => {
@@ -1061,42 +975,7 @@ const confirmIncludePasswords = (event) => {
   }
 }
 
-const exportHistory = async () => {
-  if (!selectedHistory.value.size) {
-    setNotice('请先选择要导出的历史记录')
-    return
-  }
-  const form = new FormData()
-  Array.from(selectedHistory.value).forEach((id) => form.append('run_ids', id))
-  Array.from(selectedSheets.value).forEach((sheet) => form.append('sheet_names', sheet))
-  let response
-  try {
-    response = await fetch('/history/export', { method: 'POST', body: form })
-  } catch (error) {
-    setNotice(`导出失败：${toErrorMessage(error)}`)
-    return
-  }
-  if (!response.ok) {
-    setNotice(`导出失败：${await response.text()}`)
-    return
-  }
-  // 从 Content-Disposition 抽 filename；后端走 FastAPI FileResponse 会给。
-  // 兜底：用时间戳避免文件名空。注意不能直接 window.open(blobUrl) —— 浏览器
-  // 会按 inline 渲染 .xlsx 二进制成乱码，必须主动 <a download> 触发下载。
-  const disposition = response.headers.get('Content-Disposition') || ''
-  const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
-  const filename = match ? decodeURIComponent(match[1]) : `history_export_${Date.now()}.xlsx`
-  const blob = await response.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  // 让浏览器有机会启动下载，再回收 URL。延后些避免 Edge 偶发 download 中断。
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
+// exportHistory 迁到 useHistoryStore（顶部已挂同名 alias）
 
 // 切路由时停掉所有轮询定时器，避免离开页面后还在打 API
 watch(() => route.path, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })

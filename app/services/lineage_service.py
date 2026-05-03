@@ -12,6 +12,7 @@ from fastapi import HTTPException, UploadFile
 from app.lineage.analyzer import analyze_sql_lineage
 from app.lineage.batch_analyzer import ScriptInput, analyze_lineage_batch
 from app.services._io_utils import check_zip_safety, decode_sql_content, truthy
+from app.services.lineage_ai import enrich_lineage_result
 from app.services.lineage_exporter import write_lineage_batch_excel, write_lineage_json
 from app.services.schema_metadata import parse_schema_metadata
 from app.services.schema_service import resolve_lineage_schema, schema_from_files
@@ -36,7 +37,14 @@ def analyze_json(payload: dict[str, str]) -> dict[str, object]:
         truthy(payload.get("schema_only_sql_tables")),
         payload.get("schema_dialect") or "",
     )
-    return _attach_warnings(analyze_sql_lineage(sql, dialect, schema), schema_warnings)
+    result = _attach_warnings(analyze_sql_lineage(sql, dialect, schema), schema_warnings)
+    return enrich_lineage_result(
+        result,
+        sql_text=sql,
+        dialect=dialect,
+        scope="single",
+        enabled=truthy(payload.get("ai_enabled")),
+    )
 
 
 def analyze_form(
@@ -49,6 +57,7 @@ def analyze_form(
     schema_dialect: str,
     sql_file: UploadFile | None,
     schema_file: list[UploadFile],
+    ai_enabled: str = "",
 ) -> dict[str, object]:
     sql_text = _sql_text(sql, sql_file)
     logger.info("lineage form api analyze start sql_chars=%s dialect=%s", len(sql_text), dialect or "auto")
@@ -61,7 +70,14 @@ def analyze_form(
         truthy(schema_only_sql_tables),
         schema_dialect,
     )
-    return _attach_warnings(analyze_sql_lineage(sql_text, dialect or None, schema), schema_warnings)
+    result = _attach_warnings(analyze_sql_lineage(sql_text, dialect or None, schema), schema_warnings)
+    return enrich_lineage_result(
+        result,
+        sql_text=sql_text,
+        dialect=dialect or None,
+        scope="single",
+        enabled=truthy(ai_enabled),
+    )
 
 
 def analyze_batch(
@@ -73,6 +89,7 @@ def analyze_batch(
     schema_dialect: str,
     sql_files: list[UploadFile],
     schema_file: list[UploadFile],
+    ai_enabled: str = "",
 ) -> dict[str, object]:
     scripts = _script_inputs(sql_files)
     combined_sql = "\n;\n".join(script.sql for script in scripts)
@@ -89,6 +106,14 @@ def analyze_batch(
     result["warnings"] = schema_warnings + result.get("warnings", [])
     if "summary" in result:
         result["summary"]["warnings"] = len(result["warnings"])
+    enrich_lineage_result(
+        result,
+        sql_text=combined_sql,
+        dialect=dialect or None,
+        scope="batch",
+        scripts=[{"file_name": script.file_name, "sql": script.sql} for script in scripts],
+        enabled=truthy(ai_enabled),
+    )
     exports = _write_batch_exports(result)
     return {"result": result, "exports": exports}
 

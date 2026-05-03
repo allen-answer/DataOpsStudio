@@ -29,6 +29,7 @@ def lineage_form_api(
     schema_table_filter: str = Form(""),
     schema_only_sql_tables: str = Form(""),
     schema_dialect: str = Form(""),
+    ai_enabled: str = Form(""),
     sql_file: UploadFile | None = File(None),
     schema_file: list[UploadFile] = File(default=[]),
 ):
@@ -36,7 +37,7 @@ def lineage_form_api(
         return lineage_service.analyze_form(
             sql, dialect, schema_datasource_id, schema_name,
             schema_table_filter, schema_only_sql_tables, schema_dialect,
-            sql_file, schema_file,
+            sql_file, schema_file, ai_enabled,
         )
     except HTTPException:
         raise
@@ -52,6 +53,7 @@ def lineage_batch_api(
     schema_table_filter: str = Form(""),
     schema_only_sql_tables: str = Form(""),
     schema_dialect: str = Form(""),
+    ai_enabled: str = Form(""),
     sql_files: list[UploadFile] = File(default=[]),
     schema_file: list[UploadFile] = File(default=[]),
 ):
@@ -59,7 +61,7 @@ def lineage_batch_api(
         return lineage_service.analyze_batch(
             dialect, schema_datasource_id, schema_name,
             schema_table_filter, schema_only_sql_tables, schema_dialect,
-            sql_files, schema_file,
+            sql_files, schema_file, ai_enabled,
         )
     except HTTPException:
         raise
