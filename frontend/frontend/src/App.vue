@@ -13,6 +13,7 @@ import { useWorkflowStore } from './stores/workflow'
 import { useLineageStore } from './stores/lineage'
 import { useBatchStore } from './stores/batch'
 import { useHistoryStore } from './stores/history'
+import { useBootstrapStore } from './stores/bootstrap'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -33,6 +34,8 @@ const workflowStore = useWorkflowStore()
 const lineageStore = useLineageStore()
 const batchStore = useBatchStore()
 const historyStore = useHistoryStore()
+const bootstrapStore = useBootstrapStore()
+const { state } = bootstrapStore
 const { notice } = storeToRefs(noticeStore)
 const { actionStatus, setNotice, setActionStatus } = noticeStore
 const { editingDatasourceId } = storeToRefs(datasourceStore)
@@ -81,15 +84,7 @@ const loading = ref(false)
 // selectedWorkflowId / workflow* 迁到 useWorkflowStore；batchActiveTab 迁到 useBatchStore；
 // selectedHistoryTaskId / historyActiveTab / selectedHistory / selectedSheets 迁到 useHistoryStore
 
-const state = reactive({
-  datasources: [],
-  tasks: [],
-  workflows: [],
-  drivers: {},
-  dbTypes: [],
-  history: [],
-  historySheets: [],
-})
+// state 已迁到 useBootstrapStore（顶部 `const { state } = bootstrapStore` 解构）
 
 // taskDraft / selectedTaskId / 字段选择 / preview / asyncJob 已迁移到 useTaskStore（顶部解构）
 
@@ -146,14 +141,10 @@ const loadBootstrap = async ({ keepTaskSelection = false } = {}) => {
   const previousTaskId = selectedTaskId.value
   loading.value = true
   try {
-    const data = await apiGet('/api/bootstrap')
-    state.datasources = data.datasources || []
-    state.tasks = data.tasks || []
-    state.workflows = data.workflows || []
-    state.drivers = data.drivers || {}
-    state.dbTypes = data.db_types || []
-    state.history = data.history || []
-    state.historySheets = data.history_sheets || []
+    // 数据拉取 + 写入 state 的逻辑已迁到 useBootstrapStore.reload()
+    await bootstrapStore.reload()
+    // 联动业务（默认 db_type / 默认数据源 / 任务选择）仍在 App.vue：
+    // 这部分跨 store（datasource / task / bootstrap）协调，先在 App.vue 收口
     if (state.dbTypes.length) datasourceDraft.db_type = state.dbTypes[0]
     if (state.datasources.length) {
       taskDraft.source_id = state.datasources[0].id
