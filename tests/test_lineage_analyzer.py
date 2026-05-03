@@ -652,3 +652,151 @@ def test_update_with_subquery_all_dialects(dialect):
     result = analyze_sql_lineage(sql, dialect=dialect)
     sources = {tbl for m in result["insert_mappings"] for tbl in m.get("source_tables", [])}
     assert "stg.s" in sources
+
+
+# ─── target_summary 聚合（Phase 7 Track B 第 2 项）─────────────────────────────
+
+def _summary_by(target_summary, table):
+    matches = [s for s in target_summary if s["target_table"].lower() == table.lower()]
+    assert matches, f"未在 target_summary 找到 {table}: {[s['target_table'] for s in target_summary]}"
+    return matches[0]
+
+
+def test_target_summary_aggregates_multiple_inserts():
+    sql = """
+    INSERT INTO dw.fact SELECT a, b FROM stg.a;
+    INSERT INTO dw.fact SELECT c, d FROM stg.b;
+    INSERT INTO dw.fact SELECT e, f FROM stg.c;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dw.fact")
+    assert summary["insert_count"] == 3
+    assert summary["update_count"] == 0
+    assert summary["refresh_mode"] == "append"
+
+
+def test_target_summary_truncate_insert_full_refresh():
+    sql = """
+    TRUNCATE TABLE dim.cust;
+    INSERT INTO dim.cust SELECT id, name FROM stg.cust;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dim.cust")
+    assert summary["truncate_before_insert"] is True
+    assert summary["truncate_count"] == 1
+    assert summary["refresh_mode"] == "truncate_insert"
+
+
+def test_target_summary_delete_insert_full_refresh():
+    sql = """
+    DELETE FROM dwd.fact_order;
+    INSERT INTO dwd.fact_order SELECT * FROM ods.order_log;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.fact_order")
+    assert summary["delete_before_insert"] is True
+    assert summary["delete_count"] == 1
+    assert summary["refresh_mode"] == "delete_insert"
+
+
+def test_target_summary_delete_with_where_is_partial():
+    sql = """
+    DELETE FROM dwd.fact_order WHERE biz_date = '2025-01-01';
+    INSERT INTO dwd.fact_order SELECT * FROM ods.order_log WHERE biz_date = '2025-01-01';
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.fact_order")
+    assert summary["delete_before_insert"] is True
+    assert summary["refresh_mode"] == "delete_insert_partial"
+
+
+def test_target_summary_merge_only():
+    sql = """
+    MERGE INTO dwd.dim_user d
+    USING stg.user_delta s ON d.id = s.id
+    WHEN MATCHED THEN UPDATE SET d.name = s.name
+    WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name);
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by(result["target_summary"], "dwd.dim_user")
+    assert summary["merge_count"] == 1
+    assert summary["insert_count"] == 0
+    assert summary["refresh_mode"] == "merge"
+
+
+def test_target_summary_update_only():
+    sql = "UPDATE dwd.fact SET status = '1' WHERE biz_date = '2025-01-01';"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.fact")
+    assert summary["update_count"] == 1
+    assert summary["refresh_mode"] == "update"
+
+
+def test_target_summary_mixed_insert_and_update():
+    sql = """
+    INSERT INTO dwd.fact SELECT * FROM stg.fact;
+    UPDATE dwd.fact SET flag = 1 WHERE flag IS NULL;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.fact")
+    assert summary["insert_count"] == 1
+    assert summary["update_count"] == 1
+    assert summary["refresh_mode"] == "mixed"
+
+
+def test_target_summary_multiple_targets():
+    sql = """
+    INSERT INTO dw.a SELECT * FROM stg.a;
+    INSERT INTO dw.b SELECT * FROM stg.b;
+    INSERT INTO dw.a SELECT * FROM stg.a2;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    a = _summary_by(result["target_summary"], "dw.a")
+    b = _summary_by(result["target_summary"], "dw.b")
+    assert a["insert_count"] == 2
+    assert b["insert_count"] == 1
+
+
+def test_target_summary_truncate_multiple_tables():
+    sql = "TRUNCATE TABLE dim.a, dim.b;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    a = _summary_by(result["target_summary"], "dim.a")
+    b = _summary_by(result["target_summary"], "dim.b")
+    assert a["truncate_count"] == 1
+    assert b["truncate_count"] == 1
+    # truncate 单飞，没 insert 跟着 → refresh_mode 不应升级到 truncate_insert
+    assert a["refresh_mode"] is None
+    assert b["refresh_mode"] is None
+
+
+def test_target_summary_skips_temp_table():
+    sql = """
+    CREATE TEMPORARY TABLE tmp_stage AS SELECT * FROM stg.s;
+    INSERT INTO dw.fact SELECT * FROM tmp_stage;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    targets = {s["target_table"].lower() for s in result["target_summary"]}
+    assert "dw.fact" in targets
+    assert "tmp_stage" not in targets
+
+
+def test_target_summary_empty_when_select_only():
+    sql = "SELECT a, b FROM dw.fact WHERE biz_date = '2025-01-01';"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    assert result["target_summary"] == []
+
+
+def test_target_summary_insert_overwrite():
+    # INSERT OVERWRITE 视为 INSERT 家族
+    sql = "INSERT OVERWRITE TABLE dw.fact SELECT * FROM stg.s;"
+    result = analyze_sql_lineage(sql, dialect="hive")
+    summary = _summary_by(result["target_summary"], "dw.fact")
+    assert summary["insert_count"] == 1
+
+
+def test_target_summary_ctas_counts_as_insert():
+    sql = "CREATE TABLE dw.snapshot AS SELECT * FROM stg.cust;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dw.snapshot")
+    assert summary["insert_count"] == 1
+    assert summary["refresh_mode"] == "append"

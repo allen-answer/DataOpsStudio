@@ -16,6 +16,10 @@ from typing import Any
 
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
+from app.lineage.aggregation import (
+    aggregate_target_summary as _aggregate_target_summary,
+    collect_target_operations as _collect_target_operations,
+)
 from app.lineage.clauses import filters, group_by, joins, unions
 from app.lineage.columns import (
     derived_column_map, derived_table_map, select_columns,
@@ -82,11 +86,17 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     edges = _graph_edges(analyses)
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
+    # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
+    # analysis_statements() 过滤掉非 SELECT/INSERT/UPDATE/MERGE，会漏掉删表 / 截断。
+    target_summary = _aggregate_target_summary(
+        _collect_target_operations([s for s in statements if s is not None])
+    )
     return {
         "statement_count": len(analyses),
         "tables": unique_items(item for analysis in analyses for item in analysis["tables"]),
         "columns": [column for analysis in analyses for column in analysis["columns"]],
         "insert_mappings": statement_indexed_items(analyses, "insert_mappings"),
+        "target_summary": target_summary,
         "joins": [join for analysis in analyses for join in analysis["joins"]],
         "filters": [item for analysis in analyses for item in analysis["filters"]],
         "group_by": [item for analysis in analyses for item in analysis["group_by"]],

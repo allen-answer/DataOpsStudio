@@ -102,6 +102,7 @@ class LineageAnalyzeResult(BaseModel):
     tables: list[dict[str, Any]] = Field(default_factory=list)
     columns: list[dict[str, Any]] = Field(default_factory=list)
     insert_mappings: list[dict[str, Any]] = Field(default_factory=list)
+    target_summary: list[dict[str, Any]] = Field(default_factory=list)
     joins: list[dict[str, Any]] = Field(default_factory=list)
     filters: list[dict[str, Any]] = Field(default_factory=list)
     group_by: list[dict[str, Any]] = Field(default_factory=list)

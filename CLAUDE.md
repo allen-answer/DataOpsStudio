@@ -134,6 +134,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - `tables.py`（161 行）— 表引用归一化
 - `helpers.py`（139 行）— 公共辅助
 - `graph.py`（105 行）— 图结构装配
+- `aggregation.py` — 按目标表聚合 INSERT/UPDATE/MERGE/DELETE/TRUNCATE，识别 `delete_insert` / `truncate_insert` 全量重刷模式（输出 `target_summary`）
 - `_common.py` / `clauses.py` / `dialects.py` / `variables.py` / `warnings.py` — 方言映射、子句拆解、变量跟踪、warning 收集等小模块
 
 入口和批量分析都接受可选 Schema 元数据文件，用于解析 `SELECT *` 和未限定列名。
@@ -201,7 +202,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 目标：没有 AI 的环境下，也能明显提升 SQL / 存储过程分析准确性。
 
 1. **存储过程分段解析**——支持 Oracle / DM / OB / MySQL；识别 BEGIN/END 内多段 `SELECT INTO` / `DELETE` / `INSERT` / `UPDATE` / `MERGE` / `COMMIT`；每段保留 `statement_index` / `line_start` / `line_end` / 前置注释。
-2. **DML 聚合**——按目标表聚合 INSERT/UPDATE/MERGE 次数，识别 `DELETE+INSERT` / `TRUNCATE+INSERT` 全量重刷模式。输出 `target_summary`：`target_table` / `insert_count` / `update_count` / `merge_count` / `delete_before_insert` / `refresh_mode`。
+2. **DML 聚合** ✅ —— `app/lineage/aggregation.py`：按目标表聚合 INSERT/UPDATE/MERGE/DELETE/TRUNCATE 计数，识别 `truncate_insert` / `delete_insert`（DELETE 无 WHERE）/ `delete_insert_partial` / `merge` / `update` / `append` / `mixed` 等 `refresh_mode`。输出在 `analyze_sql_lineage()` 顶层 `target_summary` 字段，包含 `target_table` / `insert_count` / `update_count` / `merge_count` / `delete_count` / `truncate_count` / `delete_before_insert` / `truncate_before_insert` / `refresh_mode`。
 3. **Oracle 方言增强**——正确处理 `/*+ parallel(...) */` hint、`table@dblink` DB Link、`SELECT ... INTO variable`、包/过程/变量赋值/游标/动态 SQL 片段；对无法静态解析的 `EXECUTE IMMEDIATE` 输出风险提示。
 4. **表角色识别**（纯规则，不依赖 AI）：`config` / `reference` / `dimension` / `source_fact` / `filter|exclusion` / `target` / `intermediate` / `remote_dblink`。
 5. **业务分组规则**——可配置规则文件 `lineage_group_rules.yml`，按表名 / schema / 注释关键词分组。示例：`a_ks_jg_*` → 机构、`a_ks_r_*` → 融资融券、`a_ks_qq_*` → 期权、`*_stock` → 持仓/市值、`t_config` / `bbq` → 配置、`pcyyyb` / `cust_base_info` → 过滤/排除。
