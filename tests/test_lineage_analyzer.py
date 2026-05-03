@@ -1286,3 +1286,104 @@ def test_oracle_proc_fixture_procedure_segments():
     assert procs[0]["name"] == "cispnew.sync_full_refresh"
     # 至少 2 DELETE + 5 INSERT = 7 段（具体数因为 dedupe 可能略低）
     assert procs[0]["segment_count"] >= 5
+
+
+# ─── procedure_segments line_start / preceding_comment / parse_status ─────────
+
+
+def test_procedure_segments_carry_line_numbers():
+    """每段记录 line_start / line_end，按出现顺序单调递增。"""
+    sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  -- 业务标题 A
+  INSERT INTO dw.t_a SELECT * FROM stg.s_a;
+
+  -- 业务标题 B
+  INSERT INTO dw.t_b SELECT * FROM stg.s_b;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result["procedure_segments"]
+    assert len(segs) == 2
+    assert all("line_start" in s and "line_end" in s for s in segs)
+    assert segs[0]["line_start"] < segs[1]["line_start"]
+    # 第一段 INSERT 在第 4 行（1-based），允许 ±1 容差应对前置注释计入策略
+    assert 3 <= segs[0]["line_start"] <= 4
+    assert segs[0]["line_end"] >= segs[0]["line_start"]
+
+
+def test_procedure_segments_extract_preceding_comment():
+    """业务标题 `-- 集中交易` 这种前置行注释被抽到 preceding_comment。"""
+    sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  -- 集中交易
+  INSERT INTO dw.t_a SELECT * FROM stg.s_a;
+  INSERT INTO dw.t_b SELECT * FROM stg.s_b;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result["procedure_segments"]
+    assert segs[0]["preceding_comment"] == "集中交易"
+    # 第二段没有前置注释 → 空串
+    assert segs[1]["preceding_comment"] == ""
+
+
+def test_procedure_segments_block_comment_extracted():
+    """`/* 业务标题 */` 块注释也能抽出。"""
+    sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  /* 持仓市值 -- 全量重刷 */
+  INSERT INTO dw.t_a SELECT * FROM stg.s_a;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    seg = result["procedure_segments"][0]
+    assert "持仓市值" in seg["preceding_comment"]
+
+
+def test_procedure_segments_parse_status_marked():
+    """sqlglot 能解析的段标 parsed；不能的标 unsupported。"""
+    sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  INSERT INTO dw.t_a SELECT * FROM stg.s_a;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result["procedure_segments"]
+    assert all(s["parse_status"] in ("parsed", "unsupported") for s in segs)
+    assert segs[0]["parse_status"] == "parsed"
+
+
+def test_semantic_procedures_expose_steps():
+    """semantic_lineage.procedures[i].steps 暴露每段的 line / 标题 / 状态。"""
+    sql = """\
+CREATE OR REPLACE PROCEDURE etl_demo AS
+BEGIN
+  -- 标题 A
+  INSERT INTO dw.t_a SELECT * FROM stg.s_a;
+  -- 标题 B
+  DELETE FROM dw.t_b WHERE dt = SYSDATE;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    proc = result["semantic_lineage"]["procedures"][0]
+    assert proc["segment_count"] == 2
+    assert len(proc["steps"]) == 2
+    assert proc["steps"][0]["dml_keyword"] == "INSERT"
+    assert proc["steps"][1]["dml_keyword"] == "DELETE"
+    assert proc["steps"][0]["preceding_comment"] == "标题 A"
+    assert all(s.get("line_start") is not None for s in proc["steps"])
+
+
+def test_oracle_proc_fixture_steps_monotonic():
+    """真实 Oracle fixture：所有 step 的 line_start 单调递增。"""
+    result = analyze_sql_lineage(_ORACLE_PROC_FIXTURE, dialect="oracle")
+    proc = result["semantic_lineage"]["procedures"][0]
+    lines = [s["line_start"] for s in proc["steps"]]
+    assert lines == sorted(lines)
+    # 至少有一段抽到了业务标题
+    assert any(s["preceding_comment"] for s in proc["steps"])

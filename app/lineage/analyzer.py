@@ -59,6 +59,15 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     dynamic_sqls = [s["sql"] for s in dynamic_sql_segments]
     procedure_segments = _extract_procedure_segments(sql_text)
     procedure_sqls = [s["sql"] for s in procedure_segments]
+    # 给每条 procedure_segments 标 parse_status：单独喂 sqlglot 看能不能解析。
+    # 这是 step-level lineage 的基础——前端可以高亮"这一段无法静态解析"。
+    for seg in procedure_segments:
+        try:
+            parsed = sqlglot.parse(seg["sql"], read=dialect or None)
+        except Exception:
+            seg["parse_status"] = "unsupported"
+            continue
+        seg["parse_status"] = "parsed" if parsed and any(p is not None for p in parsed) else "unsupported"
     try:
         primary_statements = _parse_lineage_statements(sqlglot, sql_text, dialect)
     except Exception:

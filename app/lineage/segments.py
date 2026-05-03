@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass
+class _BodySegment:
+    """过程体内一段 DML，带原文位置和前置注释。
+
+    text          —— 段落原始文本（含前置注释；注释要保留下来给 sqlglot 挂到 statement.comments）
+    dml_start     —— DML 关键字（INSERT/UPDATE/...）在 body 中的起始 offset，
+                     当作"语义起始行"——business title 注释不计入。
+    end           —— 段落（含 ;）在 body 中的结束 offset。
+    preceding_comment —— 提取出来的业务标题注释（已 strip `--` / `/* */` 标记），无则空串。
+    """
+    text: str
+    dml_start: int
+    end: int
+    preceding_comment: str
 
 
 def parse_lineage_statements(sqlglot: Any, sql: str, dialect: str | None) -> list[Any]:
@@ -134,16 +151,20 @@ _RE_BODY_DML = re.compile(
 _RE_PURE_COMMENT_PREFIX = re.compile(r"(?:\s|--[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*")
 
 
-def extract_procedure_segments(sql: str) -> list[dict[str, str]]:
+def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
     """Extract DML statements nested inside CREATE PROCEDURE/FUNCTION/PACKAGE BODY/TRIGGER blocks.
 
     Skips control-flow shells (IF/LOOP/EXCEPTION) and nested BEGIN/END blocks via token-balanced scan.
 
     Important: 段落保留原始换行——`-- 行注释` 必须靠换行终止才不会把后面的列名一起吞掉。
     用规范化文本（空白压平）做 dedupe key，原始格式喂给 sqlglot 解析。
+
+    每条记录包含：procedure_name / procedure_kind / segment_index / sql / confidence /
+    line_start / line_end / preceding_comment / parse_status。parse_status 默认 'unknown'，
+    由上游（analyzer.py）在跑完 sqlglot 后回填 'parsed' / 'unsupported'。
     """
     seen: set[str] = set()
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     for header in _RE_PROC_HEADER.finditer(sql):
         name = header.group("name").strip()
         kind = " ".join(header.group("kind").split()).upper()
@@ -167,15 +188,18 @@ def extract_procedure_segments(sql: str) -> list[dict[str, str]]:
                 if depth == 0:
                     body_end = tok_match.start()
                     break
-        body = sql[body_start.end():body_end]
-        for index, segment in enumerate(_iter_procedure_body_segments(body), start=1):
-            preserved = clean_procedure_segment(segment)
+        body_offset = body_start.end()
+        body = sql[body_offset:body_end]
+        for index, item in enumerate(_iter_procedure_body_segments(body), start=1):
+            preserved = clean_procedure_segment(item.text)
             if not preserved:
                 continue
             dedupe_key = " ".join(preserved.split())
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
+            abs_start = body_offset + item.dml_start
+            abs_end = body_offset + item.end
             result.append(
                 {
                     "procedure_name": name,
@@ -183,9 +207,21 @@ def extract_procedure_segments(sql: str) -> list[dict[str, str]]:
                     "segment_index": str(index),
                     "sql": preserved,
                     "confidence": "high",
+                    "line_start": _line_of(sql, abs_start),
+                    "line_end": _line_of(sql, abs_end),
+                    "preceding_comment": item.preceding_comment,
+                    "parse_status": "unknown",
                 }
             )
     return result
+
+
+def _line_of(text: str, offset: int) -> int:
+    """1-based line number of `offset` in `text`. Beyond-end → last line."""
+    if offset <= 0:
+        return 1
+    capped = min(offset, len(text))
+    return text.count("\n", 0, capped) + 1
 
 
 def clean_procedure_segment(segment: str) -> str:
@@ -198,11 +234,15 @@ def clean_procedure_segment(segment: str) -> str:
     return segment.strip().rstrip(";").strip()
 
 
-def _iter_procedure_body_segments(body: str) -> list[str]:
-    """Split a procedure body into top-level statements, skipping control-flow shells."""
-    segments: list[str] = []
+def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
+    """Split a procedure body into top-level statements, skipping control-flow shells.
+
+    返回带 body-内偏移和前置注释的 _BodySegment，方便上层算 line_start/line_end。
+    """
+    raw_segments: list[tuple[str, int, int]] = []  # (text, body_start, body_end_inclusive_semicolon)
     depth = 0
     buffer: list[str] = []
+    seg_start = 0
     pos = 0
     length = len(body)
     while pos < length:
@@ -241,31 +281,85 @@ def _iter_procedure_body_segments(body: str) -> list[str]:
                 pos += 3
                 continue
         if char == ";" and depth == 0:
-            segments.append("".join(buffer).strip())
+            raw_segments.append(("".join(buffer), seg_start, pos + 1))
             buffer = []
             pos += 1
+            seg_start = pos
             continue
         buffer.append(char)
         pos += 1
-    tail = "".join(buffer).strip()
-    if tail:
-        segments.append(tail)
-    cleaned: list[str] = []
-    for seg in segments:
+    tail = "".join(buffer)
+    if tail.strip():
+        raw_segments.append((tail, seg_start, length))
+
+    cleaned: list[_BodySegment] = []
+    for raw_text, raw_start, raw_end in raw_segments:
+        # raw_start 指向缓冲起点（可能含前导空白）；找到首个非空白字符作为段起点
+        leading_ws = len(raw_text) - len(raw_text.lstrip())
+        seg_text = raw_text.strip()
+        if not seg_text:
+            continue
         # The segment may start with control-flow shells (IF ... THEN, ELSIF ... THEN, FOR ... LOOP).
         # Find the first DML keyword and analyze from there.
-        match = _RE_BODY_DML.search(seg)
+        match = _RE_BODY_DML.search(seg_text)
         if not match:
             continue
-        prefix = seg[:match.start()]
+        prefix = seg_text[:match.start()]
         # 如果 DML 前面只有空白和 line/block 注释（业务标题 `-- 集中交易`），保留 ——
         # sqlglot 会把它挂到 statement.comments 上做 statement_title。
         # 反之（IF/THEN、CASE 之类的控制流壳子），仍然剥掉。
         if _RE_PURE_COMMENT_PREFIX.fullmatch(prefix):
-            cleaned.append(seg.strip())
+            kept_text = seg_text
+            preceding_comment = _strip_comment_prefix(prefix)
         else:
-            cleaned.append(seg[match.start():].strip())
+            kept_text = seg_text[match.start():]
+            preceding_comment = ""
+        # body 内偏移：raw_start + 前导空白 + kept_text 在 seg_text 中的起点
+        # kept_text 是 seg_text 的尾部 → 起点 = len(seg_text) - len(kept_text)
+        kept_offset_in_seg = len(seg_text) - len(kept_text)
+        body_kept_start = raw_start + leading_ws + kept_offset_in_seg
+        # DML 关键字在 body 中的位置（用于 line_start —— 业务标题前缀不算）
+        if preceding_comment:
+            # match.start() 是 DML 在 seg_text 中的位置；kept_text 包含完整 seg_text，
+            # 所以 DML 在 body 中的偏移直接是 raw_start + leading_ws + match.start()
+            dml_offset = raw_start + leading_ws + match.start()
+        else:
+            dml_offset = body_kept_start
+        cleaned.append(_BodySegment(
+            text=kept_text.strip(),
+            dml_start=dml_offset,
+            end=raw_end,
+            preceding_comment=preceding_comment,
+        ))
     return cleaned
+
+
+_RE_LINE_COMMENT = re.compile(r"--[^\n]*")
+_RE_BLOCK_COMMENT = re.compile(r"/\*(?:[^*]|\*(?!/))*\*/", flags=re.DOTALL)
+
+
+def _strip_comment_prefix(prefix: str) -> str:
+    """从一段纯注释前缀里抽业务标题：剥 `--` / `/* */` 标记，多行用空格连。
+
+    截断 200 字符，避免巨型 banner 注释把 UI 撑爆。
+    """
+    pieces: list[str] = []
+    for m in _RE_BLOCK_COMMENT.finditer(prefix):
+        body = m.group(0)[2:-2].strip().strip("*").strip()
+        if body:
+            pieces.append(body)
+    # 块注释剥掉后，剩下的是行注释和空白
+    line_only = _RE_BLOCK_COMMENT.sub(" ", prefix)
+    for m in _RE_LINE_COMMENT.finditer(line_only):
+        body = m.group(0).lstrip("-").strip()
+        if body:
+            pieces.append(body)
+    if not pieces:
+        return ""
+    joined = " ".join(pieces).strip()
+    if len(joined) > 200:
+        joined = joined[:200].rstrip() + "…"
+    return joined
 
 
 def extract_dynamic_sql_segments(sql: str) -> list[dict[str, str]]:

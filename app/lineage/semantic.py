@@ -100,9 +100,13 @@ def _cached_group_rules() -> list[GroupRule]:
 
 
 def _build_procedures(procedure_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """同名 procedure 多段 DML 折叠成一条记录。"""
+    """同名 procedure 多段 DML 折叠成一条记录，附带 step 列表。
+
+    每个 step 含 line_start / line_end / preceding_comment / parse_status / dml_keyword，
+    给前端做 step-level lineage 视图。dml_keyword 直接从 sql 段头部抽（INSERT / DELETE / ...）。
+    """
     grouped: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"name": "", "kind": "", "segment_count": 0}
+        lambda: {"name": "", "kind": "", "segment_count": 0, "steps": [], "unsupported_count": 0}
     )
     for seg in procedure_segments:
         name = seg.get("procedure_name", "") or ""
@@ -112,7 +116,33 @@ def _build_procedures(procedure_segments: list[dict[str, Any]]) -> list[dict[str
         proc["name"] = name
         proc["kind"] = seg.get("procedure_kind", "") or proc["kind"]
         proc["segment_count"] += 1
+        parse_status = seg.get("parse_status") or "unknown"
+        if parse_status == "unsupported":
+            proc["unsupported_count"] += 1
+        proc["steps"].append({
+            "segment_index": seg.get("segment_index"),
+            "dml_keyword": _first_dml_keyword(seg.get("sql", "")),
+            "line_start": seg.get("line_start"),
+            "line_end": seg.get("line_end"),
+            "preceding_comment": seg.get("preceding_comment", ""),
+            "parse_status": parse_status,
+        })
     return list(grouped.values())
+
+
+_DML_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "SELECT", "WITH", "REPLACE", "CREATE")
+
+
+def _first_dml_keyword(sql: str) -> str:
+    """段头部第一个 DML 关键字（去注释 / 空白后）。无则空串。"""
+    import re as _re
+    cleaned = _re.sub(r"/\*(?:[^*]|\*(?!/))*\*/", " ", sql, flags=_re.DOTALL)
+    cleaned = _re.sub(r"--[^\n]*", " ", cleaned).strip()
+    head = cleaned[:40].upper()
+    for kw in _DML_KEYWORDS:
+        if head.startswith(kw):
+            return kw
+    return ""
 
 
 def _build_targets(

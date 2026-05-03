@@ -69,6 +69,30 @@ const RISK_BADGE = {
   medium: 'bg-amber-200 text-amber-900',
   low: 'bg-slate-200 text-slate-800',
 }
+
+const DML_PILL = {
+  INSERT: 'bg-emerald-100 text-emerald-700',
+  UPDATE: 'bg-cyan-100 text-cyan-700',
+  MERGE: 'bg-blue-100 text-blue-700',
+  DELETE: 'bg-rose-100 text-rose-700',
+  TRUNCATE: 'bg-rose-100 text-rose-700',
+  SELECT: 'bg-slate-100 text-slate-600',
+  WITH: 'bg-slate-100 text-slate-600',
+  REPLACE: 'bg-emerald-100 text-emerald-700',
+  CREATE: 'bg-violet-100 text-violet-700',
+}
+
+const PARSE_STATUS_PILL = {
+  parsed: 'bg-emerald-100 text-emerald-700',
+  unsupported: 'bg-amber-100 text-amber-800',
+  unknown: 'bg-slate-100 text-slate-500',
+}
+
+const PARSE_STATUS_LABEL = {
+  parsed: '已解析',
+  unsupported: '未支持',
+  unknown: '—',
+}
 </script>
 
 <template>
@@ -222,18 +246,60 @@ const RISK_BADGE = {
 
     <div v-if="semantic.procedures?.length">
       <h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">存储过程</h3>
-      <div class="flex flex-wrap gap-2">
-        <div
+      <div class="space-y-2">
+        <details
           v-for="proc in semantic.procedures"
           :key="proc.name"
-          class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+          class="rounded-lg border border-slate-200 bg-slate-50"
         >
-          <span class="sql-font font-medium text-slate-800">{{ proc.name }}</span>
-          <span class="muted text-xs">{{ proc.kind }}</span>
-          <span class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
-            {{ proc.segment_count }} 段
-          </span>
-        </div>
+          <summary class="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
+            <span class="sql-font font-medium text-slate-800">{{ proc.name }}</span>
+            <span class="muted text-xs">{{ proc.kind }}</span>
+            <span class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
+              {{ proc.segment_count }} 段
+            </span>
+            <span
+              v-if="proc.unsupported_count"
+              class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+              :title="`${proc.unsupported_count} 段 sqlglot 无法解析`"
+            >
+              {{ proc.unsupported_count }} 未解析
+            </span>
+          </summary>
+          <div v-if="proc.steps?.length" class="border-t border-slate-200 px-3 py-2">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-left text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <th class="py-1 pr-3">行</th>
+                  <th class="py-1 pr-3">操作</th>
+                  <th class="py-1 pr-3">业务标题</th>
+                  <th class="py-1">解析</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="step in proc.steps" :key="step.segment_index" class="border-t border-slate-100">
+                  <td class="py-1 pr-3 sql-font text-slate-500">
+                    {{ step.line_start }}<span v-if="step.line_end && step.line_end !== step.line_start">–{{ step.line_end }}</span>
+                  </td>
+                  <td class="py-1 pr-3">
+                    <span
+                      v-if="step.dml_keyword"
+                      class="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                      :class="DML_PILL[step.dml_keyword] || 'bg-slate-200 text-slate-700'"
+                    >{{ step.dml_keyword }}</span>
+                  </td>
+                  <td class="py-1 pr-3 text-slate-700 break-words">{{ step.preceding_comment || '—' }}</td>
+                  <td class="py-1">
+                    <span
+                      class="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                      :class="PARSE_STATUS_PILL[step.parse_status] || PARSE_STATUS_PILL.unknown"
+                    >{{ PARSE_STATUS_LABEL[step.parse_status] || step.parse_status }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
       </div>
     </div>
   </div>
