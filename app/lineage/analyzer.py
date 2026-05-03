@@ -21,6 +21,7 @@ from app.lineage.aggregation import (
     collect_target_operations as _collect_target_operations,
 )
 from app.lineage.clauses import filters, group_by, joins, unions
+from app.lineage.roles import identify_table_roles as _identify_table_roles
 from app.lineage.columns import (
     derived_column_map, derived_table_map, select_columns,
 )
@@ -91,12 +92,16 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     target_summary = _aggregate_target_summary(
         _collect_target_operations([s for s in statements if s is not None])
     )
+    flat_tables = unique_items(item for analysis in analyses for item in analysis["tables"])
+    flat_insert_mappings = statement_indexed_items(analyses, "insert_mappings")
+    table_roles = _identify_table_roles(flat_tables, target_summary, flat_insert_mappings)
     return {
         "statement_count": len(analyses),
-        "tables": unique_items(item for analysis in analyses for item in analysis["tables"]),
+        "tables": flat_tables,
         "columns": [column for analysis in analyses for column in analysis["columns"]],
-        "insert_mappings": statement_indexed_items(analyses, "insert_mappings"),
+        "insert_mappings": flat_insert_mappings,
         "target_summary": target_summary,
+        "table_roles": table_roles,
         "joins": [join for analysis in analyses for join in analysis["joins"]],
         "filters": [item for analysis in analyses for item in analysis["filters"]],
         "group_by": [item for analysis in analyses for item in analysis["group_by"]],

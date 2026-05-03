@@ -135,6 +135,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - `helpers.py`（139 行）— 公共辅助
 - `graph.py`（105 行）— 图结构装配
 - `aggregation.py` — 按目标表聚合 INSERT/UPDATE/MERGE/DELETE/TRUNCATE，识别 `delete_insert` / `truncate_insert` 全量重刷模式（输出 `target_summary`）
+- `roles.py` — 给脚本里所有出现的表打 role 标签：`target` / `intermediate` / `source_fact` / `remote_dblink`（结构角色）+ `config` / `reference` / `dimension` / `filter`（命名角色）。一张表可挂多个 role，`primary_role` 按展示优先级取一个。输出 `table_roles`
 - `_common.py` / `clauses.py` / `dialects.py` / `variables.py` / `warnings.py` — 方言映射、子句拆解、变量跟踪、warning 收集等小模块
 
 入口和批量分析都接受可选 Schema 元数据文件，用于解析 `SELECT *` 和未限定列名。
@@ -204,7 +205,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 1. **存储过程分段解析**——支持 Oracle / DM / OB / MySQL；识别 BEGIN/END 内多段 `SELECT INTO` / `DELETE` / `INSERT` / `UPDATE` / `MERGE` / `COMMIT`；每段保留 `statement_index` / `line_start` / `line_end` / 前置注释。
 2. **DML 聚合** ✅ —— `app/lineage/aggregation.py`：按目标表聚合 INSERT/UPDATE/MERGE/DELETE/TRUNCATE 计数，识别 `truncate_insert` / `delete_insert`（DELETE 无 WHERE）/ `delete_insert_partial` / `merge` / `update` / `append` / `mixed` 等 `refresh_mode`。输出在 `analyze_sql_lineage()` 顶层 `target_summary` 字段，包含 `target_table` / `insert_count` / `update_count` / `merge_count` / `delete_count` / `truncate_count` / `delete_before_insert` / `truncate_before_insert` / `refresh_mode`。
 3. **Oracle 方言增强**——正确处理 `/*+ parallel(...) */` hint、`table@dblink` DB Link、`SELECT ... INTO variable`、包/过程/变量赋值/游标/动态 SQL 片段；对无法静态解析的 `EXECUTE IMMEDIATE` 输出风险提示。
-4. **表角色识别**（纯规则，不依赖 AI）：`config` / `reference` / `dimension` / `source_fact` / `filter|exclusion` / `target` / `intermediate` / `remote_dblink`。
+4. **表角色识别** ✅ —— `app/lineage/roles.py`：结构角色（`target` / `intermediate` / `source_fact` / `remote_dblink`）+ 命名角色（`config` / `reference` / `dimension` / `filter`）。schema 段（`dim.cust` / `ref.code` / `config.t_config` / `filter.exclude_*`）和 basename（`dim_user` / `code_status` / `t_config` / `exclude_cust`）都会扫一遍，多 role 共存时 `primary_role` 按 `remote_dblink > intermediate > target > config > reference > dimension > filter > source_fact` 取一个。Oracle DB Link 表（`tab@dblink`）单独识别。输出在 `analyze_sql_lineage()` 顶层 `table_roles` 字段。
 5. **业务分组规则**——可配置规则文件 `lineage_group_rules.yml`，按表名 / schema / 注释关键词分组。示例：`a_ks_jg_*` → 机构、`a_ks_r_*` → 融资融券、`a_ks_qq_*` → 期权、`*_stock` → 持仓/市值、`t_config` / `bbq` → 配置、`pcyyyb` / `cust_base_info` → 过滤/排除。
 6. **注释利用**——提取 INSERT 前最近的中文注释作为 `statement_title`；用注释辅助业务分组和节点标签（"集中交易" / "机构柜台" / "融资融券" / "期权" / "A股主板股票"等）。
 7. **语义血缘结构** `semantic_lineage`——即使没有 AI 也输出：`procedure` / `target_summary` / `table_roles` / `business_groups` / `grouped_edges` / `observations` / `risks`。

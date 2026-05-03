@@ -800,3 +800,127 @@ def test_target_summary_ctas_counts_as_insert():
     summary = _summary_by(result["target_summary"], "dw.snapshot")
     assert summary["insert_count"] == 1
     assert summary["refresh_mode"] == "append"
+
+
+# ─── table_roles 角色识别（Phase 7 Track B 第 4 项）───────────────────────────
+
+def _roles_by(table_roles, name):
+    matches = [r for r in table_roles if r["table"].lower() == name.lower()]
+    assert matches, f"未在 table_roles 找到 {name}: {[r['table'] for r in table_roles]}"
+    return matches[0]
+
+
+def test_table_roles_target_only():
+    sql = "INSERT INTO dwd.fact_order SELECT id, amount FROM ods.order_log;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    fact = _roles_by(result["table_roles"], "dwd.fact_order")
+    log = _roles_by(result["table_roles"], "ods.order_log")
+    assert fact["primary_role"] == "target"
+    assert "target" in fact["roles"]
+    assert log["primary_role"] == "source_fact"
+
+
+def test_table_roles_intermediate():
+    sql = """
+    INSERT INTO tmp_stage SELECT * FROM ods.raw;
+    INSERT INTO dw.final SELECT * FROM tmp_stage;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    stage = _roles_by(result["table_roles"], "tmp_stage")
+    final = _roles_by(result["table_roles"], "dw.final")
+    assert stage["primary_role"] == "intermediate"
+    assert "intermediate" in stage["roles"]
+    assert final["primary_role"] == "target"
+
+
+def test_table_roles_dimension_by_schema():
+    sql = "INSERT INTO dw.fact SELECT id, c.name FROM ods.x JOIN dim.cust c ON c.id = ods.x.cid;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    cust = _roles_by(result["table_roles"], "dim.cust")
+    assert "dimension" in cust["roles"]
+    assert cust["primary_role"] == "dimension"
+
+
+def test_table_roles_dimension_by_basename():
+    sql = "INSERT INTO dw.fact SELECT id, d.name FROM ods.x JOIN ods.dim_user d ON d.id = ods.x.uid;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    user = _roles_by(result["table_roles"], "ods.dim_user")
+    assert "dimension" in user["roles"]
+
+
+def test_table_roles_reference():
+    sql = "INSERT INTO dw.fact SELECT s.label FROM ods.x JOIN ref.code_status s ON s.code = ods.x.status;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    code_status = _roles_by(result["table_roles"], "ref.code_status")
+    assert "reference" in code_status["roles"]
+
+
+def test_table_roles_config():
+    sql = "INSERT INTO dw.fact SELECT cfg.batch FROM ods.x JOIN config.t_config cfg ON cfg.k = 'a';"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    cfg = _roles_by(result["table_roles"], "config.t_config")
+    assert "config" in cfg["roles"]
+
+
+def test_table_roles_filter():
+    sql = """
+    INSERT INTO dw.fact SELECT id FROM ods.x
+    WHERE id NOT IN (SELECT cid FROM filter.exclude_cust);
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    excl = _roles_by(result["table_roles"], "filter.exclude_cust")
+    assert "filter" in excl["roles"]
+
+
+def test_table_roles_remote_dblink_oracle():
+    # DB Link 是 Oracle 专属语法
+    sql = """
+    INSERT INTO dw.f
+    SELECT o.id, r.name FROM ods.o o JOIN remote_t@dblink_a r ON r.id = o.rid;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    remote = _roles_by(result["table_roles"], "remote_t@dblink_a")
+    assert "remote_dblink" in remote["roles"]
+    assert remote["primary_role"] == "remote_dblink"
+
+
+def test_table_roles_target_plus_dimension_combo():
+    # 目标表又是个维度表 → 两个 role 都挂上，primary 取 target
+    sql = """
+    TRUNCATE TABLE dim.user_snapshot;
+    INSERT INTO dim.user_snapshot SELECT id, name FROM ods.user;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    snap = _roles_by(result["table_roles"], "dim.user_snapshot")
+    assert "target" in snap["roles"]
+    assert "dimension" in snap["roles"]
+    assert snap["primary_role"] == "target"
+
+
+def test_table_roles_pure_source_no_naming_falls_back_to_source_fact():
+    sql = "INSERT INTO dw.f SELECT * FROM ods.order_log;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    log = _roles_by(result["table_roles"], "ods.order_log")
+    assert log["roles"] == ["source_fact"]
+
+
+def test_table_roles_empty_for_select_only():
+    sql = "SELECT * FROM ods.x WHERE biz_date = '2025-01-01';"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    # 不写表 = 没 target，但读侧 ods.x 应该出现且默认 source_fact
+    x = _roles_by(result["table_roles"], "ods.x")
+    assert x["roles"] == ["source_fact"]
+
+
+def test_table_roles_does_not_match_partial_word():
+    # `decode_lookup` 应被识别为 reference（lookup），不应把 `decode` 误判
+    # `dimsum` 不应被识别为 dimension（dim 没有边界）
+    sql = """
+    INSERT INTO dw.f SELECT * FROM ods.dimsum;
+    INSERT INTO dw.g SELECT * FROM ods.decode_lookup;
+    """
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    dimsum = _roles_by(result["table_roles"], "ods.dimsum")
+    lookup = _roles_by(result["table_roles"], "ods.decode_lookup")
+    assert "dimension" not in dimsum["roles"]
+    assert "reference" in lookup["roles"]
