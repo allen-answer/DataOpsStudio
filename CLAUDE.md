@@ -230,6 +230,7 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 3. **324 段假动态 SQL**：`extract_dynamic_sql_segments` 的 `string_literal` 兜底匹配任何 20+ 字符字面量，中文注释片段、错误信息、报表 header 等全中招。修：删除兜底，动态 SQL 只走 EXECUTE / PREPARE / EXECUTE IMMEDIATE 变量拼接三条精确路径。
 4. **Oracle hint 误为业务标题**：sqlglot 把 `/*+ parallel(...) */` 也塞进 `.comments`（去掉 `+`），看起来跟普通注释一样。修：`aggregation._looks_like_oracle_hint()` 用 Oracle hint 关键字白名单（parallel/leading/index/use_hash 等 70+ 个）跳过。
 5. **过程体段把前置注释剥掉**：`_iter_procedure_body_segments` 用 `_RE_BODY_DML.search(seg)` 后取 `seg[match.start():]`，把 `-- 集中交易` 一类业务标题前缀丢了。修：仅当前缀是纯空白+注释时保留整段（让 sqlglot 把注释挂到节点 `.comments`）。
+6. **全角标点 / 模板变量让 sqlglot 报 `Expected END after CASE`**：中文输入法 / ETL 工具产出的 SQL 经常混入 `（` U+FF08、`）` U+FF09、`，` U+FF0C、`；` U+FF1B 全角符号；ETL 模板变量 `${data_dt1}` 也吃不下。修：新增 `app/lineage/preprocess.py`，状态机扫 SQL 把 code 段（不含字符串字面量 / 行注释 / 块注释）的全角标点替换成半角，`${name}` 替换成 `:name`（sqlglot bind param）。`script_variables` 在 normalize 之前抽，保留原始模板变量名进 `result["variables"]`。归一化保持换行数和位置不变，所以 `procedure_segments.line_start` 不偏。
 
 回归 fixture 在 `tests/test_lineage_analyzer.py::test_oracle_proc_fixture_*` —— 不上传真实业务文件（避免泄露内部表名），改用合成 Oracle 过程，复刻所有上述模式。
 

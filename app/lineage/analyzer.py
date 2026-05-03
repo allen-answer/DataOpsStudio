@@ -31,6 +31,7 @@ from app.lineage.dialects import resolve_dialect as _resolve_dialect
 from app.lineage.dml import insert_mappings
 from app.lineage.graph import graph_edges as _graph_edges
 from app.lineage.graph import graph_groups as _graph_groups
+from app.lineage.preprocess import normalize_for_parsing as _normalize_for_parsing
 from app.lineage.helpers import (
     analysis_statements, exp, normalize_schema, sql, statement_indexed_items,
     unique_analysis_statements, unique_items, unique_parsed_statements,
@@ -54,7 +55,11 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
         raise RuntimeError("sqlglot is not installed. Please install sqlglot to use SQL lineage analysis.") from exc
 
     dialect = _resolve_dialect(dialect)
+    # script_variables 必须在 normalize 之前抽：normalize 会把 `${name}` → `:name`，
+    # 之后就识别不出原始模板变量名了。变量记录里仍保留原始名（前端展示用）。
     script_vars = _script_variables(sql_text)
+    # 全角标点 → 半角；`${var}` → `:var`。string / 注释段不动。
+    sql_text = _normalize_for_parsing(sql_text)
     dynamic_sql_segments = _extract_dynamic_sql_segments(sql_text)
     dynamic_sqls = [s["sql"] for s in dynamic_sql_segments]
     procedure_segments = _extract_procedure_segments(sql_text)

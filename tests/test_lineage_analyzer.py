@@ -1387,3 +1387,98 @@ def test_oracle_proc_fixture_steps_monotonic():
     assert lines == sorted(lines)
     # 至少有一段抽到了业务标题
     assert any(s["preceding_comment"] for s in proc["steps"])
+
+
+# ─── 解析前归一化（全角标点 / ${var} 模板变量）─────────────────────────────────
+
+
+def test_preprocess_normalize_fullwidth_punct():
+    from app.lineage.preprocess import normalize_for_parsing
+
+    assert normalize_for_parsing("a in（'1','13')") == "a in('1','13')"
+    assert normalize_for_parsing("a，b；c") == "a,b;c"
+
+
+def test_preprocess_normalize_template_var():
+    from app.lineage.preprocess import normalize_for_parsing
+
+    assert normalize_for_parsing("dt = ${data_dt1}") == "dt = :data_dt1"
+    # 多变量
+    assert "from = :a" in normalize_for_parsing("from = ${a} to = ${b}")
+
+
+def test_preprocess_protects_string_literal():
+    """字符串字面量内的全角符 / ${} 都不应替换 —— 那是数据。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    assert normalize_for_parsing("col = 'a，b'") == "col = 'a，b'"
+    assert normalize_for_parsing("col = '${data_dt1}'") == "col = '${data_dt1}'"
+    # 转义引号 '' 内联，状态机要正确处理
+    assert normalize_for_parsing("a = 'it''s' and b in（1)") == "a = 'it''s' and b in(1)"
+
+
+def test_preprocess_protects_comments():
+    """注释段不动 —— 替换它没意义，避免行号偏移更稳。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    # 行注释
+    assert normalize_for_parsing("a -- 注释（不动）\nb in（1)") == "a -- 注释（不动）\nb in(1)"
+    # 块注释
+    assert normalize_for_parsing("/* hint（保留） */ a in（1)") == "/* hint（保留） */ a in(1)"
+
+
+def test_preprocess_does_not_change_line_count():
+    """归一化必须保持换行数和位置——procedure_segments 行号依赖这点。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    sql = "line1\nline2 ${var}\nline3 a in（1)\nline4"
+    out = normalize_for_parsing(sql)
+    assert sql.count("\n") == out.count("\n")
+    # 每个换行的相对位置（按行索引）应该一致
+    assert sql.split("\n")[0] == out.split("\n")[0]
+    assert ":var" in out.split("\n")[1]
+    assert "in(1)" in out.split("\n")[2]
+
+
+def test_fullwidth_paren_in_case_when_does_not_break_parse():
+    """回归：t.l_class in（'1','13'）这种全角左括号曾让 sqlglot 报
+    `Expected END after CASE`。归一化后应能解出目标表 + 4 张来源表 + 模板变量。"""
+    sql = """\
+insert into kgrp.t_ftbi_bks_cpjbxx (cpdm, cplx, dqrq, bz)
+select t.vc_code,
+       (case when t.l_class in（'1','13') then '1'
+             when t.l_class in ('3','4','5','8','16') then '2'
+             when t.l_class ='17' then '3'
+             else ''
+        end) cplx,
+       to_char(t.d_dqrq,'yyyymmdd') dqrq,
+       '' bz
+  from ods.ods_hsgz_tfundinfo t
+  left join ods.ods_hsgz_txbrl_jjfzxx t1
+    on t1.l_ztbh = t.l_fundid
+  left join ods.ods_hsgz_tglrxx c
+    on t.vc_glrbh = c.vc_bh
+  left join ods.ods_hsgz_tyttx d
+    on t.l_fundid = d.l_ztbh
+   and to_char(d.d_begin,'yyyymmdd') <= ${data_dt1}
+ where (to_char(t.d_dqrq,'yyyymmdd') >= ${data_dt1} or t.d_dqrq is null)
+   and t.l_class in ('1','3','4','5','8','16','17','13');
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    # 不应再报 "Expected END after CASE"
+    assert result["parse_errors"] == [], result["parse_errors"]
+    # 目标表
+    targets = {t["target_table"] for t in result["target_summary"]}
+    assert "kgrp.t_ftbi_bks_cpjbxx" in targets
+    # 4 张来源表
+    src_names = {t["table"] for t in result["tables"]}
+    expected_sources = {
+        "ods.ods_hsgz_tfundinfo",
+        "ods.ods_hsgz_txbrl_jjfzxx",
+        "ods.ods_hsgz_tglrxx",
+        "ods.ods_hsgz_tyttx",
+    }
+    assert expected_sources <= src_names, f"missing: {expected_sources - src_names}"
+    # 模板变量被收集
+    var_names = {v["name"] for v in result["variables"]}
+    assert "data_dt1" in var_names
