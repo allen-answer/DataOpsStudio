@@ -18,7 +18,7 @@ const STEP_IDS = ['source', 'rules', 'mapping', 'result']
 
 const currentStep = ref('source')
 
-const { taskDraft, selectedTaskId, isSavedTask, runTask } = inject('app')
+const { taskDraft, selectedTaskId, isSavedTask, runTask, taskValidationIssues, canSaveTask } = inject('app')
 
 const search = ref('')
 
@@ -49,6 +49,16 @@ const currentIndex = computed(() => STEP_IDS.indexOf(currentStep.value))
 const canPrev = computed(() => currentIndex.value > 0)
 const canNext = computed(() => currentIndex.value < STEP_IDS.length - 1)
 
+// 各 step 的错误 issue 数 —— 给步骤条标红用
+const stepErrorCounts = computed(() => {
+  const counts = { source: 0, rules: 0, mapping: 0, result: 0 }
+  for (const issue of taskValidationIssues.value) {
+    if (issue.level !== 'error') continue
+    counts[issue.step] = (counts[issue.step] || 0) + 1
+  }
+  return counts
+})
+
 function goPrev() { if (canPrev.value) currentStep.value = STEP_IDS[currentIndex.value - 1] }
 function goNext() { if (canNext.value) currentStep.value = STEP_IDS[currentIndex.value + 1] }
 </script>
@@ -63,6 +73,7 @@ function goNext() { if (canNext.value) currentStep.value = STEP_IDS[currentIndex
       <WorkbenchStepBar
         :current="currentStep"
         :completion="completion"
+        :error-counts="stepErrorCounts"
         @change="(s) => currentStep = s"
       />
 
@@ -78,12 +89,13 @@ function goNext() { if (canNext.value) currentStep.value = STEP_IDS[currentIndex
         </button>
         <p class="muted text-[11px]">
           {{ currentIndex + 1 }} / {{ STEP_IDS.length }}
-          <span v-if="!isSavedTask" class="ml-2 text-status-warning">· 任务未保存，先保存再执行</span>
+          <span v-if="!canSaveTask" class="ml-2 text-status-error">· 配置不完整，无法保存</span>
+          <span v-else-if="!isSavedTask" class="ml-2 text-status-warning">· 任务未保存，先保存再执行</span>
         </p>
         <button v-if="canNext" class="btn btn-primary" @click="goNext">
           下一步 <ChevronRight class="h-4 w-4" />
         </button>
-        <button v-else class="btn btn-primary" :disabled="!isSavedTask" @click="runTask">
+        <button v-else class="btn btn-primary" :disabled="!isSavedTask || !canSaveTask" @click="runTask">
           <Play class="h-4 w-4" /> 执行对比
         </button>
       </div>

@@ -1,12 +1,15 @@
 <script setup>
-import { inject, computed } from 'vue'
-import { CheckCircle2, AlertCircle, Database, FileSpreadsheet, ArrowRight, Play, Square, Save, Copy, Trash2 } from 'lucide-vue-next'
+import { computed, inject } from 'vue'
+import { CheckCircle2, AlertCircle, AlertTriangle, Database, FileSpreadsheet, ArrowRight, Play, Square, Save, Copy, Trash2 } from 'lucide-vue-next'
 
 const {
   state, taskDraft, selectedTaskId, isSavedTask, currentTask,
   compareResult, asyncJob, asyncStatus,
+  taskValidationIssues, canSaveTask,
   saveTask, runTask, runAsync, cancelAsync, copyTask, deleteTask,
 } = inject('app')
+
+const errorIssues = computed(() => taskValidationIssues.value.filter(i => i.level === 'error'))
 
 function dsName(id) {
   return state.datasources.find(d => d.id === id)?.name || ''
@@ -89,6 +92,26 @@ const lastRun = computed(() => {
       </div>
     </div>
 
+    <!-- 校验问题 -->
+    <div
+      v-if="errorIssues.length"
+      class="rounded-lg border border-status-error-bg bg-status-error-bg/40 p-3 text-xs"
+    >
+      <div class="mb-2 flex items-center gap-1.5 text-status-error">
+        <AlertTriangle class="h-3.5 w-3.5" />
+        <span class="font-semibold">{{ errorIssues.length }} 项配置问题</span>
+      </div>
+      <ul class="space-y-1 text-status-error">
+        <li
+          v-for="(issue, i) in errorIssues" :key="i"
+          class="flex items-start gap-1.5"
+        >
+          <span class="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-status-error" />
+          <span class="break-words">{{ issue.message }}</span>
+        </li>
+      </ul>
+    </div>
+
     <!-- 规则摘要 -->
     <div class="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
       <div class="mb-2 font-semibold text-slate-700">规则摘要</div>
@@ -154,16 +177,26 @@ const lastRun = computed(() => {
     <div class="space-y-1.5 border-t border-slate-100 pt-3">
       <button
         class="btn btn-primary w-full"
-        :disabled="!isSavedTask"
+        :disabled="!isSavedTask || !canSaveTask"
+        :title="errorIssues.length ? `修复 ${errorIssues.length} 项配置问题后才能执行` : ''"
         @click="runTask"
       >
         <Play class="h-4 w-4" /> 执行对比
       </button>
       <div class="grid grid-cols-2 gap-1.5">
-        <button class="btn btn-outline h-9 text-xs" @click="saveTask">
+        <button
+          class="btn btn-outline h-9 text-xs"
+          :disabled="!canSaveTask"
+          :title="errorIssues.length ? `修复 ${errorIssues.length} 项配置问题后才能保存` : ''"
+          @click="saveTask"
+        >
           <Save class="h-3.5 w-3.5" /> {{ isSavedTask ? '保存修改' : '保存任务' }}
         </button>
-        <button class="btn btn-outline h-9 text-xs" :disabled="!isSavedTask" @click="runAsync">
+        <button
+          class="btn btn-outline h-9 text-xs"
+          :disabled="!isSavedTask || !canSaveTask"
+          @click="runAsync"
+        >
           <Play class="h-3.5 w-3.5" /> 后台执行
         </button>
       </div>

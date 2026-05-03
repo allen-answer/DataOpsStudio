@@ -50,7 +50,10 @@ class CompareTask(BaseModel):
 
     @model_validator(mode="after")
     def validate_inputs(self) -> "CompareTask":
-        _validate_compare_inputs(self)
+        # 持久化 schema 跑 lenient 校验：允许加载历史任务（即使违反新加的混合规则），
+        # 否则一条非法 task 会让 /api/bootstrap 整个 500，老用户配置全锁死。
+        # 创建/更新走 CompareTaskCreate 仍是 strict。
+        _validate_compare_inputs(self, strict=False)
         return self
 
 
@@ -79,9 +82,22 @@ class CompareTaskCreate(BaseModel):
         return self
 
 
-def _validate_compare_inputs(task: Any) -> None:
+def _validate_compare_inputs(task: Any, *, strict: bool = True) -> None:
     """Per-side input validation. SQL kind requires datasource + SQL;
-    Excel kind requires an uploaded file path. key_columns always required."""
+    Excel kind requires an uploaded file path. key_columns always required.
+
+    `strict=True` adds 2 cross-field rules used only on create/update:
+    - single SQL mode requires both sides to be SQL (the same SELECT runs on
+      both datasources). Mixing Excel into single-mode makes no sense.
+    - stream_compare requires both sides to be ordered SQL streams. Excel
+      readers don't guarantee key ordering, so disable stream_compare when
+      either side is Excel.
+
+    `strict=False` is used by `CompareTask` (the persisted shape) so that
+    legacy task JSON on disk that violates the new cross-field rules still
+    loads. The user can re-save it through the UI; that path runs strict
+    validation on `CompareTaskCreate`.
+    """
     if task.source_kind == SourceKind.SQL:
         if not task.source_id.strip():
             raise ValueError("source_id is required for SQL source")
@@ -100,6 +116,25 @@ def _validate_compare_inputs(task: Any) -> None:
     elif task.target_kind == SourceKind.EXCEL:
         if not task.target_excel_path.strip():
             raise ValueError("target_excel_path is required for Excel target")
+
+    if strict:
+        # single SQL mode + Excel side is contradictory: there's no shared SELECT
+        # to reuse on the Excel reader. Force the user to pick double mode.
+        if task.sql_mode == SqlMode.SINGLE and (
+            task.source_kind == SourceKind.EXCEL or task.target_kind == SourceKind.EXCEL
+        ):
+            raise ValueError(
+                "single SQL mode does not support Excel inputs; switch to double SQL mode"
+            )
+
+        # stream_compare requires both sides to be SQL ordered by primary key.
+        # Excel readers buffer the whole sheet and don't preserve key ordering.
+        if task.limits.stream_compare and (
+            task.source_kind == SourceKind.EXCEL or task.target_kind == SourceKind.EXCEL
+        ):
+            raise ValueError(
+                "stream_compare requires SQL on both sides; Excel inputs cannot be streamed"
+            )
 
     if not task.key_columns:
         raise ValueError("key_columns is required")

@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useClipboard } from '@vueuse/core'
 import { apiForm, apiGet, apiJson } from './api'
 import AppShell from './layouts/AppShell.vue'
+import { validateTaskDraft } from './utils/taskValidation'
 
 // View 组件不再在这里直接 import；vue-router 接管路由 → 组件渲染（src/router/index.js）。
 // AppShell 负责布局壳：sidebar / topbar / 全局 notice / 主内容区（router-view）。
@@ -141,6 +142,13 @@ const batch = reactive({
 
 const currentTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value))
 const isSavedTask = computed(() => selectedTaskId.value !== 'new')
+
+// Compare task 校验：派发 issues + canSaveTask 给 view 用。前端做即时反馈，
+// 后端 _validate_compare_inputs 是权威；issues.field 对应 STEP_BY_FIELD 让步骤
+// 条能标红
+const taskValidation = computed(() => validateTaskDraft(taskDraft))
+const taskValidationIssues = computed(() => taskValidation.value.issues)
+const canSaveTask = computed(() => taskValidation.value.canSave)
 const currentWorkflow = computed(() => state.workflows.find((wf) => wf.id === selectedWorkflowId.value))
 const isSavedWorkflow = computed(() => selectedWorkflowId.value !== 'new')
 const selectedHistory = ref(new Set())
@@ -410,6 +418,15 @@ const selectTask = (id) => {
 }
 
 const saveTask = async () => {
+  // 前端立即校验，省一趟后端往返。后端 _validate_compare_inputs 仍是权威。
+  if (!canSaveTask.value) {
+    const errs = taskValidationIssues.value.filter(i => i.level === 'error')
+    const head = errs[0]?.message || '配置不完整'
+    const more = errs.length > 1 ? `（共 ${errs.length} 项问题）` : ''
+    setNotice(`保存被拦截：${head}${more}`)
+    setActionStatus('error', '保存被拦截', `${head}${more}`)
+    return
+  }
   setNotice('保存中...')
   setActionStatus('running', '正在保存任务', '正在校验数据源、SQL 和主键配置。')
   try {
@@ -1239,6 +1256,7 @@ provide('app', {
   // domain state
   state, taskDraft, datasourceDraft, editDraft, editingDatasourceId,
   selectedTaskId, currentTask, isSavedTask,
+  taskValidationIssues, canSaveTask,
   sourcePreviewData, targetPreviewData, sourceFields, targetFields,
   compareResult, asyncJob, asyncStatus, previewOutput, actionStatus,
   lineage, batch, batchActiveTab, batchTabs,
