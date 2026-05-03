@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -58,3 +59,32 @@ def test_csv_upload_size_guard_reuses_excel_limit(monkeypatch, tmp_path):
         file_uploads.save_uploaded_csv(upload)
 
     assert exc_info.value.status_code == 413
+
+
+def test_lineage_script_upload_accepts_txt(monkeypatch, tmp_path):
+    _patch_upload_dirs(monkeypatch, tmp_path)
+    upload = _fake_upload("job.txt", "select * from ods.orders".encode("utf-8"))
+
+    result = file_uploads.save_uploaded_lineage_script(upload)
+
+    assert result["filename"] == "job.txt"
+    assert result["kind"] == "file"
+    assert "select *" in result["preview"].lower()
+    assert Path(result["path"]).parts[-2:] == ("uploads", Path(result["path"]).name)
+
+
+def test_lineage_script_upload_accepts_zip(monkeypatch, tmp_path):
+    _patch_upload_dirs(monkeypatch, tmp_path)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("a.sql", "select * from a")
+        archive.writestr("nested/b.txt", "select * from b")
+        archive.writestr("README.md", "ignored")
+    upload = _fake_upload("jobs.zip", buf.getvalue())
+
+    result = file_uploads.save_uploaded_lineage_script(upload)
+
+    assert result["filename"] == "jobs.zip"
+    assert result["kind"] == "zip"
+    assert result["script_count"] == 2
+    assert "nested/b.txt" in result["script_names"]

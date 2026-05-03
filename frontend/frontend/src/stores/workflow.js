@@ -116,6 +116,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
       target_sql_override: node.config?.target_sql_override || '',
       sql: node.config?.sql || '',
       dialect: node.config?.dialect || '',
+      input_mode: node.config?.input_mode || (node.config?.script_path
+        ? (String(node.config?.script_filename || node.config?.script_path).toLowerCase().endsWith('.zip') ? 'uploaded_zip' : 'uploaded_file')
+        : 'inline_sql'),
+      script_path: node.config?.script_path || '',
+      script_filename: node.config?.script_filename || '',
+      script_kind: node.config?.script_kind || '',
       method: node.config?.method || 'GET',
       url: node.config?.url || '',
       body: node.config?.body || '',
@@ -168,9 +174,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
       ...(node.source_sql_override ? { source_sql_override: node.source_sql_override } : {}),
       ...(node.target_sql_override ? { target_sql_override: node.target_sql_override } : {}),
     }
-    if (node.type === 'lineage') return {
-      sql: node.sql,
-      ...(node.dialect ? { dialect: node.dialect } : {}),
+    if (node.type === 'lineage') {
+      const mode = node.input_mode || 'inline_sql'
+      const config = {
+        input_mode: mode,
+        ...(node.dialect ? { dialect: node.dialect } : {}),
+      }
+      if (mode === 'inline_sql') {
+        config.sql = node.sql || ''
+      } else {
+        config.script_path = node.script_path || ''
+        config.script_filename = node.script_filename || ''
+        config.script_kind = node.script_kind || (mode === 'uploaded_zip' ? 'zip' : 'file')
+      }
+      return config
     }
     if (node.type === 'http') return {
       url: node.url,
@@ -263,7 +280,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowDraft.nodes.push({
       id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
       task_id: '', source_sql_override: '', target_sql_override: '',
-      sql: '', dialect: '',
+      sql: '', dialect: '', input_mode: 'inline_sql', script_path: '', script_filename: '', script_kind: '',
       method: 'GET', url: '', body: '', expect_status: '',
       sheets: [
         { id: 'summary', enabled: true, sheet_name: '汇总对照', source_type: 'node_output', node_id: '', dataset: 'summary', run_id: '', max_rows: 100000 },

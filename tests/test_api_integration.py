@@ -11,6 +11,8 @@ artifact 下载。compare 节点要 MySQL，留给单元测试覆盖。
 from __future__ import annotations
 
 import json
+import io
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -122,6 +124,78 @@ def test_scheduler_status_endpoint(client, isolated_storage):
     payload = response.json()
     assert "running" in payload
     assert "entries" in payload
+
+
+def test_workflow_lineage_node_accepts_uploaded_text_file(client, isolated_storage):
+    upload = client.post(
+        "/api/uploads/lineage-script",
+        files={"file": ("job.txt", b"INSERT INTO dwd_b(id) SELECT id FROM ods_a", "text/plain")},
+    )
+    assert upload.status_code == 200, upload.text
+    script = upload.json()
+
+    workflow = client.post("/api/workflows", json={
+        "name": "lineage-file-workflow",
+        "nodes": [{
+            "id": "l1",
+            "type": "lineage",
+            "config": {
+                "input_mode": "uploaded_file",
+                "script_path": script["path"],
+                "script_filename": script["filename"],
+                "dialect": "mysql",
+            },
+            "depends_on": [],
+        }],
+    })
+    assert workflow.status_code == 200, workflow.text
+
+    run = client.post(f"/api/workflows/{workflow.json()['id']}/run", json={"variables": {}})
+    assert run.status_code == 200, run.text
+    payload = run.json()
+    assert payload["status"] == "success"
+    output = payload["nodes"][0]["output"]
+    assert output["input_mode"] == "uploaded_file"
+    assert output["script_filename"] == "job.txt"
+    assert any(edge["target_table"] == "dwd_b" for edge in output["edges"])
+
+
+def test_workflow_lineage_node_accepts_uploaded_zip(client, isolated_storage):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("a.sql", "INSERT INTO dwd_a SELECT * FROM ods_a")
+        archive.writestr("nested/b.txt", "INSERT INTO dwd_b SELECT * FROM dwd_a")
+    upload = client.post(
+        "/api/uploads/lineage-script",
+        files={"file": ("jobs.zip", buf.getvalue(), "application/zip")},
+    )
+    assert upload.status_code == 200, upload.text
+    script = upload.json()
+    assert script["script_count"] == 2
+
+    workflow = client.post("/api/workflows", json={
+        "name": "lineage-zip-workflow",
+        "nodes": [{
+            "id": "l1",
+            "type": "lineage",
+            "config": {
+                "input_mode": "uploaded_zip",
+                "script_path": script["path"],
+                "script_filename": script["filename"],
+                "dialect": "mysql",
+            },
+            "depends_on": [],
+        }],
+    })
+    assert workflow.status_code == 200, workflow.text
+
+    run = client.post(f"/api/workflows/{workflow.json()['id']}/run", json={"variables": {}})
+    assert run.status_code == 200, run.text
+    output = run.json()["nodes"][0]["output"]
+    assert output["input_mode"] == "uploaded_zip"
+    assert output["summary"]["files"] == 2
+    assert len(output["files"]) == 2
+    assert any(edge["target_table"] == "dwd_b" for edge in output["edges"])
 
 
 # --- excel_export 链路 + artifact 下载 ---

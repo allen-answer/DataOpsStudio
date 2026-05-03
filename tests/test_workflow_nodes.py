@@ -33,6 +33,44 @@ def test_lineage_node_calls_analyze_json_with_sql():
     assert out["sources"] == ["t1"]
 
 
+def test_lineage_node_interpolates_inline_sql_variables():
+    captured: dict = {}
+
+    def fake_analyze_json(payload):
+        captured["payload"] = payload
+        return {"sources": ["orders"], "targets": [], "edges": []}
+
+    with patch("app.services.lineage_service.analyze_json", side_effect=fake_analyze_json):
+        run_lineage_node({"sql": "SELECT * FROM orders WHERE dt='${biz_date}'"}, {"biz_date": "2026-05-03"})
+
+    assert "2026-05-03" in captured["payload"]["sql"]
+
+
+def test_lineage_node_uses_uploaded_script_path():
+    captured: dict = {}
+
+    def fake_analyze_stored_script(payload):
+        captured["payload"] = payload
+        return {
+            "table_edges": [{"source_table": "ods.a", "target_table": "dwd.b"}],
+            "field_mappings": [{"target_table": "dwd.b"}],
+        }
+
+    with patch("app.services.lineage_service.analyze_stored_script", side_effect=fake_analyze_stored_script):
+        out = run_lineage_node({
+            "input_mode": "uploaded_zip",
+            "script_path": "results/uploads/jobs.zip",
+            "script_filename": "jobs.zip",
+            "dialect": "oracle",
+        }, {})
+
+    assert captured["payload"]["script_path"] == "results/uploads/jobs.zip"
+    assert captured["payload"]["dialect"] == "oracle"
+    assert out["edges"] == [{"source_table": "ods.a", "target_table": "dwd.b"}]
+    assert out["sources"] == ["ods.a"]
+    assert out["targets"] == ["dwd.b"]
+
+
 # --- http runner — happy path ---
 
 class _FakeResponse:
