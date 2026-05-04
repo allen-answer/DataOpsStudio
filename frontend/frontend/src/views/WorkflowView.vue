@@ -1,5 +1,6 @@
 <script setup>
-import { inject, ref } from 'vue'
+import { inject, ref, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import WorkflowListView from './workflow/WorkflowListView.vue'
 import WorkflowDetailView from './workflow/WorkflowDetailView.vue'
 import WorkflowRunView from './workflow/WorkflowRunView.vue'
@@ -7,7 +8,33 @@ import WorkflowTemplateView from './workflow/WorkflowTemplateView.vue'
 
 const { state, selectedWorkflowId, workflowResult, selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync, setNotice } = inject('app')
 
-const subPage = ref('list')      // list / detail / run
+const route = useRoute()
+const subPage = ref('list')      // list / detail / run / templates
+
+// 深链支持：/workflows/:id → 详情；/workflow-runs/:runId → 运行详情。
+// 不接 route.params 的话，浏览器直接输 URL 进来永远停留在总览（之前的 bug）。
+async function syncFromRoute() {
+  const wfId = route.params.id
+  const runId = route.params.runId
+  if (runId) {
+    try {
+      await loadWorkflowRunDetail(runId)
+      subPage.value = 'run'
+    } catch {
+      subPage.value = 'list'
+    }
+    return
+  }
+  if (wfId) {
+    selectWorkflow(wfId)
+    subPage.value = 'detail'
+    return
+  }
+  subPage.value = 'list'
+}
+
+onMounted(syncFromRoute)
+watch(() => [route.params.id, route.params.runId], syncFromRoute)
 
 const goDetail = (workflowId) => {
   selectWorkflow(workflowId)
