@@ -327,13 +327,12 @@ class MockLineageAIProvider:
         summary = payload.get("summary", {})
         return {
             "summary": (
-                f"Static lineage found {summary.get('table_edge_count', 0)} table edges and "
-                f"{summary.get('column_edge_count', 0)} column edges."
+                f"静态解析共识别出 {summary.get('table_edge_count', 0)} 条表级血缘 + "
+                f"{summary.get('column_edge_count', 0)} 条字段级血缘。"
             ),
             "suggestions": [
                 {
-                    "type": "review",
-                    "message": "Review low-confidence columns, dynamic SQL, and parse failures first.",
+                    "message": "优先核对低置信字段、动态 SQL 片段和解析失败的脚本。",
                     "confidence": "medium",
                     "evidence": ["static_summary"],
                 }
@@ -341,6 +340,36 @@ class MockLineageAIProvider:
             "risks": [],
             "column_hints": [],
         }
+
+
+_ENRICHMENT_SYSTEM_PROMPT = (
+    "你是 SQL 血缘语义增强助手。根据用户给的【确定性解析结果】（已经由静态解析器跑出来），\n"
+    "用业务语言写一段语义解读，帮数据治理 / 数据工程师快速看懂这批 SQL 在做什么。\n\n"
+    "硬性规则（违反必返工）：\n"
+    "1. 输出语言：**全程使用简体中文**。表名 / 字段名 / SQL 关键字保留原文（用反引号包起来）。\n"
+    "2. 输出格式：仅返回 JSON 对象，包含 4 个键：summary / suggestions / risks / column_hints。"
+    "JSON 之外不要任何文字 / 注释 / Markdown 围栏。\n"
+    "3. **不要质疑、反驳、修正**用户给的 graph_edges / column_edges / table_edges。"
+    "这些是静态解析的事实，你只能在它们之上做语义归纳；不要说「应该是 X 而不是 Y」这类话。\n"
+    "4. **不要发明**未在用户输入里出现的表名 / 字段名。\n"
+    "5. summary：1~3 句话讲清楚「这批脚本/单脚本主要做什么」，业务向（例如「账户事实表全量重刷」），"
+    "不要罗列文件计数。\n"
+    "6. suggestions：每条形如 {message: 中文简短建议, evidence: 引用 file/table/column 名}，"
+    "聚焦「配 schema 元数据」「换 MERGE 提升原子性」「补字段说明」等可操作建议；"
+    "不要给「应该 review 一下」这类空话。\n"
+    "7. risks：每条形如 {level: low|medium|high, type: 简短分类, message: 中文, evidence: 引用}，"
+    "聚焦：动态 SQL 不可控 / 解析失败片段 / SELECT * 缺 schema / 跨库依赖 等。"
+    "**不要**把字段映射差异当 risk —— 那是静态解析事实。\n"
+    "8. column_hints：可空。仅当有具体字段命名 / 类型一致性建议时才填，每条 {column, hint, evidence}。\n\n"
+    "示例（仅供格式参考）：\n"
+    '{"summary": "批量分析 5 个 DM 方言 ETL 脚本，主流程是月度账户事实表的 DELETE+INSERT 全量重刷。",'
+    ' "suggestions": [{"message": "为 kgrp.r_cisp_f* 系列表补 schema 元数据，让 SELECT * 能展开真实字段",'
+    ' "evidence": "r_cisp_f3001_t / r_cisp_f3003_t 等 11 张表"}],'
+    ' "risks": [{"level": "medium", "type": "动态 SQL",'
+    ' "message": "3 处 EXECUTE IMMEDIATE 变量未解析，下游表无法静态确定",'
+    ' "evidence": "file_a.sql"}],'
+    ' "column_hints": []}'
+)
 
 
 class OpenAICompatibleLineageAIProvider:
@@ -356,15 +385,7 @@ class OpenAICompatibleLineageAIProvider:
             "model": config.model,
             "max_tokens": _openai_compatible_max_tokens(config),
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a SQL lineage reviewer. Return compact JSON only with keys "
-                        "summary, suggestions, risks, column_hints. Example JSON: "
-                        "{\"summary\":\"...\",\"suggestions\":[],\"risks\":[],\"column_hints\":[]}. "
-                        "Do not invent tables or overwrite deterministic lineage; cite evidence ids when possible."
-                    ),
-                },
+                {"role": "system", "content": _ENRICHMENT_SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
@@ -393,11 +414,7 @@ class AnthropicCompatibleLineageAIProvider:
         body = {
             "model": config.model,
             "max_tokens": 2048,
-            "system": (
-                "You are a SQL lineage reviewer. Return only a compact JSON object with keys "
-                "summary, suggestions, risks, column_hints. Do not invent tables or overwrite "
-                "deterministic lineage; cite evidence ids when possible."
-            ),
+            "system": _ENRICHMENT_SYSTEM_PROMPT,
             "messages": [
                 {
                     "role": "user",
@@ -405,7 +422,7 @@ class AnthropicCompatibleLineageAIProvider:
                         {
                             "type": "text",
                             "text": (
-                                "Review this static SQL lineage result and respond with JSON only:\n"
+                                "请对以下静态 SQL 血缘解析结果做语义增强，仅返回中文 JSON：\n"
                                 + json.dumps(payload, ensure_ascii=False)
                             ),
                         }
