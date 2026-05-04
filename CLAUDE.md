@@ -301,6 +301,18 @@ app/ai/
 4. Chrome DevTools Performance 录两段：init → 拖动 → 缩放 → focal 切换 → schema 折叠
 5. 对比 main thread 耗时 / FPS 平均 / Memory 峰值
 
+**已跑过的 baseline 数据**（2026-05-04，Playwright 自动化）：
+| Engine | Size | first_canvas | mem_delta | DOM nodes | canvases |
+|--------|------|--------------|-----------|-----------|----------|
+| G6     |  300 | 102 ms       | +8.6 MB   | 454       | 5        |
+| G6     | 1000 | 105 ms       | +8.4 MB   | 457       | 5        |
+| G6     | 5000 | 167 ms       | +23.6 MB  | 457       | 5        |
+| Cyto   |  300 |  94 ms       | +5.9 MB   | 435       | 3        |
+| Cyto   | 1000 |  58 ms       | +5.0 MB   | 438       | 3        |
+| Cyto   | 5000 | 414 ms       | +29.3 MB  | 438       | 3        |
+
+结论：focal+BFS truncation 在两个引擎都正常（DOM 恒定 ~450，与 fixture size 无关）；G6 在 5000 节点 first paint 167ms vs Cytoscape 414ms（2.5×）；Cytoscape DOM 略少（~435 vs ~454）。两个引擎在用户操作上都流畅。compound parent 优势在合成 fixture 上没体现（schema 数固定 6 个），需真实多 schema 大图才能验证。Phase 10 #5 决策：**G6 维持默认**，Cytoscape 留实验通道，等真实 Oracle 数据再考虑转正。
+
 **其它已识别但低优先级**：
 
 - **Repository 抽象 + SQLite**（Phase 9 ADR 第 6 条：先 audit/jobs，再统一）

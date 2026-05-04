@@ -169,11 +169,27 @@ def build_stress_fixture(size: int, *, seed: int = 42) -> dict[str, Any]:
         "ai_inferred": {},
     }
 
-    # 6. graph_groups —— 给 useLineageGraphData 用，按 schema 分组
-    graph_groups = [
-        {"schema": schema, "tables": names}
-        for schema, names in by_schema.items()
-    ]
+    # 6. graph_groups —— 按"目标表"分组（跟 batch_analyzer._table_groups 同形态）。
+    # useLineageGraphData 期望 {target_table, source_tables, dependency_tables} 三元组，
+    # 不是按 schema 分组。之前写成 {schema, tables} 让前端图根本画不出边。
+    by_target: dict[str, dict[str, Any]] = {}
+    for edge in edges:
+        target = edge["target_table"]
+        group = by_target.get(target)
+        if group is None:
+            group = {
+                "target_table": target,
+                "source_tables": [],
+                "dependency_tables": [],  # 留空：stress 不区分条件依赖
+                "files": [],
+            }
+            by_target[target] = group
+        if edge["source_table"] not in group["source_tables"]:
+            group["source_tables"].append(edge["source_table"])
+        f = edge.get("script") or ""
+        if f and f not in group["files"]:
+            group["files"].append(f)
+    graph_groups = list(by_target.values())
 
     return {
         "stress_fixture": True,  # 让前端能识别这是合成数据

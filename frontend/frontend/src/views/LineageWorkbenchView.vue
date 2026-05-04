@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { Code2, FileText, Files, Archive, Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
+import { apiGet } from '../api'
 
 // Phase 4：合并"单脚本血缘"和"多脚本分析"为统一血缘分析工作台。
 // 4 种输入模式：粘贴 SQL / 上传单文件 / 上传多文件 / 上传 ZIP
@@ -35,9 +36,28 @@ function defaultModeFromRoute(path) {
 
 const mode = ref(defaultModeFromRoute(route.path))
 watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
-onMounted(() => {
+onMounted(async () => {
   mode.value = defaultModeFromRoute(route.path)
   loadLineageAIStatus?.()
+
+  // Phase 10 #1：URL ?stress=N → 加载合成压测 fixture，跳过分析。用于在浏览器
+  // 跑 G6 / Cytoscape 双引擎压测对比。落到 lineage state 即可，单脚本路径渲染。
+  const stress = route.query.stress
+  if (stress) {
+    const size = parseInt(stress, 10)
+    if (Number.isNaN(size) || size < 10 || size > 10000) {
+      lineage.error = `stress 参数必须在 [10, 10000] 区间，当前 ${stress}`
+      return
+    }
+    mode.value = 'paste'
+    try {
+      lineage.error = ''
+      const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
+      lineage.result = data
+    } catch (e) {
+      lineage.error = `加载 stress fixture 失败：${e.message || e}`
+    }
+  }
 })
 
 const currentModeMeta = computed(() => MODES.find(m => m.id === mode.value))
