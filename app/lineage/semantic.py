@@ -106,7 +106,14 @@ def _build_procedures(procedure_segments: list[dict[str, Any]]) -> list[dict[str
     给前端做 step-level lineage 视图。dml_keyword 直接从 sql 段头部抽（INSERT / DELETE / ...）。
     """
     grouped: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"name": "", "kind": "", "segment_count": 0, "steps": [], "unsupported_count": 0}
+        lambda: {
+            "name": "",
+            "kind": "",
+            "segment_count": 0,
+            "steps": [],
+            "unsupported_count": 0,
+            "_operations": [],
+        }
     )
     for seg in procedure_segments:
         name = seg.get("procedure_name", "") or ""
@@ -119,15 +126,27 @@ def _build_procedures(procedure_segments: list[dict[str, Any]]) -> list[dict[str
         parse_status = seg.get("parse_status") or "unknown"
         if parse_status == "unsupported":
             proc["unsupported_count"] += 1
+        dml_keyword = _first_dml_keyword(seg.get("sql", ""))
+        operation = _procedure_operation(seg.get("sql", ""), dml_keyword)
+        if operation:
+            proc["_operations"].append(operation)
         proc["steps"].append({
             "segment_index": seg.get("segment_index"),
-            "dml_keyword": _first_dml_keyword(seg.get("sql", "")),
+            "dml_keyword": dml_keyword,
+            "target_table": operation.get("target_table", "") if operation else "",
             "line_start": seg.get("line_start"),
             "line_end": seg.get("line_end"),
             "preceding_comment": seg.get("preceding_comment", ""),
             "parse_status": parse_status,
         })
-    return list(grouped.values())
+    procedures: list[dict[str, Any]] = []
+    for proc in grouped.values():
+        operations = proc.pop("_operations", [])
+        proc["target_summary"] = _procedure_target_summary(operations)
+        modes = [item["refresh_mode"] for item in proc["target_summary"] if item.get("refresh_mode")]
+        proc["refresh_modes"] = sorted(set(modes))
+        procedures.append(proc)
+    return procedures
 
 
 _DML_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "SELECT", "WITH", "REPLACE", "CREATE")
@@ -143,6 +162,106 @@ def _first_dml_keyword(sql: str) -> str:
         if head.startswith(kw):
             return kw
     return ""
+
+
+_RE_TARGET_PATTERNS = {
+    "INSERT": r"\bINSERT\s+(?:OVERWRITE\s+)?(?:INTO\s+|TABLE\s+)?(?P<table>[\w$#.\"`\[\]]+)",
+    "REPLACE": r"\bREPLACE\s+INTO\s+(?P<table>[\w$#.\"`\[\]]+)",
+    "UPDATE": r"\bUPDATE\s+(?P<table>[\w$#.\"`\[\]]+)",
+    "MERGE": r"\bMERGE\s+INTO\s+(?P<table>[\w$#.\"`\[\]]+)",
+    "DELETE": r"\bDELETE\s+FROM\s+(?P<table>[\w$#.\"`\[\]]+)",
+    "TRUNCATE": r"\bTRUNCATE\s+(?:TABLE\s+)?(?P<table>[\w$#.\"`\[\]]+)",
+    "CREATE": r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:GLOBAL\s+TEMPORARY\s+|TEMPORARY\s+|TEMP\s+)?TABLE\s+(?P<table>[\w$#.\"`\[\]]+)",
+}
+
+
+def _procedure_operation(sql: str, dml_keyword: str) -> dict[str, Any] | None:
+    """Lightweight target extraction for procedure semantic summaries."""
+    import re as _re
+    if dml_keyword == "WITH":
+        dml_keyword = "INSERT"
+    pattern = _RE_TARGET_PATTERNS.get(dml_keyword)
+    if not pattern:
+        return None
+    cleaned = _re.sub(r"/\*(?:[^*]|\*(?!/))*\*/", " ", sql, flags=_re.DOTALL)
+    cleaned = _re.sub(r"--[^\n]*", " ", cleaned)
+    match = _re.search(pattern, cleaned, flags=_re.IGNORECASE)
+    if not match:
+        return None
+    table = match.group("table").strip().strip('"`[]')
+    if not table:
+        return None
+    return {
+        "target_table": table,
+        "dml_type": dml_keyword,
+        "has_where": bool(_re.search(r"\bWHERE\b", cleaned, flags=_re.IGNORECASE)),
+    }
+
+
+def _procedure_target_summary(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for op in operations:
+        by_target[(op.get("target_table") or "").lower()].append(op)
+
+    summaries: list[dict[str, Any]] = []
+    for ops in by_target.values():
+        insert_count = sum(1 for o in ops if o["dml_type"] in {"INSERT", "REPLACE", "CREATE"})
+        update_count = sum(1 for o in ops if o["dml_type"] == "UPDATE")
+        merge_count = sum(1 for o in ops if o["dml_type"] == "MERGE")
+        delete_count = sum(1 for o in ops if o["dml_type"] == "DELETE")
+        truncate_count = sum(1 for o in ops if o["dml_type"] == "TRUNCATE")
+        delete_seen = False
+        truncate_seen = False
+        delete_before_insert = False
+        truncate_before_insert = False
+        has_full_delete = False
+        for op in ops:
+            if op["dml_type"] == "DELETE":
+                delete_seen = True
+                has_full_delete = has_full_delete or not op.get("has_where")
+            elif op["dml_type"] == "TRUNCATE":
+                truncate_seen = True
+            elif op["dml_type"] in {"INSERT", "REPLACE", "CREATE"}:
+                delete_before_insert = delete_before_insert or delete_seen
+                truncate_before_insert = truncate_before_insert or truncate_seen
+        summaries.append({
+            "target_table": ops[0]["target_table"],
+            "insert_count": insert_count,
+            "update_count": update_count,
+            "merge_count": merge_count,
+            "delete_count": delete_count,
+            "truncate_count": truncate_count,
+            "refresh_mode": _classify_procedure_refresh_mode(
+                insert_count, update_count, merge_count,
+                delete_before_insert, truncate_before_insert, has_full_delete,
+            ),
+        })
+    return summaries
+
+
+def _classify_procedure_refresh_mode(
+    insert_count: int,
+    update_count: int,
+    merge_count: int,
+    delete_before_insert: bool,
+    truncate_before_insert: bool,
+    has_full_delete: bool,
+) -> str | None:
+    if truncate_before_insert:
+        return "truncate_insert"
+    if delete_before_insert and has_full_delete:
+        return "delete_insert"
+    if delete_before_insert:
+        return "delete_insert_partial"
+    if merge_count and not insert_count and not update_count:
+        return "merge"
+    if update_count and not insert_count and not merge_count:
+        return "update"
+    if insert_count and not update_count and not merge_count:
+        return "append"
+    if insert_count or update_count or merge_count:
+        return "mixed"
+    return None
 
 
 def _build_targets(

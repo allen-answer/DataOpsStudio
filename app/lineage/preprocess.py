@@ -36,6 +36,18 @@ _RE_TEMPLATE_VAR = re.compile(r"\$\{\s*([A-Za-z_][\w$#]*)\s*\}")
 # 在 code 段做归一化（不动 string 字面量、不动注释；不增减字符总长保证行号）。
 _RE_OPERATOR_SPACING = re.compile(r"(?<=[\w\)\s'\"`\]])([<>!])\s+([=>])(?=[\w\(\s'\"`\[])")
 
+# 部分 sqlglot 版本 / 方言组合对 `DELETE FROM table AS alias ...` 的处理不稳定。
+# Oracle/DM/MySQL 都能接受不带 AS 的删除别名形式；这里仅把 AS 替换成等长空白，
+# 保留 alias 和行列位置，避免后续表名 / 谓词分析偏移。
+_RE_DELETE_AS_ALIAS = re.compile(
+    r"(?ix)"
+    r"\bDELETE\s+FROM\s+"
+    r"(?P<table>(?:[A-Za-z_][\w$#]*|\"[^\"]+\"|`[^`]+`|\[[^\]]+\])"
+    r"(?:\s*\.\s*(?:[A-Za-z_][\w$#]*|\"[^\"]+\"|`[^`]+`|\[[^\]]+\]))*)"
+    r"(?P<ws>\s+)AS(?P<after>\s+[A-Za-z_][\w$#]*)"
+    r"(?=\s*(?:WHERE|USING|RETURNING|ORDER\s+BY|LIMIT|;|$))",
+)
+
 
 def normalize_for_parsing(sql: str) -> str:
     """把 SQL 转成 sqlglot 可吞的形式。
@@ -60,8 +72,25 @@ def normalize_for_parsing(sql: str) -> str:
             text = _replace_fullwidth(text)
             text = _RE_TEMPLATE_VAR.sub(lambda m: ":" + m.group(1), text)
             text = _normalize_operator_spacing(text)
+            text = _normalize_delete_as_alias(text)
         out.append(text)
     return "".join(out)
+
+
+def _normalize_delete_as_alias(text: str) -> str:
+    """`DELETE FROM tbl AS t` -> `DELETE FROM tbl    t`，等长替换 AS。"""
+    if "delete" not in text.lower() or " as " not in text.lower():
+        return text
+
+    def _replace(match: "re.Match[str]") -> str:
+        return (
+            match.group(0)[: match.start("ws") - match.start(0)]
+            + match.group("ws")
+            + "  "
+            + match.group("after")
+        )
+
+    return _RE_DELETE_AS_ALIAS.sub(_replace, text)
 
 
 def _normalize_insert_alias_prefix(text: str) -> str:

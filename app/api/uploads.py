@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
-from app.dbclients.factory import fetch_column_details, fetch_rows_with_schema
+from app.dbclients.factory import fetch_column_details, fetch_rows
 from app.models import (
     ExcelUploadResponse,
     PreviewColumnsResponse,
@@ -52,16 +52,16 @@ def preview_rows_api(payload: dict[str, object] = Body(...)):
             raise HTTPException(status_code=404, detail="Datasource not found")
         try:
             validate_readonly_sql(sql)
-            result = fetch_rows_with_schema(datasource, sql, max_rows=limit, raise_on_overflow=False)
+            rows = fetch_rows(datasource, sql, max_rows=limit, raise_on_overflow=False)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "side": side,
             "limit": limit,
-            "truncated": len(result.rows) == limit,
-            "columns": result.columns,
-            "warnings": result.warnings,
-            "rows": result.rows,
+            "truncated": len(rows) == limit,
+            "columns": list(rows[0]) if rows else [],
+            "warnings": [],
+            "rows": rows,
         }
 
     try:

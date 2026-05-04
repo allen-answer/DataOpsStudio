@@ -1583,6 +1583,31 @@ def test_preprocess_insert_alias_preserves_subquery_alias():
     assert out == sql or out.strip() == sql.strip()
 
 
+def test_preprocess_delete_as_alias_preserves_parseability():
+    """DELETE FROM tbl AS alias 在部分 sqlglot 方言组合下不稳定，preprocess 去 AS 但保留长度。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    sql = "DELETE FROM dw.t AS a WHERE a.id = 1"
+    out = normalize_for_parsing(sql)
+
+    assert " AS " not in out.upper()
+    assert "DELETE FROM dw.t" in out
+    assert "a WHERE" in out
+    assert len(out) == len(sql)
+
+
+def test_delete_as_alias_counts_target_summary():
+    sql = """
+    DELETE FROM dw.t AS a WHERE a.dt = :dt;
+    INSERT INTO dw.t SELECT id FROM ods.s;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by_lower(result["target_summary"], "dw.t")
+    assert summary["delete_count"] == 1
+    assert summary["insert_count"] == 1
+    assert summary["refresh_mode"] == "delete_insert_partial"
+
+
 def test_preprocess_does_not_change_line_count():
     """归一化必须保持换行数和位置——procedure_segments 行号依赖这点。"""
     from app.lineage.preprocess import normalize_for_parsing
@@ -1638,3 +1663,19 @@ select t.vc_code,
     # 模板变量被收集
     var_names = {v["name"] for v in result["variables"]}
     assert "data_dt1" in var_names
+
+
+def test_semantic_procedure_exposes_refresh_mode_summary():
+    sql = """\
+CREATE OR REPLACE PROCEDURE p_refresh AS
+BEGIN
+  DELETE FROM dw.t;
+  INSERT INTO dw.t SELECT id FROM ods.s;
+END;
+"""
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    proc = result["semantic_lineage"]["procedures"][0]
+    assert proc["refresh_modes"] == ["delete_insert"]
+    assert proc["target_summary"][0]["target_table"] == "dw.t"
+    assert proc["target_summary"][0]["refresh_mode"] == "delete_insert"
+    assert proc["steps"][0]["target_table"] == "dw.t"

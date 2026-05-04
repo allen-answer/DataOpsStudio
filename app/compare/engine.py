@@ -17,7 +17,7 @@ def compare_rows(
     rules: CompareRules | None = None,
 ) -> CompareBuckets:
     rules = rules or CompareRules()
-    rules = _rules_with_positional_mappings(source_rows, target_rows, rules)
+    rules = _rules_with_positional_mappings(source_rows, target_rows, key_columns, rules)
     source_index = _index_rows(source_rows, key_columns, {}, "source")
     target_index = _index_rows(target_rows, key_columns, rules.column_mappings, "target")
 
@@ -61,7 +61,7 @@ def compare_sorted_row_iterators(
     source_row = next(source_iter, None)
     target_row = next(target_iter, None)
     if source_row is not None and target_row is not None:
-        rules = _rules_with_positional_mappings([source_row], [target_row], rules)
+        rules = _rules_with_positional_mappings([source_row], [target_row], key_columns, rules)
 
     only_source: list[dict[str, Any]] = []
     only_target: list[dict[str, Any]] = []
@@ -122,18 +122,48 @@ def compare_sorted_row_iterators(
 def _rules_with_positional_mappings(
     source_rows: list[dict[str, Any]],
     target_rows: list[dict[str, Any]],
+    key_columns: list[str],
     rules: CompareRules,
 ) -> CompareRules:
     if rules.column_mappings or not source_rows or not target_rows:
         return rules
     source_columns = list(source_rows[0])
     target_columns = list(target_rows[0])
+    if rules.schema_policy == "strict" and [_normalize_column_name(c) for c in source_columns] != [
+        _normalize_column_name(c) for c in target_columns
+    ]:
+        raise ValueError("Schema mismatch: source and target columns differ")
+    key_names = {_normalize_column_name(column) for column in key_columns}
+    ignored = {_normalize_column_name(column) for column in rules.ignore_columns}
     mappings: dict[str, str] = {}
-    for index, source_column in enumerate(source_columns):
-        if index < len(target_columns):
-            mappings[source_column] = target_columns[index]
+    key_target_names: set[str] = set(key_names)
+    target_norms = {_normalize_column_name(column) for column in target_columns}
+    for key in key_columns:
+        key_norm = _normalize_column_name(key)
+        if key_norm in target_norms:
+            continue
+        source_index = next(
+            (index for index, column in enumerate(source_columns) if _normalize_column_name(column) == key_norm),
+            -1,
+        )
+        if 0 <= source_index < len(target_columns):
+            mappings[key] = target_columns[source_index]
+            key_target_names.add(_normalize_column_name(target_columns[source_index]))
+    source_value_columns = [
+        (index, column) for index, column in enumerate(source_columns, start=1)
+        if _normalize_column_name(column) not in key_names
+        and _normalize_column_name(column) not in ignored
+    ]
+    target_value_columns = [
+        column for column in target_columns
+        if _normalize_column_name(column) not in key_target_names
+        and _normalize_column_name(column) not in ignored
+    ]
+    for value_index, (source_index, source_column) in enumerate(source_value_columns):
+        if value_index < len(target_value_columns):
+            mappings[source_column] = target_value_columns[value_index]
         else:
-            mappings[source_column] = f"__missing_target_column_{index + 1}_{source_column}"
+            mappings[source_column] = f"__missing_target_column_{source_index}_{source_column}"
     return rules.model_copy(update={"column_mappings": mappings})
 
 
