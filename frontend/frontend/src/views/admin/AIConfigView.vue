@@ -1,6 +1,19 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Bot, CheckCircle2, KeyRound, RefreshCw, Save, ShieldCheck, TestTube2, XCircle } from 'lucide-vue-next'
+import {
+  Bot,
+  CheckCircle2,
+  FileText,
+  KeyRound,
+  Languages,
+  RefreshCw,
+  Save,
+  ShieldCheck,
+  Sparkles,
+  TestTube2,
+  Trash2,
+  XCircle,
+} from 'lucide-vue-next'
 import { apiGet, apiJson, invalidateAIEnabledCache } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 
@@ -135,6 +148,18 @@ async function testConnection() {
   }
 }
 
+function toggleClearApiKey() {
+  if (!config.value?.api_key_set) return
+  if (draft.clear_api_key) {
+    draft.clear_api_key = false
+    return
+  }
+  const confirmed = window.confirm('保存配置后将清除已保存的 API Key，确认标记清除吗？')
+  if (!confirmed) return
+  draft.api_key = ''
+  draft.clear_api_key = true
+}
+
 onMounted(() => {
   reload()
 })
@@ -210,38 +235,115 @@ onMounted(() => {
             <input v-model.number="draft.timeout_seconds" type="number" min="1" max="120" />
           </label>
 
-          <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <label class="flex items-center gap-2 text-sm text-slate-700">
-              <input v-model="draft.include_raw" type="checkbox" />
-              保存 AI 原始响应到报告
-            </label>
-            <label class="flex items-start gap-2 text-sm text-slate-700">
-              <input v-model="draft.enable_inference" type="checkbox" class="mt-0.5" />
-              <span>
-                <span class="font-medium">启用 AI 解析失败兜底</span>
-                <span class="muted block text-[11px] leading-relaxed">
-                  对静态解析失败（parse_errors）的片段调 AI 推断 source/target 表，输出独立
-                  <code class="rounded bg-slate-200 px-1 font-mono text-[10.5px]">ai_inferred</code>
-                  字段（不替代规则结论；前端虚线 + AI 徽章区分）。白名单约束保证 AI 只能从脚本里出现过的表名 / 字段名挑，避免 hallucination。
+          <div class="space-y-3 lg:col-span-2">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <h4 class="text-sm font-bold text-slate-800">功能开关</h4>
+                <p class="mt-1 text-xs text-slate-500">默认保持克制，按需开启会消耗 token 的能力。</p>
+              </div>
+              <span class="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+                Provider: {{ draft.provider || 'off' }}
+              </span>
+            </div>
+
+            <label class="flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-3 transition hover:border-primary/40 hover:bg-primary-light/40">
+              <span class="flex min-w-0 gap-3">
+                <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-600">
+                  <FileText class="h-4 w-4" />
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-sm font-semibold text-slate-800">保存 AI 原始响应到报告</span>
+                  <span class="mt-1 block text-xs leading-relaxed text-slate-500">
+                    用于排查 prompt、模型返回和解析问题；生产环境建议只在定位问题时开启。
+                  </span>
                 </span>
               </span>
-            </label>
-            <label class="flex items-start gap-2 text-sm text-slate-700">
-              <input v-model="draft.enable_auto_translation" type="checkbox" class="mt-0.5" />
-              <span>
-                <span class="font-medium">自动翻译错误信息（5xx / 长 4xx）</span>
-                <span class="muted block text-[11px] leading-relaxed">
-                  默认关。<strong>关闭时</strong>用户在错误卡片底部点 ✨"AI 解释"按钮才触发翻译，
-                  避免每个错误都烧 token；<strong>开启后</strong>所有 5xx 和长 4xx 错误自动调
-                  <code class="rounded bg-slate-200 px-1 font-mono text-[10.5px]">/api/ai/translate-error</code>
-                  并推送中文解释 + 排查建议给用户。
-                </span>
+              <input v-model="draft.include_raw" type="checkbox" class="sr-only" />
+              <span
+                class="relative mt-1 h-6 w-11 shrink-0 rounded-full transition"
+                :class="draft.include_raw ? 'bg-primary' : 'bg-slate-300'"
+              >
+                <span
+                  class="absolute top-1 h-4 w-4 rounded-full bg-white shadow transition"
+                  :class="draft.include_raw ? 'left-6' : 'left-1'"
+                ></span>
               </span>
             </label>
-            <label class="flex items-center gap-2 text-sm text-rose-700">
-              <input v-model="draft.clear_api_key" type="checkbox" :disabled="!config?.api_key_set" />
-              清除已保存 API Key
+
+            <label class="flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-3 transition hover:border-primary/40 hover:bg-primary-light/40">
+              <span class="flex min-w-0 gap-3">
+                <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary-light text-primary">
+                  <Sparkles class="h-4 w-4" />
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-sm font-semibold text-slate-800">启用 AI 解析失败兜底</span>
+                  <span class="mt-1 block text-xs leading-relaxed text-slate-500">
+                    对静态解析失败的片段推断 source / target 表，输出独立
+                    <code class="rounded bg-slate-100 px-1 font-mono text-[10.5px]">ai_inferred</code>
+                    字段；白名单约束只允许使用脚本中出现过的表名和字段名。
+                  </span>
+                </span>
+              </span>
+              <input v-model="draft.enable_inference" type="checkbox" class="sr-only" />
+              <span
+                class="relative mt-1 h-6 w-11 shrink-0 rounded-full transition"
+                :class="draft.enable_inference ? 'bg-primary' : 'bg-slate-300'"
+              >
+                <span
+                  class="absolute top-1 h-4 w-4 rounded-full bg-white shadow transition"
+                  :class="draft.enable_inference ? 'left-6' : 'left-1'"
+                ></span>
+              </span>
             </label>
+
+            <label class="flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-3 transition hover:border-primary/40 hover:bg-primary-light/40">
+              <span class="flex min-w-0 gap-3">
+                <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-status-info-bg text-status-info">
+                  <Languages class="h-4 w-4" />
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-sm font-semibold text-slate-800">错误信息 AI 解释模式</span>
+                  <span class="mt-1 block text-xs leading-relaxed text-slate-500">
+                    关闭时由用户点击“AI 解释”后再调用翻译接口；开启后 5xx 和长 4xx 错误自动调用
+                    <code class="rounded bg-slate-100 px-1 font-mono text-[10.5px]">/api/ai/translate-error</code>
+                    并返回中文解释和排查建议。
+                  </span>
+                </span>
+              </span>
+              <input v-model="draft.enable_auto_translation" type="checkbox" class="sr-only" />
+              <span
+                class="relative mt-1 h-6 w-11 shrink-0 rounded-full transition"
+                :class="draft.enable_auto_translation ? 'bg-primary' : 'bg-slate-300'"
+              >
+                <span
+                  class="absolute top-1 h-4 w-4 rounded-full bg-white shadow transition"
+                  :class="draft.enable_auto_translation ? 'left-6' : 'left-1'"
+                ></span>
+              </span>
+            </label>
+
+            <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-3">
+              <div class="flex min-w-0 gap-3">
+                <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-rose-600">
+                  <Trash2 class="h-4 w-4" />
+                </span>
+                <div class="min-w-0">
+                  <p class="text-sm font-semibold text-rose-800">清除已保存 API Key</p>
+                  <p class="mt-1 text-xs text-rose-700/75">
+                    {{ draft.clear_api_key ? '已标记清除，点击保存配置后生效。' : '不会立即删除，确认后需要再保存配置。' }}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-1.5 text-xs font-bold transition"
+                :class="draft.clear_api_key ? 'border-rose-300 bg-white text-rose-700' : 'border-rose-200 bg-rose-600 text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-200'"
+                :disabled="!config?.api_key_set"
+                @click="toggleClearApiKey"
+              >
+                {{ draft.clear_api_key ? '取消清除' : '标记清除' }}
+              </button>
+            </div>
           </div>
         </div>
 

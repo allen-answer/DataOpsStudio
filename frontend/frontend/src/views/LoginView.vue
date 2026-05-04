@@ -3,7 +3,17 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useNoticeStore } from '../stores/notice'
-import { Database, Lock, User as UserIcon } from 'lucide-vue-next'
+import {
+  Activity,
+  AlertCircle,
+  Database,
+  GitCompareArrows,
+  Lock,
+  Network,
+  ShieldCheck,
+  User as UserIcon,
+  Workflow,
+} from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const notice = useNoticeStore()
@@ -36,133 +46,187 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="login-bg relative grid min-h-screen place-items-center px-4">
-    <!-- 背景：紫蓝渐变 + 装饰光斑 + SVG 网格底纹 -->
-    <div class="login-bg-orb login-bg-orb-1" aria-hidden="true"></div>
-    <div class="login-bg-orb login-bg-orb-2" aria-hidden="true"></div>
-    <div class="login-bg-grid" aria-hidden="true"></div>
-
-    <form
-      class="relative z-10 w-full max-w-sm space-y-4 rounded-2xl border border-white/30 bg-white/85 p-6 shadow-2xl backdrop-blur-md"
-      @submit.prevent="onSubmit"
-    >
-      <div class="flex items-center gap-3 border-b border-slate-100 pb-4">
-        <div class="grid h-10 w-10 place-items-center rounded-lg bg-primary text-white shadow-md shadow-primary/40">
-          <Database class="h-5 w-5" />
+  <div class="login-shell relative min-h-screen overflow-hidden bg-slate-950 text-slate-900">
+    <div class="login-grid" aria-hidden="true"></div>
+    <div class="relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1fr)_520px]">
+      <section class="hidden min-h-screen flex-col justify-between px-10 py-9 text-white lg:flex xl:px-14">
+        <div class="flex items-center gap-3">
+          <div class="grid h-10 w-10 place-items-center rounded-xl bg-white text-primary shadow-lg shadow-black/20">
+            <Network class="h-5 w-5" />
+          </div>
+          <div>
+            <h1 class="text-base font-bold">DataOps Studio</h1>
+            <p class="text-xs text-slate-300">数据运维控制台</p>
+          </div>
         </div>
-        <div>
-          <h1 class="text-base font-bold text-slate-800">DataOps Studio</h1>
-          <p class="muted text-xs">登录后进入控制台</p>
+
+        <div class="max-w-2xl">
+          <p class="text-xs font-bold uppercase tracking-wider text-cyan-200">Operations Workspace</p>
+          <h2 class="mt-4 max-w-xl text-4xl font-bold leading-tight text-white">
+            数据对比、血缘分析和作业编排，一个入口完成。
+          </h2>
+          <p class="mt-4 max-w-lg text-sm leading-7 text-slate-300">
+            登录后继续管理数据源、任务运行、审计记录和 AI 辅助分析。
+          </p>
+
+          <div class="mt-10 w-full max-w-2xl rounded-2xl border border-white/10 bg-white/10 p-4 shadow-2xl shadow-black/30">
+            <div class="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">今日运行概览</p>
+                <p class="text-xs text-slate-400">Pipeline health</p>
+              </div>
+              <div class="flex items-center gap-1.5 rounded-full border border-emerald-300/25 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200">
+                <Activity class="h-3.5 w-3.5" />
+                正常
+              </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3">
+              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
+                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-400/15 text-cyan-200">
+                  <Database class="h-4 w-4" />
+                </div>
+                <p class="text-2xl font-bold text-white">18</p>
+                <p class="mt-1 text-xs text-slate-400">数据源</p>
+              </div>
+              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
+                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-violet-400/15 text-violet-200">
+                  <GitCompareArrows class="h-4 w-4" />
+                </div>
+                <p class="text-2xl font-bold text-white">42</p>
+                <p class="mt-1 text-xs text-slate-400">对比任务</p>
+              </div>
+              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
+                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-amber-300/15 text-amber-100">
+                  <Workflow class="h-4 w-4" />
+                </div>
+                <p class="text-2xl font-bold text-white">7</p>
+                <p class="mt-1 text-xs text-slate-400">作业流</p>
+              </div>
+            </div>
+
+            <div class="mt-4 rounded-xl border border-white/10 bg-slate-950/80 p-4">
+              <div class="flex items-center gap-3">
+                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-400/15 text-cyan-200">
+                  <Database class="h-4 w-4" />
+                </div>
+                <div class="h-px flex-1 bg-cyan-200/35"></div>
+                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-400/15 text-violet-200">
+                  <GitCompareArrows class="h-4 w-4" />
+                </div>
+                <div class="h-px flex-1 bg-violet-200/35"></div>
+                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-400/15 text-emerald-200">
+                  <Network class="h-4 w-4" />
+                </div>
+              </div>
+              <div class="mt-3 grid grid-cols-3 text-[11px] text-slate-400">
+                <span>采集</span>
+                <span class="text-center">校验</span>
+                <span class="text-right">血缘</span>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
 
-      <label class="block">
-        <span class="muted mb-1 block text-[11px] font-bold uppercase tracking-wider">用户名</span>
-        <div class="relative">
-          <UserIcon class="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-          <input
-            v-model="username"
-            type="text"
-            autocomplete="username"
-            autofocus
-            class="w-full pl-9"
-            placeholder="admin"
-          />
+        <div class="flex items-center gap-2 text-xs text-slate-400">
+          <ShieldCheck class="h-4 w-4 text-emerald-300" />
+          <span>DataOps Studio · Console Access</span>
         </div>
-      </label>
+      </section>
 
-      <label class="block">
-        <span class="muted mb-1 block text-[11px] font-bold uppercase tracking-wider">密码</span>
-        <div class="relative">
-          <Lock class="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            class="w-full pl-9"
-            placeholder="********"
-          />
-        </div>
-      </label>
+      <main class="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 sm:px-6 lg:bg-white">
+        <form
+          class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/70 sm:p-8"
+          @submit.prevent="onSubmit"
+        >
+          <div class="mb-8">
+            <div class="mb-5 flex items-center gap-3 lg:hidden">
+              <div class="grid h-10 w-10 place-items-center rounded-xl bg-primary text-white shadow-md shadow-primary/30">
+                <Network class="h-5 w-5" />
+              </div>
+              <div>
+                <h1 class="text-base font-bold text-slate-900">DataOps Studio</h1>
+                <p class="text-xs text-slate-500">数据运维控制台</p>
+              </div>
+            </div>
+            <p class="text-xs font-bold uppercase tracking-wider text-primary">Secure Login</p>
+            <h2 class="mt-2 text-2xl font-bold text-slate-950">欢迎回来</h2>
+            <p class="mt-2 text-sm text-slate-500">输入账号信息进入工作台。</p>
+          </div>
 
-      <p v-if="errorMsg" class="rounded-md bg-status-error-bg px-3 py-2 text-xs text-status-error">
-        {{ errorMsg }}
-      </p>
+          <div class="space-y-4">
+            <label class="block">
+              <span class="mb-1.5 block text-xs font-bold text-slate-600">用户名</span>
+              <div class="relative">
+                <UserIcon class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                <input
+                  v-model="username"
+                  type="text"
+                  autocomplete="username"
+                  autofocus
+                  class="h-11 w-full rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm transition focus:border-primary focus:bg-white focus:ring-primary/20"
+                  placeholder="admin"
+                />
+              </div>
+            </label>
 
-      <button
-        type="submit"
-        class="btn btn-primary w-full"
-        :disabled="submitting"
-      >
-        {{ submitting ? '登录中…' : '登录' }}
-      </button>
+            <label class="block">
+              <span class="mb-1.5 block text-xs font-bold text-slate-600">密码</span>
+              <div class="relative">
+                <Lock class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                <input
+                  v-model="password"
+                  type="password"
+                  autocomplete="current-password"
+                  class="h-11 w-full rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm transition focus:border-primary focus:bg-white focus:ring-primary/20"
+                  placeholder="请输入密码"
+                />
+              </div>
+            </label>
+          </div>
 
-      <p class="muted text-center text-[11px]">
-        首次启动默认账号 <code class="font-mono">admin / admin</code>
-        ——登录后请到「用户管理」改密码
-      </p>
-    </form>
+          <div
+            v-if="errorMsg"
+            class="mt-4 flex items-start gap-2 rounded-xl border border-status-error/20 bg-status-error-bg px-3 py-2.5 text-xs text-status-error"
+          >
+            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{{ errorMsg }}</span>
+          </div>
 
-    <!-- 底部品牌 / 版权脚 -->
-    <p class="absolute bottom-4 z-10 text-center text-[11px] text-white/70">
-      DataOps Studio · 数据对比 · 血缘分析 · 作业流编排
-    </p>
+          <button
+            type="submit"
+            class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            :disabled="submitting"
+          >
+            {{ submitting ? '登录中…' : '登录' }}
+          </button>
+
+          <div class="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-[11px] leading-5 text-slate-500">
+            首次启动默认账号 <code class="font-mono font-semibold text-slate-700">admin / admin</code>
+            ，登录后请到「用户管理」修改密码
+          </div>
+        </form>
+      </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* 主背景：紫蓝深色渐变 —— 跟 sidebar #1a1d2e + 主色 #7c3aed 呼应 */
-.login-bg {
+.login-shell {
   background:
-    radial-gradient(circle at 20% 20%, rgba(124, 58, 237, 0.45) 0%, transparent 45%),
-    radial-gradient(circle at 80% 70%, rgba(59, 130, 246, 0.35) 0%, transparent 45%),
-    linear-gradient(135deg, #1a1d2e 0%, #2d3142 50%, #1e1b4b 100%);
-  overflow: hidden;
+    linear-gradient(120deg, rgba(14, 165, 233, 0.20), transparent 34%),
+    linear-gradient(150deg, #111827 0%, #182135 46%, #0f172a 100%);
 }
 
-/* 装饰光斑 —— 缓慢呼吸动画，避免画面过死 */
-.login-bg-orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.55;
-  pointer-events: none;
-}
-.login-bg-orb-1 {
-  width: 480px;
-  height: 480px;
-  background: #7c3aed;
-  top: -120px;
-  left: -120px;
-  animation: orb-pulse 8s ease-in-out infinite;
-}
-.login-bg-orb-2 {
-  width: 380px;
-  height: 380px;
-  background: #06b6d4;
-  bottom: -100px;
-  right: -80px;
-  animation: orb-pulse 10s ease-in-out infinite reverse;
-}
-@keyframes orb-pulse {
-  0%, 100% { transform: scale(1) translate(0, 0); opacity: 0.55; }
-  50%      { transform: scale(1.15) translate(20px, -20px); opacity: 0.4; }
-}
-
-/* SVG 网格底纹 —— 数据感细节，叠在渐变上 */
-.login-bg-grid {
+.login-grid {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 48px 48px;
+    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 40px 40px;
   background-position: -1px -1px;
+  mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.84) 44%, transparent 74%);
   pointer-events: none;
-}
-
-/* 减弱动画偏好（无障碍） */
-@media (prefers-reduced-motion: reduce) {
-  .login-bg-orb { animation: none; }
 }
 </style>
