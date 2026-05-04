@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { Sparkles, X, AlertCircle } from 'lucide-vue-next'
 import AppSidebar from './AppSidebar.vue'
 import AppTopBar from './AppTopBar.vue'
+import ErrorBoundary from '../components/ErrorBoundary.vue'
 import { useNoticeStore } from '../stores/notice'
 
 defineProps({
@@ -79,8 +80,11 @@ const { aiTranslation } = storeToRefs(noticeStore)
           </div>
         </div>
 
-        <!-- Page content -->
-        <slot />
+        <!-- Page content：用 ErrorBoundary 兜住子组件渲染异常，
+             避免任意一个 view 抛错让整个 SPA 白屏 -->
+        <ErrorBoundary name="page">
+          <slot />
+        </ErrorBoundary>
       </div>
     </main>
   </div>

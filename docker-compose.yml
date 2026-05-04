@@ -40,6 +40,16 @@ services:
       - ./results:/app/results
       - ./logs:/app/logs
     restart: unless-stopped
+    # 健康检查：调 /api/drivers 兜底 —— 公开端点（无 auth），命中即说明 FastAPI
+    # 路由 + Python import 都正常；也间接覆盖 RequestIdMiddleware /
+    # AuditLogMiddleware / MetricsMiddleware 三层中间件。
+    # start_period 给应用启动留 30s 缓冲（scheduler init / lazy 加载 lineage_index 等）。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/drivers', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # 浏览器 e2e（可选 profile，默认 docker compose up 不启动）
   # 跑法：docker compose --profile e2e run --rm e2e
