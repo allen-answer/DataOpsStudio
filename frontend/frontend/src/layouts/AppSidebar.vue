@@ -3,6 +3,7 @@ import { inject } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Database,
+  Network,
   GitCompareArrows,
   Workflow,
   GitBranch,
@@ -64,7 +65,7 @@ async function onProjectChange(event) {
     <!-- Logo -->
     <div class="flex h-16 shrink-0 items-center gap-3 border-b border-sidebar-border px-6">
       <div class="grid h-9 w-9 place-items-center rounded-lg bg-primary text-white">
-        <Database class="h-5 w-5" />
+        <Network class="h-5 w-5" />
       </div>
       <div class="min-w-0">
         <div class="truncate text-sm font-semibold text-white">DataOps Studio</div>
