@@ -212,9 +212,10 @@ def _attach_ai_enrichment(
     scripts: list[dict[str, str]] | None = None,
     ai_async: bool = True,
 ) -> dict[str, object]:
-    # Phase 7 双轨 A：AI 解析失败兜底 —— 先做（同步、快速、独立字段），再做 enrichment
-    # 兜底针对 result["parse_errors"]：调 AI 推断 source/target 表，输出 result["ai_inferred"]
-    _attach_ai_inference(result, dialect=dialect, enabled=enabled)
+    # Phase 7 双轨 A：AI 解析失败兜底 —— 独立字段 ai_inferred。
+    # Phase 9 Day 5：默认异步，跟 enrichment 一起后台跑；test / 批量同步路径
+    # 通过 ai_async=False 退回旧行为。
+    _attach_ai_inference(result, dialect=dialect, enabled=enabled, ai_async=ai_async)
     attach = enqueue_lineage_ai_enrichment if ai_async else enrich_lineage_result
     return attach(
         result,
@@ -290,13 +291,19 @@ def _attach_ai_inference(
     *,
     dialect: str | None,
     enabled: bool,
+    ai_async: bool = False,
 ) -> None:
-    """对 result.parse_errors 和 result.dynamic_sql_segments 调 AI 兜底推断
-    （同步、best-effort、不阻塞主流程）。
+    """对 result.parse_errors 和 result.dynamic_sql_segments 调 AI 兜底推断。
+
+    Phase 9 Day 5：支持异步化。生产路径走 `_attach_ai_enrichment(ai_async=True)`
+    传下来 → `result["ai_inferred"]` 是 pending placeholder，真正的推断在后台
+    线程跑；前端轮询 `/api/lineage/ai/jobs/{job_id}` 拿最终结果。
+    `ai_async=False`（**helper 默认值**）走旧的同步行为，让 tests / batch CLI
+    /direct caller 不用改。
 
     P1：parse_errors（sqlglot 解析直接失败）
     P2：dynamic_sql_segments 中 confidence ∈ {unresolved, low, string_literal} 的片段
-    两类合并落 result["ai_inferred"]，每条 edge 用 source_kind 区分来源。
+    P3：unqualified column → suggested_table 归属推荐
     要求 LineageAIConfig.enable_inference=True 才执行；任一失败默默降级，不抛错。
     """
     parse_errors = result.get("parse_errors") or []
@@ -309,6 +316,7 @@ def _attach_ai_inference(
         # lazy import 避免 lineage_service ↔ lineage_ai_inference 循环
         from app.services.lineage_ai import _config as _ai_config
         from app.services.lineage_ai_inference import (
+            enqueue_lineage_ai_inference,
             infer_column_attribution,
             infer_from_dynamic_sql_segments,
             infer_from_parse_errors,
@@ -359,6 +367,25 @@ def _attach_ai_inference(
                     if isinstance(tc, str):
                         column_names.add(tc)
 
+        # Phase 9 Day 5：异步分支 —— 立刻返回 pending placeholder
+        if ai_async:
+            logger.info(
+                "AI inference enqueue (async): parse_errors=%s dynamic_sql_segments=%s ambiguous_columns=%s",
+                len(parse_errors), len(dynamic_sql_segments), len(ambiguous_columns),
+            )
+            result["ai_inferred"] = enqueue_lineage_ai_inference(
+                parse_errors=list(parse_errors),
+                dynamic_sql_segments=list(dynamic_sql_segments),
+                ambiguous_columns=list(ambiguous_columns),
+                procedure_segments=list(result.get("procedure_segments") or []),
+                table_whitelist=table_names,
+                column_whitelist=column_names,
+                dialect=dialect or "",
+                config=config,
+            )
+            return
+
+        # ─── 同步分支（ai_async=False） ───────────────────────────────────────
         # P1：parse_errors 兜底
         merged_edges: list = []
         merged_warnings: list = []
@@ -419,13 +446,17 @@ def _attach_ai_inference(
             merged_trigger += int(inferred_col.get("trigger_count", 0))
             merged_filtered += int(inferred_col.get("filtered_count", 0))
 
-        result["ai_inferred"] = {
+        # Phase 9 Day 2：出口处包 AIInferenceResult —— edges / column_hints
+        # 走 model 校验（confidence 拦 high → medium 静默降级），envelope
+        # extra="allow"，未建模字段透传。
+        from app.models.lineage import AIInferenceResult as _AIInferenceResult
+        result["ai_inferred"] = _AIInferenceResult.model_validate({
             "edges": merged_edges,
             "column_hints": merged_hints,
             "warnings": merged_warnings,
             "trigger_count": merged_trigger,
             "filtered_count": merged_filtered,
-        }
+        }).model_dump(by_alias=True)
         logger.info(
             "AI inference done: edges=%s column_hints=%s triggers=%s filtered=%s warnings=%s",
             len(merged_edges),
@@ -436,12 +467,14 @@ def _attach_ai_inference(
         )
     except Exception as exc:
         logger.warning("AI inference fallback failed: %s", exc)
-        result["ai_inferred"] = {
+        from app.models.lineage import AIInferenceResult as _AIInferenceResult
+        result["ai_inferred"] = _AIInferenceResult.model_validate({
             "edges": [],
+            "column_hints": [],
             "warnings": [{"type": "ai_inference_pipeline_error", "message": str(exc)}],
             "trigger_count": 0,
             "filtered_count": 0,
-        }
+        }).model_dump(by_alias=True)
 
 
 def _sql_text(sql: str, sql_file: UploadFile | None) -> str:

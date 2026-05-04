@@ -1,6 +1,7 @@
 <script setup>
-import { computed } from 'vue'
-import { Sparkles, AlertTriangle, ChevronRight, FileWarning, Code, AlertCircle, Columns } from 'lucide-vue-next'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { Sparkles, AlertTriangle, ChevronRight, FileWarning, Code, AlertCircle, Columns, Loader2 } from 'lucide-vue-next'
+import { apiGet } from '../../api'
 
 const props = defineProps({
   inferred: { type: Object, default: () => ({ edges: [], column_hints: [], warnings: [], trigger_count: 0, filtered_count: 0 }) },
@@ -9,11 +10,72 @@ const props = defineProps({
   warnings: { type: Array, default: () => [] },
 })
 
-const edges = computed(() => Array.isArray(props.inferred?.edges) ? props.inferred.edges : [])
-const columnHints = computed(() => Array.isArray(props.inferred?.column_hints) ? props.inferred.column_hints : [])
-const aiWarnings = computed(() => Array.isArray(props.inferred?.warnings) ? props.inferred.warnings : [])
-const triggerCount = computed(() => Number(props.inferred?.trigger_count || 0))
-const filteredCount = computed(() => Number(props.inferred?.filtered_count || 0))
+const emit = defineEmits(['update:inferred'])
+
+// Phase 9 Day 5：异步 inference —— 收到 pending placeholder 时本地轮询；
+// 拿到最终结果后用 finalInferred 替换 prop 显示，并 emit 让父级保存。
+const finalInferred = ref(null)
+
+const effective = computed(() => finalInferred.value || props.inferred || {})
+
+const isPending = computed(() => {
+  const s = effective.value?.status
+  return s === 'pending' || s === 'running'
+})
+const jobId = computed(() => effective.value?.job_id || null)
+
+const edges = computed(() => Array.isArray(effective.value?.edges) ? effective.value.edges : [])
+const columnHints = computed(() => Array.isArray(effective.value?.column_hints) ? effective.value.column_hints : [])
+const aiWarnings = computed(() => Array.isArray(effective.value?.warnings) ? effective.value.warnings : [])
+const triggerCount = computed(() => Number(effective.value?.trigger_count || 0))
+const filteredCount = computed(() => Number(effective.value?.filtered_count || 0))
+
+let pollTimer = null
+
+function stopPolling () {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollOnce () {
+  if (!jobId.value) return
+  try {
+    const job = await apiGet(`/api/lineage/ai/jobs/${jobId.value}`)
+    if (job?.status === 'ok' || job?.status === 'error') {
+      finalInferred.value = job
+      emit('update:inferred', job)
+      stopPolling()
+      return
+    }
+  } catch (e) {
+    // 404 = job 已被清理 / 端点不可用：停轮询，留 pending banner
+    stopPolling()
+    return
+  }
+  // 还在 pending/running，继续轮询（指数退避：500ms → 1s → 2s → 上限 3s）
+  pollTimer = setTimeout(pollOnce, Math.min(currentInterval(), 3000))
+}
+
+let intervalState = 500
+function currentInterval () {
+  const v = intervalState
+  intervalState = Math.min(intervalState * 1.5, 3000)
+  return v
+}
+
+watch(() => props.inferred, (val) => {
+  // 父级换了新 result（新一轮分析）→ reset 本地状态
+  finalInferred.value = null
+  intervalState = 500
+  stopPolling()
+  if (val?.status === 'pending' || val?.status === 'running') {
+    pollTimer = setTimeout(pollOnce, intervalState)
+  }
+}, { immediate: true })
+
+onUnmounted(stopPolling)
 
 // Phase 2：按 source_kind 分组（parse_error / dynamic_sql）
 const parseErrorEdges = computed(() => edges.value.filter(e => (e.source_kind || 'parse_error') === 'parse_error'))
@@ -70,6 +132,25 @@ const dmlClass = (d) => ({
         </p>
       </div>
     </header>
+
+    <!-- Phase 9 Day 5：异步 pending 状态 -->
+    <div
+      v-if="isPending"
+      class="card flex items-center gap-3 border-blue-200 bg-blue-50/40 p-3"
+    >
+      <Loader2 class="h-4 w-4 animate-spin text-blue-600" />
+      <div class="flex-1">
+        <p class="text-sm font-bold text-blue-800">
+          AI 兜底推断进行中
+          <span class="ml-2 pill bg-blue-100 text-blue-700 text-[10px]">
+            {{ effective.status === 'running' ? '运行中' : '排队中' }}
+          </span>
+        </p>
+        <p class="muted mt-0.5 text-[11px]">
+          后台线程跑完会自动刷新结果（job_id: <code class="sql-font">{{ jobId?.slice(0, 8) }}</code>）。
+        </p>
+      </div>
+    </div>
 
     <!-- 警告 -->
     <div v-if="aiWarnings.length" class="card border-amber-200 bg-amber-50/40 p-3">

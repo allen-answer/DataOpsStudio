@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+import threading
+import time
+import uuid
 from typing import Any
 
 from app.services.lineage_ai import (
@@ -57,17 +59,28 @@ from app.services.lineage_ai import (
     _openai_compatible_max_tokens,
     _post_json,
     _should_disable_kimi_thinking,
+    _store_ai_job,
 )
 from app.services.lineage_ai_config import (
     ANTHROPIC_COMPATIBLE_PROVIDERS,
     OPENAI_COMPATIBLE_PROVIDERS,
 )
+# Phase 9 Day 3：内部用 model，外部 API 仍 list[dict]（向后兼容）。
+from app.models.lineage import AIColumnHint, AIInferredEdge
+# Phase 9 Day 4：filters / _normalize_name 搬到 app.ai.filters。
+# 老 import path（`from app.services.lineage_ai_inference import _validate_and_filter_edges`）
+# 仍可用 —— 走下面这行 re-export。
+from app.ai.filters import (  # noqa: F401  (re-export for backward compat)
+    _filter_columns,
+    _normalize_name,
+    _validate_and_filter_column_hints,
+    _validate_and_filter_edges,
+)
 
 logger = logging.getLogger(__name__)
 
-# AI 推断的 dml_type 枚举（避免 hallucinated 类型）
-_VALID_DML = {"INSERT", "UPDATE", "MERGE", "DELETE", "CTAS", "TRUNCATE_INSERT"}
-_VALID_CONFIDENCE = {"low", "medium"}  # high 不允许（AI 推断永远不能是 high）
+# `_VALID_DML` / `_VALID_CONFIDENCE` 已搬到 `app.ai.filters`，AIInferredEdge
+# field_validator 拦 high → low（最保守降级）。这里不再重复定义。
 
 
 def infer_from_parse_errors(
@@ -151,7 +164,7 @@ def infer_from_parse_errors(
                 fragment_index=index,
                 evidence_hint=sql_text[:200],
             )
-            output["edges"].extend(edges)
+            output["edges"].extend(e.model_dump() for e in edges)
             output["filtered_count"] += filtered
             if filtered:
                 output["warnings"].append({
@@ -290,7 +303,7 @@ def infer_from_dynamic_sql_segments(
                 evidence_hint=sql_text[:200],
                 source_kind="dynamic_sql",
             )
-            output["edges"].extend(edges)
+            output["edges"].extend(e.model_dump() for e in edges)
             output["filtered_count"] += filtered
             if filtered:
                 output["warnings"].append({
@@ -509,92 +522,7 @@ def _call_anthropic(config: LineageAIConfig, user_content: str, *, system_prompt
 
 
 # ─── 输出校验 + 白名单过滤 ────────────────────────────────────────────────────
-
-
-def _validate_and_filter_edges(
-    raw_edges: Any,
-    *,
-    table_set: set[str],
-    column_set: set[str],
-    fragment_index: int,
-    evidence_hint: str,
-    source_kind: str = "parse_error",
-) -> tuple[list[dict[str, Any]], int]:
-    """逐条 edge 校验：dml_type / confidence 枚举 + 表名 / 字段名白名单。"""
-    if not isinstance(raw_edges, list):
-        return [], 0
-    output: list[dict[str, Any]] = []
-    filtered = 0
-    for raw in raw_edges:
-        if not isinstance(raw, dict):
-            filtered += 1
-            continue
-        target_table = _normalize_name(raw.get("target_table") or "")
-        source_table = _normalize_name(raw.get("source_table") or "")
-        # 至少要有 target（INSERT/UPDATE/MERGE/DELETE 都有 target）
-        if not target_table or target_table not in table_set:
-            filtered += 1
-            continue
-        # source_table 可空（DELETE/TRUNCATE 可能没 source；但 INSERT 必须有）
-        if source_table and source_table not in table_set:
-            # 源不在白名单 → 整条边降级为只保留 target，source 设空
-            source_table = ""
-        dml_type = str(raw.get("dml_type") or "INSERT").upper()
-        if dml_type not in _VALID_DML:
-            dml_type = "INSERT"  # 兜底
-        confidence = str(raw.get("confidence") or "low").lower()
-        if confidence not in _VALID_CONFIDENCE:
-            confidence = "low"
-        # 字段白名单过滤
-        source_columns = _filter_columns(raw.get("source_columns"), column_set)
-        target_columns = _filter_columns(raw.get("target_columns"), column_set)
-        # evidence 必须有 —— AI 没给的话用片段开头兜底（防止前端展示空）
-        evidence = str(raw.get("evidence") or "").strip()[:300] or evidence_hint
-        reason = str(raw.get("reason") or "AI 推断（无附加说明）").strip()[:200]
-        output.append({
-            "source_table": source_table,
-            "target_table": target_table,
-            "dml_type": dml_type,
-            "source_columns": source_columns,
-            "target_columns": target_columns,
-            "confidence": confidence,
-            "reason": reason,
-            "evidence": evidence,
-            "fragment_index": fragment_index,
-            "source_kind": source_kind,  # parse_error | dynamic_sql
-            "is_ai_inferred": True,
-        })
-    return output, filtered
-
-
-def _filter_columns(raw: Any, whitelist: set[str]) -> list[str]:
-    if not isinstance(raw, list) or not whitelist:
-        return []
-    out: list[str] = []
-    for item in raw:
-        if not isinstance(item, str):
-            continue
-        # 字段可能是 "t.col" 形式，剥到 col 或保留全名都查白名单
-        normalized = _normalize_name(item)
-        bare = normalized.split(".")[-1] if "." in normalized else normalized
-        if normalized in whitelist or bare in whitelist:
-            out.append(item.strip())
-    # 去重保序
-    seen: set[str] = set()
-    unique: list[str] = []
-    for item in out:
-        if item not in seen:
-            seen.add(item)
-            unique.append(item)
-    return unique
-
-
-_NAME_NORMALIZE_RE = re.compile(r'["`\[\]]')
-
-
-def _normalize_name(name: str) -> str:
-    """表 / 字段名归一化：去引号 + lowercase。`"ODS"."T1"` → ods.t1"""
-    return _NAME_NORMALIZE_RE.sub("", str(name or "")).strip().lower()
+# 实际实现在 app.ai.filters。这里通过模块顶部的 `from app.ai.filters import *` 透传。
 
 
 # ─── Phase 3：多表 unqualified column 归属推荐 ────────────────────────────────
@@ -688,7 +616,7 @@ def infer_column_attribution(
             table_set=table_set,
             column_set=column_set,
         )
-        output["hints"] = hints
+        output["hints"] = [h.model_dump() for h in hints]
         output["filtered_count"] = filtered
         if filtered:
             output["warnings"].append({
@@ -741,48 +669,181 @@ def _call_provider_column_attribution(
     raise ValueError(f"unsupported provider for column_attribution: {provider_name}")
 
 
-def _validate_and_filter_column_hints(
-    raw_hints: Any,
+# `_validate_and_filter_column_hints` 实际实现在 app.ai.filters；模块顶部的
+# import 已经把符号挂在本模块命名空间，老 import path 仍可用。
+
+
+# ─── Phase 9 Day 5：异步化 ────────────────────────────────────────────────────
+
+
+def enqueue_lineage_ai_inference(
     *,
-    table_set: set[str],
-    column_set: set[str],
-) -> tuple[list[dict[str, Any]], int]:
-    """逐条 hint 校验：suggested_table 在白名单 + 每个 column 只保留 1 条。"""
-    if not isinstance(raw_hints, list):
-        return [], 0
-    out: list[dict[str, Any]] = []
-    filtered = 0
-    seen_columns: set[str] = set()
-    for raw in raw_hints:
-        if not isinstance(raw, dict):
-            filtered += 1
-            continue
-        column = str(raw.get("column") or "").strip()
-        suggested = _normalize_name(raw.get("suggested_table") or "")
-        if not column or not suggested:
-            filtered += 1
-            continue
-        if suggested not in table_set:
-            filtered += 1
-            continue
-        column_key = _normalize_name(column).split(".")[-1]
-        if column_key in seen_columns:
-            filtered += 1
-            continue
-        seen_columns.add(column_key)
-        # column 在白名单里也是加分项，但不作为强约束（unqualified column 命名可能跟 schema 不一致）
-        confidence = str(raw.get("confidence") or "low").lower()
-        if confidence not in {"low", "medium"}:
-            confidence = "low"
-        reason = str(raw.get("reason") or "AI 推断（无附加说明）").strip()[:200]
-        evidence = str(raw.get("evidence") or "").strip()[:300]
-        out.append({
-            "column": column,
-            "suggested_table": suggested,
-            "confidence": confidence,
-            "reason": reason,
-            "evidence": evidence,
-            "source_kind": "column_attribution",
-            "is_ai_inferred": True,
+    parse_errors: list[dict[str, str]],
+    dynamic_sql_segments: list[dict[str, Any]],
+    ambiguous_columns: list[dict[str, Any]],
+    procedure_segments: list[dict[str, Any]],
+    table_whitelist: set[str],
+    column_whitelist: set[str],
+    dialect: str,
+    config: LineageAIConfig,
+) -> dict[str, Any]:
+    """异步把 inference 兜底排进后台线程，立即返回 pending placeholder。
+
+    复用 `app.services.lineage_ai._AI_JOBS` / `_store_ai_job`，跟
+    enrichment 共享状态字典；`/api/lineage/ai/jobs/{job_id}` 端点对
+    enrichment 和 inference 一视同仁，靠返回的 `kind` 字段区分。
+
+    用户感知：大批量分析（多 parse_errors / 多 dynamic_sql）不再阻塞接口
+    几十秒；前端拿到 pending 后轮询 jobs endpoint 拿最终结果。
+    """
+    job_id = uuid.uuid4().hex
+    pending: dict[str, Any] = {
+        "kind": "inference",
+        "status": "pending",
+        "job_id": job_id,
+        "edges": [],
+        "column_hints": [],
+        "warnings": [],
+        "trigger_count": 0,
+        "filtered_count": 0,
+    }
+    _store_ai_job(job_id, pending)
+    thread = threading.Thread(
+        target=_run_inference_job,
+        args=(
+            job_id,
+            parse_errors,
+            dynamic_sql_segments,
+            ambiguous_columns,
+            procedure_segments,
+            table_whitelist,
+            column_whitelist,
+            dialect,
+            config,
+        ),
+        name=f"lineage-ai-inference-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return pending
+
+
+def _run_inference_job(
+    job_id: str,
+    parse_errors: list[dict[str, str]],
+    dynamic_sql_segments: list[dict[str, Any]],
+    ambiguous_columns: list[dict[str, Any]],
+    procedure_segments: list[dict[str, Any]],
+    table_whitelist: set[str],
+    column_whitelist: set[str],
+    dialect: str,
+    config: LineageAIConfig,
+) -> None:
+    """worker thread 实体：跑三类兜底 → 合并 → 落盘到 _AI_JOBS。"""
+    started = time.perf_counter()
+    try:
+        running: dict[str, Any] = {
+            "kind": "inference",
+            "status": "running",
+            "job_id": job_id,
+            "edges": [],
+            "column_hints": [],
+            "warnings": [],
+            "trigger_count": 0,
+            "filtered_count": 0,
+        }
+        _store_ai_job(job_id, running)
+
+        merged_edges: list[dict[str, Any]] = []
+        merged_hints: list[dict[str, Any]] = []
+        merged_warnings: list[dict[str, Any]] = []
+        merged_trigger = 0
+        merged_filtered = 0
+
+        if parse_errors:
+            inferred_pe = infer_from_parse_errors(
+                parse_errors,
+                table_whitelist=table_whitelist,
+                column_whitelist=column_whitelist,
+                dialect=dialect or "",
+                config=config,
+                max_fragment_chars=config.inference_max_fragment_chars,
+                max_fragments=config.inference_max_fragments,
+            )
+            merged_edges.extend(inferred_pe.get("edges", []))
+            merged_warnings.extend(inferred_pe.get("warnings", []))
+            merged_trigger += int(inferred_pe.get("trigger_count", 0))
+            merged_filtered += int(inferred_pe.get("filtered_count", 0))
+
+        if dynamic_sql_segments:
+            inferred_dyn = infer_from_dynamic_sql_segments(
+                dynamic_sql_segments,
+                table_whitelist=table_whitelist,
+                column_whitelist=column_whitelist,
+                dialect=dialect or "",
+                config=config,
+                procedure_segments=procedure_segments,
+                max_fragment_chars=config.inference_max_fragment_chars,
+                max_fragments=config.inference_max_fragments,
+            )
+            merged_edges.extend(inferred_dyn.get("edges", []))
+            merged_warnings.extend(inferred_dyn.get("warnings", []))
+            merged_trigger += int(inferred_dyn.get("trigger_count", 0))
+            merged_filtered += int(inferred_dyn.get("filtered_count", 0))
+
+        if ambiguous_columns:
+            inferred_col = infer_column_attribution(
+                ambiguous_columns,
+                table_whitelist=table_whitelist,
+                column_whitelist=column_whitelist,
+                dialect=dialect or "",
+                config=config,
+            )
+            merged_hints.extend(inferred_col.get("hints", []))
+            merged_warnings.extend(inferred_col.get("warnings", []))
+            merged_trigger += int(inferred_col.get("trigger_count", 0))
+            merged_filtered += int(inferred_col.get("filtered_count", 0))
+
+        # 出口处包 AIInferenceResult model 校验 + 6 不变量约束（confidence
+        # 拦 high → low）。失败再退到原始 dict（兜底兜底）。
+        try:
+            from app.models.lineage import AIInferenceResult
+            envelope = AIInferenceResult.model_validate({
+                "edges": merged_edges,
+                "column_hints": merged_hints,
+                "warnings": merged_warnings,
+                "trigger_count": merged_trigger,
+                "filtered_count": merged_filtered,
+            }).model_dump(by_alias=True)
+        except Exception:
+            envelope = {
+                "edges": merged_edges,
+                "column_hints": merged_hints,
+                "warnings": merged_warnings,
+                "trigger_count": merged_trigger,
+                "filtered_count": merged_filtered,
+            }
+
+        envelope["kind"] = "inference"
+        envelope["status"] = "ok"
+        envelope["job_id"] = job_id
+        envelope["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        _store_ai_job(job_id, envelope)
+        logger.info(
+            "lineage AI inference async done job_id=%s edges=%s hints=%s elapsed=%ss",
+            job_id, len(merged_edges), len(merged_hints), envelope["elapsed_seconds"],
+        )
+    except Exception as exc:
+        logger.exception("lineage AI inference async failed job_id=%s", job_id)
+        _store_ai_job(job_id, {
+            "kind": "inference",
+            "status": "error",
+            "job_id": job_id,
+            "edges": [],
+            "column_hints": [],
+            "warnings": [{"type": "ai_inference_pipeline_error", "message": str(exc)}],
+            "trigger_count": 0,
+            "filtered_count": 0,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "error": str(exc),
         })
-    return out, filtered
