@@ -51,11 +51,71 @@ function _handleAuthFailure(response) {
   window.location.hash = '#/login'
 }
 
+// AI 错误翻译 hook：5xx 或长错误时异步调 /api/ai/translate-error。
+// 不阻塞主请求 throw —— 翻译完成后通过事件总线推给 noticeStore。
+const _AI_TRANSLATE_THRESHOLD_CHARS = 60
+const _AI_TRANSLATE_RECENT = new Map()  // dedupe：相同 error 5 秒内不重复翻译
+
+let _aiEnabled = null  // null=未探测，true/false=探测过的结果
+async function _isAIEnabled() {
+  if (_aiEnabled !== null) return _aiEnabled
+  try {
+    const status = await fetch('/api/lineage/ai/status', { headers: { ...authHeaders() } })
+    if (status.ok) {
+      const data = await status.json()
+      _aiEnabled = !!data?.enabled && !!data?.configured
+    } else {
+      _aiEnabled = false
+    }
+  } catch {
+    _aiEnabled = false
+  }
+  return _aiEnabled
+}
+
+// 给外部（admin AIConfigView 保存配置后）调用，丢掉缓存重新探测
+export function invalidateAIEnabledCache() { _aiEnabled = null }
+
+async function _maybeTranslateError(response, errorText, context = {}) {
+  if (!errorText || errorText.length < _AI_TRANSLATE_THRESHOLD_CHARS) return
+  // 仅对 5xx + 4xx 中的 422 / 400 长错误翻译；403 / 404 / 409 已经够清楚
+  if (response.status < 500 && ![400, 422].includes(response.status)) return
+  const dedupeKey = `${response.status}:${errorText.slice(0, 100)}`
+  const now = Date.now()
+  if (_AI_TRANSLATE_RECENT.has(dedupeKey) && now - _AI_TRANSLATE_RECENT.get(dedupeKey) < 5000) return
+  _AI_TRANSLATE_RECENT.set(dedupeKey, now)
+  if (!await _isAIEnabled()) return
+  try {
+    const r = await fetch('/api/ai/translate-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        error_text: errorText,
+        sql_excerpt: context.sql_excerpt || '',
+        db_type: context.db_type || '',
+      }),
+    })
+    if (!r.ok) return
+    const data = await r.json()
+    if (!data.ok || !data.translation) return
+    // 派发自定义事件 —— App.vue 接 + 推给 noticeStore（避免 api.js 直接依赖 store）
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('dataops:error-translated', {
+        detail: { translation: data.translation, suggestions: data.suggestions || [], original: errorText },
+      }))
+    }
+  } catch {
+    /* 翻译失败静默 —— 主请求已经 throw 出去了 */
+  }
+}
+
 export const apiGet = async (url) => {
   const response = await fetch(withProjectQuery(url), { headers: { ...authHeaders() } })
   if (!response.ok) {
     _handleAuthFailure(response)
-    throw new Error(await parseError(response))
+    const message = await parseError(response)
+    _maybeTranslateError(response, message)
+    throw new Error(message)
   }
   return response.json()
 }
@@ -68,7 +128,9 @@ export const apiJson = async (url, method, payload) => {
   })
   if (!response.ok) {
     _handleAuthFailure(response)
-    throw new Error(await parseError(response))
+    const message = await parseError(response)
+    _maybeTranslateError(response, message)
+    throw new Error(message)
   }
   return response.json()
 }
@@ -81,9 +143,32 @@ export const apiForm = async (url, formData) => {
   })
   if (!response.ok) {
     _handleAuthFailure(response)
-    throw new Error(await parseError(response))
+    const message = await parseError(response)
+    _maybeTranslateError(response, message)
+    throw new Error(message)
   }
   return response.json()
+}
+
+// 显式触发翻译 + 上下文（适合预览 SQL 失败时）：
+// 业务代码 catch 后调 translateError({ error: e.message, sql_excerpt, db_type })
+export async function translateError({ error, sql_excerpt, db_type } = {}) {
+  if (!error) return
+  if (!await _isAIEnabled()) return
+  try {
+    const r = await fetch('/api/ai/translate-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ error_text: String(error), sql_excerpt, db_type }),
+    })
+    if (!r.ok) return
+    const data = await r.json()
+    if (data.ok && data.translation && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('dataops:error-translated', {
+        detail: { translation: data.translation, suggestions: data.suggestions || [], original: String(error) },
+      }))
+    }
+  } catch { /* silent */ }
 }
 
 export const readFileText = async (file) => file ? file.text() : ''

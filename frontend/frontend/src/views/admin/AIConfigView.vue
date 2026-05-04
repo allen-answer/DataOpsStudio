@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { Bot, CheckCircle2, KeyRound, RefreshCw, Save, ShieldCheck, TestTube2, XCircle } from 'lucide-vue-next'
-import { apiGet, apiJson } from '../../api'
+import { apiGet, apiJson, invalidateAIEnabledCache } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 
 const noticeStore = useNoticeStore()
@@ -109,6 +109,7 @@ async function saveConfig() {
   saving.value = true
   try {
     hydrate(await apiJson('/api/lineage/ai/config', 'PUT', payload()))
+    invalidateAIEnabledCache()  // provider 改了 → api.js 错误翻译 hook 重新探测
     noticeStore.setNotice('AI 配置已保存，API Key 已加密落盘')
   } catch (err) {
     noticeStore.setNotice(`保存 AI 配置失败：${err.message || err}`)

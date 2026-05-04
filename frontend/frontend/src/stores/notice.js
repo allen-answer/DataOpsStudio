@@ -20,6 +20,10 @@ export const useNoticeStore = defineStore('notice', () => {
     message: '保存任务后可执行对比、预览、后台执行或复制任务。',
   })
 
+  // AI 错误翻译：api.js 在 5xx 错误时调 /api/ai/translate-error，把结果丢这里
+  // 让 AppShell 弹更醒目的卡片（不是普通 toast 4 秒就消失的那种）
+  const aiTranslation = ref(null)  // { translation, suggestions, original } | null
+
   function setNotice(msg) {
     notice.value = msg
     if (noticeTimer.value) clearTimeout(noticeTimer.value)
@@ -34,5 +38,17 @@ export const useNoticeStore = defineStore('notice', () => {
     actionStatus.message = message
   }
 
-  return { notice, actionStatus, setNotice, setActionStatus }
+  function setAITranslation(payload) {
+    aiTranslation.value = payload
+  }
+
+  function dismissAITranslation() {
+    aiTranslation.value = null
+  }
+
+  return {
+    notice, actionStatus, aiTranslation,
+    setNotice, setActionStatus,
+    setAITranslation, dismissAITranslation,
+  }
 })

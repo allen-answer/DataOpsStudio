@@ -245,8 +245,18 @@ const confirmIncludePasswords = (event) => {
 
 // 切路由时停掉所有轮询定时器，避免离开页面后还在打 API
 watch(() => route.path, () => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
+
+// AI 错误翻译事件：api.js 在 5xx / 长 4xx 错误时 dispatch；这里塞进 noticeStore，
+// AppShell 弹醒目卡片（区别于普通 4 秒 toast）。
+function _onAITranslated(event) {
+  if (event?.detail?.translation) {
+    noticeStore.setAITranslation(event.detail)
+  }
+}
+
 // 已登录才拉 bootstrap 数据 + refresh user；未登录走 LoginView 全屏（router 守卫已跳）
 onMounted(async () => {
+  window.addEventListener('dataops:error-translated', _onAITranslated)
   if (!authStore.isLoggedIn) return
   await authStore.refreshMe()  // 验证 token + 刷新 user 信息（过期则 401 自动跳 login）
   if (authStore.isLoggedIn) {
@@ -254,7 +264,11 @@ onMounted(async () => {
     await loadBootstrap()
   }
 })
-onUnmounted(() => { stopAsyncPoll(); stopWorkflowAsyncPoll() })
+onUnmounted(() => {
+  window.removeEventListener('dataops:error-translated', _onAITranslated)
+  stopAsyncPoll()
+  stopWorkflowAsyncPoll()
+})
 
 // Shared context for view components. Reactive objects (state, lineage, batch, ...)
 // preserve reactivity through inject; refs auto-unwrap in templates.
