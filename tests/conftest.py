@@ -31,6 +31,8 @@ def isolated_storage(tmp_path, monkeypatch):
     wf_runs.mkdir()
     uploads = results / "uploads"
     uploads.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
 
     # 1. JsonStore 单例：直接改 path + invalidate cache
     from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
@@ -75,6 +77,12 @@ def isolated_storage(tmp_path, monkeypatch):
     from app.api import system as system_api
     monkeypatch.setattr(system_api, "RESULTS_DIR", results)
 
+    # 5.0 SQLite 重定向到 tmp_path/data/dataops.db（Phase 9 ADR 6 起 audit/jobs 用）
+    from app.services import sqlite_store
+    monkeypatch.setattr(sqlite_store, "SQLITE_DB_FILE", data / "dataops.db")
+    # 清掉模块级初始化标记，让新 db 走一遍 _ensure_initialized
+    sqlite_store._initialized.clear()
+
     # 5. user / project / audit store —— D-MVP 多项目空间相关
     from app.services import auth as auth_svc, audit as audit_svc
     from app.services import lineage_ai_config as lineage_ai_config_svc, secret_crypto as secret_crypto_svc
@@ -94,4 +102,5 @@ def isolated_storage(tmp_path, monkeypatch):
         "results": results,
         "wf_runs": wf_runs,
         "uploads": uploads,
+        "data": data,
     }

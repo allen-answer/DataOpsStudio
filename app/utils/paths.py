@@ -7,6 +7,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_DIR = BASE_DIR / "config"
 RESULTS_DIR = BASE_DIR / "results"
 LOGS_DIR = BASE_DIR / "logs"
+DATA_DIR = BASE_DIR / "data"  # SQLite 落地（audit / jobs，Phase 9 ADR 6）
+SQLITE_DB_FILE = DATA_DIR / "dataops.db"
 DATASOURCES_FILE = CONFIG_DIR / "datasources.json"
 TASKS_FILE = CONFIG_DIR / "tasks.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
@@ -26,6 +28,7 @@ def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not DATASOURCES_FILE.exists():
         DATASOURCES_FILE.write_text("[]", encoding="utf-8")
     if not TASKS_FILE.exists():

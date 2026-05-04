@@ -1,7 +1,10 @@
 """审计日志：mutating endpoint 的操作流水。
 
-落 logs/audit.jsonl 一行一条 JSON，便于 grep / tail / 不入主 DB。
-查询接口 GET /api/audit-logs（admin only）按行倒序读最近 N 条。
+Phase 9 ADR 6 起切 SQLite —— 主存储是 `data/dataops.db` 的 `audit_logs` 表
+（多线程安全 + WAL mode + 索引化查询）。`logs/audit.jsonl` 仍双写
+（向后兼容备份脚本 + grep / tail 工具链），主查询走 SQLite。
+
+查询接口 GET /api/audit-logs（admin only）按 ts 倒序读最近 N 条。
 
 不包含响应体，避免日志膨胀；只记元数据 + status_code。
 """
@@ -19,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.models import AuditLogEntry
+from app.services import sqlite_store
 from app.services.auth import decode_access_token, user_store
 from app.utils.paths import AUDIT_LOG_FILE
 
@@ -51,13 +55,45 @@ def _extract_user(request: Request) -> tuple[str, str]:
     return user_id, username
 
 
-def _append_log(entry: AuditLogEntry) -> None:
+def _append_log(entry: AuditLogEntry, *, request_id: str = "", project_id: str = "") -> None:
+    """SQLite 主存储 + jsonl 双写（向后兼容备份 / grep）。两路独立 catch，
+    一边失败不影响另一边写成功。
+    """
+    payload = entry.model_dump()
+    # 1. SQLite
+    try:
+        with sqlite_store.connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_logs (ts, user_id, username, method, path, status, "
+                "request_id, resource, resource_id, project_id, extra) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    payload.get("ts", ""),
+                    payload.get("user_id", ""),
+                    payload.get("username", ""),
+                    payload.get("method", ""),
+                    payload.get("path", ""),
+                    int(payload.get("status_code", 0)),
+                    request_id,
+                    payload.get("resource_type", ""),
+                    payload.get("resource_id", ""),
+                    project_id,
+                    "",  # extra 暂时空着，留给以后扩展（如 ip / user_agent）
+                ),
+            )
+    except Exception:
+        logger.exception("审计日志写 SQLite 失败 path=%s", entry.path)
+
+    # 2. jsonl 双写（兼容老备份脚本 / oncall 用 tail / grep 排错）
     try:
         AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with AUDIT_LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry.model_dump(), ensure_ascii=False) + "\n")
+            line = dict(payload)
+            if request_id:
+                line["request_id"] = request_id
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
     except Exception:
-        logger.exception("审计日志落盘失败 path=%s", entry.path)
+        logger.exception("审计日志写 jsonl 失败 path=%s", entry.path)
 
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
@@ -85,27 +121,61 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 resource_id=resource_id,
                 status_code=response.status_code,
             )
-            _append_log(entry)
+            # request_id：Phase 9 Day 6 ContextVar 已设；project_id 从 query 拿（如果有）
+            try:
+                from app.api._error_handler import request_id_ctx
+                rid = request_id_ctx.get() or ""
+            except Exception:
+                rid = ""
+            project_id = request.query_params.get("project_id", "") if hasattr(request, "query_params") else ""
+            _append_log(entry, request_id=rid, project_id=project_id)
         except Exception:
             logger.exception("审计中间件异常 —— 不影响主流程")
         return response
 
 
 def read_recent_logs(limit: int = 200) -> list[dict[str, Any]]:
-    """倒序读最近 N 条。用于 GET /api/audit-logs。"""
+    """倒序读最近 N 条。用于 GET /api/audit-logs。
+
+    Phase 9 ADR 6 起：主走 SQLite（按 ts 索引倒序），失败兜底回 jsonl 兼容路径。
+    """
+    limit = max(int(limit or 1), 1)
+    # SQLite 主路径
+    try:
+        with sqlite_store.connect() as conn:
+            cur = conn.execute(
+                "SELECT ts, user_id, username, method, path, status, request_id, "
+                "resource, resource_id, project_id "
+                "FROM audit_logs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        if rows:
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                d = dict(row)
+                # 兼容老 AuditLogEntry 字段名
+                d["status_code"] = d.pop("status", 0)
+                d["resource_type"] = d.pop("resource", "")
+                out.append(d)
+            return out
+    except Exception:
+        logger.exception("audit logs read from SQLite failed; falling back to jsonl")
+
+    # jsonl 兜底（SQLite 不可用 / 还没迁移完时）
     if not AUDIT_LOG_FILE.exists():
         return []
     try:
         lines = AUDIT_LOG_FILE.read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
-    out: list[dict[str, Any]] = []
-    for line in reversed(lines[-max(limit, 1):]):
+    out2: list[dict[str, Any]] = []
+    for line in reversed(lines[-limit:]):
         line = line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            out2.append(json.loads(line))
         except Exception:
             continue
-    return out
+    return out2

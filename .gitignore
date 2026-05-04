@@ -14,6 +14,7 @@ env/
 htmlcov/
 logs/
 results/
+data/
 *.log
 .DS_Store
 wheels/

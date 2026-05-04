@@ -49,8 +49,11 @@ def test_cleanup_jobs_prunes_only_expired_terminal_jobs(isolated_storage):
     assert removed == 1
     assert "old-success" not in jobs._jobs
     assert "active-running" in jobs._jobs
-    persisted = json.loads((isolated_storage["cfg"] / "jobs.json").read_text(encoding="utf-8"))
-    assert [item["job_id"] for item in persisted] == ["active-running"]
+    # Phase 9 ADR 6 起 jobs 主存储是 SQLite —— 走 sqlite_store 验证
+    from app.services import sqlite_store
+    with sqlite_store.connect() as conn:
+        rows = conn.execute("SELECT id FROM jobs ORDER BY id").fetchall()
+    assert [r["id"] for r in rows] == ["active-running"]
 
 
 def test_submit_task_run_retries_failed_attempt_once(monkeypatch, isolated_storage):

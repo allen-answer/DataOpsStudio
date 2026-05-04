@@ -27,6 +27,13 @@ mimetypes.add_type("application/json", ".json")
 ensure_dirs()
 setup_logging()
 
+# Phase 9 ADR 6：audit / jobs 切 SQLite。启动时跑一次迁移（幂等 —— 表已有数据
+# 时跳过，老 jsonl/.json 文件保持原样，让回滚仍能 tail / cat 老文件）。
+from app.services import sqlite_store as _sqlite_store
+from app.utils.paths import AUDIT_LOG_FILE as _AUDIT_FILE, JOBS_FILE as _JOBS_FILE
+_sqlite_store.migrate_audit_jsonl(_AUDIT_FILE)
+_sqlite_store.migrate_jobs_json(_JOBS_FILE)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
