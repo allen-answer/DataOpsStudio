@@ -16,6 +16,7 @@ import WorkbenchView from '../views/WorkbenchView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
 import LineageWorkbenchView from '../views/LineageWorkbenchView.vue'
 import HistoryView from '../views/HistoryView.vue'
+import AssetDetailView from '../views/AssetDetailView.vue'
 import LoginView from '../views/LoginView.vue'
 import UserManagementView from '../views/admin/UserManagementView.vue'
 import AuditLogView from '../views/admin/AuditLogView.vue'
@@ -37,6 +38,10 @@ const routes = [
   { path: '/lineage',       name: 'lineage',       component: LineageWorkbenchView },
   { path: '/batch-lineage', name: 'batch-lineage', component: LineageWorkbenchView },
   { path: '/history',       name: 'history',       component: HistoryView },
+
+  // Phase 10 #4：表资产详情页 —— 反向查找谁引用此表
+  // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
+  { path: '/assets/table/:name(.*)', name: 'asset-table', component: AssetDetailView, props: true },
 
   // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示
   { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },

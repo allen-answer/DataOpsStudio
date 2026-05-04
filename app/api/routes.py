@@ -11,11 +11,13 @@ from fastapi import APIRouter
 
 from app.api import (
     ai_utils,
+    assets,
     auth,
     config_io,
     datasources,
     history,
     lineage,
+    lineage_graph,
     projects,
     runs,
     scheduler,
@@ -42,7 +44,9 @@ router.include_router(workflows.router)
 router.include_router(workflow_runs.router)
 router.include_router(history.router)
 router.include_router(lineage.router)
+router.include_router(lineage_graph.router)
 router.include_router(uploads.router)
 router.include_router(config_io.router)
 router.include_router(ai_utils.router)
 router.include_router(search.router)
+router.include_router(assets.router)
