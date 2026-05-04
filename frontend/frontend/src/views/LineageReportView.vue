@@ -31,6 +31,7 @@ const props = defineProps({
   aiInferred: { type: Object, default: () => ({}) },
   parseErrors: { type: Array, default: () => [] },
   dynamicSqlSegments: { type: Array, default: () => [] },
+  ambiguousColumnWarnings: { type: Array, default: () => [] },
 })
 
 const TABS = [
@@ -220,6 +221,7 @@ const tabBadgeCount = computed(() => ({
       :inferred="aiInferred"
       :parse-errors="parseErrors"
       :dynamic-sql-segments="dynamicSqlSegments"
+      :warnings="ambiguousColumnWarnings"
     />
   </div>
 </template>

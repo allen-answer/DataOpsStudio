@@ -554,6 +554,151 @@ def test_service_layer_merges_parse_errors_and_dynamic_sql(monkeypatch):
     assert inferred["trigger_count"] == 2
 
 
+# ─── Phase 3: column_attribution AI 字段归属推荐 ──────────────────────────────
+
+
+from app.services.lineage_ai_inference import infer_column_attribution
+
+
+def test_column_attribution_empty_short_circuits():
+    config = LineageAIConfig(provider="openai", model="m", api_key="k")
+    out = infer_column_attribution(
+        [],
+        table_whitelist={"a"},
+        column_whitelist=set(),
+        dialect="mysql",
+        config=config,
+    )
+    assert out["hints"] == []
+    assert out["trigger_count"] == 0
+
+
+def test_column_attribution_provider_off_skips():
+    out = infer_column_attribution(
+        [{"column": "status", "candidate_tables": ["t1", "t2"], "context": "..."}],
+        table_whitelist={"t1", "t2"},
+        column_whitelist=set(),
+        dialect="mysql",
+        config=LineageAIConfig(provider="off"),
+    )
+    assert out["hints"] == []
+
+
+def test_column_attribution_filters_non_whitelist_target(monkeypatch):
+    """AI 给的 suggested_table 不在白名单 → 过滤。"""
+    _setup_fake_openai(monkeypatch, {"hints": [
+        {"column": "status", "suggested_table": "phantom", "confidence": "low",
+         "reason": "guess", "evidence": "..."},
+        {"column": "amount", "suggested_table": "t_real", "confidence": "medium",
+         "reason": "命名匹配", "evidence": "JOIN ON ..."},
+    ]})
+    out = infer_column_attribution(
+        [
+            {"column": "status", "candidate_tables": ["t_real"], "context": "..."},
+            {"column": "amount", "candidate_tables": ["t_real"], "context": "..."},
+        ],
+        table_whitelist={"t_real"},
+        column_whitelist=set(),
+        dialect="mysql",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+    )
+    assert len(out["hints"]) == 1
+    assert out["hints"][0]["column"] == "amount"
+    assert out["hints"][0]["suggested_table"] == "t_real"
+    assert out["filtered_count"] == 1
+
+
+def test_column_attribution_dedupes_same_column(monkeypatch):
+    """AI 一个 column 给多条 hint → 只保留第一条。"""
+    _setup_fake_openai(monkeypatch, {"hints": [
+        {"column": "status", "suggested_table": "t1", "confidence": "medium", "reason": "first"},
+        {"column": "status", "suggested_table": "t2", "confidence": "low", "reason": "duplicate"},
+    ]})
+    out = infer_column_attribution(
+        [{"column": "status", "candidate_tables": ["t1", "t2"], "context": "..."}],
+        table_whitelist={"t1", "t2"},
+        column_whitelist=set(),
+        dialect="mysql",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+    )
+    assert len(out["hints"]) == 1
+    assert out["hints"][0]["suggested_table"] == "t1"
+    assert out["filtered_count"] == 1
+
+
+def test_column_attribution_max_columns_truncates(monkeypatch):
+    """20 个 ambiguous columns + max_columns=5 → 仅前 5 送 AI + warning。"""
+    _setup_fake_openai(monkeypatch, {"hints": []})
+    cols = [
+        {"column": f"col_{i}", "candidate_tables": ["t1", "t2"], "context": ""}
+        for i in range(20)
+    ]
+    out = infer_column_attribution(
+        cols,
+        table_whitelist={"t1", "t2"},
+        column_whitelist=set(),
+        dialect="mysql",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+        max_columns=5,
+    )
+    assert any(w["type"] == "ai_inference_truncated" and w.get("source_kind") == "column_attribution"
+               for w in out["warnings"])
+
+
+def test_extract_ambiguous_columns_from_warnings():
+    """_extract_ambiguous_columns 从 result.warnings 解析"未限定字段 X..."。"""
+    from app.services.lineage_service import _extract_ambiguous_columns
+
+    result = {
+        "tables": [{"table": "t1"}, {"table": "t2"}, {"table": "t3"}],
+        "warnings": [
+            {"type": "字段歧义", "message": "未限定字段 status 同时存在于多张来源表: t1, t2"},
+            {"type": "字段来源未知", "message": "未限定字段 amount 无法在当前 Schema 元数据中归属来源表"},
+            {"type": "无关警告", "message": "ignore me"},
+        ],
+    }
+    out = _extract_ambiguous_columns(result)
+    assert len(out) == 2
+    assert out[0]["column"] == "status"
+    assert out[0]["candidate_tables"] == ["t1", "t2"]
+    assert out[1]["column"] == "amount"
+    # 没有 "存在于" tail → 候选表用全部
+    assert "t1" in out[1]["candidate_tables"]
+
+
+def test_service_layer_attaches_column_hints(monkeypatch):
+    """端到端：result.warnings 含字段歧义 → AI 推荐 → result.ai_inferred.column_hints"""
+    from app.services import lineage_service
+
+    fake_config = LineageAIConfig(
+        provider="openai", model="m", api_key="k", base_url="https://api.x/v1",
+        timeout_seconds=5, enable_inference=True,
+    )
+    monkeypatch.setattr("app.services.lineage_ai._config", lambda: fake_config)
+    _setup_fake_openai(monkeypatch, {"hints": [
+        {"column": "status", "suggested_table": "t1", "confidence": "medium",
+         "reason": "命名风格匹配 t1.status", "evidence": "SELECT status FROM t1 ..."},
+    ]})
+
+    result = {
+        "tables": [{"table": "t1"}, {"table": "t2"}],
+        "columns": [],
+        "insert_mappings": [],
+        "parse_errors": [],
+        "dynamic_sql_segments": [],
+        "warnings": [
+            {"type": "字段歧义", "message": "未限定字段 status 同时存在于多张来源表: t1, t2"},
+        ],
+    }
+    lineage_service._attach_ai_inference(result, dialect="mysql", enabled=True)
+    inferred = result["ai_inferred"]
+    assert "column_hints" in inferred
+    assert len(inferred["column_hints"]) == 1
+    assert inferred["column_hints"][0]["column"] == "status"
+    assert inferred["column_hints"][0]["suggested_table"] == "t1"
+    assert inferred["column_hints"][0]["source_kind"] == "column_attribution"
+
+
 def test_batch_analyzer_top_level_aggregates_parse_errors():
     """批量分析的 base_result 必须把每文件的 parse_errors / dynamic_sql_segments
     聚合到顶层（带 file_name），不然 _attach_ai_inference 看不见。"""

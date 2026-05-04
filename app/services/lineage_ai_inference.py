@@ -595,3 +595,194 @@ _NAME_NORMALIZE_RE = re.compile(r'["`\[\]]')
 def _normalize_name(name: str) -> str:
     """表 / 字段名归一化：去引号 + lowercase。`"ODS"."T1"` → ods.t1"""
     return _NAME_NORMALIZE_RE.sub("", str(name or "")).strip().lower()
+
+
+# ─── Phase 3：多表 unqualified column 归属推荐 ────────────────────────────────
+
+
+_COLUMN_ATTRIBUTION_SYSTEM_PROMPT = (
+    "你是 SQL 字段归属推荐助手。\n"
+    "用户给一组**未限定字段**（unqualified column，例如 `status`、`amount`），它们出现在含多个 source\n"
+    "table 的 JOIN/UNION 语句里，静态解析器没有 schema 元数据 → 无法判断字段归属哪张表。\n"
+    "你需要根据字段命名习惯（语义匹配） + JOIN 上下文 + 表名命名习惯，给出最可能的归属表推荐。\n\n"
+    "硬性规则（违反必返工）：\n"
+    "1. 仅返回 JSON 对象 `{\"hints\": [...]}`，无其它文字。\n"
+    "2. 每条 hint：column（字段名，原样）、suggested_table（**白名单内**唯一最可能的表）、\n"
+    "   confidence（low 或 medium）、reason（**中文**，1 句话讲清依据，引用字段命名 / 表名 / 业务上下文），\n"
+    "   evidence（引自 SQL 的原文片段或 JOIN ON 条件）。\n"
+    "3. suggested_table **必须**在 candidate_tables 里。绝对不要发明表名。\n"
+    "4. 如果完全无法判断（字段名通用如 `id` `name`，多表都可能），返回 `{\"hints\": []}`，**不要乱猜**。\n"
+    "5. confidence 默认 low；只有字段名跟表名命名风格强匹配（如 `order_id` 出现且白名单有 `t_order`）时才允许 medium。\n"
+    "6. 不要重复推荐：每个 column 最多 1 条 hint。\n"
+)
+
+
+def infer_column_attribution(
+    ambiguous_columns: list[dict[str, Any]],
+    *,
+    table_whitelist: set[str],
+    column_whitelist: set[str],
+    dialect: str,
+    config: LineageAIConfig,
+    max_columns: int = 20,
+) -> dict[str, Any]:
+    """对低置信 / 字段歧义的 unqualified column 调 AI 推荐归属表。
+
+    输入 ambiguous_columns 每条：
+      {column: 'status', candidate_tables: ['t1', 't2'], context: 'JOIN 片段或 SELECT 列表'}
+
+    AI 输出 hints 列表，每条带 suggested_table 推荐 + confidence + reason + evidence。
+    白名单约束：suggested_table 必须在 candidate_tables ∪ table_whitelist 里。
+    """
+    output: dict[str, Any] = {
+        "hints": [],
+        "warnings": [],
+        "trigger_count": 0,
+        "filtered_count": 0,
+    }
+    if not ambiguous_columns:
+        return output
+    provider_name = (config.provider or "off").lower()
+    if provider_name in {"off", "disabled", "none", ""}:
+        return output
+    if (
+        provider_name not in OPENAI_COMPATIBLE_PROVIDERS
+        and provider_name not in ANTHROPIC_COMPATIBLE_PROVIDERS
+        and provider_name != "mock"
+    ):
+        return output
+    if not table_whitelist:
+        return output
+
+    table_set = {_normalize_name(t) for t in table_whitelist if t}
+    column_set = {_normalize_name(c) for c in column_whitelist if c}
+
+    # 一次 batch 调用，把所有 ambiguous columns 一起传给 AI（节省 token）
+    candidates = ambiguous_columns[:max_columns]
+    if len(ambiguous_columns) > max_columns:
+        output["warnings"].append({
+            "type": "ai_inference_truncated",
+            "source_kind": "column_attribution",
+            "message": f"unqualified columns 共 {len(ambiguous_columns)} 个，仅推断前 {max_columns} 个",
+        })
+
+    try:
+        output["trigger_count"] = 1
+        raw = _call_provider_column_attribution(
+            provider_name=provider_name,
+            config=config,
+            ambiguous_columns=candidates,
+            dialect=dialect,
+            table_whitelist=sorted(table_set),
+            column_whitelist=sorted(column_set)[:200],
+        )
+        if not isinstance(raw, dict):
+            output["warnings"].append({
+                "type": "ai_inference_invalid",
+                "source_kind": "column_attribution",
+                "message": "AI 返回非 dict，丢弃",
+            })
+            return output
+        hints, filtered = _validate_and_filter_column_hints(
+            raw.get("hints") or [],
+            table_set=table_set,
+            column_set=column_set,
+        )
+        output["hints"] = hints
+        output["filtered_count"] = filtered
+        if filtered:
+            output["warnings"].append({
+                "type": "ai_inference_filtered",
+                "source_kind": "column_attribution",
+                "message": f"AI 返回 {filtered} 条非白名单 / 重复 hint，已过滤",
+            })
+    except Exception as exc:
+        logger.warning("AI column_attribution inference failed error=%s", exc)
+        output["warnings"].append({
+            "type": "ai_inference_error",
+            "source_kind": "column_attribution",
+            "message": str(exc),
+        })
+
+    return output
+
+
+def _call_provider_column_attribution(
+    *,
+    provider_name: str,
+    config: LineageAIConfig,
+    ambiguous_columns: list[dict[str, Any]],
+    dialect: str,
+    table_whitelist: list[str],
+    column_whitelist: list[str],
+) -> dict[str, Any]:
+    user_payload = {
+        "scope": "column_attribution",
+        "dialect": dialect or "",
+        "ambiguous_columns": [
+            {
+                "column": str(c.get("column") or ""),
+                "candidate_tables": [str(t) for t in c.get("candidate_tables") or []],
+                "context": str(c.get("context") or "")[:300],
+            }
+            for c in ambiguous_columns
+        ],
+        "table_whitelist": table_whitelist,
+        "column_whitelist": column_whitelist,
+    }
+    user_content = json.dumps(user_payload, ensure_ascii=False)
+
+    if provider_name == "mock":
+        return {"hints": []}
+    if provider_name in OPENAI_COMPATIBLE_PROVIDERS:
+        return _call_openai_compatible(config, user_content, system_prompt=_COLUMN_ATTRIBUTION_SYSTEM_PROMPT)
+    if provider_name in ANTHROPIC_COMPATIBLE_PROVIDERS:
+        return _call_anthropic(config, user_content, system_prompt=_COLUMN_ATTRIBUTION_SYSTEM_PROMPT)
+    raise ValueError(f"unsupported provider for column_attribution: {provider_name}")
+
+
+def _validate_and_filter_column_hints(
+    raw_hints: Any,
+    *,
+    table_set: set[str],
+    column_set: set[str],
+) -> tuple[list[dict[str, Any]], int]:
+    """逐条 hint 校验：suggested_table 在白名单 + 每个 column 只保留 1 条。"""
+    if not isinstance(raw_hints, list):
+        return [], 0
+    out: list[dict[str, Any]] = []
+    filtered = 0
+    seen_columns: set[str] = set()
+    for raw in raw_hints:
+        if not isinstance(raw, dict):
+            filtered += 1
+            continue
+        column = str(raw.get("column") or "").strip()
+        suggested = _normalize_name(raw.get("suggested_table") or "")
+        if not column or not suggested:
+            filtered += 1
+            continue
+        if suggested not in table_set:
+            filtered += 1
+            continue
+        column_key = _normalize_name(column).split(".")[-1]
+        if column_key in seen_columns:
+            filtered += 1
+            continue
+        seen_columns.add(column_key)
+        # column 在白名单里也是加分项，但不作为强约束（unqualified column 命名可能跟 schema 不一致）
+        confidence = str(raw.get("confidence") or "low").lower()
+        if confidence not in {"low", "medium"}:
+            confidence = "low"
+        reason = str(raw.get("reason") or "AI 推断（无附加说明）").strip()[:200]
+        evidence = str(raw.get("evidence") or "").strip()[:300]
+        out.append({
+            "column": column,
+            "suggested_table": suggested,
+            "confidence": confidence,
+            "reason": reason,
+            "evidence": evidence,
+            "source_kind": "column_attribution",
+            "is_ai_inferred": True,
+        })
+    return out, filtered

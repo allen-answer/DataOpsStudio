@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api import (
+    ai_utils,
     auth,
     config_io,
     datasources,
@@ -42,3 +43,4 @@ router.include_router(history.router)
 router.include_router(lineage.router)
 router.include_router(uploads.router)
 router.include_router(config_io.router)
+router.include_router(ai_utils.router)

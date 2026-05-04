@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import time
 import uuid
 import zipfile
@@ -225,6 +226,65 @@ def _attach_ai_enrichment(
     )
 
 
+_AMBIGUOUS_COL_RE = re.compile(r"未限定字段\s+(\S+)")
+
+
+def _extract_ambiguous_columns(result: dict[str, object]) -> list[dict[str, object]]:
+    """从 result.warnings 抽 "字段歧义 / 字段来源未知" 的 unqualified column。
+
+    解析阶段 source_info 在 default_tables 多于一张 + schema 缺失时会发出 warning：
+      type='字段歧义': 多张来源表都有同名字段
+      type='字段来源未知': schema 没找到该字段
+    每条 warning message 形如 "未限定字段 status 同时存在于多张来源表: t1, t2"。
+    抽出 column 名 + 候选表 → 给 AI 推荐归属。
+    """
+    out: list[dict[str, object]] = []
+    seen: set[str] = set()
+    warnings_list = result.get("warnings") or []
+    if not isinstance(warnings_list, list):
+        return out
+    # 候选表：从已识别的 tables 取（限制不超出真实 source）
+    tables_field = result.get("tables") or []
+    all_tables: list[str] = []
+    for t in tables_field:
+        if isinstance(t, dict):
+            name = t.get("table") or t.get("name") or t.get("table_name") or ""
+            if name and name not in all_tables:
+                all_tables.append(name)
+        elif isinstance(t, str) and t and t not in all_tables:
+            all_tables.append(t)
+    for w in warnings_list:
+        if not isinstance(w, dict):
+            continue
+        wtype = str(w.get("type") or "")
+        if wtype not in {"字段歧义", "字段来源未知"}:
+            continue
+        message = str(w.get("message") or "")
+        m = _AMBIGUOUS_COL_RE.search(message)
+        if not m:
+            continue
+        col = m.group(1).strip().rstrip(".,;")
+        if col in seen:
+            continue
+        seen.add(col)
+        # 提取 message 中"同时存在于多张来源表: t1, t2"那段做候选；缺则用全表
+        candidates: list[str] = []
+        if ":" in message:
+            tail = message.split(":", 1)[1]
+            for chunk in tail.split(","):
+                name = chunk.strip().strip("。 ")
+                if name and name not in candidates:
+                    candidates.append(name)
+        if not candidates:
+            candidates = list(all_tables[:8])  # 兜底：前 8 张表
+        out.append({
+            "column": col,
+            "candidate_tables": candidates,
+            "context": message[:240],
+        })
+    return out
+
+
 def _attach_ai_inference(
     result: dict[str, object],
     *,
@@ -241,12 +301,15 @@ def _attach_ai_inference(
     """
     parse_errors = result.get("parse_errors") or []
     dynamic_sql_segments = result.get("dynamic_sql_segments") or []
-    if not enabled or (not parse_errors and not dynamic_sql_segments):
+    # Phase 3：从 result.warnings 抽出"字段歧义 / 字段来源未知"的 unqualified column
+    ambiguous_columns = _extract_ambiguous_columns(result)
+    if not enabled or (not parse_errors and not dynamic_sql_segments and not ambiguous_columns):
         return
     try:
         # lazy import 避免 lineage_service ↔ lineage_ai_inference 循环
         from app.services.lineage_ai import _config as _ai_config
         from app.services.lineage_ai_inference import (
+            infer_column_attribution,
             infer_from_dynamic_sql_segments,
             infer_from_parse_errors,
         )
@@ -302,9 +365,10 @@ def _attach_ai_inference(
         merged_trigger = 0
         merged_filtered = 0
         logger.info(
-            "AI inference start: parse_errors=%s dynamic_sql_segments=%s table_whitelist=%s column_whitelist=%s",
+            "AI inference start: parse_errors=%s dynamic_sql_segments=%s ambiguous_columns=%s table_whitelist=%s column_whitelist=%s",
             len(parse_errors),
             len(dynamic_sql_segments),
+            len(ambiguous_columns),
             len(table_names),
             len(column_names),
         )
@@ -340,15 +404,32 @@ def _attach_ai_inference(
             merged_trigger += int(inferred_dyn.get("trigger_count", 0))
             merged_filtered += int(inferred_dyn.get("filtered_count", 0))
 
+        # Phase 3：column attribution
+        merged_hints: list = []
+        if ambiguous_columns:
+            inferred_col = infer_column_attribution(
+                ambiguous_columns,
+                table_whitelist=table_names,
+                column_whitelist=column_names,
+                dialect=dialect or "",
+                config=config,
+            )
+            merged_hints.extend(inferred_col.get("hints", []))
+            merged_warnings.extend(inferred_col.get("warnings", []))
+            merged_trigger += int(inferred_col.get("trigger_count", 0))
+            merged_filtered += int(inferred_col.get("filtered_count", 0))
+
         result["ai_inferred"] = {
             "edges": merged_edges,
+            "column_hints": merged_hints,
             "warnings": merged_warnings,
             "trigger_count": merged_trigger,
             "filtered_count": merged_filtered,
         }
         logger.info(
-            "AI inference done: edges=%s triggers=%s filtered=%s warnings=%s",
+            "AI inference done: edges=%s column_hints=%s triggers=%s filtered=%s warnings=%s",
             len(merged_edges),
+            len(merged_hints),
             merged_trigger,
             merged_filtered,
             len(merged_warnings),

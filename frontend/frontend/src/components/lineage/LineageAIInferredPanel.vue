@@ -1,15 +1,17 @@
 <script setup>
 import { computed } from 'vue'
-import { Sparkles, AlertTriangle, ChevronRight, FileWarning, Code, AlertCircle } from 'lucide-vue-next'
+import { Sparkles, AlertTriangle, ChevronRight, FileWarning, Code, AlertCircle, Columns } from 'lucide-vue-next'
 
 const props = defineProps({
-  inferred: { type: Object, default: () => ({ edges: [], warnings: [], trigger_count: 0, filtered_count: 0 }) },
+  inferred: { type: Object, default: () => ({ edges: [], column_hints: [], warnings: [], trigger_count: 0, filtered_count: 0 }) },
   parseErrors: { type: Array, default: () => [] },
   dynamicSqlSegments: { type: Array, default: () => [] },
+  warnings: { type: Array, default: () => [] },
 })
 
 const edges = computed(() => Array.isArray(props.inferred?.edges) ? props.inferred.edges : [])
-const warnings = computed(() => Array.isArray(props.inferred?.warnings) ? props.inferred.warnings : [])
+const columnHints = computed(() => Array.isArray(props.inferred?.column_hints) ? props.inferred.column_hints : [])
+const aiWarnings = computed(() => Array.isArray(props.inferred?.warnings) ? props.inferred.warnings : [])
 const triggerCount = computed(() => Number(props.inferred?.trigger_count || 0))
 const filteredCount = computed(() => Number(props.inferred?.filtered_count || 0))
 
@@ -21,6 +23,12 @@ const dynamicSqlEdges = computed(() => edges.value.filter(e => e.source_kind ===
 const dynamicAICandidatesCount = computed(() => {
   const triggers = new Set(['unresolved', 'low', 'string_literal'])
   return (props.dynamicSqlSegments || []).filter(s => triggers.has(s?.confidence)).length
+})
+
+// Phase 3：result.warnings 里"字段歧义 / 字段来源未知"的数量（AI 候选）
+const ambiguousColumnCount = computed(() => {
+  const types = new Set(['字段歧义', '字段来源未知'])
+  return (props.warnings || []).filter(w => types.has(w?.type)).length
 })
 
 const confidenceClass = (c) => ({
@@ -49,27 +57,28 @@ const dmlClass = (d) => ({
         <h3 class="text-base font-bold text-slate-800">AI 兜底推断</h3>
         <p class="text-xs leading-relaxed text-slate-600">
           静态解析器对
-          <strong class="font-bold text-rose-700">{{ parseErrors.length }}</strong> 条片段直接报错，
-          以及
-          <strong class="font-bold text-amber-700">{{ dynamicAICandidatesCount }}</strong> 条低置信 / 未解析的动态 SQL，
+          <strong class="font-bold text-rose-700">{{ parseErrors.length }}</strong> 条片段直接报错、
+          <strong class="font-bold text-amber-700">{{ dynamicAICandidatesCount }}</strong> 条低置信 / 未解析的动态 SQL、
+          <strong class="font-bold text-blue-700">{{ ambiguousColumnCount }}</strong> 个字段歧义/未归属 unqualified column，
           AI 用脚本里出现过的 <strong>表名 / 字段名白名单</strong>约束推断了
-          <strong class="font-bold text-purple-700">{{ edges.length }}</strong> 条候选血缘边
+          <strong class="font-bold text-purple-700">{{ edges.length }}</strong> 条血缘边
+          + <strong class="font-bold text-blue-700">{{ columnHints.length }}</strong> 条字段归属
           <span v-if="filteredCount" class="muted">（另过滤 {{ filteredCount }} 条非白名单 hallucination）</span>。
           <span class="block mt-0.5 text-[11px] text-purple-700">
-            本面板内容均为 AI 推断（紫色徽章区分），不进入主血缘图，仅供人工核对。
+            本面板内容均为 AI 推断（紫色 / 蓝色徽章区分），不进入主血缘图，仅供人工核对。
           </span>
         </p>
       </div>
     </header>
 
     <!-- 警告 -->
-    <div v-if="warnings.length" class="card border-amber-200 bg-amber-50/40 p-3">
+    <div v-if="aiWarnings.length" class="card border-amber-200 bg-amber-50/40 p-3">
       <p class="mb-2 flex items-center gap-1.5 text-xs font-bold text-amber-800">
-        <AlertTriangle class="h-3.5 w-3.5" /> 推断过程警告 ({{ warnings.length }})
+        <AlertTriangle class="h-3.5 w-3.5" /> 推断过程警告 ({{ aiWarnings.length }})
       </p>
       <ul class="space-y-1 text-[11px] text-amber-900">
-        <li v-for="(w, i) in warnings" :key="i" class="flex gap-2">
-          <span class="muted shrink-0">[{{ w.type }}]</span>
+        <li v-for="(w, i) in aiWarnings" :key="i" class="flex gap-2">
+          <span class="muted shrink-0">[{{ w.type }}{{ w.source_kind ? '/' + w.source_kind : '' }}]</span>
           <span>{{ w.message }}</span>
         </li>
       </ul>
@@ -132,6 +141,42 @@ const dmlClass = (d) => ({
           <details v-if="edge.evidence" class="text-[11px]">
             <summary class="cursor-pointer text-rose-700 hover:underline">查看 evidence（原 SQL 片段）</summary>
             <pre class="sql-font mt-1.5 max-h-48 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{{ edge.evidence }}</pre>
+          </details>
+        </article>
+      </div>
+    </section>
+
+    <!-- 来源 3：字段归属推荐（Phase 3） -->
+    <section v-if="columnHints.length">
+      <div class="mb-2 flex items-center gap-2">
+        <Columns class="h-4 w-4 text-blue-600" />
+        <h4 class="text-sm font-bold text-slate-800">字段归属推荐</h4>
+        <span class="pill bg-blue-100 text-blue-700 text-[10px]">{{ columnHints.length }} 条</span>
+        <span class="muted text-[11px]">多表 unqualified column 缺 schema → AI 推荐归属</span>
+      </div>
+      <div class="space-y-2">
+        <article
+          v-for="(hint, i) in columnHints" :key="`col-${i}`"
+          class="card relative space-y-2 border-l-4 border-l-blue-400 p-3"
+        >
+          <span class="pill absolute right-3 top-3 bg-blue-100 text-[10px] uppercase tracking-wider text-blue-700">
+            AI · column_attribution
+          </span>
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <span class="sql-font rounded bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+              {{ hint.column }}
+            </span>
+            <ChevronRight class="h-3.5 w-3.5 text-blue-400" />
+            <span class="muted text-[11px]">归属</span>
+            <span class="sql-font rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-800 ring-1 ring-blue-200">
+              {{ hint.suggested_table }}
+            </span>
+            <span class="pill" :class="confidenceClass(hint.confidence)">{{ hint.confidence }}</span>
+          </div>
+          <p class="text-[12px] leading-relaxed text-slate-700">{{ hint.reason }}</p>
+          <details v-if="hint.evidence" class="text-[11px]">
+            <summary class="cursor-pointer text-blue-700 hover:underline">查看 evidence</summary>
+            <pre class="sql-font mt-1 max-h-32 overflow-auto rounded bg-slate-50 p-1.5 text-[11px] text-slate-700">{{ hint.evidence }}</pre>
           </details>
         </article>
       </div>
@@ -200,16 +245,17 @@ const dmlClass = (d) => ({
     </section>
 
     <!-- 无推断结果 -->
-    <div v-else-if="triggerCount === 0 && parseErrors.length === 0 && dynamicAICandidatesCount === 0" class="card border-dashed py-10 text-center">
+    <div v-else-if="triggerCount === 0 && parseErrors.length === 0 && dynamicAICandidatesCount === 0 && ambiguousColumnCount === 0" class="card border-dashed py-10 text-center">
       <FileWarning class="mx-auto h-8 w-8 text-slate-300" />
-      <p class="mt-2 text-sm text-slate-500">本次分析没有解析失败片段或低置信动态 SQL，无需 AI 兜底</p>
+      <p class="mt-2 text-sm text-slate-500">本次分析没有解析失败片段、低置信动态 SQL 或字段歧义，无需 AI 兜底</p>
     </div>
 
-    <div v-else-if="triggerCount === 0 && (parseErrors.length > 0 || dynamicAICandidatesCount > 0)" class="card border-dashed py-8 text-center">
+    <div v-else-if="triggerCount === 0 && (parseErrors.length > 0 || dynamicAICandidatesCount > 0 || ambiguousColumnCount > 0)" class="card border-dashed py-8 text-center">
       <Sparkles class="mx-auto h-8 w-8 text-slate-300" />
       <p class="mt-2 text-sm text-slate-500">
         检测到 {{ parseErrors.length }} 条 parse_errors
         <span v-if="dynamicAICandidatesCount">+ {{ dynamicAICandidatesCount }} 条低置信动态 SQL</span>
+        <span v-if="ambiguousColumnCount">+ {{ ambiguousColumnCount }} 条字段歧义</span>
       </p>
       <p class="mt-1 text-xs text-slate-400">在 admin → AI 配置中开启「启用 AI 解析失败兜底」即可让 AI 推断这些片段的血缘</p>
     </div>

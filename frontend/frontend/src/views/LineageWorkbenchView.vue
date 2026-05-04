@@ -288,6 +288,7 @@ function onZipChange(e) {
       :ai-inferred="result.ai_inferred || {}"
       :parse-errors="result.parse_errors || []"
       :dynamic-sql-segments="result.dynamic_sql_segments || []"
+      :ambiguous-column-warnings="result.warnings || []"
     />
   </section>
 </template>
