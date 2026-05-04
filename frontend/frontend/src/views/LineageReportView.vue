@@ -30,6 +30,7 @@ const props = defineProps({
   aiEnrichment: { type: Object, default: () => ({}) },
   aiInferred: { type: Object, default: () => ({}) },
   parseErrors: { type: Array, default: () => [] },
+  dynamicSqlSegments: { type: Array, default: () => [] },
 })
 
 const TABS = [
@@ -218,6 +219,7 @@ const tabBadgeCount = computed(() => ({
       v-else-if="activeTab === 'ai_inferred'"
       :inferred="aiInferred"
       :parse-errors="parseErrors"
+      :dynamic-sql-segments="dynamicSqlSegments"
     />
   </div>
 </template>

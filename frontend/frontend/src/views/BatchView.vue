@@ -77,6 +77,7 @@ const report = computed(() => batch.result?.report || null)
       :ai-enrichment="batch.result.ai_enrichment || {}"
       :ai-inferred="batch.result.ai_inferred || {}"
       :parse-errors="batch.result.parse_errors || []"
+      :dynamic-sql-segments="batch.result.dynamic_sql_segments || []"
     />
   </section>
 </template>

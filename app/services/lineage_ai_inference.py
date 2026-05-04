@@ -176,6 +176,166 @@ def infer_from_parse_errors(
     return output
 
 
+# ─── 动态 SQL 推断（Phase 2） ─────────────────────────────────────────────────
+
+# 哪些 confidence 值需要 AI 兜底：
+# - unresolved：变量没找到赋值（参数 / 包变量 / cursor / 外部传入）
+# - var_concat 但 confidence='low'：变量拼接但 sqlglot 仍解不通顺
+# - string_literal：弱兜底情况（基本不出现，extract_dynamic_sql 已经移除该路径）
+# 不送 AI 的：'high'（EXECUTE IMMEDIATE 字面量已含完整 SQL）/ 'prepare_var' 高置信
+_DYNAMIC_SQL_AI_TRIGGER_CONFIDENCES = {"unresolved", "low", "string_literal"}
+
+
+def infer_from_dynamic_sql_segments(
+    segments: list[dict[str, Any]],
+    *,
+    table_whitelist: set[str],
+    column_whitelist: set[str],
+    dialect: str,
+    config: LineageAIConfig,
+    procedure_segments: list[dict[str, Any]] | None = None,
+    max_fragment_chars: int = 8000,
+    max_fragments: int = 10,
+) -> dict[str, Any]:
+    """对 dynamic_sql_segments 中**低置信 / 未解析**的片段调 AI 推断。
+
+    跟 parse_errors 的差异：
+    - parse_errors 是"sqlglot 解析直接抛错"
+    - dynamic_sql 是"变量拼接的 SQL，可能能拼出但 confidence 低 / 或拼不出"
+
+    本函数只对 confidence ∈ {unresolved, low, string_literal} 的 segment 调 AI；
+    high 和 prepare_var 已经有完整源信息，跳过避免浪费 token。
+
+    procedure_segments 提供过程上下文（procedure_name + preceding_comment）—— 当
+    动态 SQL 出现在某个过程体内时，把过程信息塞进 prompt，让 AI 看 "这个过程叫
+    什么名字 / 注释写了啥业务含义" 来辅助推断目标表。
+    """
+    output: dict[str, Any] = {
+        "edges": [],
+        "warnings": [],
+        "trigger_count": 0,
+        "filtered_count": 0,
+    }
+    if not segments:
+        return output
+    provider_name = (config.provider or "off").lower()
+    if provider_name in {"off", "disabled", "none", ""}:
+        return output  # parse_errors 路径已加 warning，此处不重复
+    if provider_name not in OPENAI_COMPATIBLE_PROVIDERS and provider_name not in ANTHROPIC_COMPATIBLE_PROVIDERS and provider_name != "mock":
+        return output
+    if not table_whitelist:
+        return output
+
+    table_set = {_normalize_name(t) for t in table_whitelist if t}
+    column_set = {_normalize_name(c) for c in column_whitelist if c}
+
+    # 触发筛选：只对低置信 / 未解析的 segment 调 AI
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for index, segment in enumerate(segments or []):
+        confidence = str(segment.get("confidence") or "").lower()
+        if confidence not in _DYNAMIC_SQL_AI_TRIGGER_CONFIDENCES:
+            continue
+        candidates.append((index, segment))
+
+    if not candidates:
+        return output
+
+    # 构建过程上下文索引：procedure_name → preceding_comment（用于 enrich prompt）
+    proc_context = _build_procedure_context(procedure_segments or [])
+
+    for actual_count, (segment_index, segment) in enumerate(candidates):
+        if actual_count >= max_fragments:
+            output["warnings"].append({
+                "type": "ai_inference_truncated",
+                "source_kind": "dynamic_sql",
+                "message": f"dynamic_sql 候选 {len(candidates)} 个，仅推断前 {max_fragments} 个（防 API 滥用）",
+            })
+            break
+        sql_text = (segment.get("sql") or "").strip()
+        if not sql_text:
+            continue
+        if len(sql_text) > max_fragment_chars:
+            sql_text = sql_text[:max_fragment_chars] + "\n/* truncated */"
+
+        # 试图找到这个 dynamic SQL 关联的过程：sql_text 里如果有 EXECUTE IMMEDIATE p_var
+        # 那 p_var 就是变量名，可以在 procedure 里查"该 procedure 名字 / preceding_comment"
+        # 简化策略：直接把所有 procedure 上下文整体丢给 AI（max 5 个，截断 comment）
+        try:
+            output["trigger_count"] += 1
+            raw = _call_provider_dynamic(
+                provider_name=provider_name,
+                config=config,
+                sql_text=sql_text,
+                source=str(segment.get("source") or ""),
+                confidence=str(segment.get("confidence") or ""),
+                dialect=dialect,
+                table_whitelist=sorted(table_set),
+                column_whitelist=sorted(column_set)[:200],
+                segment_index=segment_index,
+                proc_context=proc_context[:5],
+            )
+            if not isinstance(raw, dict):
+                output["warnings"].append({
+                    "type": "ai_inference_invalid",
+                    "source_kind": "dynamic_sql",
+                    "segment_index": segment_index,
+                    "message": "AI 返回非 dict，丢弃",
+                })
+                continue
+            edges, filtered = _validate_and_filter_edges(
+                raw.get("edges") or [],
+                table_set=table_set,
+                column_set=column_set,
+                fragment_index=segment_index,
+                evidence_hint=sql_text[:200],
+                source_kind="dynamic_sql",
+            )
+            output["edges"].extend(edges)
+            output["filtered_count"] += filtered
+            if filtered:
+                output["warnings"].append({
+                    "type": "ai_inference_filtered",
+                    "source_kind": "dynamic_sql",
+                    "segment_index": segment_index,
+                    "message": f"AI 返回 {filtered} 条非白名单表名，已过滤",
+                })
+        except Exception as exc:
+            logger.warning(
+                "AI dynamic_sql inference failed segment_index=%s error=%s",
+                segment_index,
+                exc,
+            )
+            output["warnings"].append({
+                "type": "ai_inference_error",
+                "source_kind": "dynamic_sql",
+                "segment_index": segment_index,
+                "message": str(exc),
+            })
+
+    return output
+
+
+def _build_procedure_context(procedure_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从 procedure_segments 构建给 AI 的过程上下文（procedure_name + 注释 + 行号）。
+    每个 procedure 取第一段（业务标题最有可能在那里），注释截断 200 字符防 token 爆。
+    """
+    seen_procs: set[str] = set()
+    context: list[dict[str, Any]] = []
+    for seg in procedure_segments:
+        proc_name = (seg.get("procedure_name") or "").strip()
+        if not proc_name or proc_name in seen_procs:
+            continue
+        seen_procs.add(proc_name)
+        comment = (seg.get("preceding_comment") or "").strip()
+        context.append({
+            "procedure_name": proc_name,
+            "procedure_kind": seg.get("procedure_kind") or "",
+            "preceding_comment": comment[:200],
+            "line_start": seg.get("line_start"),
+        })
+    return context
+
+
 # ─── Prompt 构建 ──────────────────────────────────────────────────────────────
 
 
@@ -194,6 +354,27 @@ _SYSTEM_PROMPT = (
     "- Do NOT invent table or column names.\n"
     "- Do NOT explain outside the JSON.\n"
     "- If the fragment has no clear data flow, return {\"edges\": []}."
+)
+
+
+_DYNAMIC_SYSTEM_PROMPT = (
+    "You are a SQL lineage extractor for the deterministic analyzer's dynamic-SQL fallback path. "
+    "The fragment is a DYNAMIC SQL stub: usually 'EXECUTE IMMEDIATE p_var' where the variable "
+    "could not be statically resolved, or a low-confidence variable concatenation. "
+    "Use the procedure context (procedure_name + preceding_comment showing business intent) and "
+    "the table/column whitelist to GUESS the most likely target table for the dynamic statement. "
+    "Strict rules:\n"
+    "- Output ONLY a JSON object with key `edges`.\n"
+    "- Each edge: source_table (CAN BE EMPTY when not derivable), target_table (REQUIRED), "
+    "dml_type (one of INSERT/UPDATE/MERGE/DELETE/CTAS/TRUNCATE_INSERT), confidence (low|medium, "
+    "default low), reason (Chinese, must reference procedure_name or comment if used), "
+    "evidence (the variable name or original fragment).\n"
+    "- target_table MUST be in the table whitelist; never invent.\n"
+    "- If the variable name (like p_t_name) and procedure context don't suggest any table in "
+    "the whitelist, return {\"edges\": []}. NEVER guess randomly.\n"
+    "- Confidence MUST be low when only variable name is available; medium ONLY when a comment "
+    "explicitly mentions a target table that's also in the whitelist.\n"
+    "- Do NOT explain outside the JSON."
 )
 
 
@@ -235,7 +416,43 @@ def _call_provider(
     raise ValueError(f"unsupported provider for inference: {provider_name}")
 
 
-def _call_openai_compatible(config: LineageAIConfig, user_content: str) -> dict[str, Any]:
+def _call_provider_dynamic(
+    *,
+    provider_name: str,
+    config: LineageAIConfig,
+    sql_text: str,
+    source: str,
+    confidence: str,
+    dialect: str,
+    table_whitelist: list[str],
+    column_whitelist: list[str],
+    segment_index: int,
+    proc_context: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """跟 _call_provider 类似，但走 _DYNAMIC_SYSTEM_PROMPT；user message 包过程上下文。"""
+    user_payload = {
+        "scope": "dynamic_sql_fallback",
+        "segment_index": segment_index,
+        "dialect": dialect or "",
+        "segment_source": source,
+        "segment_confidence": confidence,
+        "sql": sql_text,
+        "procedure_context": proc_context,
+        "table_whitelist": table_whitelist,
+        "column_whitelist": column_whitelist,
+    }
+    user_content = json.dumps(user_payload, ensure_ascii=False)
+
+    if provider_name == "mock":
+        return {"edges": []}
+    if provider_name in OPENAI_COMPATIBLE_PROVIDERS:
+        return _call_openai_compatible(config, user_content, system_prompt=_DYNAMIC_SYSTEM_PROMPT)
+    if provider_name in ANTHROPIC_COMPATIBLE_PROVIDERS:
+        return _call_anthropic(config, user_content, system_prompt=_DYNAMIC_SYSTEM_PROMPT)
+    raise ValueError(f"unsupported provider for dynamic inference: {provider_name}")
+
+
+def _call_openai_compatible(config: LineageAIConfig, user_content: str, *, system_prompt: str = "") -> dict[str, Any]:
     if not config.api_key:
         raise ValueError("AI API key is required")
     if not config.model:
@@ -245,7 +462,7 @@ def _call_openai_compatible(config: LineageAIConfig, user_content: str) -> dict[
         "model": config.model,
         "max_tokens": _openai_compatible_max_tokens(config),
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt or _SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
     }
@@ -260,7 +477,7 @@ def _call_openai_compatible(config: LineageAIConfig, user_content: str) -> dict[
     return _loads_json_object(_openai_compatible_content(data))
 
 
-def _call_anthropic(config: LineageAIConfig, user_content: str) -> dict[str, Any]:
+def _call_anthropic(config: LineageAIConfig, user_content: str, *, system_prompt: str = "") -> dict[str, Any]:
     if not config.api_key:
         raise ValueError("AI API key is required")
     if not config.model:
@@ -269,7 +486,7 @@ def _call_anthropic(config: LineageAIConfig, user_content: str) -> dict[str, Any
     body = {
         "model": config.model,
         "max_tokens": 4096,
-        "system": _SYSTEM_PROMPT,
+        "system": system_prompt or _SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": user_content}],
     }
     data = _post_json(
@@ -294,6 +511,7 @@ def _validate_and_filter_edges(
     column_set: set[str],
     fragment_index: int,
     evidence_hint: str,
+    source_kind: str = "parse_error",
 ) -> tuple[list[dict[str, Any]], int]:
     """逐条 edge 校验：dml_type / confidence 枚举 + 表名 / 字段名白名单。"""
     if not isinstance(raw_edges, list):
@@ -336,6 +554,7 @@ def _validate_and_filter_edges(
             "reason": reason,
             "evidence": evidence,
             "fragment_index": fragment_index,
+            "source_kind": source_kind,  # parse_error | dynamic_sql
             "is_ai_inferred": True,
         })
     return output, filtered

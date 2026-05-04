@@ -233,8 +233,8 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - 默认 `max_fragments=10`（防 API 滥用）+ `max_fragment_chars=8000`（防 token 爆）
 - 14 个 test case（`tests/test_lineage_ai_inference.py`）：白名单过滤 / hallucination dml_type / confidence=high 强制降到 low / source 不在白名单则保留 target / column 字段过滤 / provider exception 降级 / 非 dict response 降级 / max_fragments 截断 / 端到端
 
-后续阶段（Phase 2-4，未排期）：
-- **Phase 2** `dynamic_sql_segments`（confidence=var_concat/unresolved）：跟踪变量赋值 + 注释推断目标表
+后续阶段（Phase 2-4）：
+- **Phase 2 ✅** `dynamic_sql_segments`：confidence ∈ {`unresolved`, `low`, `string_literal`} 的片段送 AI；`high` / `prepare_var` 已有完整 SQL 跳过。每个 segment 带过程上下文（procedure_name + preceding_comment + line_start，最多 5 个），AI 用过程语义猜测目标表。专属 `_DYNAMIC_SYSTEM_PROMPT` 强调"target 必须在白名单 / source 可空 / 默认 confidence=low"。`source_kind="dynamic_sql"` 跟 parse_error 区分；前端 `LineageAIInferredPanel` 按 source_kind 分两栏渲染（红色边 = 解析失败 / 黄色边 = 动态 SQL）。7 个新 test case：high 不送 / unresolved 触发并用过程上下文 / 白名单过滤 target / var_concat low 触发 / max_fragments 截断 / 异常降级 / service 集成合并 parse_errors + dynamic_sql。
 - **Phase 3** 多表 unqualified column 缺 schema 时的归属推荐
 - **Phase 4** procedure 语义模式（refresh mode / 数据流向）
 

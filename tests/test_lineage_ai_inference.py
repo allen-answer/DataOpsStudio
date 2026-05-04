@@ -338,3 +338,217 @@ def test_service_layer_attaches_ai_inferred_when_enabled(monkeypatch):
     inferred = result.get("ai_inferred") or {}
     assert len(inferred.get("edges", [])) == 1
     assert inferred["edges"][0]["target_table"] == "users_archive"
+
+
+# ─── Phase 2: dynamic_sql_segments 推断 ───────────────────────────────────────
+
+
+from app.services.lineage_ai_inference import infer_from_dynamic_sql_segments
+
+
+def test_dynamic_sql_high_confidence_skipped(monkeypatch):
+    """confidence='high'（EXECUTE IMMEDIATE 字面量）已含完整 SQL，不送 AI。"""
+    called = {"n": 0}
+
+    def fake_urlopen(req, timeout):
+        called["n"] += 1
+        return None
+
+    monkeypatch.setattr("app.services.lineage_ai.urllib.request.urlopen", fake_urlopen)
+    out = infer_from_dynamic_sql_segments(
+        [
+            {"sql": "INSERT INTO t SELECT * FROM s", "source": "execute_keyword", "confidence": "high"},
+            {"sql": "INSERT INTO t SELECT 1", "source": "prepare_var", "confidence": "high"},
+        ],
+        table_whitelist={"t", "s"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k"),
+    )
+    assert called["n"] == 0  # 完全没调 HTTP
+    assert out["trigger_count"] == 0
+    assert out["edges"] == []
+
+
+def test_dynamic_sql_unresolved_triggers_ai(monkeypatch):
+    """confidence='unresolved'（变量没找到赋值）→ 送 AI；AI 用过程上下文给 target。"""
+    _setup_fake_openai(monkeypatch, {"edges": [
+        {
+            "source_table": "",
+            "target_table": "ods.t_orders",
+            "dml_type": "INSERT",
+            "confidence": "low",
+            "reason": "过程名 LOAD_ORDERS + preceding_comment 提到 '订单加载'，目标表是 ods.t_orders",
+            "evidence": "EXECUTE IMMEDIATE p_var",
+        },
+    ]})
+    out = infer_from_dynamic_sql_segments(
+        [
+            {
+                "sql": "-- unresolved EXECUTE IMMEDIATE variable: p_var",
+                "source": "execute_var_unresolved",
+                "confidence": "unresolved",
+            },
+        ],
+        table_whitelist={"ods.t_orders", "ods.src"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+        procedure_segments=[
+            {
+                "procedure_name": "LOAD_ORDERS",
+                "procedure_kind": "PROCEDURE",
+                "preceding_comment": "-- 订单加载",
+                "line_start": 100,
+            },
+        ],
+    )
+    assert len(out["edges"]) == 1
+    edge = out["edges"][0]
+    assert edge["target_table"] == "ods.t_orders"
+    assert edge["source_kind"] == "dynamic_sql"
+    assert edge["source_table"] == ""
+    assert edge["confidence"] == "low"
+
+
+def test_dynamic_sql_filters_non_whitelist_target(monkeypatch):
+    """AI 返回 target 不在白名单 → 过滤 + 计数，不收入。"""
+    _setup_fake_openai(monkeypatch, {"edges": [
+        {"source_table": "", "target_table": "phantom", "dml_type": "INSERT"},
+        {"source_table": "", "target_table": "ods.real", "dml_type": "INSERT"},
+    ]})
+    out = infer_from_dynamic_sql_segments(
+        [
+            {"sql": "-- unresolved p_var", "source": "execute_var_unresolved", "confidence": "unresolved"},
+        ],
+        table_whitelist={"ods.real"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+    )
+    assert len(out["edges"]) == 1
+    assert out["edges"][0]["target_table"] == "ods.real"
+    assert out["filtered_count"] == 1
+
+
+def test_dynamic_sql_low_confidence_var_concat_triggers(monkeypatch):
+    """var_concat + low 置信也触发推断（拼接的 SQL 解析不顺）。"""
+    _setup_fake_openai(monkeypatch, {"edges": [
+        {"source_table": "src", "target_table": "tgt", "dml_type": "INSERT"},
+    ]})
+    out = infer_from_dynamic_sql_segments(
+        [
+            {"sql": "INSERT INTO :tab SELECT FROM src", "source": "var_concat", "confidence": "low"},
+        ],
+        table_whitelist={"src", "tgt"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=5),
+    )
+    assert len(out["edges"]) == 1
+
+
+def test_dynamic_sql_max_fragments(monkeypatch):
+    """20 条候选 + max_fragments=2 → 只调 2 次。"""
+    call_count = {"n": 0}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "{\"edges\":[]}"}}]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        call_count["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr("app.services.lineage_ai.urllib.request.urlopen", fake_urlopen)
+
+    segments = [
+        {"sql": f"-- p_var_{i}", "source": "execute_var_unresolved", "confidence": "unresolved"}
+        for i in range(20)
+    ]
+    out = infer_from_dynamic_sql_segments(
+        segments,
+        table_whitelist={"a"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=2),
+        max_fragments=2,
+    )
+    assert call_count["n"] == 2
+    assert out["trigger_count"] == 2
+    truncated = [w for w in out["warnings"] if w["type"] == "ai_inference_truncated" and w.get("source_kind") == "dynamic_sql"]
+    assert truncated
+
+
+def test_dynamic_sql_provider_exception_per_segment(monkeypatch):
+    """provider 抛异常 → 每个 segment 各记一条 warning，不抛错。"""
+    def boom(req, timeout):
+        raise ConnectionError("nope")
+    monkeypatch.setattr("app.services.lineage_ai.urllib.request.urlopen", boom)
+
+    out = infer_from_dynamic_sql_segments(
+        [
+            {"sql": "-- p_a", "source": "execute_var_unresolved", "confidence": "unresolved"},
+            {"sql": "-- p_b", "source": "execute_var_unresolved", "confidence": "unresolved"},
+        ],
+        table_whitelist={"a"},
+        column_whitelist=set(),
+        dialect="oracle",
+        config=LineageAIConfig(provider="openai", model="m", api_key="k", timeout_seconds=2),
+    )
+    assert out["edges"] == []
+    error_warnings = [w for w in out["warnings"] if w["type"] == "ai_inference_error"]
+    assert len(error_warnings) == 2
+    assert all(w.get("source_kind") == "dynamic_sql" for w in error_warnings)
+
+
+def test_service_layer_merges_parse_errors_and_dynamic_sql(monkeypatch):
+    """_attach_ai_inference 同时处理 parse_errors + dynamic_sql_segments，edges 合并。"""
+    from app.services import lineage_service
+
+    fake_config = LineageAIConfig(
+        provider="openai", model="m", api_key="k", base_url="https://api.x/v1",
+        timeout_seconds=5, enable_inference=True,
+    )
+    monkeypatch.setattr("app.services.lineage_ai._config", lambda: fake_config)
+
+    responses = [
+        {"edges": [{"source_table": "src", "target_table": "tgt", "dml_type": "INSERT"}]},
+        {"edges": [{"source_table": "", "target_table": "tgt2", "dml_type": "INSERT"}]},
+    ]
+    response_iter = iter(responses)
+
+    class _Resp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps(self._body, ensure_ascii=False)}}]
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        return _Resp(next(response_iter))
+
+    monkeypatch.setattr("app.services.lineage_ai.urllib.request.urlopen", fake_urlopen)
+
+    result = {
+        "tables": [{"name": "src"}, {"name": "tgt"}, {"name": "tgt2"}],
+        "columns": [],
+        "insert_mappings": [],
+        "parse_errors": [{"sql": "MERGE BAD", "error": "Expected END"}],
+        "dynamic_sql_segments": [{
+            "sql": "-- unresolved p_t",
+            "source": "execute_var_unresolved",
+            "confidence": "unresolved",
+        }],
+        "procedure_segments": [],
+    }
+    lineage_service._attach_ai_inference(result, dialect="oracle", enabled=True)
+    inferred = result["ai_inferred"]
+    assert len(inferred["edges"]) == 2
+    source_kinds = {e["source_kind"] for e in inferred["edges"]}
+    assert source_kinds == {"parse_error", "dynamic_sql"}
+    assert inferred["trigger_count"] == 2

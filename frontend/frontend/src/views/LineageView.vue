@@ -67,6 +67,7 @@ const report = computed(() => lineage.result?.report || null)
       :ai-enrichment="lineage.result.ai_enrichment || {}"
       :ai-inferred="lineage.result.ai_inferred || {}"
       :parse-errors="lineage.result.parse_errors || []"
+      :dynamic-sql-segments="lineage.result.dynamic_sql_segments || []"
     />
   </section>
 </template>

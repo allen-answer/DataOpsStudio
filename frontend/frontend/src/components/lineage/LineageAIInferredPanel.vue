@@ -1,16 +1,27 @@
 <script setup>
 import { computed } from 'vue'
-import { Sparkles, AlertTriangle, ChevronRight, FileWarning } from 'lucide-vue-next'
+import { Sparkles, AlertTriangle, ChevronRight, FileWarning, Code, AlertCircle } from 'lucide-vue-next'
 
 const props = defineProps({
   inferred: { type: Object, default: () => ({ edges: [], warnings: [], trigger_count: 0, filtered_count: 0 }) },
   parseErrors: { type: Array, default: () => [] },
+  dynamicSqlSegments: { type: Array, default: () => [] },
 })
 
 const edges = computed(() => Array.isArray(props.inferred?.edges) ? props.inferred.edges : [])
 const warnings = computed(() => Array.isArray(props.inferred?.warnings) ? props.inferred.warnings : [])
 const triggerCount = computed(() => Number(props.inferred?.trigger_count || 0))
 const filteredCount = computed(() => Number(props.inferred?.filtered_count || 0))
+
+// Phase 2：按 source_kind 分组（parse_error / dynamic_sql）
+const parseErrorEdges = computed(() => edges.value.filter(e => (e.source_kind || 'parse_error') === 'parse_error'))
+const dynamicSqlEdges = computed(() => edges.value.filter(e => e.source_kind === 'dynamic_sql'))
+
+// 触发候选数（前端展示用，不一定全送了 AI）
+const dynamicAICandidatesCount = computed(() => {
+  const triggers = new Set(['unresolved', 'low', 'string_literal'])
+  return (props.dynamicSqlSegments || []).filter(s => triggers.has(s?.confidence)).length
+})
 
 const confidenceClass = (c) => ({
   low:    'bg-amber-100 text-amber-700',
@@ -35,14 +46,17 @@ const dmlClass = (d) => ({
         <Sparkles class="h-5 w-5" />
       </div>
       <div class="flex-1 space-y-1">
-        <h3 class="text-base font-bold text-slate-800">AI 解析失败兜底推断</h3>
+        <h3 class="text-base font-bold text-slate-800">AI 兜底推断</h3>
         <p class="text-xs leading-relaxed text-slate-600">
-          静态解析器对 <strong class="font-bold text-rose-700">{{ parseErrors.length }}</strong> 条片段报错（PL/SQL 控制流、动态 SQL 等），
+          静态解析器对
+          <strong class="font-bold text-rose-700">{{ parseErrors.length }}</strong> 条片段直接报错，
+          以及
+          <strong class="font-bold text-amber-700">{{ dynamicAICandidatesCount }}</strong> 条低置信 / 未解析的动态 SQL，
           AI 用脚本里出现过的 <strong>表名 / 字段名白名单</strong>约束推断了
           <strong class="font-bold text-purple-700">{{ edges.length }}</strong> 条候选血缘边
           <span v-if="filteredCount" class="muted">（另过滤 {{ filteredCount }} 条非白名单 hallucination）</span>。
           <span class="block mt-0.5 text-[11px] text-purple-700">
-            本面板内容均为 AI 推断（虚线 + 紫色徽章区分），不进入主血缘图，仅供人工核对。
+            本面板内容均为 AI 推断（紫色徽章区分），不进入主血缘图，仅供人工核对。
           </span>
         </p>
       </div>
@@ -61,77 +75,142 @@ const dmlClass = (d) => ({
       </ul>
     </div>
 
-    <!-- 推断 edges 列表 -->
-    <div v-if="edges.length" class="space-y-3">
-      <article
-        v-for="(edge, i) in edges" :key="i"
-        class="card relative space-y-3 border-l-4 border-l-purple-400 p-4"
-      >
-        <span class="pill absolute right-3 top-3 bg-purple-100 text-[10px] uppercase tracking-wider text-purple-700">
-          AI 推断
-        </span>
+    <!-- 来源 1：parse_errors 兜底 -->
+    <section v-if="parseErrorEdges.length">
+      <div class="mb-2 flex items-center gap-2">
+        <AlertCircle class="h-4 w-4 text-rose-600" />
+        <h4 class="text-sm font-bold text-slate-800">解析失败兜底</h4>
+        <span class="pill bg-rose-100 text-rose-700 text-[10px]">{{ parseErrorEdges.length }} 条</span>
+        <span class="muted text-[11px]">sqlglot 直接抛错的片段，AI 从 0 推断</span>
+      </div>
+      <div class="space-y-3">
+        <article
+          v-for="(edge, i) in parseErrorEdges" :key="`pe-${i}`"
+          class="card relative space-y-3 border-l-4 border-l-rose-400 p-4"
+        >
+          <span class="pill absolute right-3 top-3 bg-rose-100 text-[10px] uppercase tracking-wider text-rose-700">
+            AI · parse_error
+          </span>
 
-        <!-- 边主体 source → target -->
-        <div class="flex flex-wrap items-center gap-2 text-sm">
-          <span class="sql-font rounded bg-slate-100 px-2 py-1 font-medium text-slate-700">
-            {{ edge.source_table || '(未知源)' }}
-          </span>
-          <ChevronRight class="h-4 w-4 text-purple-400" />
-          <span class="sql-font rounded bg-purple-50 px-2 py-1 font-medium text-purple-800 ring-1 ring-purple-200">
-            {{ edge.target_table }}
-          </span>
-          <span class="pill" :class="dmlClass(edge.dml_type)">{{ edge.dml_type }}</span>
-          <span class="pill" :class="confidenceClass(edge.confidence)">{{ edge.confidence }}</span>
-          <span v-if="edge.fragment_index !== undefined" class="pill bg-slate-100 text-slate-500 text-[10px]">
-            片段 #{{ edge.fragment_index }}
-          </span>
-        </div>
-
-        <!-- 字段 -->
-        <div v-if="edge.source_columns?.length || edge.target_columns?.length" class="grid grid-cols-1 gap-2 md:grid-cols-2">
-          <div v-if="edge.source_columns?.length">
-            <p class="muted mb-1 text-[10px] font-bold uppercase">源字段</p>
-            <ul class="flex flex-wrap gap-1">
-              <li
-                v-for="col in edge.source_columns" :key="col"
-                class="sql-font rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700"
-              >{{ col }}</li>
-            </ul>
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <span class="sql-font rounded bg-slate-100 px-2 py-1 font-medium text-slate-700">
+              {{ edge.source_table || '(未知源)' }}
+            </span>
+            <ChevronRight class="h-4 w-4 text-rose-400" />
+            <span class="sql-font rounded bg-rose-50 px-2 py-1 font-medium text-rose-800 ring-1 ring-rose-200">
+              {{ edge.target_table }}
+            </span>
+            <span class="pill" :class="dmlClass(edge.dml_type)">{{ edge.dml_type }}</span>
+            <span class="pill" :class="confidenceClass(edge.confidence)">{{ edge.confidence }}</span>
+            <span v-if="edge.fragment_index !== undefined" class="pill bg-slate-100 text-slate-500 text-[10px]">
+              片段 #{{ edge.fragment_index }}
+            </span>
           </div>
-          <div v-if="edge.target_columns?.length">
-            <p class="muted mb-1 text-[10px] font-bold uppercase">目标字段</p>
-            <ul class="flex flex-wrap gap-1">
-              <li
-                v-for="col in edge.target_columns" :key="col"
-                class="sql-font rounded bg-purple-50 px-1.5 py-0.5 text-[11px] text-purple-700"
-              >{{ col }}</li>
-            </ul>
+
+          <div v-if="edge.source_columns?.length || edge.target_columns?.length" class="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div v-if="edge.source_columns?.length">
+              <p class="muted mb-1 text-[10px] font-bold uppercase">源字段</p>
+              <ul class="flex flex-wrap gap-1">
+                <li v-for="col in edge.source_columns" :key="col"
+                    class="sql-font rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">{{ col }}</li>
+              </ul>
+            </div>
+            <div v-if="edge.target_columns?.length">
+              <p class="muted mb-1 text-[10px] font-bold uppercase">目标字段</p>
+              <ul class="flex flex-wrap gap-1">
+                <li v-for="col in edge.target_columns" :key="col"
+                    class="sql-font rounded bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700">{{ col }}</li>
+              </ul>
+            </div>
           </div>
-        </div>
 
-        <!-- AI 给的理由 -->
-        <div>
-          <p class="muted mb-0.5 text-[10px] font-bold uppercase">AI 推断依据</p>
-          <p class="text-[12px] leading-relaxed text-slate-700">{{ edge.reason }}</p>
-        </div>
+          <div>
+            <p class="muted mb-0.5 text-[10px] font-bold uppercase">AI 推断依据</p>
+            <p class="text-[12px] leading-relaxed text-slate-700">{{ edge.reason }}</p>
+          </div>
 
-        <!-- 引用的 SQL 片段（evidence）-->
-        <details v-if="edge.evidence" class="text-[11px]">
-          <summary class="cursor-pointer text-purple-700 hover:underline">查看 evidence（原 SQL 片段）</summary>
-          <pre class="sql-font mt-1.5 max-h-48 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{{ edge.evidence }}</pre>
-        </details>
-      </article>
-    </div>
+          <details v-if="edge.evidence" class="text-[11px]">
+            <summary class="cursor-pointer text-rose-700 hover:underline">查看 evidence（原 SQL 片段）</summary>
+            <pre class="sql-font mt-1.5 max-h-48 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{{ edge.evidence }}</pre>
+          </details>
+        </article>
+      </div>
+    </section>
+
+    <!-- 来源 2：dynamic_sql_segments 兜底 -->
+    <section v-if="dynamicSqlEdges.length">
+      <div class="mb-2 flex items-center gap-2">
+        <Code class="h-4 w-4 text-amber-600" />
+        <h4 class="text-sm font-bold text-slate-800">动态 SQL 兜底</h4>
+        <span class="pill bg-amber-100 text-amber-700 text-[10px]">{{ dynamicSqlEdges.length }} 条</span>
+        <span class="muted text-[11px]">变量拼接 / 未解析的 EXECUTE IMMEDIATE，AI 用过程上下文推断目标</span>
+      </div>
+      <div class="space-y-3">
+        <article
+          v-for="(edge, i) in dynamicSqlEdges" :key="`dyn-${i}`"
+          class="card relative space-y-3 border-l-4 border-l-amber-400 p-4"
+        >
+          <span class="pill absolute right-3 top-3 bg-amber-100 text-[10px] uppercase tracking-wider text-amber-700">
+            AI · dynamic_sql
+          </span>
+
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <span class="sql-font rounded bg-slate-100 px-2 py-1 font-medium text-slate-700">
+              {{ edge.source_table || '(未知源)' }}
+            </span>
+            <ChevronRight class="h-4 w-4 text-amber-400" />
+            <span class="sql-font rounded bg-amber-50 px-2 py-1 font-medium text-amber-800 ring-1 ring-amber-200">
+              {{ edge.target_table }}
+            </span>
+            <span class="pill" :class="dmlClass(edge.dml_type)">{{ edge.dml_type }}</span>
+            <span class="pill" :class="confidenceClass(edge.confidence)">{{ edge.confidence }}</span>
+            <span v-if="edge.fragment_index !== undefined" class="pill bg-slate-100 text-slate-500 text-[10px]">
+              segment #{{ edge.fragment_index }}
+            </span>
+          </div>
+
+          <div v-if="edge.source_columns?.length || edge.target_columns?.length" class="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div v-if="edge.source_columns?.length">
+              <p class="muted mb-1 text-[10px] font-bold uppercase">源字段</p>
+              <ul class="flex flex-wrap gap-1">
+                <li v-for="col in edge.source_columns" :key="col"
+                    class="sql-font rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">{{ col }}</li>
+              </ul>
+            </div>
+            <div v-if="edge.target_columns?.length">
+              <p class="muted mb-1 text-[10px] font-bold uppercase">目标字段</p>
+              <ul class="flex flex-wrap gap-1">
+                <li v-for="col in edge.target_columns" :key="col"
+                    class="sql-font rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700">{{ col }}</li>
+              </ul>
+            </div>
+          </div>
+
+          <div>
+            <p class="muted mb-0.5 text-[10px] font-bold uppercase">AI 推断依据</p>
+            <p class="text-[12px] leading-relaxed text-slate-700">{{ edge.reason }}</p>
+          </div>
+
+          <details v-if="edge.evidence" class="text-[11px]">
+            <summary class="cursor-pointer text-amber-700 hover:underline">查看 evidence（动态 SQL 片段）</summary>
+            <pre class="sql-font mt-1.5 max-h-48 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{{ edge.evidence }}</pre>
+          </details>
+        </article>
+      </div>
+    </section>
 
     <!-- 无推断结果 -->
-    <div v-else-if="triggerCount === 0 && parseErrors.length === 0" class="card border-dashed py-10 text-center">
+    <div v-else-if="triggerCount === 0 && parseErrors.length === 0 && dynamicAICandidatesCount === 0" class="card border-dashed py-10 text-center">
       <FileWarning class="mx-auto h-8 w-8 text-slate-300" />
-      <p class="mt-2 text-sm text-slate-500">本次分析没有解析失败的片段，无需 AI 兜底</p>
+      <p class="mt-2 text-sm text-slate-500">本次分析没有解析失败片段或低置信动态 SQL，无需 AI 兜底</p>
     </div>
 
-    <div v-else-if="triggerCount === 0 && parseErrors.length > 0" class="card border-dashed py-8 text-center">
+    <div v-else-if="triggerCount === 0 && (parseErrors.length > 0 || dynamicAICandidatesCount > 0)" class="card border-dashed py-8 text-center">
       <Sparkles class="mx-auto h-8 w-8 text-slate-300" />
-      <p class="mt-2 text-sm text-slate-500">检测到 {{ parseErrors.length }} 条 parse_errors</p>
+      <p class="mt-2 text-sm text-slate-500">
+        检测到 {{ parseErrors.length }} 条 parse_errors
+        <span v-if="dynamicAICandidatesCount">+ {{ dynamicAICandidatesCount }} 条低置信动态 SQL</span>
+      </p>
       <p class="mt-1 text-xs text-slate-400">在 admin → AI 配置中开启「启用 AI 解析失败兜底」即可让 AI 推断这些片段的血缘</p>
     </div>
 

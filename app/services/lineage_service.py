@@ -231,18 +231,25 @@ def _attach_ai_inference(
     dialect: str | None,
     enabled: bool,
 ) -> None:
-    """对 result.parse_errors 调 AI 兜底推断（同步、best-effort、不阻塞主流程）。
+    """对 result.parse_errors 和 result.dynamic_sql_segments 调 AI 兜底推断
+    （同步、best-effort、不阻塞主流程）。
 
-    结果落 result["ai_inferred"]：edges/columns 列表 + warnings + trigger_count 等。
+    P1：parse_errors（sqlglot 解析直接失败）
+    P2：dynamic_sql_segments 中 confidence ∈ {unresolved, low, string_literal} 的片段
+    两类合并落 result["ai_inferred"]，每条 edge 用 source_kind 区分来源。
     要求 LineageAIConfig.enable_inference=True 才执行；任一失败默默降级，不抛错。
     """
     parse_errors = result.get("parse_errors") or []
-    if not enabled or not parse_errors:
+    dynamic_sql_segments = result.get("dynamic_sql_segments") or []
+    if not enabled or (not parse_errors and not dynamic_sql_segments):
         return
     try:
         # lazy import 避免 lineage_service ↔ lineage_ai_inference 循环
         from app.services.lineage_ai import _config as _ai_config
-        from app.services.lineage_ai_inference import infer_from_parse_errors
+        from app.services.lineage_ai_inference import (
+            infer_from_dynamic_sql_segments,
+            infer_from_parse_errors,
+        )
 
         config = _ai_config()
         if not getattr(config, "enable_inference", False):
@@ -272,16 +279,49 @@ def _attach_ai_inference(
                     if isinstance(tc, str):
                         column_names.add(tc)
 
-        inferred = infer_from_parse_errors(
-            parse_errors,
-            table_whitelist=table_names,
-            column_whitelist=column_names,
-            dialect=dialect or "",
-            config=config,
-            max_fragment_chars=config.inference_max_fragment_chars,
-            max_fragments=config.inference_max_fragments,
-        )
-        result["ai_inferred"] = inferred
+        # P1：parse_errors 兜底
+        merged_edges: list = []
+        merged_warnings: list = []
+        merged_trigger = 0
+        merged_filtered = 0
+        if parse_errors:
+            inferred_pe = infer_from_parse_errors(
+                parse_errors,
+                table_whitelist=table_names,
+                column_whitelist=column_names,
+                dialect=dialect or "",
+                config=config,
+                max_fragment_chars=config.inference_max_fragment_chars,
+                max_fragments=config.inference_max_fragments,
+            )
+            merged_edges.extend(inferred_pe.get("edges", []))
+            merged_warnings.extend(inferred_pe.get("warnings", []))
+            merged_trigger += int(inferred_pe.get("trigger_count", 0))
+            merged_filtered += int(inferred_pe.get("filtered_count", 0))
+
+        # P2：dynamic_sql_segments 兜底
+        if dynamic_sql_segments:
+            inferred_dyn = infer_from_dynamic_sql_segments(
+                dynamic_sql_segments,
+                table_whitelist=table_names,
+                column_whitelist=column_names,
+                dialect=dialect or "",
+                config=config,
+                procedure_segments=result.get("procedure_segments") or [],
+                max_fragment_chars=config.inference_max_fragment_chars,
+                max_fragments=config.inference_max_fragments,
+            )
+            merged_edges.extend(inferred_dyn.get("edges", []))
+            merged_warnings.extend(inferred_dyn.get("warnings", []))
+            merged_trigger += int(inferred_dyn.get("trigger_count", 0))
+            merged_filtered += int(inferred_dyn.get("filtered_count", 0))
+
+        result["ai_inferred"] = {
+            "edges": merged_edges,
+            "warnings": merged_warnings,
+            "trigger_count": merged_trigger,
+            "filtered_count": merged_filtered,
+        }
     except Exception as exc:
         logger.warning("AI inference fallback failed: %s", exc)
         result["ai_inferred"] = {
