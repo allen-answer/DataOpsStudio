@@ -259,11 +259,28 @@ def _attach_ai_inference(
         table_names: set[str] = set()
         for t in tables_field:
             if isinstance(t, dict):
-                name = t.get("name") or t.get("table") or ""
+                # analyzer 输出 {'table': 'dw.t', 'alias': 't'}；batch 路径可能用 'name'
+                name = t.get("table") or t.get("name") or t.get("table_name") or ""
                 if name:
                     table_names.add(name)
             elif isinstance(t, str) and t:
                 table_names.add(t)
+        # 顶层 graph_edges 里的源/目标也加入白名单（防止 tables 不全）
+        for edge in result.get("graph_edges") or []:
+            if isinstance(edge, dict):
+                for key in ("source_table", "target_table"):
+                    val = edge.get(key)
+                    if isinstance(val, str) and val:
+                        table_names.add(val)
+        # insert_mappings 里的 source_tables / target_table 也加入
+        for mapping in result.get("insert_mappings") or []:
+            if isinstance(mapping, dict):
+                for st in mapping.get("source_tables") or []:
+                    if isinstance(st, str) and st:
+                        table_names.add(st)
+                tt = mapping.get("target_table")
+                if isinstance(tt, str) and tt:
+                    table_names.add(tt)
         column_names: set[str] = set()
         for col in result.get("columns") or []:
             if isinstance(col, dict):

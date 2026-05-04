@@ -1492,6 +1492,44 @@ def test_preprocess_protects_comments():
     assert normalize_for_parsing("/* hint（保留） */ a in（1)") == "/* hint（保留） */ a in(1)"
 
 
+def test_preprocess_normalizes_operator_spacing():
+    """DM / Oracle / 部分 ETL 工具的 SQL 把 binary 比较运算符拆开打 (`< =` / `> =` / `! =` / `< >`)。
+    sqlglot 拒绝；归一化要合并并保持长度（不偏移行号）。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    # `< =` → `<=` 加 1 个空格保持长度
+    assert normalize_for_parsing("where a < = 100") == "where a <=  100"
+    # `> =`
+    assert normalize_for_parsing("where a > = 100") == "where a >=  100"
+    # `< >`
+    assert normalize_for_parsing("where a < > b") == "where a <>  b"
+    # `! =`
+    assert normalize_for_parsing("where a ! = b") == "where a !=  b"
+    # 字符串里的 `< =` 不动
+    assert "a < = b" in normalize_for_parsing("col = 'a < = b'")
+    # 不影响普通 SQL：`a <= b` 已正常
+    assert normalize_for_parsing("where a <= 100") == "where a <= 100"
+    # 长度保持（行号不偏）
+    src = "where a < = b\nand c > = d"
+    out = normalize_for_parsing(src)
+    assert len(out) == len(src)
+    assert out.count("\n") == src.count("\n")
+
+
+def test_preprocess_operator_spacing_real_etl_sql():
+    """跑通真实 ETL 输出的 case：to_char(...) < = :var。"""
+    from app.lineage.analyzer import analyze_sql_lineage
+
+    sql = """
+    INSERT INTO dw.t_target SELECT a.x FROM ods.t_src a
+    WHERE to_char(a.dt,'yyyymmdd') > :v_start
+      AND to_char(a.dt,'yyyymmdd') < = :v_end
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert result.get("parse_errors") == [], f"parse failed unexpectedly: {result.get('parse_errors')}"
+    assert any(m.get("target_table") == "dw.t_target" for m in result.get("insert_mappings", []))
+
+
 def test_preprocess_does_not_change_line_count():
     """归一化必须保持换行数和位置——procedure_segments 行号依赖这点。"""
     from app.lineage.preprocess import normalize_for_parsing

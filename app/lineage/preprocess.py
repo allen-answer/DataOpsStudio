@@ -31,14 +31,19 @@ _FULLWIDTH_PUNCT_MAP = {
 
 _RE_TEMPLATE_VAR = re.compile(r"\$\{\s*([A-Za-z_][\w$#]*)\s*\}")
 
+# DM / Oracle 容许比较运算符之间出现空白（`< =`、`> =`、`! =`、`< >`），
+# sqlglot 把它们当成两个独立 token 报 `Required keyword: 'expression' missing`。
+# 在 code 段做归一化（不动 string 字面量、不动注释；不增减字符总长保证行号）。
+_RE_OPERATOR_SPACING = re.compile(r"(?<=[\w\)\s'\"`\]])([<>!])\s+([=>])(?=[\w\(\s'\"`\[])")
+
 
 def normalize_for_parsing(sql: str) -> str:
     """把 SQL 转成 sqlglot 可吞的形式。
 
-    - code 段：全角标点 → 半角；`${name}` → `:name`
+    - code 段：全角标点 → 半角；`${name}` → `:name`；比较运算符空白合并
     - string / line_comment / block_comment：原样保留
 
-    保证不增减换行，所以原文件的行号在 normalized 文本里仍然对应。
+    保证不增减字符总长，所以原文件的行号在 normalized 文本里仍然对应。
     """
     if not sql:
         return sql
@@ -47,8 +52,25 @@ def normalize_for_parsing(sql: str) -> str:
         if kind == "code":
             text = _replace_fullwidth(text)
             text = _RE_TEMPLATE_VAR.sub(lambda m: ":" + m.group(1), text)
+            text = _normalize_operator_spacing(text)
         out.append(text)
     return "".join(out)
+
+
+def _normalize_operator_spacing(text: str) -> str:
+    """`< =` → `<=`（保留长度的归一化：先用空格补回缺的字符）。
+
+    sqlglot 收到 `< =` 会认为是 LT + EQ 两个独立 token，要么报错要么误判。
+    DM / Oracle / 部分 ETL 工具的 SQL formatter 会把所有 binary operator 都
+    分开打。这里把 `< =`、`> =`、`! =`、`< >` 合并成 `<=` 等，并在原空白位置
+    补一个空格，保证整体长度（→ 行号）不变。
+    """
+    def _merge(match: "re.Match[str]") -> str:
+        first, second = match.group(1), match.group(2)
+        # 原文 `<` + 1+ 空白 + `=` → `<=` + 等量空格保持长度
+        consumed = match.end() - match.start()
+        return first + second + " " * (consumed - 2)
+    return _RE_OPERATOR_SPACING.sub(_merge, text)
 
 
 def _replace_fullwidth(text: str) -> str:
