@@ -284,6 +284,13 @@ def _attach_ai_inference(
         merged_warnings: list = []
         merged_trigger = 0
         merged_filtered = 0
+        logger.info(
+            "AI inference start: parse_errors=%s dynamic_sql_segments=%s table_whitelist=%s column_whitelist=%s",
+            len(parse_errors),
+            len(dynamic_sql_segments),
+            len(table_names),
+            len(column_names),
+        )
         if parse_errors:
             inferred_pe = infer_from_parse_errors(
                 parse_errors,
@@ -322,6 +329,13 @@ def _attach_ai_inference(
             "trigger_count": merged_trigger,
             "filtered_count": merged_filtered,
         }
+        logger.info(
+            "AI inference done: edges=%s triggers=%s filtered=%s warnings=%s",
+            len(merged_edges),
+            merged_trigger,
+            merged_filtered,
+            len(merged_warnings),
+        )
     except Exception as exc:
         logger.warning("AI inference fallback failed: %s", exc)
         result["ai_inferred"] = {

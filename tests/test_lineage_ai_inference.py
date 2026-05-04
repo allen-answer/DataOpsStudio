@@ -552,3 +552,33 @@ def test_service_layer_merges_parse_errors_and_dynamic_sql(monkeypatch):
     source_kinds = {e["source_kind"] for e in inferred["edges"]}
     assert source_kinds == {"parse_error", "dynamic_sql"}
     assert inferred["trigger_count"] == 2
+
+
+def test_batch_analyzer_top_level_aggregates_parse_errors():
+    """批量分析的 base_result 必须把每文件的 parse_errors / dynamic_sql_segments
+    聚合到顶层（带 file_name），不然 _attach_ai_inference 看不见。"""
+    from app.lineage.batch_analyzer import ScriptInput, analyze_lineage_batch
+
+    # 一段会让 sqlglot 报错的 PL/SQL（CASE END 不平衡）
+    bad_sql = """
+    CREATE OR REPLACE PROCEDURE bad_proc IS
+    BEGIN
+      EXECUTE IMMEDIATE p_unknown_var;
+    END;
+    """
+    result = analyze_lineage_batch(
+        [ScriptInput(file_name="test.sql", sql=bad_sql)],
+        "oracle",
+        None,
+    )
+    # 顶层有 parse_errors 和 dynamic_sql_segments 字段
+    assert "parse_errors" in result
+    assert "dynamic_sql_segments" in result
+    assert "tables" in result
+    # 至少这段动态 SQL（execute_var_unresolved）应该被识别
+    dyn_segments = result["dynamic_sql_segments"]
+    assert any("p_unknown_var" in (s.get("sql") or "") for s in dyn_segments), \
+        f"未捕获 unresolved EXECUTE IMMEDIATE 动态 SQL: {dyn_segments}"
+    # file_name 注入
+    if dyn_segments:
+        assert any(s.get("file_name") == "test.sql" for s in dyn_segments)

@@ -93,6 +93,13 @@ def analyze_lineage_batch(
                 "warnings": file_warnings,
                 "procedure_segments": file_procedure_segments,
                 "statements": file_statements,
+                # P2 AI inference 兜底用：让 _attach_ai_inference 能看到批量结果里
+                # 每文件的失败片段；顶层会聚合一次
+                "parse_errors": result.get("parse_errors", []) or [],
+                "dynamic_sql_segments": result.get("dynamic_sql_segments", []) or [],
+                "tables": result.get("tables", []) or [],
+                "columns": result.get("columns", []) or [],
+                "insert_mappings": mappings,
             }
         )
         warnings.extend({"file_name": script.file_name, **item} for item in file_warnings)
@@ -146,6 +153,26 @@ def analyze_lineage_batch(
     warnings.extend(_global_warnings(files, dag["write_conflicts"]))
     warnings.extend(_dag_warnings(dag))
 
+    # 聚合 parse_errors / dynamic_sql_segments 到顶层（带 file_name），让
+    # _attach_ai_inference 能直接消费；同时给前端 LineageAIInferredPanel 提供
+    # 批量场景的统一计数入口
+    aggregated_parse_errors: list[dict[str, Any]] = []
+    aggregated_dynamic_sql: list[dict[str, Any]] = []
+    aggregated_tables: list[dict[str, Any]] = []
+    aggregated_columns: list[dict[str, Any]] = []
+    for f in files:
+        if f.get("status") != "成功":
+            continue
+        for pe in f.get("parse_errors") or []:
+            aggregated_parse_errors.append({**pe, "file_name": f.get("file_name", "")})
+        for seg in f.get("dynamic_sql_segments") or []:
+            aggregated_dynamic_sql.append({**seg, "file_name": f.get("file_name", "")})
+        for t in f.get("tables") or []:
+            aggregated_tables.append(t if isinstance(t, dict) else {"name": str(t)})
+        for c in f.get("columns") or []:
+            if isinstance(c, dict):
+                aggregated_columns.append(c)
+
     base_result = {
         "file_count": len(scripts),
         "files": files,
@@ -156,6 +183,12 @@ def analyze_lineage_batch(
         "impact_analysis": _impact_analysis(table_edges),
         "dag": dag,
         "warnings": warnings,
+        # 顶层 AI inference 入口：聚合所有文件的 parse_errors / dynamic_sql_segments
+        "parse_errors": aggregated_parse_errors,
+        "dynamic_sql_segments": aggregated_dynamic_sql,
+        "tables": aggregated_tables,
+        "columns": aggregated_columns,
+        "insert_mappings": field_mappings,  # 字段映射 == insert_mappings 在 batch 里
         "summary": {
             "files": len(scripts),
             "success_files": sum(1 for item in files if item["status"] == "成功"),
