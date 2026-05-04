@@ -56,19 +56,24 @@ function _handleAuthFailure(response) {
 const _AI_TRANSLATE_THRESHOLD_CHARS = 60
 const _AI_TRANSLATE_RECENT = new Map()  // dedupe：相同 error 5 秒内不重复翻译
 
-let _aiEnabled = null  // null=未探测，true/false=探测过的结果
+let _aiEnabled = null  // null=未探测，{enabled, configured, autoTranslate}=探测过
 async function _isAIEnabled() {
   if (_aiEnabled !== null) return _aiEnabled
   try {
     const status = await fetch('/api/lineage/ai/status', { headers: { ...authHeaders() } })
     if (status.ok) {
       const data = await status.json()
-      _aiEnabled = !!data?.enabled && !!data?.configured
+      _aiEnabled = {
+        enabled: !!data?.enabled && !!data?.configured,
+        // Phase 9 Day 6：默认 off。admin 在 AIConfig 显式开启 enable_auto_translation
+        // 才会走自动翻译路径；显式 translateError() 仍可用（不受 gate 控制）。
+        autoTranslate: !!data?.enable_auto_translation,
+      }
     } else {
-      _aiEnabled = false
+      _aiEnabled = { enabled: false, autoTranslate: false }
     }
   } catch {
-    _aiEnabled = false
+    _aiEnabled = { enabled: false, autoTranslate: false }
   }
   return _aiEnabled
 }
@@ -84,7 +89,10 @@ async function _maybeTranslateError(response, errorText, context = {}) {
   const now = Date.now()
   if (_AI_TRANSLATE_RECENT.has(dedupeKey) && now - _AI_TRANSLATE_RECENT.get(dedupeKey) < 5000) return
   _AI_TRANSLATE_RECENT.set(dedupeKey, now)
-  if (!await _isAIEnabled()) return
+  // Phase 9 Day 6：默认关。admin 在 AIConfig 开启 enable_auto_translation
+  // 才走这条自动翻译路径，避免每个 5xx 都烧 token。
+  const aiState = await _isAIEnabled()
+  if (!aiState?.enabled || !aiState?.autoTranslate) return
   try {
     const r = await fetch('/api/ai/translate-error', {
       method: 'POST',
@@ -150,11 +158,14 @@ export const apiForm = async (url, formData) => {
   return response.json()
 }
 
-// 显式触发翻译 + 上下文（适合预览 SQL 失败时）：
+// 显式触发翻译 + 上下文（适合预览 SQL 失败 / 错误卡片底部"AI 解释"按钮）：
 // 业务代码 catch 后调 translateError({ error: e.message, sql_excerpt, db_type })
+// Phase 9 Day 6：显式调用不受 enable_auto_translation gate 限制，只要 AI provider
+// 已配置就走 —— 用户主动点按钮 = 明确同意烧 token。
 export async function translateError({ error, sql_excerpt, db_type } = {}) {
   if (!error) return
-  if (!await _isAIEnabled()) return
+  const aiState = await _isAIEnabled()
+  if (!aiState?.enabled) return
   try {
     const r = await fetch('/api/ai/translate-error', {
       method: 'POST',

@@ -32,6 +32,11 @@ def get_effective_lineage_ai_config() -> dict[str, Any]:
             stored.get("enable_inference"),
             os.getenv("DATAOPS_LINEAGE_AI_ENABLE_INFERENCE", "false"),
         ),
+        # Phase 9 Day 6：错误自动翻译。默认关 —— 错误卡片底部"AI 解释"按钮显式触发。
+        "enable_auto_translation": _bool(
+            stored.get("enable_auto_translation"),
+            os.getenv("DATAOPS_LINEAGE_AI_ENABLE_AUTO_TRANSLATION", "false"),
+        ),
         "source": "stored" if stored else "env",
         "api_key_source": "stored" if encrypted_key else ("env" if env_key else ""),
         "api_key_encrypted": is_encrypted(encrypted_key),
@@ -57,6 +62,10 @@ def save_lineage_ai_config(payload: dict[str, Any]) -> dict[str, Any]:
         "timeout_seconds": _float(payload.get("timeout_seconds"), current.get("timeout_seconds", 60)),
         "include_raw": _bool(payload.get("include_raw"), current.get("include_raw", False)),
         "enable_inference": _bool(payload.get("enable_inference"), current.get("enable_inference", False)),
+        "enable_auto_translation": _bool(
+            payload.get("enable_auto_translation"),
+            current.get("enable_auto_translation", False),
+        ),
         "api_key_encrypted": str(current.get("api_key_encrypted") or ""),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -99,6 +108,7 @@ def _public_from_effective(config: dict[str, Any]) -> dict[str, Any]:
         "timeout_seconds": config.get("timeout_seconds") or 60,
         "include_raw": bool(config.get("include_raw")),
         "enable_inference": bool(config.get("enable_inference")),
+        "enable_auto_translation": bool(config.get("enable_auto_translation")),
         "updated_at": config.get("updated_at") or "",
     }
 

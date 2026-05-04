@@ -20,6 +20,7 @@ const draft = reactive({
   timeout_seconds: 60,
   include_raw: false,
   enable_inference: false,
+  enable_auto_translation: false,
   clear_api_key: false,
 })
 
@@ -73,6 +74,7 @@ function hydrate(nextConfig) {
   draft.timeout_seconds = Number(nextConfig.timeout_seconds || 20)
   draft.include_raw = Boolean(nextConfig.include_raw)
   draft.enable_inference = Boolean(nextConfig.enable_inference)
+  draft.enable_auto_translation = Boolean(nextConfig.enable_auto_translation)
   draft.clear_api_key = false
 }
 
@@ -95,6 +97,7 @@ function payload({ includeKey = true } = {}) {
     timeout_seconds: Number(draft.timeout_seconds || 20),
     include_raw: Boolean(draft.include_raw),
     enable_inference: Boolean(draft.enable_inference),
+    enable_auto_translation: Boolean(draft.enable_auto_translation),
   }
   if (includeKey && draft.api_key.trim()) body.api_key = draft.api_key
   if (includeKey && draft.clear_api_key) body.clear_api_key = true
@@ -220,6 +223,18 @@ onMounted(() => {
                   对静态解析失败（parse_errors）的片段调 AI 推断 source/target 表，输出独立
                   <code class="rounded bg-slate-200 px-1 font-mono text-[10.5px]">ai_inferred</code>
                   字段（不替代规则结论；前端虚线 + AI 徽章区分）。白名单约束保证 AI 只能从脚本里出现过的表名 / 字段名挑，避免 hallucination。
+                </span>
+              </span>
+            </label>
+            <label class="flex items-start gap-2 text-sm text-slate-700">
+              <input v-model="draft.enable_auto_translation" type="checkbox" class="mt-0.5" />
+              <span>
+                <span class="font-medium">自动翻译错误信息（5xx / 长 4xx）</span>
+                <span class="muted block text-[11px] leading-relaxed">
+                  默认关。<strong>关闭时</strong>用户在错误卡片底部点 ✨"AI 解释"按钮才触发翻译，
+                  避免每个错误都烧 token；<strong>开启后</strong>所有 5xx 和长 4xx 错误自动调
+                  <code class="rounded bg-slate-200 px-1 font-mono text-[10.5px]">/api/ai/translate-error</code>
+                  并推送中文解释 + 排查建议给用户。
                 </span>
               </span>
             </label>

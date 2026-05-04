@@ -39,6 +39,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Lightweight Data Compare Tool", version="0.1.0", lifespan=lifespan)
+# Phase 9 Day 6：统一错误响应 envelope + request_id middleware。
+# 必须在 AuditLogMiddleware 之前 install —— middleware 按 LIFO 触发，先 install
+# 的最后跑，让 request_id 在 audit log 阶段已经设进 ContextVar。
+from app.api._error_handler import install as install_error_handler
+install_error_handler(app)
 # 审计日志中间件 —— 记 mutating endpoint 流水到 logs/audit.jsonl
 from app.services.audit import AuditLogMiddleware
 app.add_middleware(AuditLogMiddleware)

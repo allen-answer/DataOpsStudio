@@ -31,6 +31,11 @@ class LineageAIConfig:
     enable_inference: bool = False
     inference_max_fragment_chars: int = 8000
     inference_max_fragments: int = 10
+    # Phase 9 Day 6：错误自动翻译。默认关 —— 默认让用户主动点 ✨"AI 解释"
+    # 按钮触发翻译；admin 在 AIConfig 显式开启后才会按 5xx / 长 4xx 自动调
+    # /api/ai/translate-error。原因：自动翻译每个错误都烧 token，多数错误
+    # （403 / 404 / 简洁 4xx）已经够清楚，不值得花成本翻。
+    enable_auto_translation: bool = False
 
 
 class LineageAIProvider(Protocol):
@@ -477,6 +482,7 @@ def _config() -> LineageAIConfig:
         enable_inference=bool(effective.get("enable_inference") or False),
         inference_max_fragment_chars=int(effective.get("inference_max_fragment_chars") or 8000),
         inference_max_fragments=int(effective.get("inference_max_fragments") or 10),
+        enable_auto_translation=bool(effective.get("enable_auto_translation") or False),
     )
 
 
@@ -501,6 +507,11 @@ def _config_with_override(override: dict[str, Any]) -> LineageAIConfig:
         ),
         inference_max_fragment_chars=base.inference_max_fragment_chars,
         inference_max_fragments=base.inference_max_fragments,
+        enable_auto_translation=bool(
+            override.get("enable_auto_translation")
+            if override.get("enable_auto_translation") is not None
+            else base.enable_auto_translation
+        ),
     )
 
 
