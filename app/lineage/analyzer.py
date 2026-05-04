@@ -38,6 +38,9 @@ from app.lineage.helpers import (
     unique_analysis_statements, unique_items, unique_parsed_statements,
     variables_in_expression,
 )
+# Phase 9 Day 2：出口处包 model 校验。导入 app.models.lineage 是允许的（schema
+# 包不会反向 import lineage 包，避免循环）。
+from app.models.lineage import LineageReport as _LineageReport
 from app.lineage.segments import (
     extract_dynamic_sql_segments as _extract_dynamic_sql_segments,
     extract_procedure_segments as _extract_procedure_segments,
@@ -138,7 +141,11 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # Phase 3：附加统一展示模型 LineageAnalysisReport（不修改原字段，前端 / 第三方
     # 可选消费 result.report 渲染同一组组件）
     base_result["report"] = _to_lineage_report(base_result, scope="single")
-    return base_result
+    # Phase 9 Day 2：出口处包 LineageReport —— typed 字段（target_summary）走 model
+    # 校验，未建模字段（envelope extra="allow"）原样透传。ai_inferred /
+    # ai_enrichment 不在 LineageReport 字段表里 —— 它们由 lineage_service._attach_*
+    # 后续注入，envelope 不预留 Optional 字段（避免 dump 出 None 噪声键）。
+    return _LineageReport.model_validate(base_result).model_dump(by_alias=True)
 
 
 def _analyze_statement(

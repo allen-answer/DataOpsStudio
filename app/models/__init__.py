@@ -68,6 +68,30 @@ from app.models.user import (
     UserUpdate,
 )
 
+# --- 血缘领域 schema（Phase 9 Day 1 收口）---
+from app.models.lineage import (
+    AIColumnHint,
+    AIConfidence,
+    AIInferenceDmlType,
+    AIInferenceResult,
+    AIInferenceSourceKind,
+    AIInferredEdge,
+    ColumnEdge,
+    ColumnRef,
+    DmlType,
+    LineageBatchReport,
+    LineageReport,
+    ParseStatus,
+    ProcessStep,
+    RefreshMode,
+    RiskLevel,
+    RuleConfidence,
+    TableRef,
+    TableRoleKind,
+    TargetOperation,
+    TargetSummary,
+)
+
 # --- API 响应 schema ---
 from app.models.responses import (
     BootstrapResponse,
@@ -104,6 +128,14 @@ __all__ = [
     "AuditLogEntry", "LoginRequest", "LoginResponse",
     "Project", "ProjectCreate",
     "User", "UserCreate", "UserRole", "UserUpdate",
+    # lineage（Phase 9 Day 1）
+    "AIColumnHint", "AIConfidence", "AIInferenceDmlType",
+    "AIInferenceResult", "AIInferenceSourceKind", "AIInferredEdge",
+    "ColumnEdge", "ColumnRef", "DmlType",
+    "LineageBatchReport", "LineageReport",
+    "ParseStatus", "ProcessStep", "RefreshMode", "RiskLevel",
+    "RuleConfidence", "TableRef", "TableRoleKind",
+    "TargetOperation", "TargetSummary",
     # responses
     "BootstrapResponse", "ConnectionTestResult", "DriverInfo",
     "ExcelUploadResponse", "LineageAnalyzeResult",

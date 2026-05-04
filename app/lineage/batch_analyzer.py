@@ -11,6 +11,7 @@ from app.lineage._common import unique_strings as _unique_strings
 from app.lineage._common import weaker_confidence as _weaker_confidence
 from app.lineage.analyzer import analyze_sql_lineage
 from app.lineage.report import to_lineage_report as _to_lineage_report
+from app.models.lineage import LineageBatchReport as _LineageBatchReport
 
 
 @dataclass(frozen=True)
@@ -204,7 +205,9 @@ def analyze_lineage_batch(
     }
     # Phase 3：附加统一展示模型 LineageAnalysisReport（与单脚本同结构）
     base_result["report"] = _to_lineage_report(base_result, scope="batch")
-    return base_result
+    # Phase 9 Day 2：出口处包 LineageBatchReport（envelope extra="allow"，未建模
+    # 字段透传）。ai_inferred / ai_enrichment 不在 envelope 字段表里。
+    return _LineageBatchReport.model_validate(base_result).model_dump(by_alias=True)
 
 
 def _impact_analysis(table_edges: list[dict[str, Any]]) -> dict[str, list[str]]:
