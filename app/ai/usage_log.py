@@ -94,6 +94,18 @@ def log_call(
     except Exception as exc:
         logger.warning("ai_usage_log write failed: %s", exc)
 
+    # Phase 10 后期：同步推到 Prometheus counter，让 /metrics 看到 AI 调用统计。
+    # 失败静默降级（指标系统不能拖累主流程）。
+    try:
+        from app.services.metrics import ai_usage_calls_total, ai_usage_tokens_total
+        ai_usage_calls_total.inc(kind=kind, provider=provider, status=status)
+        if input_tokens is not None:
+            ai_usage_tokens_total.inc(amount=float(input_tokens), kind=kind, direction="input")
+        if output_tokens is not None:
+            ai_usage_tokens_total.inc(amount=float(output_tokens), kind=kind, direction="output")
+    except Exception:
+        pass
+
 
 def read_recent(limit: int = 100) -> list[dict[str, Any]]:
     """读最近 N 条记录，按时间倒序。失败返回空列表。"""

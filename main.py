@@ -47,5 +47,12 @@ install_error_handler(app)
 # 审计日志中间件 —— 记 mutating endpoint 流水到 logs/audit.jsonl
 from app.services.audit import AuditLogMiddleware
 app.add_middleware(AuditLogMiddleware)
+# Phase 10 后期：HTTP metrics 中间件 —— 自动埋点 http_requests_total +
+# http_request_duration_seconds，让 /metrics 端点有真实数据
+from app.api._metrics_middleware import MetricsMiddleware
+app.add_middleware(MetricsMiddleware)
+# /metrics 端点（独立路由，不挂在 /api 前缀下，遵循 Prometheus 抓取约定）
+from app.api.metrics import router as metrics_router
+app.include_router(metrics_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(router)
