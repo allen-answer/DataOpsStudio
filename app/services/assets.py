@@ -135,7 +135,12 @@ def _scan_history_referencing(table_name: str, project_id: str) -> list[dict[str
 
 
 def get_table_asset(name: str, *, project_id: str = "") -> dict[str, Any]:
-    """组装表资产详情。返回 dict（不含 None 字段时仍保留 key 以保 contract 稳定）。"""
+    """组装表资产详情。返回 dict（不含 None 字段时仍保留 key 以保 contract 稳定）。
+
+    Phase 10 #3 v1：role / refresh_mode / upstream_count / downstream_count
+    从全局 lineage 索引（aggregated from 最近 50 workflow_run）填上 ——
+    索引里没这张表（即没在最近的 workflow lineage 里出现过）则保持 null。
+    """
     if not name or not name.strip():
         raise ValueError("name is required")
     name = name.strip()
@@ -148,14 +153,45 @@ def get_table_asset(name: str, *, project_id: str = "") -> dict[str, Any]:
 
     refs_total = len(tasks) + len(workflows) + len(lineage_scripts) + len(history)
 
+    # 从全局 lineage 索引拉元数据 —— 失败兜底（索引未启用 / rebuild 异常）
+    primary_role = None
+    refresh_mode = None
+    refresh_modes: list[str] = []
+    roles: list[str] = []
+    upstream_count = 0
+    downstream_count = 0
+    last_seen_run_id = ""
+    last_seen_at = ""
+    try:
+        from app.services.lineage_index import get_lineage_index
+        meta = get_lineage_index().get_table_metadata(name)
+        if meta:
+            primary_role = meta.get("primary_role") or None
+            refresh_modes = meta.get("refresh_modes") or []
+            # 多种 refresh_mode 共存时 refresh_mode 字段取第一个；refresh_modes
+            # 列表保留全部
+            refresh_mode = refresh_modes[0] if refresh_modes else None
+            roles = meta.get("roles") or []
+            upstream_count = int(meta.get("upstream_count") or 0)
+            downstream_count = int(meta.get("downstream_count") or 0)
+            last_seen_run_id = str(meta.get("last_seen_run_id") or "")
+            last_seen_at = str(meta.get("last_seen_at") or "")
+    except Exception:  # pragma: no cover —— 索引不可用时兜底
+        pass
+
     return {
         "kind": "table",
         "name": name,
         "schema": schema,
         "basename": basename,
-        # MVP：role / refresh_mode 留空，下个 sprint 接全局 lineage 索引时填
-        "primary_role": None,
-        "refresh_mode": None,
+        "primary_role": primary_role,
+        "refresh_mode": refresh_mode,
+        "refresh_modes": refresh_modes,
+        "roles": roles,
+        "upstream_count": upstream_count,
+        "downstream_count": downstream_count,
+        "last_seen_run_id": last_seen_run_id,
+        "last_seen_at": last_seen_at,
         "references": {
             "tasks": tasks,
             "workflows": workflows,

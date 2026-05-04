@@ -65,6 +65,28 @@ function gotoWorkflowRun(runId) {
       </div>
     </div>
 
+    <!-- Phase 10 #3 v1：从全局 lineage 索引拉来的元数据（role / refresh_mode / 上下游） -->
+    <div v-if="asset && (asset.primary_role || asset.refresh_mode || asset.upstream_count || asset.downstream_count)" class="card flex flex-wrap items-center gap-3 p-4">
+      <span v-if="asset.primary_role" class="pill bg-blue-100 text-blue-700">
+        role: {{ asset.primary_role }}
+      </span>
+      <span v-if="asset.refresh_mode" class="pill bg-emerald-100 text-emerald-700">
+        refresh: {{ asset.refresh_mode }}
+        <span v-if="asset.refresh_modes?.length > 1" class="ml-1 text-[10px] opacity-70">
+          (+{{ asset.refresh_modes.length - 1 }} 其它)
+        </span>
+      </span>
+      <span class="pill bg-slate-100 text-slate-700">
+        上游 <strong>{{ asset.upstream_count }}</strong>
+      </span>
+      <span class="pill bg-slate-100 text-slate-700">
+        下游 <strong>{{ asset.downstream_count }}</strong>
+      </span>
+      <span v-if="asset.last_seen_at" class="muted ml-auto text-[11px]">
+        上次出现 {{ asset.last_seen_at }}
+      </span>
+    </div>
+
     <div v-if="loading" class="card p-4 text-sm text-slate-500">加载中…</div>
     <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 p-3 text-sm text-status-error">
       <AlertCircle class="mr-1 inline h-4 w-4" /> {{ error }}
@@ -151,11 +173,11 @@ function gotoWorkflowRun(runId) {
       </article>
     </div>
 
-    <!-- MVP 提示：role/refresh_mode/字段 等留下个 sprint -->
+    <!-- 下个 sprint：classification / 字段列表 -->
     <div v-if="asset && !loading" class="card border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-      <strong>下个 sprint 计划</strong>：接全局 lineage 索引后这里会补：
-      primary_role / refresh_mode / 字段列表 / classification (PII / SLA / owner)
-      / 最近 ETL run 时间。当前 MVP 只做"反向引用"。
+      <strong>下个 sprint 计划</strong>：classification (PII / SLA / owner) +
+      字段列表 + 字段血缘热点。当前已支持：反向引用（4 类）+ 全局索引元数据
+      （role / refresh_mode / 上下游计数 / 最近出现 run）。
     </div>
   </section>
 </template>
