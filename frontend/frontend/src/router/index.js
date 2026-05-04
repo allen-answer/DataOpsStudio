@@ -8,47 +8,46 @@
  * D-MVP（多项目空间）：
  * - 加 /login 路由，meta.public = true 跳过 auth 守卫
  * - beforeEach 守卫：未登录访问 protected 路由 → 跳 /login?redirect=...
+ *
+ * Phase 10 后期：路由级 lazy loading —— 所有 view 改 () => import('...')，
+ * vite 自动按 chunk 拆分。bundle 主入口只剩 router + auth + sidebar，首屏
+ * 仅加载当前命中的 route chunk；admin views / WorkflowView 这些大组件
+ * （含 G6 / Cytoscape / DAG canvas / CodeMirror）只在用户跳进去时才下载。
+ *
+ * Vite 给每个 dynamic import 自动生成独立 chunk，无需 webpack-style
+ * `webpackChunkName`. 同 view 的多个 import 共享同一 chunk。
  */
 import { createRouter, createWebHashHistory } from 'vue-router'
 
-import DatasourceView from '../views/DatasourceView.vue'
-import WorkbenchView from '../views/WorkbenchView.vue'
-import WorkflowView from '../views/WorkflowView.vue'
-import LineageWorkbenchView from '../views/LineageWorkbenchView.vue'
-import HistoryView from '../views/HistoryView.vue'
-import AssetDetailView from '../views/AssetDetailView.vue'
-import LoginView from '../views/LoginView.vue'
-import UserManagementView from '../views/admin/UserManagementView.vue'
-import AuditLogView from '../views/admin/AuditLogView.vue'
-import ProjectManagementView from '../views/admin/ProjectManagementView.vue'
-import AIConfigView from '../views/admin/AIConfigView.vue'
-import SchedulerMonitorView from '../views/admin/SchedulerMonitorView.vue'
-
 const routes = [
   { path: '/', redirect: '/datasources' },
-  { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
+  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { public: true } },
 
-  { path: '/datasources',   name: 'datasources',   component: DatasourceView },
-  { path: '/data-compare',  name: 'data-compare',  component: WorkbenchView },
+  { path: '/datasources',   name: 'datasources',   component: () => import('../views/DatasourceView.vue') },
+  { path: '/data-compare',  name: 'data-compare',  component: () => import('../views/WorkbenchView.vue') },
 
-  { path: '/workflows',                 name: 'workflows',        component: WorkflowView },
-  { path: '/workflows/:id',             name: 'workflow-detail',  component: WorkflowView, props: true },
-  { path: '/workflow-runs/:runId',      name: 'workflow-run',     component: WorkflowView, props: true },
+  // Workflow chain —— 三条 path 共享同一个 chunk（同 import 路径）
+  { path: '/workflows',                 name: 'workflows',        component: () => import('../views/WorkflowView.vue') },
+  { path: '/workflows/:id',             name: 'workflow-detail',  component: () => import('../views/WorkflowView.vue'), props: true },
+  { path: '/workflow-runs/:runId',      name: 'workflow-run',     component: () => import('../views/WorkflowView.vue'), props: true },
 
-  { path: '/lineage',       name: 'lineage',       component: LineageWorkbenchView },
-  { path: '/batch-lineage', name: 'batch-lineage', component: LineageWorkbenchView },
-  { path: '/history',       name: 'history',       component: HistoryView },
+  // Lineage —— 单脚本 + 批量都走 LineageWorkbenchView，含 G6 / Cytoscape，
+  // chunk 体积大（~1.4MB G6 + ~534KB cytoscape），lazy 后首屏不加载
+  { path: '/lineage',       name: 'lineage',       component: () => import('../views/LineageWorkbenchView.vue') },
+  { path: '/batch-lineage', name: 'batch-lineage', component: () => import('../views/LineageWorkbenchView.vue') },
+  { path: '/history',       name: 'history',       component: () => import('../views/HistoryView.vue') },
 
   // Phase 10 #4：表资产详情页 —— 反向查找谁引用此表
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
-  { path: '/assets/table/:name(.*)', name: 'asset-table', component: AssetDetailView, props: true },
+  { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
 
-  // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示
-  { path: '/admin/users',    name: 'admin-users',    component: UserManagementView,    meta: { adminOnly: true } },
-  { path: '/admin/audit',    name: 'admin-audit',    component: AuditLogView,           meta: { adminOnly: true } },
-  { path: '/admin/projects', name: 'admin-projects', component: ProjectManagementView,  meta: { adminOnly: true } },
-  { path: '/admin/ai',         name: 'admin-ai',         component: AIConfigView,          meta: { adminOnly: true } },
-  { path: '/admin/scheduler',  name: 'admin-scheduler',  component: SchedulerMonitorView,  meta: { adminOnly: true } },
+  // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示。lazy load 节省
+  // 普通用户的首屏带宽（admin 占总人数 < 5% 的场景下尤其值得）
+  { path: '/admin/users',     name: 'admin-users',     component: () => import('../views/admin/UserManagementView.vue'),    meta: { adminOnly: true } },
+  { path: '/admin/audit',     name: 'admin-audit',     component: () => import('../views/admin/AuditLogView.vue'),           meta: { adminOnly: true } },
+  { path: '/admin/projects',  name: 'admin-projects',  component: () => import('../views/admin/ProjectManagementView.vue'),  meta: { adminOnly: true } },
+  { path: '/admin/ai',        name: 'admin-ai',        component: () => import('../views/admin/AIConfigView.vue'),          meta: { adminOnly: true } },
+  { path: '/admin/scheduler', name: 'admin-scheduler', component: () => import('../views/admin/SchedulerMonitorView.vue'),  meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]
