@@ -3,18 +3,24 @@ import { computed, inject, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Database, GitCompareArrows, Workflow, GitBranch, History as HistoryIcon,
-  Search, X, ChevronRight,
+  Search, X, ChevronRight, FileCode, Loader2,
 } from 'lucide-vue-next'
+import { apiGet } from '../api'
 
 // 全局命令面板。AppTopBar 通过 v-model:open 控制；快捷键 Ctrl/Cmd+K 也可触发。
-// 搜索范围：sidebar 5 项 + 数据源 + 任务，分组显示，键盘上下移动 + 回车跳转。
+//
+// Phase 10 第 2 项：搜索范围扩到平台级 ——
+// - 本地 nav（5 条 sidebar 入口）—— 即时
+// - 后端 /api/search?q=... —— 跨数据源 / 任务 / 作业流 / 历史 / 血缘脚本，
+//   按表名 / SQL body / tag / node config 反向索引（200ms debounce）
+// 跟 DataHub / Atlan 平台级搜索对齐，让"搜用户表 → 所有引用的 ETL 一击命中"成立。
 const props = defineProps({
   open: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:open'])
 
 const router = useRouter()
-const { state } = inject('app', { state: { datasources: [], tasks: [] } })
+inject('app', { state: { datasources: [], tasks: [] } })  // 兼容老 inject，不依赖
 
 const NAV_ITEMS = [
   { id: 'datasources',   label: '数据源',     icon: Database,         path: '/datasources' },
@@ -24,12 +30,64 @@ const NAV_ITEMS = [
   { id: 'history',       label: '执行历史',   icon: HistoryIcon,      path: '/history' },
 ]
 
+// kind → (icon, group_title, target_path_resolver)
+const KIND_META = {
+  datasource:     { icon: Database,         title: '数据源',     path: () => '/datasources' },
+  task:           { icon: GitCompareArrows, title: '对比任务',   path: (h) => ({ path: '/data-compare', query: { task: h.id } }) },
+  workflow:       { icon: Workflow,         title: '作业流',     path: (h) => `/workflows/${h.id}` },
+  history:        { icon: HistoryIcon,      title: '执行历史',   path: () => '/history' },
+  lineage_script: { icon: FileCode,         title: '血缘脚本',   path: (h) => h.metadata?.run_id ? `/workflow-runs/${h.metadata.run_id}` : '/lineage' },
+}
+
 const query = ref('')
 const activeIndex = ref(0)
 const inputEl = ref(null)
+const backendHits = ref([])
+const loading = ref(false)
+let debounceTimer = null
+let activeFetchToken = 0
+
+watch(() => props.open, async (val) => {
+  if (val) {
+    query.value = ''
+    activeIndex.value = 0
+    backendHits.value = []
+    await nextTick()
+    inputEl.value?.focus()
+  }
+})
+
+watch(query, (val) => {
+  activeIndex.value = 0
+  if (debounceTimer) clearTimeout(debounceTimer)
+  const trimmed = val.trim()
+  if (!trimmed) {
+    backendHits.value = []
+    loading.value = false
+    return
+  }
+  loading.value = true
+  debounceTimer = setTimeout(() => fetchBackend(trimmed), 200)
+})
+
+async function fetchBackend(q) {
+  const token = ++activeFetchToken
+  try {
+    const data = await apiGet(`/api/search?q=${encodeURIComponent(q)}&limit=30`)
+    if (token !== activeFetchToken) return  // 过时响应丢掉
+    backendHits.value = Array.isArray(data?.hits) ? data.hits : []
+  } catch (e) {
+    if (token !== activeFetchToken) return
+    backendHits.value = []
+  } finally {
+    if (token === activeFetchToken) loading.value = false
+  }
+}
 
 const groups = computed(() => {
   const kw = query.value.trim().toLowerCase()
+
+  // 本地 nav 过滤（即时）
   const navHits = NAV_ITEMS
     .filter(item => !kw || item.label.toLowerCase().includes(kw) || item.path.includes(kw))
     .map(item => ({
@@ -41,53 +99,40 @@ const groups = computed(() => {
       path: item.path,
     }))
 
-  const dsHits = (state?.datasources || [])
-    .filter(d => !kw || (d.name || '').toLowerCase().includes(kw) || (d.host || '').toLowerCase().includes(kw))
-    .slice(0, 8)
-    .map(d => ({
-      kind: 'datasource',
-      key: `ds:${d.id}`,
-      label: d.name,
-      hint: `${d.db_type || 'DB'} · ${d.host || ''}`,
-      icon: Database,
-      path: '/datasources',
-    }))
-
-  const taskHits = (state?.tasks || [])
-    .filter(t => !kw || (t.name || '').toLowerCase().includes(kw))
-    .slice(0, 8)
-    .map(t => ({
-      kind: 'task',
-      key: `task:${t.id}`,
-      label: t.name,
-      hint: '数据对比任务',
-      icon: GitCompareArrows,
-      path: '/data-compare',
-      taskId: t.id,
-    }))
+  // 后端 hits 按 kind 分组
+  const byKind = {}
+  for (const hit of backendHits.value) {
+    if (!byKind[hit.kind]) byKind[hit.kind] = []
+    byKind[hit.kind].push(hit)
+  }
 
   const list = []
   if (navHits.length) list.push({ title: '导航', items: navHits })
-  if (dsHits.length) list.push({ title: '数据源', items: dsHits })
-  if (taskHits.length) list.push({ title: '任务', items: taskHits })
+
+  // 按固定顺序展示：datasource / task / workflow / history / lineage_script
+  for (const kind of ['datasource', 'task', 'workflow', 'history', 'lineage_script']) {
+    const hits = byKind[kind] || []
+    if (!hits.length) continue
+    const meta = KIND_META[kind]
+    list.push({
+      title: meta.title,
+      items: hits.map(h => ({
+        kind,
+        key: `${kind}:${h.id}`,
+        label: h.name || h.id,
+        hint: h.snippet || h.match_path || '',
+        icon: meta.icon,
+        score: h.score,
+        path: meta.path(h),
+        rawHit: h,
+      })),
+    })
+  }
+
   return list
 })
 
-// flat list 用于键盘上下移动
 const flatItems = computed(() => groups.value.flatMap(g => g.items))
-
-watch(() => props.open, async (val) => {
-  if (val) {
-    query.value = ''
-    activeIndex.value = 0
-    await nextTick()
-    inputEl.value?.focus()
-  }
-})
-
-watch(query, () => {
-  activeIndex.value = 0
-})
 
 function close() {
   emit('update:open', false)
@@ -95,10 +140,8 @@ function close() {
 
 function pick(item) {
   if (!item) return
-  if (item.kind === 'task' && item.taskId) {
-    // 跳到对比页 + 通过 query 提示 selectedTaskId（App.vue 监听 route.query 还没接，
-    // 暂时只跳路由，用户在 /data-compare 里手动点；后续可以接）
-    router.push({ path: item.path, query: { task: item.taskId } })
+  if (typeof item.path === 'string') {
+    router.push(item.path)
   } else {
     router.push(item.path)
   }
@@ -153,10 +196,11 @@ function setActive(item) {
             ref="inputEl"
             v-model="query"
             type="text"
-            placeholder="搜索导航 / 数据源 / 任务"
+            placeholder="搜索导航 / 数据源 / 任务 / 作业流 / 历史 / 血缘脚本"
             class="flex-1 border-0 bg-transparent p-0 text-sm focus:outline-none focus:ring-0"
             @keydown="onKeyDown"
           />
+          <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin text-slate-400" />
           <kbd class="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">Esc</kbd>
           <button class="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-slate-100" @click="close">
             <X class="h-3.5 w-3.5" />
@@ -166,7 +210,9 @@ function setActive(item) {
         <!-- 结果 -->
         <div class="max-h-[60vh] overflow-auto py-1">
           <div v-if="!groups.length" class="px-4 py-8 text-center text-sm text-slate-400">
-            没有匹配结果
+            <span v-if="loading">搜索中…</span>
+            <span v-else-if="query.trim()">没有匹配结果</span>
+            <span v-else>输入关键词搜索 —— 跨数据源 / 任务 / 作业流 / 历史 / 血缘脚本</span>
           </div>
           <div v-for="g in groups" :key="g.title" class="py-1">
             <div class="px-4 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -182,7 +228,9 @@ function setActive(item) {
             >
               <component :is="item.icon" class="h-4 w-4 shrink-0" :class="isActive(item) ? 'text-primary' : 'text-slate-400'" />
               <span class="flex-1 truncate">{{ item.label }}</span>
-              <span class="muted text-[11px]" :class="isActive(item) ? 'text-primary/70' : ''">{{ item.hint }}</span>
+              <span class="muted truncate text-[11px]" :class="isActive(item) ? 'text-primary/70' : ''">
+                {{ item.hint }}
+              </span>
               <ChevronRight class="h-3.5 w-3.5 shrink-0" :class="isActive(item) ? 'text-primary' : 'text-slate-300'" />
             </button>
           </div>

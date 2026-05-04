@@ -19,6 +19,7 @@ from app.api import (
     projects,
     runs,
     scheduler,
+    search,
     system,
     tasks,
     uploads,
@@ -44,3 +45,4 @@ router.include_router(lineage.router)
 router.include_router(uploads.router)
 router.include_router(config_io.router)
 router.include_router(ai_utils.router)
+router.include_router(search.router)
