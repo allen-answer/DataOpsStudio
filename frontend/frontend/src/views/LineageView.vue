@@ -1,15 +1,38 @@
 <script setup>
-import { defineAsyncComponent, inject, computed } from 'vue'
+import { defineAsyncComponent, inject, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
+import { apiGet } from '../api'
 
 const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
 
 const { lineage, analyzeLineage } = inject('app')
+const route = useRoute()
 
 // 从分析结果取 LineageAnalysisReport（Phase 3 后端附加字段）
 const report = computed(() => lineage.result?.report || null)
+const isStressMode = computed(() => !!lineage.result?.stress_fixture)
+
+// Phase 10 #1：URL ?stress=N → 加载合成压测 fixture，跳过分析。
+// 用于在浏览器跑 G6 / Cytoscape 双引擎压测对比。
+onMounted(async () => {
+  const stress = route.query.stress
+  if (!stress) return
+  const size = parseInt(stress, 10)
+  if (Number.isNaN(size) || size < 10 || size > 10000) {
+    lineage.error = `stress 参数必须在 [10, 10000] 区间，当前 ${stress}`
+    return
+  }
+  try {
+    lineage.error = ''
+    const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
+    lineage.result = data
+  } catch (e) {
+    lineage.error = `加载 stress fixture 失败：${e.message || e}`
+  }
+})
 </script>
 
 <template>
@@ -48,6 +71,22 @@ const report = computed(() => lineage.result?.report || null)
             </label>
           </template>
         </SchemaPanel>
+      </div>
+    </div>
+
+    <!-- Phase 10 #1：压测模式提示 -->
+    <div v-if="isStressMode" class="card border-purple-200 bg-purple-50/40 p-3 text-sm">
+      <div class="flex items-start gap-2">
+        <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-purple-600" />
+        <div>
+          <p class="font-bold text-purple-800">压测 fixture 模式</p>
+          <p class="muted text-[12px] leading-relaxed">
+            正在显示 <strong>{{ lineage.result.stress_size }}</strong> 张合成表的血缘图。
+            建议 Chrome DevTools Performance 录一段（init → 拖动 → 缩放 → focal 切换 → schema 折叠），
+            分别在 G6 / Cytoscape 引擎下各做一次，对比 main thread 耗时 / FPS / Memory 峰值。
+            URL 改 ?stress=300 / 1000 / 5000 切换 fixture 大小。
+          </p>
+        </div>
       </div>
     </div>
 

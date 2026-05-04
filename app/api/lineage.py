@@ -49,6 +49,23 @@ def lineage_ai_job_api(job_id: str):
     return result
 
 
+@router.get("/api/lineage/stress-fixture")
+def lineage_stress_fixture_api(size: int = 1000):
+    """Phase 10 #1：合成血缘大图压测 fixture（dev / 压测专用）。
+
+    返回完整 lineage result（graph_groups + graph_edges + table_roles +
+    target_summary + report），让前端能跳过分析直接渲染 N 张表的图，跑两个
+    引擎对比。size 范围 [10, 10000]。同 size + 同 seed 永远生成同一份。
+    """
+    from app.services.lineage_stress import build_stress_fixture
+    if size < 10 or size > 10000:
+        raise HTTPException(status_code=400, detail="size 必须在 [10, 10000] 区间")
+    try:
+        return build_stress_fixture(size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
 def lineage_api(payload: dict[str, str] = Body(...)):
     try:
