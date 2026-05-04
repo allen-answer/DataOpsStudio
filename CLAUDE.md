@@ -286,6 +286,18 @@ app/ai/
 
 ### 还可以做（未排期）
 
+**Phase 10 候选 · 平台级血缘架构**（codex review 后定的方向，等 Phase 9 完）
+
+按 ROI 排，前 4 项是平台演进必经，能落到 Phase 10：
+
+1. **真实大图压测 G6 / Cytoscape**（1d）—— 最便宜先做。300 / 1000 / 5000 节点样本跑两引擎对比筛选 / 聚焦 / compound 容器表现 + 内存占用；不出数据架构决策没依据
+2. **全局搜索 / 反向索引**（2~3d）—— 跨脚本表 / 字段反向索引（`/api/search?q=用户表` → 命中所有引用它的 task/workflow/lineage script）；这比 graph query 更基础（前者是查找入口，后者是查找结果）
+3. **`/api/lineage/graph` 服务端查询接口**（3d）—— 替代当前"一次性报告"形态：按 `asset_id + direction + depth + filters` 分页查；前端图改增量加载
+4. **资产详情页**（3~5d）—— 把表 / 任务 / 字段当**一等资产**：schema + owner + 最近 ETL run + 关联作业流 + classification 标记（PII / quality tags / SLA），DataHub / Atlan 的核心能力
+5. **Cytoscape 转正决策 + 元数据扩展点**（长期）—— 1000+ 节点压测后判断；扩展 `lineage_group_rules.yml` 成完整 metadata model + custom aspect
+
+**其它已识别但低优先级**：
+
 - **Repository 抽象 + SQLite**（Phase 9 ADR 第 6 条：先 audit/jobs，再统一）
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
 - **Phase 4 procedure refresh mode 语义模式**（轨道 A 增量后续）
@@ -310,3 +322,19 @@ app/ai/
 - **数据派生抽到 composable**：`useLineageGraphData.js` —— `allGraphData` → `filteredBase`（角色 / 边类型 / 可信度 / 脚本过滤）→ `projectedBase`（schema combo，仅 G6）→ `graphData / cyData`（focal+hop BFS）。两引擎共享派生只换渲染层
 - **引擎切换**：`LineageGraphPanel.vue` 顶部切换器，两组件 `defineAsyncComponent` 懒加载（cytoscape ~534KB；G6 ~1.4MB）
 - **真实大图验证**：等用户拿真实 Oracle 多脚本 lineage（300+ 节点）跑两引擎对比，再决定是否替换 G6。当前 G6 稳定 / Cytoscape 共存
+
+### 跟 DataHub / Atlan / Dagster / dbt Explorer 的差距
+
+参考它们做的是"**前端血缘图可扩展交互模式**"，**不是平台级资产图谱架构**。当前能力盘点（≈ 10 项 viz 模式已对齐，5 项平台能力未做）：
+
+**已对齐的 viz 模式**：双图引擎切换、大图收敛 / focal+N-hop、schema 聚合（combo / compound parent）、表格视图逃生通道、role/edge/confidence/script/schema 多 facet 过滤、命中搜索定位、PNG/JSON 导出、Cytoscape 路径高亮。
+
+**未做的平台能力**（差距来源）：
+
+1. **后端不是资产图谱服务** —— 当前 `analyze_sql_lineage` 一次性产 report，前端本地裁剪。DataHub / Atlan 是 graph query：按 `asset_id + direction + depth + filters` 分页查
+2. **没有资产详情页** —— 当前从图点节点最多看 role / refresh_mode / titles；DataHub/Atlan 把表 / 任务 / 字段当**一等资产**，详情页有 schema / owner / 最近 run / 关联作业流 / classification（PII / sensitive / SLA）
+3. **没有全局搜索 / 反向索引** —— 当前只能图内 Ctrl+F；DataHub 的 "搜 用户表" → 所有相关 ETL / 报表 / dashboard 一击命中
+4. **没有元数据扩展点 / custom aspect** —— `config/lineage_group_rules.yml` 是 mini 版本（schema/basename/title 关键词）；DataHub / Atlan 有完整 metadata model 支持 PII / 数据质量 / 业务术语等自定义 aspect
+5. **没有服务端缓存 / 增量加载** —— 当前 300+ 节点靠前端限制 + 100+ 切表格逃生；1000+ 节点不够稳
+
+**判断**：viz 模式做得不错；平台架构没做。下一步**不是继续堆 UI**，而是把后端从"一次性报告"演进到"资产图谱服务"。
