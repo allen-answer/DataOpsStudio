@@ -47,6 +47,13 @@ def normalize_for_parsing(sql: str) -> str:
     """
     if not sql:
         return sql
+    # 第 1 步：INSERT alias-prefixed 列名归一化必须用整段 SQL（不能走 _walk_sql 切片，
+    # 因为 INSERT 列表跨行 + 内嵌行注释会把 code 段切碎，regex 找不到匹配的 `)`）。
+    # 这个函数自带 string / comment 状态机，自己跳过它们。
+    sql = _normalize_insert_alias_prefix(sql)
+
+    # 第 2 步：剩余的 code 段内归一化（全角 / 模板变量 / 运算符空白都是单 token 替换，
+    # 切片不影响正确性）
     out: list[str] = []
     for kind, text in _walk_sql(sql):
         if kind == "code":
@@ -54,6 +61,180 @@ def normalize_for_parsing(sql: str) -> str:
             text = _RE_TEMPLATE_VAR.sub(lambda m: ":" + m.group(1), text)
             text = _normalize_operator_spacing(text)
         out.append(text)
+    return "".join(out)
+
+
+def _normalize_insert_alias_prefix(text: str) -> str:
+    """`INSERT INTO tbl alias (alias.col1, alias.col2, ...)` → 标准形式。
+
+    Oracle / DM 容许 INSERT 列表用 alias-prefixed 列名（如 `c.customer_no`），
+    sqlglot 拒绝（要求列表里只能是 bare column）。
+    修法：扫每个 INSERT INTO 子句：如果表名后面跟一个标识符（alias），且后面紧跟
+    `(...)` 列表，就在列表内把 `<alias>.` 前缀剥掉，alias 自身保留（位置等长，
+    不偏行号）。
+    """
+    if "insert" not in text.lower():
+        return text
+
+    pattern = re.compile(
+        r"(?ix)"
+        r"\b(insert\s+into\s+[\w$#.\"`\[\]]+)"   # group 1: INSERT INTO schema.table
+        r"(\s+)([A-Za-z_][\w$#]*)"                # group 2: ws, group 3: alias
+        r"(\s*\(\s*)",                            # group 4: opening (
+    )
+
+    def _rewrite(m: "re.Match[str]") -> str:
+        head = m.group(0)
+        alias = m.group(3)
+        # alias 不能是 SQL 关键字（误判 INSERT INTO t SELECT 等）
+        if alias.upper() in {"SELECT", "VALUES", "WITH", "AS", "DEFAULT"}:
+            return head
+        # 找匹配的右括号
+        start = m.end()
+        depth = 1
+        i = start
+        in_str = False
+        escape = False
+        quote = ""
+        in_line_comment = False
+        in_block_comment = False
+        while i < len(text):
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+                i += 1
+                continue
+            if in_block_comment:
+                if ch == "*" and i + 1 < len(text) and text[i + 1] == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if in_str:
+                if ch == "\\":
+                    escape = True
+                elif ch == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        i += 2  # SQL 双引号转义
+                        continue
+                    in_str = False
+                i += 1
+                continue
+            if ch == "-" and i + 1 < len(text) and text[i + 1] == "-":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+                in_block_comment = True
+                i += 2
+                continue
+            if ch in ("'", '"', "`"):
+                in_str = True
+                quote = ch
+                i += 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth != 0:
+            return head
+        # text[start:i] 是 (...) 内部内容
+        body = text[start:i]
+        # 剥 <alias>. 前缀（保留长度：换成等量空格）
+        alias_re = re.compile(r"\b" + re.escape(alias) + r"\.", flags=re.IGNORECASE)
+        new_body = alias_re.sub(lambda mm: " " * (len(alias) + 1), body)
+        # head 已经覆盖到 start；保持原顺序输出
+        return head + new_body + ")"
+
+    # 用回调替换：因为我们要扫到匹配的右括号，sub 一次只能动 head 部分
+    # 改成手工遍历
+    out: list[str] = []
+    last_end = 0
+    for m in pattern.finditer(text):
+        if m.start() < last_end:
+            continue
+        head = m.group(0)
+        alias = m.group(3)
+        if alias.upper() in {"SELECT", "VALUES", "WITH", "AS", "DEFAULT"}:
+            continue  # 跳过假阳性
+        start = m.end()
+        depth = 1
+        i = start
+        in_str = False
+        escape = False
+        quote = ""
+        in_line_comment = False
+        in_block_comment = False
+        while i < len(text):
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+                i += 1
+                continue
+            if in_block_comment:
+                if ch == "*" and i + 1 < len(text) and text[i + 1] == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if in_str:
+                if ch == "\\":
+                    escape = True
+                elif ch == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        i += 2
+                        continue
+                    in_str = False
+                i += 1
+                continue
+            if ch == "-" and i + 1 < len(text) and text[i + 1] == "-":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+                in_block_comment = True
+                i += 2
+                continue
+            if ch in ("'", '"', "`"):
+                in_str = True
+                quote = ch
+                i += 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth != 0:
+            continue
+        # 把上一段 + head + 处理过的 body 全 append
+        out.append(text[last_end:m.start()])
+        out.append(head)
+        body = text[start:i]
+        alias_re = re.compile(r"\b" + re.escape(alias) + r"\.", flags=re.IGNORECASE)
+        new_body = alias_re.sub(lambda mm: " " * (len(alias) + 1), body)
+        out.append(new_body)
+        out.append(")")
+        last_end = i + 1
+    out.append(text[last_end:])
     return "".join(out)
 
 

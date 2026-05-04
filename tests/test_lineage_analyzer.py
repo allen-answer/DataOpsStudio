@@ -1530,6 +1530,59 @@ def test_preprocess_operator_spacing_real_etl_sql():
     assert any(m.get("target_table") == "dw.t_target" for m in result.get("insert_mappings", []))
 
 
+def test_preprocess_strips_insert_alias_prefix():
+    """Oracle/DM 容许 INSERT INTO tbl alias (alias.col1, ...) 形式，sqlglot 不接受。
+    preprocess 必须把 alias.col 前缀剥掉。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    sql = """
+    insert into kgrp.t_target c
+    (
+      c.customer_no,
+      c.dept_id
+    )
+    select '1', '2' from dual
+    """
+    out = normalize_for_parsing(sql)
+    # alias 前缀剥掉，但保留长度（c. → 两个空格）
+    assert "c.customer_no" not in out
+    assert "customer_no," in out
+    assert "c.dept_id" not in out
+    assert "dept_id" in out
+    # 整段长度应保持
+    assert len(out) == len(sql)
+
+
+def test_preprocess_insert_alias_handles_inline_comments():
+    """INSERT 列表跨行 + 行内 -- 注释，preprocess 仍要剥 alias 前缀（关键回归：
+    走 _walk_sql 切片会让正则 lookback 失败，必须先在整段 SQL 上做 alias 归一化）。"""
+    from app.lineage.analyzer import analyze_sql_lineage
+
+    sql = """
+    /***** 插入发行人台账 *****/
+    insert into kgrp.t_fxrxx c
+    (
+      c.customer_no, --客户代码
+      c.department_id, --部门id
+      c.fxrmc --发行人名称
+    )
+    select 'A','B','C' from dual
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert result.get("parse_errors") == [], f"parse failed: {result.get('parse_errors')}"
+    assert any(m.get("target_table") == "kgrp.t_fxrxx" for m in result.get("insert_mappings", []))
+
+
+def test_preprocess_insert_alias_preserves_subquery_alias():
+    """`INSERT INTO tbl SELECT ...` 里的 SELECT 子查询不受影响（alias=SELECT 关键字跳过）。"""
+    from app.lineage.preprocess import normalize_for_parsing
+
+    sql = "insert into dw.t SELECT a.x FROM ods.s a"
+    out = normalize_for_parsing(sql)
+    assert "a.x" in out  # alias 是关键字 SELECT，不应当 alias 处理
+    assert out == sql or out.strip() == sql.strip()
+
+
 def test_preprocess_does_not_change_line_count():
     """归一化必须保持换行数和位置——procedure_segments 行号依赖这点。"""
     from app.lineage.preprocess import normalize_for_parsing
