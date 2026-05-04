@@ -345,6 +345,120 @@ Vite 开发服务器（`npm run dev`）将所有 API 调用代理到 `http://app
 - **真实大图验证**：等用户拿真实 Oracle 多脚本 lineage 结果（300+ 节点）跑两个引擎对比筛选 / 聚焦 / compound 容器表现，再决定是否把 Cytoscape 升为默认 / 替换 G6。
 - **不替换 G6**：路径稳定，先共存。Cytoscape 失败 / 大图卡顿，用户可一键切回 G6。
 
+### Phase 9（领域模型收口 + AI 包独立 + AI 异步化 + 错误响应统一 · 进行中）
+
+**为什么做这个 sprint**：项目已经从"工具"长成了"小平台"，下一阶段最缺的不是功能，是**稳定的领域语言**。当前最频繁的 bug 不是 JSON 写并发，是 dict 契约漂移（如 `t.get("name")` vs `t.get("table")` 让 AI 兜底白名单永远空）。先固定数据结构骨架，后面 AI 包独立、TS codegen、SQLite schema 才有锚点。
+
+**6 day sprint 计划**
+
+#### Day 1：领域 schema 骨架
+
+新文件 `app/models/lineage.py` —— **纯 Pydantic v2，禁止** `from app.lineage.*` 反向 import（避免循环）。
+
+定义 schema：
+- `TableRef` —— `{table, alias}`；以 `table` 为正名（跟当前 dict 主键一致），不发明 `name` 字段
+- `ColumnRef` —— `{column, table}`
+- `ColumnEdge` —— 字段血缘 `{output_column, expression, source_columns, source_tables, confidence, transform, variables, warnings, select_index}`
+- `TargetOperation` —— 单次 DML `{target_table, dml_type, statement_index, title, where_clause}`
+- `TargetSummary` —— 按目标表聚合 `{target_table, *_count, refresh_mode, titles, delete_before_insert, truncate_before_insert}`
+- `ProcessStep` —— procedure step `{segment_index, dml_keyword, target_table, line_start, line_end, preceding_comment, parse_status}`
+- `AIInferredEdge` —— AI 推断边（confidence 限 low/medium，不允许 high）
+- `AIColumnHint` —— AI 字段归属
+- `AIInferenceResult` —— `result.ai_inferred` 顶层 `{edges, column_hints, warnings, trigger_count, filtered_count}`
+- `LineageReport` —— `result.report` 顶层
+
+每个 model `ConfigDict(populate_by_name=True, extra="ignore")` —— 让现有 dict 多余字段不抛错。`__init__.py` re-export。
+
+测试 `tests/test_lineage_models.py`：~12 个 case，验证 dict round-trip 等价 + Literal 闭集 + AIInferredEdge confidence 拦截 high。
+
+**Deliverable**：1 文件 + 1 测试 + __init__ 改 1 行。零业务代码动。
+
+#### Day 2：API 出口包 model（不动内部 helper）
+
+仅在 result 出口处用 model 校验 + `model_dump(by_alias=True)`，让 API contract 不变但 schema 集中。**不动解析器内部 helper**（`_analyze_statement` / `_aggregate_target_summary` 等保留 dict）。
+
+改动：
+- `app/lineage/analyzer.py:analyze_sql_lineage` —— 出口包 `target_summary` / `columns` / `process_steps`
+- `app/lineage/batch_analyzer.py:analyze_lineage_batch` —— 同样处理
+- `app/services/lineage_service.py:_attach_ai_inference` —— 直接构造 `AIInferenceResult` 再 dump
+
+**关键约束**：
+- 旧测试零变更通过 = 向后兼容证明
+- 旧测试发现失败时停修，不掩盖
+
+#### Day 3：AI inference 模型化
+
+`app/services/lineage_ai_inference.py`：
+- `_validate_and_filter_edges` 返回 `tuple[list[AIInferredEdge], int]`
+- `_validate_and_filter_column_hints` 返回 `tuple[list[AIColumnHint], int]`
+- 三个 `infer_from_*` 累加 model 对象，最后 list-comp `model_dump`
+- 6 不变量第 4 条（confidence/reason/evidence 必带）由 model 默认值保证，不再手动塞 dict
+
+22 个 inference 测试零修改通过。
+
+#### Day 4：`app/ai/` 包独立
+
+```
+app/ai/
+  __init__.py
+  providers/
+    base.py            # AIProvider Protocol
+    openai_compatible.py  # 含 Kimi thinking 关闭
+    anthropic.py
+    mock.py
+    ollama.py
+  prompts/
+    enrichment.py / inference.py / dynamic_sql.py / column_attr.py / error_translate.py / column_mapping.py
+  schemas.py           # re-export from app.models.lineage
+  filters.py           # _validate_and_filter_*, _normalize_name
+  usage_log.py         # 新增：每次调用记 model/tokens/elapsed/status → logs/ai_usage.jsonl
+```
+
+老文件去向：
+- `app/services/lineage_ai.py` 主体迁出，保留 thin shim re-export 给现有 import path 不破
+- `app/services/lineage_ai_inference.py` 同样 shim
+- `app/api/ai_utils.py` 直接 import 新路径
+
+**新增能力**：`usage_log.py` —— admin 调度器监控页可加 token 用量统计；落 `logs/ai_usage.jsonl`，跟 audit log 同档次。
+
+#### Day 5：AI inference 异步化
+
+复用 `enqueue_lineage_ai_enrichment` 模式：
+- 加 `enqueue_lineage_ai_inference(result, ..., job_id)` —— 跟 enrichment 一样开 thread
+- `_attach_ai_inference` 默认改异步：`result["ai_inferred"] = {"status": "pending", "job_id": "..."}`，主请求立刻返回
+- 复用 `/api/lineage/ai/jobs/{job_id}` 端点 —— enrichment + inference 共享 jobs dict（用 `kind` 字段区分）
+- 前端 `LineageAIInferredPanel` 加 pending/running/done 状态展示
+
+**用户感知最强的一项**：大批量分析不再等 30~50s；改 5s 拿到结果 + 异步补 AI 推断。
+
+#### Day 6：统一错误响应 + AI 翻译改"按需"
+
+后端：
+- 新增 `app/api/_error_handler.py`：FastAPI exception handler 统一翻成 `{code, message, detail, request_id, retryable, ai_translation?, suggestions?}`
+- `request_id` 用 ContextVar + middleware 注入
+
+前端：
+- `api.js` **移除** `_maybeTranslateError` 自动调用 —— 不再每个 5xx 自动烧 token
+- 保留 `translateError()` 显式 action，给前端按钮调
+- `AppShell` 错误卡片底部加 ✨"AI 解释"按钮 → 用户主动点击才烧 token
+- AdminAIConfigView 加可选 toggle `enable_auto_translation`（默认 off）
+
+**为什么改按需**：生产环境 token 成本敏感；用户大部分 5xx 错误（404 / 403 / 422）已经够清楚，不需要 AI 翻译；真卡住的时候点一下按钮性价比最高。
+
+**Phase 9 决策记录（ADR-style）**
+
+- **schema 放 `app/models/lineage.py`** 而不是 `app/lineage/schemas.py`：跟现有 `Workflow/CompareTask/User` 同级，OpenAPI codegen 一处管，避免 `app/lineage/` 包内循环。
+- **NodeOutput 名字废弃**：跟 workflow node output 容易混；改用 `AIInferenceResult` / `LineageReport`。
+- **AI 翻译改按需**：默认 off，用户主动点 ✨"AI 解释"按钮才调。Auto-translate 改成 admin 可选开关，默认 off。
+- **不上 Storybook**：Vitest + Vue Testing Library 性价比更高。Storybook 配置成本 vs 当前组件库稳定度不匹配。
+- **不全量 store 拆分**：行数大不等于复杂度高；先治跨 store 时序耦合（saveTask → reload bootstrap → selectTask 这种隐式链），再考虑拆细。
+- **Repository 抽象拆两步**：(1) 短期把高并发写的 `audit.jsonl` + `jobs.json` 切 SQLite（最痛两处）；(2) 长期再统一接口。本 sprint 不动其它 4 处 JSON store。
+- **Day 2 范围收窄**：只做"出口 model 化"，不一口气把 analyzer / aggregation / roles 都重写；先稳住契约。
+
+**完成判定**
+
+每天 push + 跑全测试套（targets ≥ 645 测试通过 + Phase 9 新增的 ~25 个）。Sprint 收口时合并到本节"已完成"列表，本节迁到"### 已完成"区段。
+
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 
 参考 DataHub / Dagster / dbt Explorer / Atlan 的可扩展模式，避免 dagre 在 50+ 节点时把图压成一列：
