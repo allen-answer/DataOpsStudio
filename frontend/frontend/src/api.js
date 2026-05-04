@@ -14,6 +14,17 @@ const PROJECT_AWARE_PATHS = [
   '/api/history',
 ]
 
+// Phase 10 后期：API 版本化前缀。所有 /api/X 透明改写到 /api/v1/X，让前端
+// 走稳定 v1 契约。后端 install_v1_aliases 给 /api/v1/X 注册了同义路由，所以
+// /api/X 旧路径仍可用（deprecation window）。新代码可以直接写 /api/v1/...
+// 也可以继续写 /api/...（等价）。
+function _versionPath(url) {
+  if (typeof url !== 'string') return url
+  if (url.startsWith('/api/v1/')) return url
+  if (url.startsWith('/api/')) return '/api/v1/' + url.slice(5)
+  return url
+}
+
 function authHeaders() {
   const token = localStorage.getItem(TOKEN_KEY) || ''
   return token ? { Authorization: `Bearer ${token}` } : {}
@@ -21,14 +32,17 @@ function authHeaders() {
 
 // 给 path 追加 ?project_id=<localStorage>。仅命中 PROJECT_AWARE_PATHS 的
 // 主路径（不含子路径，如 /api/datasources/:id 不加）。
+// 注意：检查的是 versioned 之前的 path（PROJECT_AWARE_PATHS 用 /api/ 前缀写），
+// 但返回的是 versioned URL。
 function withProjectQuery(url) {
   const projectId = localStorage.getItem(PROJECT_KEY) || ''
-  if (!projectId) return url
-  // 只对 GET 列表主路径加；id 子路径 / mutating 操作走自身存储的 project_id 不动
+  const versioned = _versionPath(url)
+  if (!projectId) return versioned
+  // 用未版本化的 path 匹配（PROJECT_AWARE_PATHS 写的是 /api/）
   const [pathPart] = url.split('?')
-  if (!PROJECT_AWARE_PATHS.includes(pathPart)) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}project_id=${encodeURIComponent(projectId)}`
+  if (!PROJECT_AWARE_PATHS.includes(pathPart)) return versioned
+  const sep = versioned.includes('?') ? '&' : '?'
+  return `${versioned}${sep}project_id=${encodeURIComponent(projectId)}`
 }
 
 const parseError = async (response) => {
@@ -60,7 +74,7 @@ let _aiEnabled = null  // null=未探测，{enabled, configured, autoTranslate}=
 async function _isAIEnabled() {
   if (_aiEnabled !== null) return _aiEnabled
   try {
-    const status = await fetch('/api/lineage/ai/status', { headers: { ...authHeaders() } })
+    const status = await fetch(_versionPath('/api/lineage/ai/status'), { headers: { ...authHeaders() } })
     if (status.ok) {
       const data = await status.json()
       _aiEnabled = {
@@ -94,7 +108,7 @@ async function _maybeTranslateError(response, errorText, context = {}) {
   const aiState = await _isAIEnabled()
   if (!aiState?.enabled || !aiState?.autoTranslate) return
   try {
-    const r = await fetch('/api/ai/translate-error', {
+    const r = await fetch(_versionPath('/api/ai/translate-error'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
@@ -129,7 +143,7 @@ export const apiGet = async (url) => {
 }
 
 export const apiJson = async (url, method, payload) => {
-  const response = await fetch(url, {
+  const response = await fetch(_versionPath(url), {
     method,
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: payload === undefined ? undefined : JSON.stringify(payload),
@@ -144,7 +158,7 @@ export const apiJson = async (url, method, payload) => {
 }
 
 export const apiForm = async (url, formData) => {
-  const response = await fetch(url, {
+  const response = await fetch(_versionPath(url), {
     method: 'POST',
     headers: { ...authHeaders() },
     body: formData,
@@ -167,7 +181,7 @@ export async function translateError({ error, sql_excerpt, db_type } = {}) {
   const aiState = await _isAIEnabled()
   if (!aiState?.enabled) return
   try {
-    const r = await fetch('/api/ai/translate-error', {
+    const r = await fetch(_versionPath('/api/ai/translate-error'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ error_text: String(error), sql_excerpt, db_type }),

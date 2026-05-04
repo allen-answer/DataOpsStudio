@@ -63,3 +63,8 @@ from app.api.metrics import router as metrics_router
 app.include_router(metrics_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(router)
+# Phase 10 后期：API 版本化前缀。所有 /api/X 路由克隆出 /api/v1/X 同义版本，
+# 给前端 / 第三方一个稳定 v1 契约；旧 /api/... 路径继续可用作 deprecation window。
+# 必须在 include_router 之后调（要遍历已注册路由）。
+from app.api._versioning import install_v1_aliases
+install_v1_aliases(app)
