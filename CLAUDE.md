@@ -286,15 +286,20 @@ app/ai/
 
 ### 还可以做（未排期）
 
-**Phase 10 候选 · 平台级血缘架构**（codex review 后定的方向，等 Phase 9 完）
+**Phase 10 · 平台级血缘架构**（进行中，#1 + #2 已完成 ✅）
 
-按 ROI 排，前 4 项是平台演进必经，能落到 Phase 10：
+1. ✅ **真实大图压测 fixture**（commit `ccd395b`）—— `/api/lineage/stress-fixture?size=N` 合成 [10, 10000] 节点的血缘图（schema 池 / role 分布 / refresh_mode 真实分布）；前端 `/lineage?stress=N` URL hook 跳过分析直接加载，紫色提示卡片提醒 DevTools Performance 录制对比。给用户跑 G6 / Cytoscape 双引擎压测对比（main thread 耗时 / FPS / Memory 峰值）。15 个新 test。
+2. ✅ **全局搜索 / 反向索引**（commit `d86c0ab`）—— `/api/search?q=...&kinds=...&project_id=...&limit=N` 跨 5 类资产搜索（datasource / task / workflow / history / lineage_script）。AND 多 token 语义 + 评分排序 + snippet 高亮 + 项目空间过滤。`CommandPalette.vue` 改后端调用，从图内 Ctrl+F 升级到 DataHub-style 平台级搜索。13 个新 test。
+3. **`/api/lineage/graph` 服务端查询接口**（3d，未启动）—— 替代当前"一次性报告"形态：按 `asset_id + direction + depth + filters` 分页查；前端图改增量加载
+4. **资产详情页**（3~5d，未启动）—— 表 / 任务 / 字段当**一等资产**：schema + owner + 最近 ETL run + 关联作业流 + classification（PII / quality / SLA）
+5. **Cytoscape 转正决策 + 元数据扩展点**（长期）—— 等 #1 压测 fixture 跑出 empirical 数据再判断；扩展 `lineage_group_rules.yml` 成完整 metadata model + custom aspect
 
-1. **真实大图压测 G6 / Cytoscape**（1d）—— 最便宜先做。300 / 1000 / 5000 节点样本跑两引擎对比筛选 / 聚焦 / compound 容器表现 + 内存占用；不出数据架构决策没依据
-2. **全局搜索 / 反向索引**（2~3d）—— 跨脚本表 / 字段反向索引（`/api/search?q=用户表` → 命中所有引用它的 task/workflow/lineage script）；这比 graph query 更基础（前者是查找入口，后者是查找结果）
-3. **`/api/lineage/graph` 服务端查询接口**（3d）—— 替代当前"一次性报告"形态：按 `asset_id + direction + depth + filters` 分页查；前端图改增量加载
-4. **资产详情页**（3~5d）—— 把表 / 任务 / 字段当**一等资产**：schema + owner + 最近 ETL run + 关联作业流 + classification 标记（PII / quality tags / SLA），DataHub / Atlan 的核心能力
-5. **Cytoscape 转正决策 + 元数据扩展点**（长期）—— 1000+ 节点压测后判断；扩展 `lineage_group_rules.yml` 成完整 metadata model + custom aspect
+**压测使用**（用 #1 fixture，empirical 数据决定 #5）：
+1. 起 dev：`cd frontend/frontend && npm run dev` + 后端 `docker compose up -d --build`
+2. 浏览器开 `#/lineage?stress=1000`（或 300 / 5000）
+3. LineageGraphPanel 顶部切换 G6 / Cytoscape
+4. Chrome DevTools Performance 录两段：init → 拖动 → 缩放 → focal 切换 → schema 折叠
+5. 对比 main thread 耗时 / FPS 平均 / Memory 峰值
 
 **其它已识别但低优先级**：
 
