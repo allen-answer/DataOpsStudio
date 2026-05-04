@@ -70,7 +70,13 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 ### 后端
 
-`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器（聚合 14 个领域子模块：`system / auth / projects / datasources / tasks / runs / scheduler / workflows / workflow_runs / history / lineage / uploads / config_io / ai_utils`）。新增 endpoint 加到对应子模块；不属于任何领域时新建子模块再 include 进 `routes.py`。
+`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器（聚合 17 个领域子模块：`system / auth / projects / datasources / tasks / runs / scheduler / workflows / workflow_runs / history / lineage / lineage_graph / uploads / config_io / ai_utils / search / assets`）。新增 endpoint 加到对应子模块；不属于任何领域时新建子模块再 include 进 `routes.py`。
+
+**横切 middleware**（main.py 按 LIFO 安装顺序：先安装的最后跑）：
+1. `RequestIdMiddleware`（`app/api/_error_handler.py`）—— 纯 ASGI middleware，从 `X-Request-Id` header 接 / uuid 自动生成，写入 `request_id_ctx` ContextVar，response 必带回 header
+2. `AuditLogMiddleware`（`services/audit.py`）—— mutating endpoint 流水到 `logs/audit.jsonl`
+3. `MetricsMiddleware`（`app/api/_metrics_middleware.py`）—— 自动埋点 `http_requests_total{path,method,status}` + `http_request_duration_seconds`，path 归一化（`/api/tasks/<id>` → `/api/tasks/*`）防 label 基数爆炸
+4. 三类 exception handler（HTTPException / RequestValidationError / Exception）统一 `{code, message, detail, request_id, retryable, ai_translation, suggestions}` envelope
 
 **对比任务的数据流**：
 1. `routes.py` → `runner.run_task(task_id)`（同步）或 `jobs.submit_task_run(task_id)`（异步后台线程）
@@ -106,13 +112,20 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 **通知 / 集成** — `services/notifier.py` 三 channel：`webhook` / `wecom` / `email`（SMTP），workflow run finish 自动 dispatch。`services/openlineage_emitter.py` 把每次 workflow run 转成 OpenLineage `START` / `COMPLETE` event，支持 generic webhook / `marquez` / `datahub` 三种 target type（base URL 自动补端点 + Bearer token）。
 
+**全局搜索 / 资产 / 全局 lineage 索引**（Phase 10 平台级架构）：
+- `services/search.py` —— 跨 datasource / task / workflow / history / lineage_script 反向索引，AND 多 token + 字段权重评分。`/api/search?q=&kinds=&project_id=&limit=`，前端 `CommandPalette` 200ms debounce 调用
+- `services/assets.py` —— 表当一等资产，`/api/assets/table/{name:path}` 返回反向引用（4 类）+ 全局索引补的 `primary_role` / `refresh_mode` / 上下游计数；前端 `/assets/table/:name` 路由
+- `services/lineage_graph_query.py` + `services/lineage_index.py` —— 服务端 BFS 子图查询：v0 stateless `POST /api/lineage/graph/subgraph`（caller 提供 graph_edges），v1 stateful `GET /api/lineage/graph?asset_id=&direction=&depth=`（lazy 从最近 50 个 workflow_run lineage 节点 output 聚合，TTL 300s + run 数变化触发失效，admin `POST /api/lineage/graph/refresh` 强制失效，`GET /stats` 看构建状态）
+
+**观测性** — `/metrics` 端点（`services/metrics.py`）走 Prometheus text format v0.0.4，自实现 Counter / Histogram / Gauge（不依赖 prometheus_client）。指标：`http_requests_total` / `http_request_duration_seconds` / `ai_usage_calls_total{kind,provider,status}` / `ai_usage_tokens_total{kind,direction}` / `lineage_index_table_count` / `lineage_index_edge_count` / `ai_jobs_inflight`。AI provider 调用通过 `app/ai/usage_log.log_call` 同步推 counter + 写 `logs/ai_usage.jsonl`。`DATAOPS_LOG_FORMAT=json` 切换结构化日志（`utils/logging_config.JsonLogFormatter`），自动注入 request_id（来自上面的 ContextVar）+ extra dict 透传。
+
 **DB 驱动** — `dbclients/drivers.py` 声明各 `DatabaseType` 对应 Python 模块，`dbclients/factory.py` 在连接时动态导入。当前启用：`pymysql + cryptography`（MySQL）、`dmPython`（DM）。Oracle、DB2 为可选。`dbclients/pool.py` LIFO 连接池：每 datasource_id 一个池，`max_size=4`，`idle_seconds=600`，MySQL 路径 acquire 时 `SELECT 1` ping 验活。`extra.disable_pool=true` / 改 host/port 时池自动失效。
 
 ### 前端
 
 Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice / datasource / task / workflow / lineage / batch / history / bootstrap / auth / project`。`App.vue` 顶部 `useXxxStore() + storeToRefs`，`provide('app', {...})` 仍 backward compat 把 store 字段平铺给 `inject('app')` 用。新代码直接 `useStore`。
 
-**视图层**：`DatasourceView / WorkbenchView / WorkflowView / LineageWorkbenchView / HistoryView / LoginView` + admin 子路由 5 个（`UserManagement / AuditLog / ProjectManagement / AIConfig / SchedulerMonitor`）。Hash router（`createWebHashHistory`）+ `beforeEach` 守卫读 localStorage 跳 login + adminOnly 守卫拦非 admin。
+**视图层**：`DatasourceView / WorkbenchView / WorkflowView / LineageWorkbenchView / HistoryView / AssetDetailView / LoginView` + admin 子路由 5 个（`UserManagement / AuditLog / ProjectManagement / AIConfig / SchedulerMonitor`）。Hash router（`createWebHashHistory`）+ `beforeEach` 守卫读 localStorage 跳 login + adminOnly 守卫拦非 admin。**13 个 view 全部走路由级 lazy load（`() => import('...')`）**，vite 自动按 chunk 拆分；G6（~1.4MB）/ Cytoscape（~534KB）/ admin views / WorkflowView DAG canvas 都不在首屏 chunk 里。
 
 **作业流视图**按职责拆到 `components/workflow/`：`WorkflowDagCanvas`（SVG 画布）+ `WorkflowSettingsPanel`（元数据 sidebar）+ `WorkflowHistoryPanel`（运行历史 + mini gantt）+ `WorkflowRunNodeDetail`（节点详情）+ 4 个节点编辑器（params/compare/lineage/excel_export）。
 
@@ -177,78 +190,10 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 ## 路线图
 
-整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口与 AI 异步化（当前）**。
+整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-### 当前 sprint：Phase 9 · 领域模型收口 + AI 包独立 + 异步化 + 错误响应统一
+当前测试基线 **738 通过 / 0 失败 / 1 skipped**。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 MVP、Prometheus `/metrics` + 结构化日志、路由 lazy loading 全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
-**为什么做**：项目已经从"工具"长成"小平台"，下阶段最缺的不是功能，是**稳定的领域语言**。当前最频繁的 bug 不是 JSON 写并发，是 dict 契约漂移（如 `t.get("name")` vs `t.get("table")` 让 AI 兜底白名单永远空）。先固定数据结构骨架，后面 AI 包独立、TS codegen、SQLite schema 才有锚点。
-
-**6 day 计划**
-
-#### Day 1：领域 schema 骨架
-
-新文件 `app/models/lineage.py` —— **纯 Pydantic v2，禁止** `from app.lineage.*` 反向 import（避免循环）。
-
-定义 schema：`TableRef / ColumnRef / ColumnEdge / TargetOperation / TargetSummary / ProcessStep / AIInferredEdge / AIColumnHint / AIInferenceResult / LineageReport`。每个 model `ConfigDict(populate_by_name=True, extra="ignore")` —— 让现有 dict 多余字段不抛错。`__init__.py` re-export。
-
-测试 `tests/test_lineage_models.py`：~12 case，验证 dict round-trip 等价 + Literal 闭集 + AIInferredEdge confidence 拦截 high。
-
-**Deliverable**：1 文件 + 1 测试 + __init__ 改 1 行。零业务代码动。
-
-#### Day 2：API 出口包 model（不动内部 helper）
-
-仅在 result 出口处用 model 校验 + `model_dump(by_alias=True)`，让 API contract 不变但 schema 集中。**不动解析器内部 helper**。
-
-改动：`analyzer.analyze_sql_lineage` / `batch_analyzer.analyze_lineage_batch` / `lineage_service._attach_ai_inference`。
-
-**关键约束**：旧测试零变更通过 = 向后兼容证明；旧测试发现失败时停修，不掩盖。
-
-#### Day 3：AI inference 模型化
-
-`lineage_ai_inference.py` 内部用 model：`_validate_and_filter_edges` 返回 `tuple[list[AIInferredEdge], int]`；`_validate_and_filter_column_hints` 返回 `tuple[list[AIColumnHint], int]`。22 个 inference 测试零修改通过。
-
-#### Day 4：`app/ai/` 包独立
-
-```
-app/ai/
-  providers/{base,openai_compatible,anthropic,mock,ollama}.py
-  prompts/{enrichment,inference,dynamic_sql,column_attr,error_translate,column_mapping}.py
-  schemas.py    # re-export from app.models.lineage
-  filters.py    # _validate_and_filter_*, _normalize_name
-  usage_log.py  # 新增：每次调用记 model/tokens/elapsed/status → logs/ai_usage.jsonl
-```
-
-老文件保留 thin shim re-export 给现有 import path 不破。
-
-#### Day 5：AI inference 异步化
-
-复用 `enqueue_lineage_ai_enrichment` 模式：
-- `enqueue_lineage_ai_inference(...)` 跟 enrichment 一样开 thread
-- `_attach_ai_inference` 默认改异步：`result["ai_inferred"] = {"status": "pending", "job_id": "..."}`
-- 复用 `/api/lineage/ai/jobs/{job_id}` —— enrichment + inference 共享 jobs dict（`kind` 字段区分）
-- 前端 `LineageAIInferredPanel` 加 pending/running/done 状态展示
-
-**用户感知最强的一项**：大批量分析不再等 30~50s。
-
-#### Day 6：统一错误响应 + AI 翻译改"按需"
-
-后端：新增 `app/api/_error_handler.py` 统一翻成 `{code, message, detail, request_id, retryable, ai_translation?, suggestions?}`。`request_id` 用 ContextVar + middleware 注入。
-
-前端：`api.js` 移除自动调用，保留 `translateError()` 显式 action。`AppShell` 错误卡片底部加 ✨"AI 解释"按钮 → 用户主动点击才烧 token。AdminAIConfigView 加可选 toggle `enable_auto_translation`（默认 off）。
-
-**Phase 9 决策记录（ADR-style）**
-
-- **schema 放 `app/models/lineage.py`**：跟 `Workflow / CompareTask / User` 同级，OpenAPI codegen 一处管，避免 `app/lineage/` 包内循环
-- **`NodeOutput` 名字废弃**：跟 workflow node output 容易混；改用 `AIInferenceResult` / `LineageReport`
-- **AI 翻译改按需**：默认 off，用户主动点 ✨"AI 解释"按钮才调
-- **不上 Storybook**：Vitest + Vue Testing Library 性价比更高
-- **不全量 store 拆分**：先治跨 store 时序耦合（`saveTask → reload bootstrap → selectTask` 这种隐式链），再考虑拆细
-- **Repository 抽象拆两步**：(1) 短期把高并发写的 `audit.jsonl` + `jobs.json` 切 SQLite；(2) 长期再统一接口
-- **Day 2 范围收窄**：只做"出口 model 化"，不一口气重写 analyzer / aggregation / roles 内部
-
-**完成判定**：每天 push + 全测试套通过（≥ 645 测试 + Phase 9 新增的 ~25 个）。Sprint 收口时合并到"已完成"。
-
-**分工**：Day 1（Claude 阻塞）→ Day 2（codex）∥ Day 3（Claude）→ Day 4（codex）→ Day 5（codex），Day 6（Claude 独立可在 Day 1 后随时插）。
 
 ### 已完成（按方向归类，不是时间线）
 
@@ -270,7 +215,28 @@ app/ai/
 
 **Phase 8 调度 + 通知 + 集成** — APScheduler cron + sensor（file / workflow_success）+ notifier 三 channel（webhook / wecom / email）+ OpenLineage emitter（generic webhook + Marquez + DataHub，URL 自动补全 + Bearer token）+ 数据源连接池 LIFO（`max_size=4` / TTL 600s / ping 验活）+ 字段级血缘可视化 `ColumnLineageGraph.vue`+ 双图引擎共享 composable + Cytoscape compound parent。
 
-**Phase 9** ✅ 部分（持续 sprint，见上）。
+**Phase 9 领域模型收口 + AI 异步化 + 错误响应统一**（6 day sprint，详见 commit log）：
+- Day 1：`app/models/lineage.py` 收口 10 model + 9 Literal 闭集（envelope `extra="allow"` / 元素 `extra="ignore"` / AIInferredEdge confidence 拦 high → low 最保守降级）
+- Day 2：`analyzer.analyze_sql_lineage` / `batch_analyzer.analyze_lineage_batch` / `lineage_service._attach_ai_inference` 出口包 model 校验，旧测试零变更通过
+- Day 3：`_validate_and_filter_*` 改返回 `tuple[list[Model], int]`，外部 API 仍 list[dict]（caller 在 extend output 时 `model_dump()` 回 dict）
+- Day 4：`app/ai/` 包独立 —— `providers/{base,mock,openai_compatible,anthropic,ollama}` + `prompts/{enrichment,inference,dynamic_sql,column_attr,error_translate,column_mapping}` + `schemas`（re-export）+ `filters`（实搬）+ **新增 `usage_log`**（`logs/ai_usage.jsonl`）。老路径保留 thin shim re-export
+- Day 5：inference 异步化 —— `enqueue_lineage_ai_inference()` 复用 `_AI_JOBS`；`_attach_ai_inference(ai_async=True)` 立即返回 `{"status": "pending", "job_id": ..., "kind": "inference"}` placeholder；前端 `LineageAIInferredPanel` 加 banner + 自动轮询（exp backoff 500ms→3s）
+- Day 6：统一错误响应 envelope `{code, message, detail, request_id, retryable, ai_translation, suggestions}` + 纯 ASGI `RequestIdMiddleware`（`finally` 不 reset token，让 unhandled exception handler 仍能拿到 rid）+ 三类 exception handler；AI 翻译改"按需"，admin AIConfigView 加 toggle `enable_auto_translation`（默认 off）；显式 `translateError()` 不受 gate 限制
+
+**Phase 9 ADR 摘录**：schema 放 `app/models/lineage.py` 跟 `Workflow / CompareTask` 同级（避免 lineage 包内循环）；envelope 用 `extra="allow"` 让未建模字段透传；AI 翻译改按需（每个错误烧 token 不值）；Repository 抽象拆两步（先 audit/jobs 切 SQLite 再统一接口）。
+
+**Phase 10 平台级血缘架构** — 把后端从"一次性报告"演进到"资产图谱服务"：
+- ✅ #1 大图压测 fixture（`services/lineage_stress.py` + `/api/lineage/stress-fixture?size=N`）—— 合成 [10, 10000] 节点，6 schema 按 ods/dwd/dws/dim/ref/fct 30/25/20/5/5/15 分布，layer 严格递增；前端 `?stress=N` URL hook 跳过分析，紫色提示卡片提醒 DevTools Performance 录制对比
+- ✅ #2 全局搜索（`services/search.py` + `/api/search?q=&kinds=&project_id=&limit=`）—— 跨 5 类资产（datasource / task / workflow / history / lineage_script），AND 多 token + 字段权重评分（name 100 > tables 50 > tags 40 > host/database 30 > description 20 > sql body 10）+ snippet 上下文；`CommandPalette.vue` 200ms debounce 调后端
+- ✅ #3 v0 服务端 BFS 子图（`services/lineage_graph_query.py` + `POST /api/lineage/graph/subgraph`）—— stateless，caller 提交 graph_edges + asset_id + direction + depth + filters；BFS 切片 + role_filter 后置（锚点强保留）+ max_nodes 截断
+- ✅ #3 v1 全局 lineage 索引（`services/lineage_index.py` + `GET /api/lineage/graph` + `/stats` + admin `/refresh`）—— lazy 从最近 50 个 workflow_run 的 lineage 节点 output 聚合 graph_edges / table_roles / target_summary，TTL 300s + run 数变化触发自动失效。同表多 run 的 primary_role 取频次最高，refresh_modes 合并去重，记 last_seen_run_id
+- ✅ #4 资产详情页 MVP（`services/assets.py` + `/api/assets/table/{name:path}` + 前端 `/assets/table/:name`）—— 表当一等资产，反查 4 类引用（task source/target、workflow 节点 config 字符串、lineage_script 的 read/write tables、history 任务），index 补 `primary_role` / `refresh_mode` / 上下游计数 / `last_seen_run_id`
+- ✅ #5 Cytoscape 决策 —— G6 默认 + Cytoscape 实验通道保留（双引擎共享 `useLineageGraphData` composable，等真实大图压测 empirical 数据再判断转正）
+
+**观测性 + 性能**（Phase 10 收尾）：
+- 路由 lazy loading：13 个 view 全部 `() => import('...')`，G6 (~1.4MB) + Cytoscape (~534KB) + admin views + WorkflowView DAG canvas 都不进首屏 chunk
+- `/metrics`（`services/metrics.py`）—— Prometheus text format v0.0.4，自实现 Counter/Histogram/Gauge（不依赖 prometheus_client，**修了 Histogram observe 已是累计存储 / render 二次累加的 double-count bug**）；HTTP middleware 自动埋点 + `_normalize_path` 把 `/api/tasks/<id>` → `/api/tasks/*` 防 label 基数爆炸；`/metrics` 自身排除埋点
+- 结构化 JSON 日志（`utils/logging_config.JsonLogFormatter`）—— `DATAOPS_LOG_FORMAT=json` 切换；`RequestIdInjectFilter` 从 Phase 9 Day 6 ContextVar 注入 request_id；extra dict 透传，non-serializable 值自动 stringify 兜底
 
 ### Phase 7 长期参考的设计方向
 
@@ -286,13 +252,15 @@ app/ai/
 
 ### 还可以做（未排期）
 
-**Phase 10 · 平台级血缘架构**（进行中，#1 + #2 已完成 ✅）
+**Phase 10 · 平台级血缘架构** ✅ 全部完成（详见上面"已完成"章节，5 项 + 观测性 + lazy loading）。下方留压测说明 + enhancement 候选。
+
+**Phase 10 全 5 项（归档参考）**：
 
 1. ✅ **真实大图压测 fixture**（commit `ccd395b`）—— `/api/lineage/stress-fixture?size=N` 合成 [10, 10000] 节点的血缘图（schema 池 / role 分布 / refresh_mode 真实分布）；前端 `/lineage?stress=N` URL hook 跳过分析直接加载，紫色提示卡片提醒 DevTools Performance 录制对比。给用户跑 G6 / Cytoscape 双引擎压测对比（main thread 耗时 / FPS / Memory 峰值）。15 个新 test。
 2. ✅ **全局搜索 / 反向索引**（commit `d86c0ab`）—— `/api/search?q=...&kinds=...&project_id=...&limit=N` 跨 5 类资产搜索（datasource / task / workflow / history / lineage_script）。AND 多 token 语义 + 评分排序 + snippet 高亮 + 项目空间过滤。`CommandPalette.vue` 改后端调用，从图内 Ctrl+F 升级到 DataHub-style 平台级搜索。13 个新 test。
-3. **`/api/lineage/graph` 服务端查询接口**（3d，未启动）—— 替代当前"一次性报告"形态：按 `asset_id + direction + depth + filters` 分页查；前端图改增量加载
-4. **资产详情页**（3~5d，未启动）—— 表 / 任务 / 字段当**一等资产**：schema + owner + 最近 ETL run + 关联作业流 + classification（PII / quality / SLA）
-5. **Cytoscape 转正决策 + 元数据扩展点**（长期）—— 等 #1 压测 fixture 跑出 empirical 数据再判断；扩展 `lineage_group_rules.yml` 成完整 metadata model + custom aspect
+3. ✅ **`/api/lineage/graph` 服务端查询接口** —— v0 stateless `POST /api/lineage/graph/subgraph`（caller 提供 graph_edges）+ v1 stateful `GET /api/lineage/graph`（全局索引，TTL 300s + run 数变化失效）+ `/stats` + admin `/refresh`
+4. ✅ **资产详情页 MVP** —— `/api/assets/table/{name:path}` 反查 4 类引用 + 索引补 role/refresh_mode/上下游计数；前端 `/assets/table/:name` 路由 + 4 张引用卡片。classification（PII/SLA/owner）+ 字段列表留下个 sprint
+5. ✅ **Cytoscape 决策**：G6 默认 + Cytoscape 实验通道保留（双引擎共享 `useLineageGraphData` composable，等真实大图压测 empirical 数据再判断转正）。元数据扩展点 / custom aspect 留下个 sprint，跟 SQLite 落地一起设计
 
 **压测使用**（用 #1 fixture，empirical 数据决定 #5）：
 1. 起 dev：`cd frontend/frontend && npm run dev` + 后端 `docker compose up -d --build`
@@ -311,19 +279,22 @@ app/ai/
 | Cyto   | 1000 |  58 ms       | +5.0 MB   | 438       | 3        |
 | Cyto   | 5000 | 414 ms       | +29.3 MB  | 438       | 3        |
 
-结论：focal+BFS truncation 在两个引擎都正常（DOM 恒定 ~450，与 fixture size 无关）；G6 在 5000 节点 first paint 167ms vs Cytoscape 414ms（2.5×）；Cytoscape DOM 略少（~435 vs ~454）。两个引擎在用户操作上都流畅。compound parent 优势在合成 fixture 上没体现（schema 数固定 6 个），需真实多 schema 大图才能验证。Phase 10 #5 决策：**G6 维持默认**，Cytoscape 留实验通道，等真实 Oracle 数据再考虑转正。
+结论：focal+BFS truncation 在两个引擎都正常（DOM 恒定 ~450，与 fixture size 无关）；G6 在 5000 节点 first paint 167ms vs Cytoscape 414ms（2.5×）；Cytoscape DOM 略少（~435 vs ~454）。两个引擎在用户操作上都流畅。compound parent 优势在合成 fixture 上没体现（schema 数固定 6 个），需真实多 schema 大图才能验证。**Phase 10 #5 决策：G6 维持默认，Cytoscape 留实验通道**，等真实 Oracle 数据再考虑转正。
 
-**其它已识别但低优先级**：
+**Phase 10 enhancement 候选**（建立在已落地基础之上）：
 
-- **Repository 抽象 + SQLite**（Phase 9 ADR 第 6 条：先 audit/jobs，再统一）
+- **资产详情补 classification**：PII / SLA / owner tag + 字段列表 + 字段血缘热点
+- **`/v1/` API 版本化前缀**：sprint 级决策（既有客户端 / OpenAPI / 前端 api.js 都要改），现在还没外部调用方，改成本最低
+- **Repository 抽象 + SQLite**（Phase 9 ADR 第 6 条）：先把高并发写的 `audit.jsonl` + `jobs.json` 切 SQLite，再统一接口；同时给元数据扩展点（PII / SLA / custom aspect）一个落地处
+- **元数据扩展点 / custom aspect**：当前 `config/lineage_group_rules.yml` 只是 schema/basename/title 关键词，DataHub / Atlan 完整 metadata model 暂未做 —— 跟 SQLite 落地一起设计
+
+**通用未做**：
+
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **Phase 4 procedure refresh mode 语义模式**（轨道 A 增量后续）
+- **Phase 4 procedure refresh mode 语义模式**（Phase 7 轨道 A 增量后续）
 - **TypeScript 渐进迁移**：Pinia store + composable 先于 view，schema 从 Pydantic codegen
 - **Vitest 关键组件单测**（不上 Storybook）
-- **`/metrics` + structured logging**（Prometheus + JSON log + request_id）
-- **API `/v1/` 版本化前缀**
 - **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`
-- **路由 lazy loading**：admin views / workflow detail / lineage 全 `defineAsyncComponent`
 - **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
 - **全局 ErrorBoundary**：捕获组件渲染异常 + 降级 UI
 - **release-please / changesets**：自动生成 release notes from conventional commits
@@ -342,16 +313,16 @@ app/ai/
 
 ### 跟 DataHub / Atlan / Dagster / dbt Explorer 的差距
 
-参考它们做的是"**前端血缘图可扩展交互模式**"，**不是平台级资产图谱架构**。当前能力盘点（≈ 10 项 viz 模式已对齐，5 项平台能力未做）：
+参考它们做的是"**前端血缘图可扩展交互模式**"，**不是平台级资产图谱架构**。Phase 10 已经把后端架构从"一次性报告"演进到"资产图谱服务"，5 项差距 4 项已落地：
 
 **已对齐的 viz 模式**：双图引擎切换、大图收敛 / focal+N-hop、schema 聚合（combo / compound parent）、表格视图逃生通道、role/edge/confidence/script/schema 多 facet 过滤、命中搜索定位、PNG/JSON 导出、Cytoscape 路径高亮。
 
-**未做的平台能力**（差距来源）：
+**5 项平台能力对比 DataHub / Atlan**：
 
-1. **后端不是资产图谱服务** —— 当前 `analyze_sql_lineage` 一次性产 report，前端本地裁剪。DataHub / Atlan 是 graph query：按 `asset_id + direction + depth + filters` 分页查
-2. **没有资产详情页** —— 当前从图点节点最多看 role / refresh_mode / titles；DataHub/Atlan 把表 / 任务 / 字段当**一等资产**，详情页有 schema / owner / 最近 run / 关联作业流 / classification（PII / sensitive / SLA）
-3. **没有全局搜索 / 反向索引** —— 当前只能图内 Ctrl+F；DataHub 的 "搜 用户表" → 所有相关 ETL / 报表 / dashboard 一击命中
-4. **没有元数据扩展点 / custom aspect** —— `config/lineage_group_rules.yml` 是 mini 版本（schema/basename/title 关键词）；DataHub / Atlan 有完整 metadata model 支持 PII / 数据质量 / 业务术语等自定义 aspect
-5. **没有服务端缓存 / 增量加载** —— 当前 300+ 节点靠前端限制 + 100+ 切表格逃生；1000+ 节点不够稳
+1. ✅ **后端是资产图谱服务** —— Phase 10 #3 v1 落地：全局 lineage 索引 + `GET /api/lineage/graph` 按 `asset_id + direction + depth + filters` 切片查；前端可分 hop 增量加载
+2. ✅ **资产详情页 MVP** —— Phase 10 #4 落地：`/api/assets/table/{name:path}` 反向引用 + 索引补 `primary_role` / `refresh_mode` / 上下游 / `last_seen_run_id`；classification（PII / SLA / owner）留下个 sprint
+3. ✅ **全局搜索 / 反向索引** —— Phase 10 #2 落地：`/api/search` 跨 5 类资产，AND 多 token + 评分 + project_id 过滤；CommandPalette 接入
+4. **元数据扩展点 / custom aspect** —— `config/lineage_group_rules.yml` 仍是 schema/basename/title 关键词的 mini 版本；DataHub / Atlan 完整 metadata model 暂未做（跟 Repository / SQLite 落地一起设计）
+5. ✅ **服务端缓存 / 增量加载** —— Phase 10 #3 v1 全局索引 + #1 大图压测 fixture（empirical 数据决定 Cytoscape 转正）
 
-**判断**：viz 模式做得不错；平台架构没做。下一步**不是继续堆 UI**，而是把后端从"一次性报告"演进到"资产图谱服务"。
+**当前判断**：viz 模式 + 平台架构基础都已就位。下一步重心在**元数据扩展点 + Repository/SQLite + classification**（让"资产"从代码引用图谱进化到含业务语义的元数据图谱）。
