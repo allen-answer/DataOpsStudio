@@ -327,7 +327,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **通用未做**：
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **TypeScript 渐进迁移**（S3.B 全 10 store + S4.A api.ts + S4.B codegen 落地）：10/10 store + api.ts（含泛型 apiGet&lt;T&gt; / apiJson&lt;T&gt;）全部 ts；openapi-typescript 从 /openapi.json 自动生成 `src/types/api-schema.ts`，友好别名在 `src/types/api.ts`（auth / project / datasource / task / workflow 已用）。剩 useLineageGraphData composable（489 行 G6/Cyto 派生）+ view（lang="ts"）留下个 sprint
+- **TypeScript 渐进迁移**（S3.B 全 10 store + S4.A api.ts + composable + S4.B codegen 落地）：10/10 store + api.ts（含泛型 apiGet&lt;T&gt; / apiJson&lt;T&gt;）+ useLineageGraphData composable 全部 ts；openapi-typescript 从 /openapi.json 自动生成 `src/types/api-schema.ts`，友好别名在 `src/types/api.ts`（auth / project / datasource / task / workflow 已用）。剩 view（&lt;script setup lang="ts"&gt;）大头（30+ 个 .vue 文件 script 改 lang="ts"）留下个 sprint
 - **i18n 详情页字符串抽取**：骨架已落（vue-i18n + sidebar + login + topbar），剩详情页 / 工作流编辑器 / 血缘 9-tab 等长尾字符串抽取（一片片来，避免单 PR 改太多）
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）

@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, type Ref } from 'vue'
 
 // 把 LineageGraph 的数据派生 / 筛选 / 聚焦逻辑统一抽到一个 composable，
 // 让 G6 实现（components/LineageGraph.vue）和实验中的 Cytoscape 实现
@@ -20,23 +20,115 @@ import { computed, ref, watch } from 'vue'
 //
 // G6 模式：filteredBase → projectedBase → graphData
 // Cytoscape 模式：filteredBase → cyData（compound 由视图自己装配）
+//
+// S4.A 收尾：迁 .ts。input groups / edges 是 lineage analyze 的 result.graph_groups
+// + result.graph_edges —— 后端结构在 LineageReport（暂时未上 codegen），用本地
+// 类型描述，等后端 model 收口后再换 codegen 类型。
+
+// ─── 类型 ────────────────────────────────────────────────────────────────────
+
+export interface LineageGroup {
+  target_table?: string
+  source_tables?: string[]
+  dependency_tables?: string[]
+}
+
+/** lineage analyze 输出的 edge metadata —— 给 hover 详情用。 */
+export interface LineageEdgeMeta {
+  source_table?: string
+  target_table?: string
+  edge_type?: string
+  confidence?: string
+  file_name?: string
+  [key: string]: unknown
+}
+
+export type NodeRole = 'source' | 'target' | 'dependency' | 'combo'
+
+export interface NodeData {
+  role: NodeRole
+  schema: string
+  isCombo?: boolean
+  count?: number
+  matched?: boolean
+  [key: string]: unknown
+}
+
+export interface GraphNode {
+  id: string
+  data: NodeData
+}
+
+export interface EdgeData {
+  details: LineageEdgeMeta[]
+  dependency: boolean
+  aggregatedCount?: number
+}
+
+export interface GraphEdge {
+  id: string
+  source: string
+  target: string
+  data: EdgeData
+}
+
+export interface GraphSnapshot {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+export type FocusMode = 'neighborhood' | 'upstream' | 'downstream' | 'all'
+
+export interface SelectedItem {
+  type: 'node' | 'edge'
+  id: string
+}
+
+export interface TableRow {
+  id: string
+  schema: string
+  hops: number | string
+  direction: string
+  upstream: number
+  downstream: number
+  isCombo: boolean
+}
+
+export interface SelectedNodeDetails {
+  id: string
+  upstream: string[]
+  downstream: string[]
+  edges: LineageEdgeMeta[]
+}
+
+interface AdjacencyMaps {
+  out: Map<string, string[]>
+  inn: Map<string, string[]>
+}
+
 
 const COMBO_PREFIX = '__combo:'
 
-const schemaName = (name) => (name.includes('.') ? name.split('.').slice(0, -1).join('.') : '(默认)')
-const edgeKey = (source, target) => `${source}|||${target}`
-const unique = (items) => Array.from(new Set(items.filter(Boolean)))
-const basename = (path) => {
+const schemaName = (name: string): string =>
+  (name.includes('.') ? name.split('.').slice(0, -1).join('.') : '(默认)')
+const edgeKey = (source: string, target: string): string => `${source}|||${target}`
+const unique = <T>(items: (T | null | undefined | false | '')[]): T[] =>
+  Array.from(new Set(items.filter(Boolean) as T[]))
+const basename = (path: string | undefined | null): string => {
   if (!path) return ''
   const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return i >= 0 ? path.slice(i + 1) : path
 }
 
-function bfsLimited(start, getNeighbors, depth) {
+function bfsLimited(
+  start: string,
+  getNeighbors: (node: string) => string[] | undefined,
+  depth: number,
+): Set<string> {
   const visited = new Set([start])
   let frontier = [start]
   for (let d = 0; d < depth; d++) {
-    const next = []
+    const next: string[] = []
     for (const node of frontier) {
       for (const neighbor of getNeighbors(node) || []) {
         if (visited.has(neighbor)) continue
@@ -50,9 +142,9 @@ function bfsLimited(start, getNeighbors, depth) {
   return visited
 }
 
-function buildAdjacency(base) {
-  const out = new Map()
-  const inn = new Map()
+function buildAdjacency(base: GraphSnapshot): AdjacencyMaps {
+  const out = new Map<string, string[]>()
+  const inn = new Map<string, string[]>()
   for (const edge of base.edges) {
     out.set(edge.source, [...(out.get(edge.source) || []), edge.target])
     inn.set(edge.target, [...(inn.get(edge.target) || []), edge.source])
@@ -60,37 +152,41 @@ function buildAdjacency(base) {
   return { out, inn }
 }
 
-export function useLineageGraphData(groupsRef, edgesRef) {
+export function useLineageGraphData(
+  groupsRef: Ref<LineageGroup[] | null | undefined>,
+  edgesRef: Ref<LineageEdgeMeta[] | null | undefined>,
+) {
   // ---------- 筛选 / 聚焦 / 选择状态 ----------
-  const searchText = ref('')
-  const matchIndex = ref(0)
-  const focusMode = ref('neighborhood') // neighborhood | upstream | downstream | all
-  const hopDepth = ref(1)
-  const clickedFocalId = ref('')
-  const roleFilter = ref('all')
-  const edgeTypeFilter = ref('all')
-  const confidenceFilter = ref('all')
-  const scriptFilter = ref('')
-  const schemaFilter = ref('all')
-  const collapsedSchemas = ref(new Set())
-  const collapsedScripts = ref(new Set())
-  const largeGraphExpanded = ref(false)
-  const selectedItem = ref(null)
+  const searchText = ref<string>('')
+  const matchIndex = ref<number>(0)
+  const focusMode = ref<FocusMode>('neighborhood')
+  const hopDepth = ref<number>(1)
+  const clickedFocalId = ref<string>('')
+  const roleFilter = ref<NodeRole | 'all'>('all')
+  const edgeTypeFilter = ref<string>('all')
+  const confidenceFilter = ref<string>('all')
+  const scriptFilter = ref<string>('')
+  const schemaFilter = ref<string>('all')
+  const collapsedSchemas = ref<Set<string>>(new Set())
+  const collapsedScripts = ref<Set<string>>(new Set())
+  const largeGraphExpanded = ref<boolean>(false)
+  const selectedItem = ref<SelectedItem | null>(null)
 
   // 基础数据：从 groups/edges 投出 nodes/edges，附 role / schema 元信息
-  const edgeDetails = computed(() => {
-    const byKey = new Map()
+  const edgeDetails = computed<Map<string, LineageEdgeMeta[]>>(() => {
+    const byKey = new Map<string, LineageEdgeMeta[]>()
     ;(edgesRef.value || []).forEach((edge) => {
+      if (!edge.source_table || !edge.target_table) return
       const key = edgeKey(edge.source_table, edge.target_table)
       if (!byKey.has(key)) byKey.set(key, [])
-      byKey.get(key).push(edge)
+      byKey.get(key)!.push(edge)
     })
     return byKey
   })
 
-  const allGraphData = computed(() => {
-    const nodes = new Map()
-    const edges = []
+  const allGraphData = computed<GraphSnapshot>(() => {
+    const nodes = new Map<string, GraphNode>()
+    const edges: GraphEdge[] = []
     ;(groupsRef.value || []).forEach((group) => {
       const target = group.target_table
       if (!target) return
@@ -109,21 +205,21 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     return { nodes: Array.from(nodes.values()), edges }
   })
 
-  const schemas = computed(() => unique(allGraphData.value.nodes.map((node) => node.data.schema)))
-  const scripts = computed(() => unique((edgesRef.value || []).map((edge) => edge.file_name)))
-  const edgeTypes = computed(() => unique((edgesRef.value || []).map((edge) => edge.edge_type)))
-  const confidences = computed(() => unique((edgesRef.value || []).map((edge) => edge.confidence)))
+  const schemas = computed<string[]>(() => unique(allGraphData.value.nodes.map((node) => node.data.schema)))
+  const scripts = computed<string[]>(() => unique((edgesRef.value || []).map((edge) => edge.file_name)))
+  const edgeTypes = computed<string[]>(() => unique((edgesRef.value || []).map((edge) => edge.edge_type)))
+  const confidences = computed<string[]>(() => unique((edgesRef.value || []).map((edge) => edge.confidence)))
 
-  const schemaCounts = computed(() => {
-    const map = new Map()
+  const schemaCounts = computed<Map<string, number>>(() => {
+    const map = new Map<string, number>()
     for (const node of allGraphData.value.nodes) {
       const s = node.data.schema
       map.set(s, (map.get(s) || 0) + 1)
     }
     return map
   })
-  const scriptCounts = computed(() => {
-    const map = new Map()
+  const scriptCounts = computed<Map<string, number>>(() => {
+    const map = new Map<string, number>()
     for (const edge of edgesRef.value || []) {
       if (!edge.file_name) continue
       map.set(edge.file_name, (map.get(edge.file_name) || 0) + 1)
@@ -131,17 +227,17 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     return map
   })
 
-  const searchMatches = computed(() => {
+  const searchMatches = computed<GraphNode[]>(() => {
     const keyword = searchText.value.trim().toLowerCase()
     if (!keyword) return []
     return allGraphData.value.nodes.filter((node) => node.id.toLowerCase().includes(keyword))
   })
-  const matchedNodeId = computed(
+  const matchedNodeId = computed<string>(
     () => searchMatches.value[matchIndex.value % Math.max(searchMatches.value.length, 1)]?.id || ''
   )
 
-  const scriptSearch = ref('')
-  const filteredScriptList = computed(() => {
+  const scriptSearch = ref<string>('')
+  const filteredScriptList = computed<string[]>(() => {
     const kw = scriptSearch.value.trim().toLowerCase()
     const list = [...scripts.value].sort(
       (a, b) => (scriptCounts.value.get(b) || 0) - (scriptCounts.value.get(a) || 0)
@@ -150,12 +246,12 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     return list.filter((f) => f.toLowerCase().includes(kw))
   })
 
-  const largeGraphLimited = computed(
+  const largeGraphLimited = computed<boolean>(
     () => allGraphData.value.nodes.length > 300 && !largeGraphExpanded.value && !searchText.value.trim()
   )
 
   // 第一层筛选：role / schema / edge-type / confidence / script + 隐藏脚本 + 大图截断
-  const filteredBase = computed(() => {
+  const filteredBase = computed<GraphSnapshot>(() => {
     let nodes = allGraphData.value.nodes
     let edges = allGraphData.value.edges
     if (roleFilter.value !== 'all') nodes = nodes.filter((node) => node.data.role === roleFilter.value)
@@ -172,7 +268,7 @@ export function useLineageGraphData(groupsRef, edgesRef) {
       edges = edges.filter((edge) => edge.data.details.some((d) => d.file_name === scriptFilter.value))
     }
     if (collapsedScripts.value.size) {
-      edges = edges.filter((edge) => !edge.data.details.some((d) => collapsedScripts.value.has(d.file_name)))
+      edges = edges.filter((edge) => !edge.data.details.some((d) => collapsedScripts.value.has(d.file_name || '')))
     }
     const connected = new Set(edges.flatMap((edge) => [edge.source, edge.target]))
     if (
@@ -192,17 +288,17 @@ export function useLineageGraphData(groupsRef, edgesRef) {
   })
 
   // 第二层（仅 G6）：把折叠 schema 的多个表投成一个 combo 节点
-  const projectedBase = computed(() => {
+  const projectedBase = computed<GraphSnapshot>(() => {
     const base = filteredBase.value
     if (!collapsedSchemas.value.size) return base
-    const isCollapsed = (schema) => collapsedSchemas.value.has(schema)
-    const projectId = (id) => {
+    const isCollapsed = (schema: string): boolean => collapsedSchemas.value.has(schema)
+    const projectId = (id: string): string => {
       const node = base.nodes.find((n) => n.id === id)
       if (node && isCollapsed(node.data.schema)) return `${COMBO_PREFIX}${node.data.schema}`
       return id
     }
-    const remappedNodes = new Map()
-    const comboCounts = new Map()
+    const remappedNodes = new Map<string, GraphNode>()
+    const comboCounts = new Map<string, number>()
     for (const node of base.nodes) {
       if (isCollapsed(node.data.schema)) {
         const id = `${COMBO_PREFIX}${node.data.schema}`
@@ -215,9 +311,10 @@ export function useLineageGraphData(groupsRef, edgesRef) {
       }
     }
     for (const [id, count] of comboCounts) {
-      remappedNodes.get(id).data.count = count
+      const n = remappedNodes.get(id)
+      if (n) n.data.count = count
     }
-    const remappedEdges = new Map()
+    const remappedEdges = new Map<string, GraphEdge>()
     for (const edge of base.edges) {
       const source = projectId(edge.source)
       const target = projectId(edge.target)
@@ -225,7 +322,7 @@ export function useLineageGraphData(groupsRef, edgesRef) {
       const key = `${source}|||${target}`
       const existing = remappedEdges.get(key)
       if (existing) {
-        existing.data.aggregatedCount += 1
+        existing.data.aggregatedCount = (existing.data.aggregatedCount || 1) + 1
         existing.data.details = existing.data.details.concat(edge.data.details)
         if (edge.data.dependency) existing.data.dependency = true
       } else {
@@ -241,13 +338,13 @@ export function useLineageGraphData(groupsRef, edgesRef) {
   })
 
   // adjacency 永远基于 projectedBase（G6），cytoscape 通过 cyAdjacency 拿
-  const adjacencyMaps = computed(() => buildAdjacency(projectedBase.value))
-  const cyAdjacency = computed(() => buildAdjacency(filteredBase.value))
+  const adjacencyMaps = computed<AdjacencyMaps>(() => buildAdjacency(projectedBase.value))
+  const cyAdjacency = computed<AdjacencyMaps>(() => buildAdjacency(filteredBase.value))
 
-  const autoFocalId = computed(() => {
+  const autoFocalId = computed<string>(() => {
     const nodes = projectedBase.value.nodes
     if (nodes.length <= 30) return ''
-    const degree = new Map()
+    const degree = new Map<string, number>()
     projectedBase.value.edges.forEach((edge) => {
       degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
       degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
@@ -265,14 +362,14 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     return bestId
   })
 
-  function presentInProjected(id) {
-    return id && projectedBase.value.nodes.some((node) => node.id === id)
+  function presentInProjected(id: string): boolean {
+    return !!id && projectedBase.value.nodes.some((node) => node.id === id)
   }
-  function presentInFiltered(id) {
-    return id && filteredBase.value.nodes.some((node) => node.id === id)
+  function presentInFiltered(id: string): boolean {
+    return !!id && filteredBase.value.nodes.some((node) => node.id === id)
   }
 
-  const effectiveFocalId = computed(() => {
+  const effectiveFocalId = computed<string>(() => {
     if (presentInProjected(clickedFocalId.value)) return clickedFocalId.value
     if (matchedNodeId.value && presentInProjected(matchedNodeId.value)) return matchedNodeId.value
     if (focusMode.value !== 'all') return autoFocalId.value
@@ -280,14 +377,14 @@ export function useLineageGraphData(groupsRef, edgesRef) {
   })
 
   // G6 视图数据：focal+hop 在 projectedBase 上 BFS
-  const graphData = computed(() => {
+  const graphData = computed<GraphSnapshot>(() => {
     const base = projectedBase.value
     const focal = effectiveFocalId.value
     if (!focal || focusMode.value === 'all') {
       return {
         nodes: base.nodes.map((node) => ({
           ...node,
-          data: { ...node.data, matched: focal && node.id === focal },
+          data: { ...node.data, matched: !!focal && node.id === focal },
         })),
         edges: base.edges,
       }
@@ -309,7 +406,7 @@ export function useLineageGraphData(groupsRef, edgesRef) {
   })
 
   // Cytoscape 视图数据：focal+hop 在 filteredBase 上 BFS（schema 通过 compound parent 表达）
-  const cyData = computed(() => {
+  const cyData = computed<GraphSnapshot>(() => {
     const base = filteredBase.value
     const focal = effectiveFocalId.value
     const focalForCy = focal && presentInFiltered(focal) ? focal : ''
@@ -317,7 +414,7 @@ export function useLineageGraphData(groupsRef, edgesRef) {
       return {
         nodes: base.nodes.map((node) => ({
           ...node,
-          data: { ...node.data, matched: focalForCy && node.id === focalForCy },
+          data: { ...node.data, matched: !!focalForCy && node.id === focalForCy },
         })),
         edges: base.edges,
       }
@@ -338,21 +435,21 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     }
   })
 
-  const visibleStats = computed(() => ({
+  const visibleStats = computed<{ visible: number; total: number }>(() => ({
     visible: graphData.value.nodes.length,
     total: projectedBase.value.nodes.length,
   }))
 
-  const tableRows = computed(() => {
+  const tableRows = computed<TableRow[]>(() => {
     const base = projectedBase.value
     const focal = effectiveFocalId.value
-    const findNode = (id) => base.nodes.find((node) => node.id === id)
+    const findNode = (id: string): GraphNode | undefined => base.nodes.find((node) => node.id === id)
     if (!focal) {
       return base.nodes
         .map((node) => ({
           id: node.id,
           schema: node.data.schema,
-          hops: '-',
+          hops: '-' as string | number,
           direction: '全图',
           upstream: base.edges.filter((edge) => edge.target === node.id).length,
           downstream: base.edges.filter((edge) => edge.source === node.id).length,
@@ -362,7 +459,7 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     }
     const { out, inn } = adjacencyMaps.value
     const focalNode = findNode(focal)
-    const rows = [{
+    const rows: TableRow[] = [{
       id: focal,
       schema: focalNode?.data.schema || '-',
       hops: 0,
@@ -371,13 +468,13 @@ export function useLineageGraphData(groupsRef, edgesRef) {
       downstream: (out.get(focal) || []).length,
       isCombo: !!focalNode?.data.isCombo,
     }]
-    const traverse = (getNeighbors, label) => {
+    const traverse = (getNeighbors: (id: string) => string[] | undefined, label: string): void => {
       const visited = new Set([focal])
       let frontier = [focal]
       let depth = 0
       while (frontier.length && depth < 10) {
         depth += 1
-        const next = []
+        const next: string[] = []
         for (const id of frontier) {
           for (const neighbor of getNeighbors(id) || []) {
             if (visited.has(neighbor)) continue
@@ -403,9 +500,9 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     return rows
   })
 
-  const tableSuggested = computed(() => projectedBase.value.nodes.length > 100)
+  const tableSuggested = computed<boolean>(() => projectedBase.value.nodes.length > 100)
 
-  const selectedNodeDetails = computed(() => {
+  const selectedNodeDetails = computed<SelectedNodeDetails | null>(() => {
     if (!selectedItem.value || selectedItem.value.type !== 'node') return null
     const id = selectedItem.value.id
     return {
@@ -416,25 +513,25 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     }
   })
 
-  const selectedEdgeDetails = computed(() => {
+  const selectedEdgeDetails = computed<LineageEdgeMeta[]>(() => {
     if (!selectedItem.value || selectedItem.value.type !== 'edge') return []
     return edgeDetails.value.get(selectedItem.value.id) || []
   })
 
   // ---------- 助手函数 ----------
-  function toggleSet(target, value) {
+  function toggleSet(target: Ref<Set<string>>, value: string): void {
     const next = new Set(target.value)
     if (next.has(value)) next.delete(value)
     else next.add(value)
     target.value = next
   }
 
-  function nextMatch() {
+  function nextMatch(): void {
     if (!searchMatches.value.length) return
     matchIndex.value = (matchIndex.value + 1) % searchMatches.value.length
   }
 
-  function clearCollapsedScripts() {
+  function clearCollapsedScripts(): void {
     collapsedScripts.value = new Set()
   }
 
@@ -487,3 +584,6 @@ export function useLineageGraphData(groupsRef, edgesRef) {
     COMBO_PREFIX,
   }
 }
+
+// 给消费者推断返回 shape 的工具类型 —— LineageGraph.vue / Cytoscape.vue 用
+export type LineageGraphData = ReturnType<typeof useLineageGraphData>
