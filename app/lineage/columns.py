@@ -139,8 +139,22 @@ def source_info(
                 source_columns.append(sql(column))
                 source_tables.extend(subquery_tables[column.table])
                 continue
+            # S5 PR21：CTE 链场景 —— column.table 是别名，alias_map 解析后是 CTE
+            # 名（如 cte_a），再用 subquery_map / subquery_tables 二次查找
+            resolved = alias_map.get(column.table, column.table)
+            expanded2 = subquery_map.get((resolved, column.name))
+            if expanded2:
+                source_columns.extend(expanded2["source_columns"] or [sql(column)])
+                source_tables.extend(expanded2["source_tables"])
+                reasons.append("CTE 链穿透")
+                continue
+            if resolved in subquery_tables:
+                source_columns.append(sql(column))
+                source_tables.extend(subquery_tables[resolved])
+                reasons.append("CTE 表级穿透")
+                continue
             source_columns.append(sql(column))
-            source_tables.append(alias_map.get(column.table, column.table))
+            source_tables.append(resolved)
             reasons.append("显式表别名/表名")
             continue
 
@@ -328,9 +342,21 @@ def _add_derived_select_columns(
     e = exp()
     for select in query.find_all(e.Select):
         default_tables = select_direct_source_tables(select)
+        # S5 PR21：CTE 链场景 —— cte_b body 引用 `cte_a a`，alias_map 只含
+        # 物理表别名，缺 `a → cte_a`，导致 a.id 解析不到底层 ods.tree。
+        # 这里给当前 SELECT 现场补：FROM/JOIN 里 alias 引用前面 CTE 的，把
+        # alias → cte_name 加进 local_alias_map（不动外层 alias_map 引用）。
+        local_alias_map = dict(alias_map)
+        existing_cte_aliases = {key[0] for key in nested_map.keys()}
+        for tab in select.find_all(e.Table):
+            tab_name_lower = tab.name.lower() if tab.name else ""
+            if tab_name_lower in {a.lower() for a in existing_cte_aliases}:
+                tab_alias = explicit_alias(tab)
+                if tab_alias:
+                    local_alias_map[tab_alias] = tab.name
         for expression in select.expressions:
             output_column = expression.alias_or_name or sql(expression)
-            info = source_info(expression, alias_map, nested_map, nested_tables, default_tables, {})
+            info = source_info(expression, local_alias_map, nested_map, nested_tables, default_tables, {})
             key = (derived_alias, output_column)
             existing = result.get(key, {"source_columns": [], "source_tables": []})
             result[key] = {

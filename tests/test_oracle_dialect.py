@@ -448,6 +448,42 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR21：CTE 链穿透到底层物理表 ──────────────────────────────────────────
+
+
+def test_cte_chain_drills_to_base_table():
+    """`WITH cte_a AS (... FROM ods.tree), cte_b AS (... FROM cte_a a JOIN ods.names t)`
+    INSERT 应该把 cte_b.id 一路穿透到 ods.tree.id，不能停在 'a' 别名上。"""
+    sql = """
+    WITH cte_a AS (SELECT id, parent_id FROM ods.tree WHERE level = 1),
+         cte_b AS (SELECT a.id, t.name FROM cte_a a JOIN ods.names t ON a.id = t.id)
+    INSERT INTO dwd.flat (id, name) SELECT id, name FROM cte_b;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.tree", "dwd.flat") in edges, \
+        f"CTE 链应穿透到底层 ods.tree: {edges}"
+    assert ("ods.names", "dwd.flat") in edges, \
+        f"CTE 链 JOIN 的另一侧 ods.names 也要在: {edges}"
+    # column-level
+    mappings = result.get("insert_mappings", [])
+    id_map = next((m for m in mappings if m.get("target_column") == "id"), None)
+    assert id_map is not None
+    assert "ods.tree" in id_map["source_tables"], \
+        f"id 字段应直接归到 ods.tree: {id_map}"
+
+
+def test_cte_simple_passthrough_unaffected():
+    """单层 CTE（没有链）不应受 PR21 影响 —— FROM cte_a 仍能正确穿透。"""
+    sql = """
+    WITH cte_a AS (SELECT id FROM ods.orders)
+    INSERT INTO dwd.fact (id) SELECT id FROM cte_a;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.orders", "dwd.fact") in edges
+
+
 # ─── S5 PR20：Oracle RETURNING ... INTO 子句不应让 sqlglot 解析失败 ───────────
 
 
