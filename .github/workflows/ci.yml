@@ -54,6 +54,11 @@ jobs:
       - name: Run Vitest
         run: npm test
 
+      # vue-tsc 类型检查 —— S3.B 起 stores/*.ts 有类型；后续轮次扩到 view
+      # 包 .vue 文件（lang="ts"）+ composables，覆盖率随 TS 渐进迁移
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
       - name: Build SPA
         run: npm run build
 

@@ -12,18 +12,32 @@ import { defineStore } from 'pinia'
 import { apiGet, apiJson } from '../api'
 
 
+export interface Project {
+  id: string
+  name: string
+  description?: string
+  members?: string[]
+}
+
+export interface ProjectUpdatePayload {
+  name?: string
+  description?: string
+  members?: string[]
+}
+
+
 const PROJECT_KEY = 'dataops.project_id'
 
 
 export const useProjectStore = defineStore('project', () => {
-  const currentProjectId = ref(localStorage.getItem(PROJECT_KEY) || '')
-  const projects = ref([])
+  const currentProjectId = ref<string>(localStorage.getItem(PROJECT_KEY) || '')
+  const projects = ref<Project[]>([])
 
-  const currentProject = computed(() =>
+  const currentProject = computed<Project | null>(() =>
     projects.value.find(p => p.id === currentProjectId.value) || null
   )
 
-  function setProject(projectId) {
+  function setProject(projectId: string): void {
     currentProjectId.value = projectId || ''
     if (currentProjectId.value) {
       localStorage.setItem(PROJECT_KEY, currentProjectId.value)
@@ -32,7 +46,7 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
-  async function reload() {
+  async function reload(): Promise<void> {
     try {
       const data = await apiGet('/api/projects')
       projects.value = Array.isArray(data) ? data : []
@@ -45,19 +59,19 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
-  async function createProject(name, description = '') {
-    const project = await apiJson('/api/projects', 'POST', { name, description, members: [] })
+  async function createProject(name: string, description = ''): Promise<Project> {
+    const project = await apiJson('/api/projects', 'POST', { name, description, members: [] }) as Project
     await reload()
     return project
   }
 
-  async function updateProject(projectId, { name, description, members }) {
-    const updated = await apiJson(`/api/projects/${projectId}`, 'PUT', { name, description, members })
+  async function updateProject(projectId: string, payload: ProjectUpdatePayload): Promise<Project> {
+    const updated = await apiJson(`/api/projects/${projectId}`, 'PUT', payload) as Project
     await reload()
     return updated
   }
 
-  async function deleteProject(projectId) {
+  async function deleteProject(projectId: string): Promise<void> {
     await apiJson(`/api/projects/${projectId}`, 'DELETE')
     if (currentProjectId.value === projectId) {
       setProject('')

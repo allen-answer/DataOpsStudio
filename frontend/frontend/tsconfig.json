@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+
+    // 渐进式 TS 迁移：放宽 strict 让既有 .js 文件 coexist；后续轮次收紧。
+    // store 已先迁 .ts —— 它们内部能用 noImplicitAny / strictNullChecks，但
+    // 整个项目级 strict 留给 Phase 2（composables + view）一起开。
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": true,
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+
+    // 让 .js 跟 .ts 共存（store 是 .ts，view 还是 .js / .vue 不带 lang="ts"）
+    "allowJs": true,
+    "checkJs": false,
+
+    "useDefineForClassFields": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue"
+  ],
+  "exclude": ["node_modules", "dist", "tests"]
+}

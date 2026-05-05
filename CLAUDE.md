@@ -36,6 +36,9 @@ npm run build
 npm test
 npm run test:watch    # watch 模式
 npm run test:coverage # 覆盖率（@vitest/coverage-v8）
+
+# TypeScript 类型检查（S3.B 起 stores/*.ts 有类型）
+npm run typecheck
 ```
 
 **主要验收以 Docker / WSL 构建为准。** Windows PowerShell 直接跑 `npm run build` 偶发 `Vite/Rolldown spawn EPERM`（Rolldown 子进程启动被 Windows Defender / 文件锁拦），属环境问题；切换到 WSL 跑构建：
@@ -318,7 +321,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **通用未做**：
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **TypeScript 渐进迁移**：Pinia store + composable 先于 view，schema 从 Pydantic codegen
+- **TypeScript 渐进迁移**（S3.B 已起头）：4/10 store 已迁 .ts（auth / notice / project / bootstrap，含 export 类型给 view 用）+ tsconfig + npm typecheck 走 vue-tsc + CI 集成。剩 6 个大 store（task / workflow / datasource / history / lineage / batch）+ composables + view（lang="ts"）+ Pydantic→TS schema codegen 留下个 sprint
 - **i18n 详情页字符串抽取**：骨架已落（vue-i18n + sidebar + login + topbar），剩详情页 / 工作流编辑器 / 血缘 9-tab 等长尾字符串抽取（一片片来，避免单 PR 改太多）
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）

@@ -12,14 +12,41 @@
  * S2.B 后所有 view 直接 `useBootstrapStore()` —— state 是 reactive，解构后
  * 仍是同一个 proxy，不需要 storeToRefs。driverItems 是 computed，给
  * sidebar 显示驱动可用性 dot 用。
+ *
+ * S3.B：迁 .ts —— BootstrapState 接口公开给 view / store 类型推断用。
+ *   list 字段都用 unknown[]（具体 shape 在各 domain store 里）；
+ *   等 task / workflow / datasource store 也迁 ts 后再换具体类型。
  */
 import { computed, reactive } from 'vue'
 import { defineStore } from 'pinia'
 import { apiGet } from '../api'
 
 
+export interface BootstrapState {
+  datasources: unknown[]
+  tasks: unknown[]
+  workflows: unknown[]
+  workflowTemplates: unknown[]
+  drivers: Record<string, boolean>
+  dbTypes: string[]
+  history: unknown[]
+  historySheets: unknown[]
+}
+
+interface BootstrapApiResponse {
+  datasources?: unknown[]
+  tasks?: unknown[]
+  workflows?: unknown[]
+  workflow_templates?: unknown[]
+  drivers?: Record<string, boolean>
+  db_types?: string[]
+  history?: unknown[]
+  history_sheets?: unknown[]
+}
+
+
 export const useBootstrapStore = defineStore('bootstrap', () => {
-  const state = reactive({
+  const state = reactive<BootstrapState>({
     datasources: [],
     tasks: [],
     workflows: [],
@@ -30,8 +57,8 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     historySheets: [],
   })
 
-  async function reload() {
-    const data = await apiGet('/api/bootstrap')
+  async function reload(): Promise<BootstrapState> {
+    const data = await apiGet('/api/bootstrap') as BootstrapApiResponse
     state.datasources = data.datasources || []
     state.tasks = data.tasks || []
     state.workflows = data.workflows || []
@@ -44,7 +71,9 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
   }
 
   // sidebar 显示驱动可用性 dot；从 state.drivers map 派生 [(name, ok), ...]
-  const driverItems = computed(() => Object.entries(state.drivers || {}))
+  const driverItems = computed<[string, boolean][]>(
+    () => Object.entries(state.drivers || {})
+  )
 
   return { state, reload, driverItems }
 })
