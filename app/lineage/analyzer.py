@@ -157,7 +157,7 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
 # S5：cursor source tracking ——————————————————————————————————————————————
 
 _RE_CURSOR_DML_TARGET = re.compile(
-    r"\b(?:INSERT\s+(?:OVERWRITE\s+)?(?:INTO\s+|TABLE\s+)?|REPLACE\s+INTO\s+|UPDATE\s+|MERGE\s+INTO\s+)"
+    r"\b(?:INSERT\s+(?:OVERWRITE\s+)?(?:INTO\s+|TABLE\s+)?|REPLACE\s+INTO\s+|UPDATE\s+|MERGE\s+INTO\s+|DELETE\s+FROM\s+)"
     r"([\w$#.\"`\[\]]+)",
     flags=re.IGNORECASE,
 )

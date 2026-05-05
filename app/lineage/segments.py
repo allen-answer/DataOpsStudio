@@ -165,6 +165,119 @@ _RE_CURSOR_FOR_LOOP_HEAD = re.compile(
     flags=re.IGNORECASE,
 )
 _RE_LOOP_KEYWORD = re.compile(r"\bLOOP\b", flags=re.IGNORECASE)
+# S5 PR2：扫整个 body 找 cursor FOR loop 范围用（非锚定开头）。
+_RE_CURSOR_FOR_LOOP_INLINE = re.compile(
+    r"\bFOR\s+[\w$#]+\s+IN\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _collect_loop_scopes(body: str) -> list[tuple[int, int, list[str]]]:
+    """S5 PR2：扫 body 找所有 `FOR rec IN (...) LOOP ... END LOOP;` 范围。
+
+    返回 [(scope_start, scope_end, cursor_sources)]，scope_start 是 `FOR` 起点，
+    scope_end 是匹配的 `END LOOP` 之后的位置。给 _iter_procedure_body_segments
+    的二次 pass 用：cursor LOOP 体内多个 DML 段都该继承同一份 cursor_sources。
+
+    嵌套 LOOP 都独立记录；segment 落在哪个 scope 里就用哪个（取最内层）。
+    字符串内的 LOOP/END LOOP 关键字会被字符串 skip 跳过。
+    """
+    scopes: list[tuple[int, int, list[str]]] = []
+    pos = 0
+    length = len(body)
+    while pos < length:
+        m = _RE_CURSOR_FOR_LOOP_INLINE.search(body, pos)
+        if not m:
+            break
+        for_start = m.start()
+        cursor_in_end = m.end()
+        # 跳空白找 cursor SELECT 的 (
+        j = cursor_in_end
+        while j < length and body[j].isspace():
+            j += 1
+        if j >= length or body[j] != "(":
+            pos = cursor_in_end
+            continue
+        # 配对找 )，跳过字符串里的 (
+        depth = 1
+        select_start = j + 1
+        j += 1
+        while j < length and depth > 0:
+            ch = body[j]
+            if ch in "'\"":
+                quote = ch
+                j += 1
+                while j < length:
+                    if body[j] == quote:
+                        if j + 1 < length and body[j + 1] == quote:
+                            j += 2
+                            continue
+                        j += 1
+                        break
+                    j += 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    select_end = j
+                    j += 1
+                    break
+            j += 1
+        if depth != 0:
+            pos = cursor_in_end
+            continue
+        cursor_sources = _extract_cursor_select_tables(body[select_start:select_end])
+        # 跳空白找 LOOP 关键字
+        while j < length and body[j].isspace():
+            j += 1
+        if body[j:j + 4].upper() != "LOOP" or (j + 4 < length and body[j + 4].isalnum()):
+            pos = cursor_in_end
+            continue
+        # 从 LOOP 之后找匹配的 END LOOP（按 LOOP / END LOOP 配对，跳字符串）
+        k = j + 4
+        loop_depth = 1
+        while k < length and loop_depth > 0:
+            ch = body[k]
+            if ch in "'\"":
+                quote = ch
+                k += 1
+                while k < length:
+                    if body[k] == quote:
+                        if k + 1 < length and body[k + 1] == quote:
+                            k += 2
+                            continue
+                        k += 1
+                        break
+                    k += 1
+                continue
+            if ch.isalpha():
+                # END LOOP（先 END 后 LOOP）
+                if body[k:k + 3].upper() == "END" and (k + 3 >= length or not body[k + 3].isalnum()):
+                    nx = k + 3
+                    while nx < length and body[nx].isspace():
+                        nx += 1
+                    if body[nx:nx + 4].upper() == "LOOP" and (nx + 4 >= length or not body[nx + 4].isalnum()):
+                        loop_depth -= 1
+                        k = nx + 4
+                        # 吃掉随后的 ;
+                        while k < length and body[k].isspace():
+                            k += 1
+                        if k < length and body[k] == ";":
+                            k += 1
+                        continue
+                # 嵌套 LOOP：单独 LOOP 关键字也增加 depth
+                if body[k:k + 4].upper() == "LOOP" and (k + 4 >= length or not body[k + 4].isalnum()):
+                    loop_depth += 1
+                    k += 4
+                    continue
+            k += 1
+        scope_end = k
+        scopes.append((for_start, scope_end, cursor_sources))
+        # 同一外层 LOOP 内部还可能嵌另一层 cursor FOR；从 LOOP 关键字后继续扫
+        pos = j + 4
+    return scopes
 
 
 def _strip_cursor_for_prefix(seg_text: str) -> str:
@@ -450,6 +563,24 @@ def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
             preceding_comment=preceding_comment,
             cursor_sources=cursor_sources,
         ))
+    # S5 PR2：扫整个 body 找 cursor FOR LOOP 范围，给已 split 出来但落在 LOOP 体内
+    # 的多 DML 段补 cursor_sources。比如：
+    #   FOR rec IN (SELECT FROM ods.t) LOOP
+    #     INSERT INTO dwd.t1 VALUES (rec.x);   -- 段0：原本就有 cursor_sources
+    #     UPDATE dwd.t2 SET x=rec.x WHERE ...; -- 段1：被 ; 切出来时丢了上下文
+    #   END LOOP;
+    # 取最内层 scope（嵌套时最后匹配到的）。
+    scopes = _collect_loop_scopes(body)
+    if scopes:
+        for seg in cleaned:
+            if seg.cursor_sources:
+                continue
+            inherited: list[str] = []
+            for scope_start, scope_end, scope_sources in scopes:
+                if scope_start <= seg.dml_start < scope_end and scope_sources:
+                    inherited = scope_sources
+            if inherited:
+                seg.cursor_sources = list(inherited)
     return cleaned
 
 

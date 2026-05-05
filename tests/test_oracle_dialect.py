@@ -252,6 +252,55 @@ def test_cursor_source_tracking_dedup_against_existing_edges():
     assert same_pair[0]["confidence"] == "high", "原始静态边应保留 high confidence"
 
 
+def test_cursor_source_tracking_multi_dml_in_loop_body():
+    """S5 PR2：cursor LOOP 体内多个 DML 段都应继承 cursor_sources。
+    PR1 只覆盖到第一段，UPDATE / DELETE 也是有效的 cursor body 操作。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.multi_dml IS
+    BEGIN
+      FOR rec IN (SELECT id FROM ods.batches) LOOP
+        INSERT INTO dwd.fact (id) VALUES (rec.id);
+        UPDATE dwd.audit SET last_run = sysdate WHERE id = rec.id;
+        DELETE FROM dwd.stale WHERE id = rec.id;
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.batches", "dwd.fact"), \
+        "INSERT 段应有边（PR1 已覆盖）"
+    assert _cursor_edge(result["graph_edges"], "ods.batches", "dwd.audit"), \
+        "PR2：UPDATE 段也应继承 cursor_sources 补边"
+    assert _cursor_edge(result["graph_edges"], "ods.batches", "dwd.stale"), \
+        "PR2：DELETE 段也应继承 cursor_sources 补边"
+
+
+def test_cursor_source_tracking_nested_loops_inner_takes_precedence():
+    """S5 PR2：嵌套 cursor LOOP 时段应继承"最内层"scope 的 cursor_sources。
+    一旦内层 END LOOP，外层 scope 重新生效。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.nested IS
+    BEGIN
+      FOR a IN (SELECT id FROM ods.outer_t) LOOP
+        INSERT INTO dwd.outer_dst (id) VALUES (a.id);
+        FOR b IN (SELECT code FROM ods.inner_t) LOOP
+          INSERT INTO dwd.inner_dst (id, code) VALUES (a.id, b.code);
+        END LOOP;
+        UPDATE dwd.outer_audit SET cnt = cnt + 1 WHERE id = a.id;
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    # 外层 scope 段：用 ods.outer_t
+    assert _cursor_edge(result["graph_edges"], "ods.outer_t", "dwd.outer_dst")
+    assert _cursor_edge(result["graph_edges"], "ods.outer_t", "dwd.outer_audit"), \
+        "内层 END LOOP 后外层 scope 应恢复"
+    # 内层 scope 段：用 ods.inner_t（最内层取胜）
+    assert _cursor_edge(result["graph_edges"], "ods.inner_t", "dwd.inner_dst")
+    # 外层 source 不应误挂到内层目标
+    assert not _cursor_edge(result["graph_edges"], "ods.outer_t", "dwd.inner_dst"), \
+        "嵌套时取最内层 scope，外层 source 不应挂到内层 target"
+
+
 def test_cursor_source_tracking_segment_carries_cursor_sources():
     """procedure_segments 输出的每段应该有 cursor_sources 字段，cursor FOR 段非空，
     其他段为 []。"""
