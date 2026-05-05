@@ -448,6 +448,65 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR17：PL/SQL 局部变量（含 %ROWTYPE / %TYPE）不污染 tables 列表 ─────────
+
+
+def test_rowtype_record_var_not_misidentified_as_table():
+    """`v_row ods.orders%ROWTYPE; SELECT * INTO v_row FROM ods.orders;`
+    sqlglot 把 SELECT INTO 改写为 CREATE TABLE v_row AS SELECT，导致 v_row
+    出现在 tables 列表里。PR17 用局部变量名集合过滤掉。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      v_row ods.orders%ROWTYPE;
+    BEGIN
+      SELECT * INTO v_row FROM ods.orders WHERE id = 1;
+      INSERT INTO dwd.fact (id) VALUES (v_row.id);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    table_names = {t.get("table", "").lower() for t in result.get("tables", [])}
+    assert "v_row" not in table_names, \
+        f"v_row 是 PL/SQL 局部变量，不应出现在 tables: {table_names}"
+    # 真实表 ods.orders 仍应在
+    assert "ods.orders" in table_names
+
+
+def test_proc_locals_not_in_top_level_variables():
+    """PR17：proc 体内的局部变量（含 %ROWTYPE）不应进 result.variables 列表，
+    保持前端面板只显示有意义的 package/declare 变量。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      v_local NUMBER := 10;
+      v_row   ods.orders%ROWTYPE;
+    BEGIN
+      INSERT INTO dwd.t (n) VALUES (v_local);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    variables = result.get("variables", [])
+    var_kinds = {v.get("kind") for v in variables}
+    assert "proc_local" not in var_kinds, \
+        f"proc_local 不应作为 kind 在 result.variables 暴露: {variables}"
+
+
+def test_package_constants_still_extracted_alongside_proc_locals():
+    """PR17 不该破坏 PR3：包级常量仍正常出现在 result.variables。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg AS
+      g_app_id CONSTANT VARCHAR2(32) := 'JY';
+      PROCEDURE proc IS
+        v_local NUMBER := 1;
+      BEGIN
+        INSERT INTO dwd.t (a, b) VALUES (g_app_id, v_local);
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    var_names = {v.get("name") for v in result.get("variables", [])}
+    assert "g_app_id" in var_names, "包级常量仍应可见"
+    assert "v_local" not in var_names, "proc 局部变量不该出现"
+
+
 # ─── S5 PR16：顶层匿名 PL/SQL 块（DECLARE/BEGIN）应能解析 ──────────────────────
 
 

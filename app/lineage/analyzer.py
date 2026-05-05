@@ -63,6 +63,17 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # script_variables 必须在 normalize 之前抽：normalize 会把 `${name}` → `:name`，
     # 之后就识别不出原始模板变量名了。变量记录里仍保留原始名（前端展示用）。
     script_vars = _script_variables(sql_text)
+    # S5 PR17：再扫一遍 PL/SQL 局部变量名（含 PROCEDURE 体内 IS/AS 段）。
+    # 不进 result.variables 列表（避免污染前端面板），只用于下游 source_info
+    # 过滤 —— 让 `v_row.id` 这种记录字段引用不被误归到表 v_row 上。
+    from app.lineage.variables import all_plsql_local_names as _all_local_names
+    proc_local_names = _all_local_names(sql_text)
+    existing_var_names = {v["name"].lower() for v in script_vars if v.get("name")}
+    proc_only_locals = proc_local_names - existing_var_names
+    extended_script_vars = list(script_vars) + [
+        {"name": n, "placeholder": n, "assigned_value": "", "kind": "proc_local"}
+        for n in sorted(proc_only_locals)
+    ]
     # 全角标点 → 半角；`${var}` → `:var`。string / 注释段不动。
     sql_text = _normalize_for_parsing(sql_text)
     dynamic_sql_segments = _extract_dynamic_sql_segments(sql_text)
@@ -102,7 +113,9 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     analyses: list[dict[str, Any]] = []
     for statement in deduped_statements:
         try:
-            analyses.append(_analyze_statement(statement, script_vars, normalized_schema))
+            # PR17：用 extended_script_vars（含 proc_local 名）过滤
+            # source_info 的 column.table 误识别 —— v_row.id 被识别为变量引用
+            analyses.append(_analyze_statement(statement, extended_script_vars, normalized_schema))
         except Exception as exc:
             parse_errors.append({"sql": sql(statement), "error": str(exc)})
     edges = _graph_edges(analyses)
@@ -135,6 +148,14 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
         _collect_target_operations([s for s in statements if s is not None])
     )
     flat_tables = unique_items(item for analysis in analyses for item in analysis["tables"])
+    # PR17：过滤被 sqlglot 误识别为表的 PL/SQL 局部变量。比如 `SELECT INTO v_row
+    # FROM ods.orders` 被 sqlglot 重写为 `CREATE TABLE v_row AS SELECT FROM
+    # ods.orders`，v_row 跑进 tables 列表。已知是变量名就 drop。
+    if proc_local_names:
+        flat_tables = [
+            t for t in flat_tables
+            if (t.get("table", "") or "").lower() not in proc_local_names
+        ]
     flat_insert_mappings = statement_indexed_items(analyses, "insert_mappings")
     table_roles = _identify_table_roles(flat_tables, target_summary, flat_insert_mappings)
     base_result = {

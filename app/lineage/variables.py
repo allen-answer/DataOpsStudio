@@ -125,6 +125,62 @@ _DECL_NOISE = {
 }
 
 
+# S5 PR17：扫所有 PL/SQL 局部变量名（含 PROCEDURE 体内）—— 不进 result.variables
+# 列表（避免污染前端面板），但用于 source_info 过滤，让 `v_row.id` 这种记录字段
+# 引用不被误归到表上。
+# 形态：`name [CONSTANT] <type_or_ref>;`，type 可能是基础类型 / `tab%ROWTYPE` /
+# `tab.col%TYPE` / 引用其他变量等，不强校验类型，只看 `name TYPE_LIKE_TOKEN ;`
+_RE_LOCAL_DECL = re.compile(
+    r"\b([A-Za-z_][\w$#]*)\s+"
+    r"(?:CONSTANT\s+)?"
+    r"[A-Za-z_][\w$#.%]*(?:\s*\(\s*\d+\s*(?:,\s*\d+\s*)?\))?"
+    r"(?:\s*:=\s*[^;]+)?"
+    r"\s*;",
+    flags=re.IGNORECASE,
+)
+
+
+def all_plsql_local_names(sql: str) -> set[str]:
+    """扫整个脚本找所有可能的 PL/SQL 局部变量声明，返回名称集合（小写）。
+
+    包括 PACKAGE BODY 顶层 / DECLARE 块 / PROCEDURE/FUNCTION 体的 IS/AS 段
+    （即 BEGIN 之前的声明区）。这个集合给 source_info 做过滤用 ——
+    避免 `v_row.id` 这种记录字段引用被误识别为表 v_row 的 column。
+    """
+    names: set[str] = set()
+    # 先把所有可能的"声明区"切出来：每个 IS/AS ... BEGIN 之间，以及 DECLARE ...
+    # BEGIN 之间，以及 PACKAGE BODY 顶层。简单起见：扫所有 BEGIN 之前的 IS/AS/
+    # DECLARE 段，加上 PACKAGE BODY 段。
+    decl_regions: list[str] = []
+    # PACKAGE BODY 顶层
+    for m in _RE_PACKAGE_BODY_HEAD.finditer(sql):
+        end_match = re.search(r"\bBEGIN\b", sql[m.end():], flags=re.IGNORECASE)
+        end = m.end() + end_match.start() if end_match else m.end() + 2000
+        decl_regions.append(sql[m.end():end])
+    # PROCEDURE/FUNCTION ... IS/AS ... BEGIN
+    proc_pattern = re.compile(
+        r"\b(?:PROCEDURE|FUNCTION)\s+[\w$#.]+(?:\s*\([^)]*\))?(?:\s+RETURN\s+[\w$#.%]+)?\s+(?:IS|AS)\b",
+        flags=re.IGNORECASE,
+    )
+    for m in proc_pattern.finditer(sql):
+        end_match = re.search(r"\bBEGIN\b", sql[m.end():], flags=re.IGNORECASE)
+        end = m.end() + end_match.start() if end_match else m.end() + 2000
+        decl_regions.append(sql[m.end():end])
+    # DECLARE 块
+    for m in _RE_DECLARE_HEAD.finditer(sql):
+        end_match = re.search(r"\bBEGIN\b", sql[m.end():], flags=re.IGNORECASE)
+        end = m.end() + end_match.start() if end_match else m.end() + 2000
+        decl_regions.append(sql[m.end():end])
+
+    for region in decl_regions:
+        for m in _RE_LOCAL_DECL.finditer(region):
+            name = m.group(1)
+            if name.upper() in _DECL_NOISE:
+                continue
+            names.add(name.lower())
+    return names
+
+
 def _iter_declaration_regions(sql: str) -> list[tuple[str, str]]:
     """切出可能含变量声明的代码区。返回 [(region_text, kind_prefix)]。
 
