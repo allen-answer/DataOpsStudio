@@ -48,7 +48,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function reload(): Promise<void> {
     try {
-      const data = await apiGet('/api/projects')
+      const data = await apiGet<Project[]>('/api/projects')
       projects.value = Array.isArray(data) ? data : []
       // 当前选中项目已从可见列表里消失（项目被删 / 用户被踢）→ 回退"全部"
       if (currentProjectId.value && !projects.value.some(p => p.id === currentProjectId.value)) {
@@ -60,13 +60,13 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   async function createProject(name: string, description = ''): Promise<Project> {
-    const project = await apiJson('/api/projects', 'POST', { name, description, members: [] }) as Project
+    const project = await apiJson<Project>('/api/projects', 'POST', { name, description, members: [] })
     await reload()
     return project
   }
 
   async function updateProject(projectId: string, payload: ProjectUpdatePayload): Promise<Project> {
-    const updated = await apiJson(`/api/projects/${projectId}`, 'PUT', payload) as Project
+    const updated = await apiJson<Project>(`/api/projects/${projectId}`, 'PUT', payload)
     await reload()
     return updated
   }

@@ -143,7 +143,7 @@ export const useLineageStore = defineStore('lineage', () => {
   }
 
   async function loadLineageAIStatus(): Promise<LineageAIStatus | null> {
-    lineageAIStatus.value = await apiGet('/api/lineage/ai/status') as LineageAIStatus
+    lineageAIStatus.value = await apiGet<LineageAIStatus>('/api/lineage/ai/status')
     return lineageAIStatus.value
   }
 

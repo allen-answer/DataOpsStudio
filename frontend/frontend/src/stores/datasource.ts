@@ -107,7 +107,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
     // 当前选中项目 → 新建资源自动归属该项目（"全部"模式 = 不指定 project_id）
     const payload = { ...datasourceDraft, project_id: project.currentProjectId || '' }
     try {
-      const created = await apiJson('/api/datasources', 'POST', payload) as Datasource
+      const created = await apiJson<Datasource>('/api/datasources', 'POST', payload)
       bootstrap.state.datasources.push(created)
       resetDatasourceDraft()
       notice.setNotice('数据源已创建')
@@ -122,7 +122,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     try {
-      const updated = await apiJson(`/api/datasources/${id}`, 'PUT', { ...editDraft }) as Datasource
+      const updated = await apiJson<Datasource>(`/api/datasources/${id}`, 'PUT', { ...editDraft })
       const idx = bootstrap.state.datasources.findIndex((d) => (d as Datasource).id === id)
       if (idx !== -1) bootstrap.state.datasources[idx] = updated
       editingDatasourceId.value = ''

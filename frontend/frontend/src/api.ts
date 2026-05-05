@@ -1,6 +1,10 @@
 // 全局 fetch wrapper，自动带 Authorization: Bearer <token>。
 // token 由 useAuthStore 管理，落 localStorage：dataops.token；本模块直接读
 // localStorage 避免循环依赖（store 还会反过来调 api）。
+//
+// S4.A：迁 .ts。给 apiGet / apiJson / apiForm 加泛型 T，调用方写
+//   `await apiGet<User>('/api/auth/me')` 直接拿 User 类型，不用 store 内 `as T`
+// 没标的话默认 unknown（比 any 安全），强迫 caller 显式断言或检查。
 const TOKEN_KEY = 'dataops.token'
 const PROJECT_KEY = 'dataops.project_id'
 
@@ -14,18 +18,36 @@ const PROJECT_AWARE_PATHS = [
   '/api/history',
 ]
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export interface TranslateErrorContext {
+  error?: string
+  sql_excerpt?: string
+  db_type?: string
+}
+
+interface AIStateProbe {
+  enabled: boolean
+  autoTranslate: boolean
+}
+
+interface AITranslateContext {
+  sql_excerpt?: string
+  db_type?: string
+}
+
 // Phase 10 后期：API 版本化前缀。所有 /api/X 透明改写到 /api/v1/X，让前端
 // 走稳定 v1 契约。后端 install_v1_aliases 给 /api/v1/X 注册了同义路由，所以
 // /api/X 旧路径仍可用（deprecation window）。新代码可以直接写 /api/v1/...
 // 也可以继续写 /api/...（等价）。
-function _versionPath(url) {
+function _versionPath(url: string): string {
   if (typeof url !== 'string') return url
   if (url.startsWith('/api/v1/')) return url
   if (url.startsWith('/api/')) return '/api/v1/' + url.slice(5)
   return url
 }
 
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   const token = localStorage.getItem(TOKEN_KEY) || ''
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
@@ -34,7 +56,7 @@ function authHeaders() {
 // 主路径（不含子路径，如 /api/datasources/:id 不加）。
 // 注意：检查的是 versioned 之前的 path（PROJECT_AWARE_PATHS 用 /api/ 前缀写），
 // 但返回的是 versioned URL。
-function withProjectQuery(url) {
+function withProjectQuery(url: string): string {
   const projectId = localStorage.getItem(PROJECT_KEY) || ''
   const versioned = _versionPath(url)
   if (!projectId) return versioned
@@ -45,17 +67,17 @@ function withProjectQuery(url) {
   return `${versioned}${sep}project_id=${encodeURIComponent(projectId)}`
 }
 
-const parseError = async (response) => {
+const parseError = async (response: Response): Promise<string> => {
   const type = response.headers.get('content-type') || ''
   if (type.includes('application/json')) {
-    const payload = await response.json()
+    const payload = await response.json() as { detail?: string } & Record<string, unknown>
     return payload.detail || JSON.stringify(payload)
   }
   return response.text()
 }
 
 // 401 时自动清 token + 跳 /spa/#/login（避免每个 view 自己处理）
-function _handleAuthFailure(response) {
+function _handleAuthFailure(response: Response): void {
   if (response.status !== 401) return
   // 已经在 login 页就别再跳，避免死循环
   const hash = window.location.hash || ''
@@ -68,15 +90,15 @@ function _handleAuthFailure(response) {
 // AI 错误翻译 hook：5xx 或长错误时异步调 /api/ai/translate-error。
 // 不阻塞主请求 throw —— 翻译完成后通过事件总线推给 noticeStore。
 const _AI_TRANSLATE_THRESHOLD_CHARS = 60
-const _AI_TRANSLATE_RECENT = new Map()  // dedupe：相同 error 5 秒内不重复翻译
+const _AI_TRANSLATE_RECENT = new Map<string, number>()  // dedupe：相同 error 5 秒内不重复翻译
 
-let _aiEnabled = null  // null=未探测，{enabled, configured, autoTranslate}=探测过
-async function _isAIEnabled() {
+let _aiEnabled: AIStateProbe | null = null  // null=未探测
+async function _isAIEnabled(): Promise<AIStateProbe> {
   if (_aiEnabled !== null) return _aiEnabled
   try {
     const status = await fetch(_versionPath('/api/lineage/ai/status'), { headers: { ...authHeaders() } })
     if (status.ok) {
-      const data = await status.json()
+      const data = await status.json() as { enabled?: boolean; configured?: boolean; enable_auto_translation?: boolean }
       _aiEnabled = {
         enabled: !!data?.enabled && !!data?.configured,
         // Phase 9 Day 6：默认 off。admin 在 AIConfig 显式开启 enable_auto_translation
@@ -93,15 +115,20 @@ async function _isAIEnabled() {
 }
 
 // 给外部（admin AIConfigView 保存配置后）调用，丢掉缓存重新探测
-export function invalidateAIEnabledCache() { _aiEnabled = null }
+export function invalidateAIEnabledCache(): void { _aiEnabled = null }
 
-async function _maybeTranslateError(response, errorText, context = {}) {
+async function _maybeTranslateError(
+  response: Response,
+  errorText: string,
+  context: AITranslateContext = {},
+): Promise<void> {
   if (!errorText || errorText.length < _AI_TRANSLATE_THRESHOLD_CHARS) return
   // 仅对 5xx + 4xx 中的 422 / 400 长错误翻译；403 / 404 / 409 已经够清楚
   if (response.status < 500 && ![400, 422].includes(response.status)) return
   const dedupeKey = `${response.status}:${errorText.slice(0, 100)}`
   const now = Date.now()
-  if (_AI_TRANSLATE_RECENT.has(dedupeKey) && now - _AI_TRANSLATE_RECENT.get(dedupeKey) < 5000) return
+  const lastSeen = _AI_TRANSLATE_RECENT.get(dedupeKey)
+  if (lastSeen && now - lastSeen < 5000) return
   _AI_TRANSLATE_RECENT.set(dedupeKey, now)
   // Phase 9 Day 6：默认关。admin 在 AIConfig 开启 enable_auto_translation
   // 才走这条自动翻译路径，避免每个 5xx 都烧 token。
@@ -118,9 +145,9 @@ async function _maybeTranslateError(response, errorText, context = {}) {
       }),
     })
     if (!r.ok) return
-    const data = await r.json()
+    const data = await r.json() as { ok?: boolean; translation?: string; suggestions?: string[] }
     if (!data.ok || !data.translation) return
-    // 派发自定义事件 —— App.vue 接 + 推给 noticeStore（避免 api.js 直接依赖 store）
+    // 派发自定义事件 —— App.vue 接 + 推给 noticeStore（避免 api.ts 直接依赖 store）
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('dataops:error-translated', {
         detail: { translation: data.translation, suggestions: data.suggestions || [], original: errorText },
@@ -131,7 +158,9 @@ async function _maybeTranslateError(response, errorText, context = {}) {
   }
 }
 
-export const apiGet = async (url) => {
+/** GET /api/...，自动 versioning + project_id 注入 + Bearer token。
+ * 调用方传 T 拿强类型；不传默认 unknown。 */
+export const apiGet = async <T = unknown>(url: string): Promise<T> => {
   const response = await fetch(withProjectQuery(url), { headers: { ...authHeaders() } })
   if (!response.ok) {
     _handleAuthFailure(response)
@@ -139,10 +168,15 @@ export const apiGet = async (url) => {
     _maybeTranslateError(response, message)
     throw new Error(message)
   }
-  return response.json()
+  return response.json() as Promise<T>
 }
 
-export const apiJson = async (url, method, payload) => {
+/** POST/PUT/PATCH/DELETE 带 JSON body。payload undefined → no body。 */
+export const apiJson = async <T = unknown>(
+  url: string,
+  method: HttpMethod,
+  payload?: unknown,
+): Promise<T> => {
   const response = await fetch(_versionPath(url), {
     method,
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -154,10 +188,11 @@ export const apiJson = async (url, method, payload) => {
     _maybeTranslateError(response, message)
     throw new Error(message)
   }
-  return response.json()
+  return response.json() as Promise<T>
 }
 
-export const apiForm = async (url, formData) => {
+/** multipart/form-data POST。FormData body，无 Content-Type header（浏览器自填 boundary）。 */
+export const apiForm = async <T = unknown>(url: string, formData: FormData): Promise<T> => {
   const response = await fetch(_versionPath(url), {
     method: 'POST',
     headers: { ...authHeaders() },
@@ -169,14 +204,14 @@ export const apiForm = async (url, formData) => {
     _maybeTranslateError(response, message)
     throw new Error(message)
   }
-  return response.json()
+  return response.json() as Promise<T>
 }
 
 // 显式触发翻译 + 上下文（适合预览 SQL 失败 / 错误卡片底部"AI 解释"按钮）：
 // 业务代码 catch 后调 translateError({ error: e.message, sql_excerpt, db_type })
 // Phase 9 Day 6：显式调用不受 enable_auto_translation gate 限制，只要 AI provider
 // 已配置就走 —— 用户主动点按钮 = 明确同意烧 token。
-export async function translateError({ error, sql_excerpt, db_type } = {}) {
+export async function translateError({ error, sql_excerpt, db_type }: TranslateErrorContext = {}): Promise<void> {
   if (!error) return
   const aiState = await _isAIEnabled()
   if (!aiState?.enabled) return
@@ -187,7 +222,7 @@ export async function translateError({ error, sql_excerpt, db_type } = {}) {
       body: JSON.stringify({ error_text: String(error), sql_excerpt, db_type }),
     })
     if (!r.ok) return
-    const data = await r.json()
+    const data = await r.json() as { ok?: boolean; translation?: string; suggestions?: string[] }
     if (data.ok && data.translation && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('dataops:error-translated', {
         detail: { translation: data.translation, suggestions: data.suggestions || [], original: String(error) },
@@ -196,4 +231,4 @@ export async function translateError({ error, sql_excerpt, db_type } = {}) {
   } catch { /* silent */ }
 }
 
-export const readFileText = async (file) => file ? file.text() : ''
+export const readFileText = async (file: File | null): Promise<string> => file ? file.text() : ''

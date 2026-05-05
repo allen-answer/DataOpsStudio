@@ -72,7 +72,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(username: string, password: string): Promise<LoginResponse> {
-    const data = await apiJson('/api/auth/login', 'POST', { username, password }) as LoginResponse
+    const data = await apiJson<LoginResponse>('/api/auth/login', 'POST', { username, password })
     token.value = data.access_token
     user.value = data.user
     _persist()
@@ -93,7 +93,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function refreshMe(): Promise<User | null> {
     if (!token.value) return null
     try {
-      const me = await apiJson('/api/auth/me', 'GET') as User
+      const me = await apiJson<User>('/api/auth/me', 'GET')
       user.value = me
       _persist()
       return me

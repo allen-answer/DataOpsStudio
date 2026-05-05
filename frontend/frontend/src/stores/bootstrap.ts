@@ -58,7 +58,7 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
   })
 
   async function reload(): Promise<BootstrapState> {
-    const data = await apiGet('/api/bootstrap') as BootstrapApiResponse
+    const data = await apiGet<BootstrapApiResponse>('/api/bootstrap')
     state.datasources = data.datasources || []
     state.tasks = data.tasks || []
     state.workflows = data.workflows || []

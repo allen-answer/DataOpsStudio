@@ -153,7 +153,7 @@ export const useHistoryStore = defineStore('history', () => {
   /** 拉一遍 /api/history 写回 bootstrapStore.state；HistoryView 删除 / 跑完 task
    * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。 */
   async function loadHistory(): Promise<void> {
-    _bootstrap.state.history = await apiGet('/api/history') as HistoryRecord[]
+    _bootstrap.state.history = await apiGet<HistoryRecord[]>('/api/history')
     selectedHistory.value = new Set()
   }
 
