@@ -39,6 +39,12 @@ npm run test:coverage # 覆盖率（@vitest/coverage-v8）
 
 # TypeScript 类型检查（S3.B 起 stores/*.ts 有类型）
 npm run typecheck
+
+# 从后端 /openapi.json 自动生成 TS 类型（S4.B）—— 后端 Pydantic model 改了
+# 字段就跑一遍，前端类型自动跟。生成结果在 src/types/api-schema.ts；
+# 友好别名（ApiUser / ApiDataSource / ...）在 src/types/api.ts，store 直接 import。
+npm run schema:fetch     # 需要 docker compose up（hits localhost:8010）
+npm run schema:from-file # 从已有的 .openapi.json 生成（CI / 离线用）
 ```
 
 **主要验收以 Docker / WSL 构建为准。** Windows PowerShell 直接跑 `npm run build` 偶发 `Vite/Rolldown spawn EPERM`（Rolldown 子进程启动被 Windows Defender / 文件锁拦），属环境问题；切换到 WSL 跑构建：
@@ -321,7 +327,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **通用未做**：
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **TypeScript 渐进迁移**（S3.B 已落 8/10 store）：auth / notice / project / bootstrap / datasource / batch / lineage / history 8 个 store 已迁 .ts（含 export 类型给 view 用）+ tsconfig + npm typecheck 走 vue-tsc + CI 集成。剩 task / workflow 2 个大 store（~660 行各）+ composables + view（lang="ts"）+ Pydantic→TS schema codegen 留下个 sprint
+- **TypeScript 渐进迁移**（S3.B 8/10 store + S4.A api.ts + S4.B codegen 落地）：8 个小中 store + api.ts（含泛型 apiGet&lt;T&gt; / apiJson&lt;T&gt;）已 ts；openapi-typescript 从 /openapi.json 自动生成 `src/types/api-schema.ts`，友好别名在 `src/types/api.ts`（auth / project / datasource 已用）。剩 task / workflow 2 个大 store + composables + view（lang="ts"）留下个 sprint
 - **i18n 详情页字符串抽取**：骨架已落（vue-i18n + sidebar + login + topbar），剩详情页 / 工作流编辑器 / 血缘 9-tab 等长尾字符串抽取（一片片来，避免单 PR 改太多）
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）

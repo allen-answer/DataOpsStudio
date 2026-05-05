@@ -19,32 +19,16 @@ import { apiJson } from '../api'
 import { useNoticeStore } from './notice'
 import { useBootstrapStore } from './bootstrap'
 import { useProjectStore } from './project'
+import type { ApiDataSource, ApiDataSourceCreate } from '../types/api'
 
 
-export interface DatasourceDraft {
-  name: string
-  db_type: string
-  host: string
-  port: number
-  database: string
-  username: string
-  password: string
-}
+// S4.B：Datasource shape 走 codegen 同步后端 Pydantic
+export type Datasource = ApiDataSource
 
-export interface DatasourceEditDraft extends DatasourceDraft {
-  project_id: string
-}
-
-export interface Datasource {
-  id: string
-  name: string
-  db_type: string
-  host: string
-  port: number
-  database: string
-  username: string
-  project_id?: string
-}
+// 表单草稿：新建表单不带 project_id（提交时再从 useProjectStore 注入）；
+// 编辑草稿带 project_id（让 admin 跨项目移动 datasource）。
+export type DatasourceDraft = Omit<ApiDataSourceCreate, 'project_id'>
+export type DatasourceEditDraft = ApiDataSourceCreate
 
 
 function _toErrorMessage(error: unknown): string {
@@ -55,9 +39,13 @@ function _toErrorMessage(error: unknown): string {
 }
 
 export const useDatasourceStore = defineStore('datasource', () => {
+  // S4.B 收口的字段名一致性 fix：db_type 后端 enum 是 'MySQL' / 'Oracle' /
+  // 'DM' / 'DB2'（区分大小写）。原来写 'mysql' 小写会被后端 422 reject —— 之前
+  // 没暴露是因为表单上 select dropdown 的 value 也都是大写覆盖默认值，
+  // 但默认 state 偷偷错了 1 年。codegen 类型对齐后 typecheck 直接抓出来。
   const datasourceDraft = reactive<DatasourceDraft>({
     name: '',
-    db_type: 'mysql',
+    db_type: 'MySQL',
     host: '',
     port: 3306,
     database: '',
@@ -67,7 +55,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
 
   const editingDatasourceId = ref<string>('')
   const editDraft = reactive<DatasourceEditDraft>({
-    name: '', db_type: '', host: '', port: 3306,
+    name: '', db_type: 'MySQL', host: '', port: 3306,
     database: '', username: '', password: '',
     project_id: '',
   })

@@ -15,18 +15,14 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiJson } from '../api'
+import type { ApiUser, ApiUserRole } from '../types/api'
 
 
-export type UserRole = 'admin' | 'editor' | 'viewer'
+// S4.B：User / UserRole 走 codegen 同步后端 Pydantic model
+export type UserRole = ApiUserRole              // 'admin' | 'editor' | 'viewer'
+export type User = ApiUser
 
-export interface User {
-  id?: string
-  username: string
-  display_name?: string
-  role: UserRole
-  created_at?: string
-}
-
+// LoginResponse 没有对应 Pydantic model（后端 inline dict），保留手写
 export interface LoginResponse {
   access_token: string
   token_type: string

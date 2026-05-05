@@ -10,20 +10,14 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiGet, apiJson } from '../api'
+import type { ApiProject, ApiProjectCreate } from '../types/api'
 
 
-export interface Project {
-  id: string
-  name: string
-  description?: string
-  members?: string[]
-}
+// S4.B：用 codegen 生成的 ApiProject 替代手写 Project，类型自动跟后端 Pydantic
+// model 同步。后端字段加减 → npm run schema:fetch → 这里自动有 typecheck 提示。
+export type Project = ApiProject
 
-export interface ProjectUpdatePayload {
-  name?: string
-  description?: string
-  members?: string[]
-}
+export type ProjectUpdatePayload = Partial<ApiProjectCreate>
 
 
 const PROJECT_KEY = 'dataops.project_id'
