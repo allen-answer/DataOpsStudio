@@ -143,7 +143,7 @@ const mappingIssues = computed(() => {
     >
       <div class="mb-2 flex items-center gap-2">
         <AlertTriangle class="h-4 w-4 text-status-warning" />
-        <h3 class="text-sm font-semibold text-status-warning">混合输入预警</h3>
+        <h3 class="text-sm font-semibold text-status-warning">{{ $t('workbench.mapping.mixedInputWarning') }}</h3>
       </div>
       <ul class="space-y-1.5 text-[12px] text-slate-700">
         <li v-if="hasMixedExcelSql" class="flex items-start gap-2">
@@ -184,7 +184,7 @@ const mappingIssues = computed(() => {
     <div class="card">
       <div class="mb-3 flex items-center justify-between gap-2">
         <div>
-          <h3 class="text-base font-semibold text-slate-800">字段映射</h3>
+          <h3 class="text-base font-semibold text-slate-800">{{ $t('workbench.mapping.title') }}</h3>
           <p class="muted text-[11px]">源字段名与目标字段名不一致时，每行写一条 `source_col -&gt; target_col`</p>
         </div>
         <button
@@ -200,7 +200,7 @@ const mappingIssues = computed(() => {
       <textarea
         v-model="taskDraft.column_mappings"
         class="min-h-[100px] bg-slate-50 sql-font text-sm"
-        placeholder="例：&#10;src_id -&gt; tgt_id&#10;create_time -&gt; created_at"
+        :placeholder="$t('workbench.mapping.placeholder')"
       />
       <!-- 映射条目列名不在已提取字段里时的实时提示 -->
       <ul v-if="mappingIssues.length" class="mt-2 space-y-1 rounded-lg border border-status-warning-bg/60 bg-status-warning-bg/30 p-2 text-[11px] text-status-warning">

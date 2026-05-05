@@ -36,7 +36,7 @@ function taskIcon(task) {
   <aside class="card sticky top-4 flex h-[calc(100vh-9rem)] flex-col">
     <div class="mb-3 flex items-center justify-between">
       <div>
-        <h3 class="text-base font-bold text-slate-800">对比任务</h3>
+        <h3 class="text-base font-bold text-slate-800">{{ $t('workbench.taskList.title') }}</h3>
         <p class="text-xs text-slate-500">{{ state.tasks.length }} 个任务 · {{ state.datasources.length }} 数据源</p>
       </div>
       <button class="btn btn-primary h-8 gap-1 px-3 text-xs" @click="selectTask('new')">
@@ -49,7 +49,7 @@ function taskIcon(task) {
       <input
         :value="search"
         class="w-full rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-2 text-xs"
-        placeholder="搜索任务名 / 主键"
+        :placeholder="$t('workbench.taskList.searchPlaceholder')"
         @input="emit('update:search', $event.target.value)"
       >
     </div>

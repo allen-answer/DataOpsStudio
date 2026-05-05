@@ -102,8 +102,8 @@ const cardClass = (tone) => ({
     <div v-if="compareResult" class="card">
       <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h3 class="text-base font-semibold text-slate-800">对比结果</h3>
-          <p class="muted text-[11px]">点击下面卡片可筛选 samples</p>
+          <h3 class="text-base font-semibold text-slate-800">{{ $t('workbench.result.title') }}</h3>
+          <p class="muted text-[11px]">{{ $t('workbench.result.hint') }}</p>
         </div>
         <div class="flex gap-2">
           <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${compareResult.excel_filename}`">
@@ -198,7 +198,7 @@ const cardClass = (tone) => ({
     <!-- 空态 -->
     <div v-else class="card flex flex-col items-center gap-2 border-dashed py-10 text-center">
       <Inbox class="h-10 w-10 text-slate-300" />
-      <p class="muted">暂无结果。保存任务后点击「开始执行对比」</p>
+      <p class="muted">{{ $t('workbench.result.noResult') }}</p>
     </div>
   </section>
 </template>

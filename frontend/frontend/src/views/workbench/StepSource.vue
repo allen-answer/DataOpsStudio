@@ -15,37 +15,37 @@ const { projects } = storeToRefs(useProjectStore())
   <section class="space-y-4">
     <!-- 任务基础字段 -->
     <div class="card">
-      <h3 class="mb-3 text-base font-semibold text-slate-800">基础信息</h3>
+      <h3 class="mb-3 text-base font-semibold text-slate-800">{{ $t('workbench.source.sectionBasic') }}</h3>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">任务名称</span>
-          <input v-model="taskDraft.name" placeholder="例：MySQL 用户表对比" class="bg-slate-50">
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.source.taskName') }}</span>
+          <input v-model="taskDraft.name" :placeholder="$t('workbench.source.taskNamePlaceholder')" class="bg-slate-50">
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">源数据源</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.source.sourceDatasource') }}</span>
           <select v-model="taskDraft.source_id" class="bg-slate-50">
-            <option value="">选择数据源</option>
+            <option value="">{{ $t('workbench.source.pickDatasource') }}</option>
             <option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">目标数据源</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.source.targetDatasource') }}</span>
           <select v-model="taskDraft.target_id" class="bg-slate-50">
-            <option value="">选择数据源</option>
+            <option value="">{{ $t('workbench.source.pickDatasource') }}</option>
             <option v-for="item in state.datasources" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">SQL 模式</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.source.sqlMode') }}</span>
           <select v-model="taskDraft.sql_mode" class="bg-slate-50">
-            <option value="single">单 SQL（源/目标共用同一段 SQL）</option>
-            <option value="double">双 SQL（源/目标分别填写）</option>
+            <option value="single">{{ $t('workbench.source.sqlModeSingle') }}</option>
+            <option value="double">{{ $t('workbench.source.sqlModeDouble') }}</option>
           </select>
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">关联项目空间</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.source.relatedProject') }}</span>
           <select v-model="taskDraft.project_id" class="bg-slate-50">
-            <option value="">全局（无项目）</option>
+            <option value="">{{ $t('workbench.source.globalProject') }}</option>
             <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
         </label>
@@ -59,7 +59,7 @@ const { projects } = storeToRefs(useProjectStore())
     </div>
 
     <FieldCachePanel
-      title="预览字段缓存"
+      :title="$t('workbench.fieldCache.titlePreview')"
       hint="SQL 预览或提取字段后，列名会缓存到这里；可以直接设主键和忽略字段，也会带到后续步骤。"
       compact
     />

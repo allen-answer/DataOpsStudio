@@ -42,41 +42,41 @@ const RULE_TOGGLES = computed(() => [
     />
     <!-- 主键 / 忽略字段 -->
     <div class="card">
-      <h3 class="mb-3 text-base font-semibold text-slate-800">键 & 忽略</h3>
+      <h3 class="mb-3 text-base font-semibold text-slate-800">{{ $t('workbench.rules.sectionKeyIgnore') }}</h3>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <div>
           <label>
-            <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">主键列（逗号分隔）</span>
+            <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.keyColumns') }}</span>
             <div class="flex gap-2">
-              <input v-model="taskDraft.key_columns" placeholder="例：id 或 order_no, line_no" class="flex-1 bg-slate-50 sql-font text-sm">
+              <input v-model="taskDraft.key_columns" :placeholder="$t('workbench.rules.keyPlaceholder')" class="flex-1 bg-slate-50 sql-font text-sm">
               <button class="btn btn-ghost h-10 gap-1.5 px-3 text-xs" @click="recommendKey">
                 <Wand2 class="h-3.5 w-3.5" /> 自动推荐
               </button>
             </div>
           </label>
-          <p class="muted mt-1 text-[11px]">同一行在两侧靠主键归并；多列主键写多个字段名（逗号分隔）。</p>
+          <p class="muted mt-1 text-[11px]">{{ $t('workbench.rules.keyHint') }}</p>
         </div>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">忽略字段</span>
-          <input v-model="taskDraft.ignore_columns" placeholder="例：etl_time, created_at" class="bg-slate-50 sql-font text-sm">
-          <p class="muted mt-1 text-[11px]">这些字段不参与值比较；主键不能放进忽略字段。</p>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.ignoreColumns') }}</span>
+          <input v-model="taskDraft.ignore_columns" :placeholder="$t('workbench.rules.ignorePlaceholder')" class="bg-slate-50 sql-font text-sm">
+          <p class="muted mt-1 text-[11px]">{{ $t('workbench.rules.ignoreHint') }}</p>
         </label>
       </div>
       <div class="mt-3 max-w-md">
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">Schema 策略</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.schemaPolicy') }}</span>
           <select v-model="taskDraft.schema_policy" class="bg-slate-50 text-sm">
-            <option value="warn">允许字段不一致，按位置映射并提示</option>
-            <option value="strict">严格模式：字段不一致时阻断执行</option>
+            <option value="warn">{{ $t('workbench.rules.schemaWarn') }}</option>
+            <option value="strict">{{ $t('workbench.rules.schemaStrict') }}</option>
           </select>
         </label>
-        <p class="muted mt-1 text-[11px]">未手工配置字段映射时，系统按左右字段顺序映射；多出的字段会标记为仅单侧。</p>
+        <p class="muted mt-1 text-[11px]">{{ $t('workbench.rules.schemaHint') }}</p>
       </div>
     </div>
 
     <!-- 对比开关 4 个 -->
     <div class="card">
-      <h3 class="mb-3 text-base font-semibold text-slate-800">类型 & 标准化</h3>
+      <h3 class="mb-3 text-base font-semibold text-slate-800">{{ $t('workbench.rules.sectionTypeNormalize') }}</h3>
       <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
         <label
           v-for="r in RULE_TOGGLES" :key="r.key"
@@ -105,22 +105,22 @@ const RULE_TOGGLES = computed(() => [
 
     <!-- 数值容忍 / 行数 / 分块 -->
     <div class="card">
-      <h3 class="mb-3 text-base font-semibold text-slate-800">阈值 & 限额</h3>
+      <h3 class="mb-3 text-base font-semibold text-slate-800">{{ $t('workbench.rules.sectionLimits') }}</h3>
       <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">数值容忍</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.numericTolerance') }}</span>
           <input v-model="taskDraft.numeric_tolerance" type="number" step="any" placeholder="0" class="bg-slate-50">
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">最大行数</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.maxRows') }}</span>
           <input v-model="taskDraft.max_rows" type="number" placeholder="100000" class="bg-slate-50">
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">导出行数</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.exportMaxRows') }}</span>
           <input v-model="taskDraft.export_max_rows" type="number" placeholder="100000" class="bg-slate-50">
         </label>
         <label>
-          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">分块行数</span>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">{{ $t('workbench.rules.fetchChunkSize') }}</span>
           <input v-model="taskDraft.fetch_chunk_size" type="number" placeholder="5000" class="bg-slate-50">
         </label>
       </div>
