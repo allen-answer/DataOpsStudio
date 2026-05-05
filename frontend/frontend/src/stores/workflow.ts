@@ -10,6 +10,10 @@
  *   - workflowTemplates（codex 加的模板列表）
  *
  * Handlers 内部调 useNoticeStore + useBootstrapStore 协调，不依赖 App.vue。
+ *
+ * S3.B 收尾：迁 .ts。WorkflowDraft 是表单形态（拍平 node config + 一些 UI-
+ * only 字段），跟 ApiWorkflow 后端模型不同 —— 通过 fillDraft / workflowPayload
+ * 互转。Run / template handler 用 codegen 类型，job/status 用 unknown 兜底。
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
@@ -17,21 +21,122 @@ import { apiGet, apiJson } from '../api'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
 import { useProjectStore } from './project'
+import type {
+  ApiWorkflow,
+  ApiWorkflowRun,
+  ApiWorkflowRunSummary,
+  ApiWorkflowTemplate,
+  ApiWorkflowStatus,
+} from '../types/api'
 
-function _toErrorMessage(error) {
-  return error?.message || String(error || '未知错误')
+
+export type WorkflowNodeKind = 'compare' | 'lineage' | 'http' | 'excel_export' | 'params'
+
+export interface AssetRef {
+  key: string
+  kind: string
+  description: string
 }
 
-const DEFAULT_DRAFT = () => ({
+export interface ExportSheet {
+  id: string
+  enabled: boolean
+  sheet_name: string
+  source_type: 'node_output' | 'history_run' | string
+  node_id: string
+  dataset: string
+  run_id: string
+  max_rows: number
+}
+
+export interface ParameterDef {
+  name: string
+  type: string
+  default?: unknown
+  source?: string
+  required?: boolean
+  description?: string
+  sql?: string
+  datasource?: string
+}
+
+/** 表单节点形态：跟 ApiWorkflowNode 不同 —— config 字段拍平到顶层（task_id /
+ * source_sql_override / sheets / etc.），buildNodeConfig 把它转回嵌套 config。 */
+export interface DraftNode {
+  id: string
+  type: WorkflowNodeKind
+  name: string
+  // compare
+  task_id: string
+  source_sql_override: string
+  target_sql_override: string
+  // lineage
+  sql: string
+  dialect: string
+  input_mode: 'inline_sql' | 'uploaded_file' | 'uploaded_zip' | string
+  script_path: string
+  script_filename: string
+  script_kind: string
+  ai_enabled: boolean
+  // http
+  method: string
+  url: string
+  body: string
+  expect_status: string | number
+  // excel_export
+  sheets: ExportSheet[]
+  // params
+  parameters: ParameterDef[]
+  // 通用
+  depends_on: string[]
+  when: string
+}
+
+export interface WorkflowDraft {
+  name: string
+  description: string
+  owner: string
+  tags: string[]
+  schedule_cron: string
+  project: string
+  project_id: string
+  status: ApiWorkflowStatus | string
+  input_assets: AssetRef[]
+  output_assets: AssetRef[]
+  notifications: Record<string, unknown>[]
+  sensors: Record<string, unknown>[]
+  default_variables: string
+  runtime_variables: string
+  nodes: DraftNode[]
+}
+
+export interface AsyncRunJob {
+  job_id: string
+  workflow_id?: string
+  status?: string
+  stage?: string
+  error?: string
+  result?: ApiWorkflowRun
+}
+
+
+function _toErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error ?? '未知错误')
+}
+
+const DEFAULT_DRAFT = (): WorkflowDraft => ({
   name: '',
   description: '',
   owner: '',
   tags: [],
   schedule_cron: '',
   project: '',
-  project_id: '',            // 关联 Project.id（多项目空间）
-  status: 'draft',           // draft | active | paused | archived
-  input_assets: [],          // [{key, kind, description}]
+  project_id: '',
+  status: 'draft',
+  input_assets: [],
   output_assets: [],
   notifications: [],
   sensors: [],
@@ -40,7 +145,7 @@ const DEFAULT_DRAFT = () => ({
   nodes: [],
 })
 
-const SHEET_TEMPLATES = {
+const SHEET_TEMPLATES: Record<string, { sheet_name: string; dataset: string }> = {
   summary:        { sheet_name: '汇总对照',     dataset: 'summary' },
   diff:           { sheet_name: '差异明细',     dataset: 'diff' },
   only_source:    { sheet_name: '源端缺失',     dataset: 'only_source' },
@@ -48,8 +153,8 @@ const SHEET_TEMPLATES = {
   same:           { sheet_name: '一致行',       dataset: 'same' },
 }
 
-function _parseVariables(text) {
-  const out = {}
+function _parseVariables(text: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
   String(text || '').split('\n').forEach((line) => {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) return
@@ -61,106 +166,109 @@ function _parseVariables(text) {
   return out
 }
 
-function _stringifyVariables(obj) {
+function _stringifyVariables(obj: Record<string, unknown> | undefined | null): string {
   return Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join('\n')
 }
 
 
 export const useWorkflowStore = defineStore('workflow', () => {
-  const workflowDraft = reactive(DEFAULT_DRAFT())
-  const selectedWorkflowId = ref('new')
-  const workflowResult = ref(null)
-  const workflowAsyncJob = ref(null)
-  const workflowAsyncStatus = ref(null)
-  const workflowAsyncPollTimer = ref(null)
-  const workflowRunHistory = ref([])
-  const allWorkflowRuns = ref([])
-  const workflowTemplates = ref([])  // codex Phase: 模板列表
+  const workflowDraft = reactive<WorkflowDraft>(DEFAULT_DRAFT())
+  const selectedWorkflowId = ref<string>('new')
+  const workflowResult = ref<ApiWorkflowRun | null>(null)
+  const workflowAsyncJob = ref<AsyncRunJob | null>(null)
+  const workflowAsyncStatus = ref<AsyncRunJob | null>(null)
+  const workflowAsyncPollTimer = ref<ReturnType<typeof setInterval> | null>(null)
+  const workflowRunHistory = ref<ApiWorkflowRunSummary[]>([])
+  const allWorkflowRuns = ref<ApiWorkflowRunSummary[]>([])
+  const workflowTemplates = ref<ApiWorkflowTemplate[]>([])
 
-  const isSavedWorkflow = computed(() => selectedWorkflowId.value !== 'new')
+  const isSavedWorkflow = computed<boolean>(() => selectedWorkflowId.value !== 'new')
 
   // currentWorkflow 依赖 bootstrap.state.workflows
-  const currentWorkflow = computed(() => {
+  const currentWorkflow = computed<ApiWorkflow | undefined>(() => {
     const bootstrap = useBootstrapStore()
-    return bootstrap.state.workflows.find((wf) => wf.id === selectedWorkflowId.value)
+    return (bootstrap.state.workflows as ApiWorkflow[]).find((wf) => wf.id === selectedWorkflowId.value)
   })
 
   // ─── Draft helpers ────────────────────────────────────────────────────────
 
-  function fillDraft(wf) {
-    workflowDraft.name = wf?.name || ''
-    workflowDraft.description = wf?.description || ''
-    workflowDraft.owner = wf?.owner || ''
-    workflowDraft.tags = Array.isArray(wf?.tags) ? [...wf.tags] : []
-    workflowDraft.schedule_cron = wf?.schedule_cron || ''
-    workflowDraft.project = wf?.project || ''
-    workflowDraft.project_id = wf?.project_id || ''
-    workflowDraft.status = wf?.status || 'draft'
-    workflowDraft.input_assets = Array.isArray(wf?.input_assets)
-      ? wf.input_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
+  function fillDraft(wf: ApiWorkflow | null | undefined): void {
+    const w = wf as (ApiWorkflow & Record<string, unknown>) | null | undefined
+    workflowDraft.name = w?.name || ''
+    workflowDraft.description = w?.description || ''
+    workflowDraft.owner = (w?.owner as string) || ''
+    workflowDraft.tags = Array.isArray(w?.tags) ? [...(w.tags as string[])] : []
+    workflowDraft.schedule_cron = (w?.schedule_cron as string) || ''
+    workflowDraft.project = (w?.project as string) || ''
+    workflowDraft.project_id = (w?.project_id as string) || ''
+    workflowDraft.status = (w?.status as ApiWorkflowStatus) || 'draft'
+    workflowDraft.input_assets = Array.isArray(w?.input_assets)
+      ? (w.input_assets as AssetRef[]).map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
       : []
-    workflowDraft.output_assets = Array.isArray(wf?.output_assets)
-      ? wf.output_assets.map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
+    workflowDraft.output_assets = Array.isArray(w?.output_assets)
+      ? (w.output_assets as AssetRef[]).map((a) => ({ key: a.key || '', kind: a.kind || 'table', description: a.description || '' }))
       : []
-    workflowDraft.notifications = Array.isArray(wf?.notifications)
-      ? wf.notifications.map((item) => ({ ...item }))
+    workflowDraft.notifications = Array.isArray(w?.notifications)
+      ? (w.notifications as Record<string, unknown>[]).map((item) => ({ ...item }))
       : []
-    workflowDraft.sensors = Array.isArray(wf?.sensors)
-      ? wf.sensors.map((item) => ({ ...item }))
+    workflowDraft.sensors = Array.isArray(w?.sensors)
+      ? (w.sensors as Record<string, unknown>[]).map((item) => ({ ...item }))
       : []
-    workflowDraft.default_variables = _stringifyVariables(wf?.default_variables)
+    workflowDraft.default_variables = _stringifyVariables(w?.default_variables as Record<string, unknown> | undefined)
     workflowDraft.runtime_variables = ''
-    workflowDraft.nodes = (wf?.nodes || []).map((node) => ({
-      id: node.id || '',
-      type: node.type || 'compare',
-      name: node.name || '',
-      task_id: node.config?.task_id || '',
-      source_sql_override: node.config?.source_sql_override || '',
-      target_sql_override: node.config?.target_sql_override || '',
-      sql: node.config?.sql || '',
-      dialect: node.config?.dialect || '',
-      input_mode: node.config?.input_mode || (node.config?.script_path
-        ? (String(node.config?.script_filename || node.config?.script_path).toLowerCase().endsWith('.zip') ? 'uploaded_zip' : 'uploaded_file')
-        : 'inline_sql'),
-      script_path: node.config?.script_path || '',
-      script_filename: node.config?.script_filename || '',
-      script_kind: node.config?.script_kind || '',
-      ai_enabled: Boolean(node.config?.ai_enabled),
-      method: node.config?.method || 'GET',
-      url: node.config?.url || '',
-      body: node.config?.body || '',
-      expect_status: node.config?.expect_status ?? '',
-      // dataset 老 dot-path 反向归一化：'samples.diff' → 'diff'
-      sheets: Array.isArray(node.config?.sheets)
-        ? (() => {
-            const deps = Array.isArray(node.depends_on) ? node.depends_on : []
-            const singleDep = deps.length === 1 ? deps[0] : ''
-            return node.config.sheets.map((s) => {
-              let dataset = s.dataset || s.source_field || s.source || ''
+    workflowDraft.nodes = ((w?.nodes as Array<Record<string, unknown>>) || []).map((node) => {
+      const config = (node.config || {}) as Record<string, unknown>
+      const depsRaw = node.depends_on
+      const deps: string[] = Array.isArray(depsRaw) ? (depsRaw as string[]) : []
+      const singleDep = deps.length === 1 ? deps[0] : ''
+      return {
+        id: (node.id as string) || '',
+        type: (node.type as WorkflowNodeKind) || 'compare',
+        name: (node.name as string) || '',
+        task_id: (config.task_id as string) || '',
+        source_sql_override: (config.source_sql_override as string) || '',
+        target_sql_override: (config.target_sql_override as string) || '',
+        sql: (config.sql as string) || '',
+        dialect: (config.dialect as string) || '',
+        input_mode: (config.input_mode as string) || (config.script_path
+          ? (String(config.script_filename || config.script_path).toLowerCase().endsWith('.zip') ? 'uploaded_zip' : 'uploaded_file')
+          : 'inline_sql'),
+        script_path: (config.script_path as string) || '',
+        script_filename: (config.script_filename as string) || '',
+        script_kind: (config.script_kind as string) || '',
+        ai_enabled: Boolean(config.ai_enabled),
+        method: (config.method as string) || 'GET',
+        url: (config.url as string) || '',
+        body: (config.body as string) || '',
+        expect_status: (config.expect_status as string | number) ?? '',
+        // dataset 老 dot-path 反向归一化：'samples.diff' → 'diff'
+        sheets: Array.isArray(config.sheets)
+          ? (config.sheets as Array<Record<string, unknown>>).map((s) => {
+              let dataset = (s.dataset as string) || (s.source_field as string) || (s.source as string) || ''
               const m = /^samples\.(only_source|only_target|diff|same)$/.exec(dataset)
               if (m) dataset = m[1]
               return {
-                id: s.id,
+                id: (s.id as string) || '',
                 enabled: s.enabled !== false,
-                sheet_name: s.sheet_name || s.id,
-                source_type: s.source_type || 'node_output',
-                node_id: s.node_id || s.source_node || singleDep || '',
+                sheet_name: (s.sheet_name as string) || (s.id as string) || '',
+                source_type: (s.source_type as string) || 'node_output',
+                node_id: (s.node_id as string) || (s.source_node as string) || singleDep || '',
                 dataset,
-                run_id: s.run_id || '',
+                run_id: (s.run_id as string) || '',
                 max_rows: Number(s.max_rows) || 100000,
               }
             })
-          })()
-        : [],
-      parameters: Array.isArray(node.config?.parameters)
-        ? node.config.parameters.map((p) => ({ ...p }))
-        : [],
-      depends_on: Array.isArray(node.depends_on) ? [...node.depends_on] : [],
-      when: node.when || '',
-    }))
+          : [],
+        parameters: Array.isArray(config.parameters)
+          ? (config.parameters as ParameterDef[]).map((p) => ({ ...p }))
+          : [],
+        depends_on: [...deps],
+        when: (node.when as string) || '',
+      }
+    })
   }
 
-  function buildNodeConfig(node) {
+  function buildNodeConfig(node: DraftNode): Record<string, unknown> {
     if (node.type === 'params') return {
       parameters: (node.parameters || []).map((p) => ({
         name: p.name,
@@ -180,7 +288,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
     if (node.type === 'lineage') {
       const mode = node.input_mode || 'inline_sql'
-      const config = {
+      const config: Record<string, unknown> = {
         input_mode: mode,
         ...(node.dialect ? { dialect: node.dialect } : {}),
       }
@@ -215,7 +323,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return {}
   }
 
-  function workflowPayload() {
+  function workflowPayload(): Record<string, unknown> {
     return {
       name: workflowDraft.name,
       description: workflowDraft.description || '',
@@ -245,8 +353,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  function workflowDraftWarnings() {
-    const warnings = []
+  function workflowDraftWarnings(): string[] {
+    const warnings: string[] = []
     for (const node of workflowDraft.nodes) {
       if (node.type === 'excel_export') {
         const noDeps = !Array.isArray(node.depends_on) || node.depends_on.length === 0
@@ -266,13 +374,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return warnings
   }
 
-  function resetWorkflowState() {
+  function resetWorkflowState(): void {
     workflowResult.value = null
     workflowAsyncStatus.value = null
     workflowRunHistory.value = []
   }
 
-  function stopWorkflowAsyncPoll() {
+  function stopWorkflowAsyncPoll(): void {
     if (workflowAsyncPollTimer.value) {
       clearInterval(workflowAsyncPollTimer.value)
       workflowAsyncPollTimer.value = null
@@ -281,12 +389,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // ─── Node editor helpers ──────────────────────────────────────────────────
 
-  function addWorkflowNode() {
+  function addWorkflowNode(): void {
     const nextIndex = workflowDraft.nodes.length + 1
     workflowDraft.nodes.push({
       id: `n${nextIndex}`, type: 'compare', name: '', depends_on: [], when: '',
       task_id: '', source_sql_override: '', target_sql_override: '',
       sql: '', dialect: '', input_mode: 'inline_sql', script_path: '', script_filename: '', script_kind: '',
+      ai_enabled: false,
       method: 'GET', url: '', body: '', expect_status: '',
       sheets: [
         { id: 'summary', enabled: true, sheet_name: '汇总对照', source_type: 'node_output', node_id: '', dataset: 'summary', run_id: '', max_rows: 100000 },
@@ -296,11 +405,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
     })
   }
 
-  function removeWorkflowNode(index) {
+  function removeWorkflowNode(index: number): void {
     workflowDraft.nodes.splice(index, 1)
   }
 
-  function moveWorkflowNode(index, delta) {
+  function moveWorkflowNode(index: number, delta: number): void {
     const target = index + delta
     if (target < 0 || target >= workflowDraft.nodes.length) return
     const tmp = workflowDraft.nodes[index]
@@ -308,21 +417,22 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowDraft.nodes[target] = tmp
   }
 
-  function addExportSheet(node, templateId) {
+  function addExportSheet(node: DraftNode, templateId: string): void {
     const tmpl = SHEET_TEMPLATES[templateId] || SHEET_TEMPLATES.summary
     const id = `${templateId}_${(node.sheets || []).length + 1}`
-    ;(node.sheets || (node.sheets = [])).push({
+    if (!Array.isArray(node.sheets)) node.sheets = []
+    node.sheets.push({
       id, enabled: true, sheet_name: tmpl.sheet_name,
       source_type: 'node_output', node_id: '', dataset: tmpl.dataset,
       run_id: '', max_rows: 100000,
     })
   }
 
-  function removeExportSheet(node, sheetIdx) {
+  function removeExportSheet(node: DraftNode, sheetIdx: number): void {
     if (Array.isArray(node.sheets)) node.sheets.splice(sheetIdx, 1)
   }
 
-  function moveExportSheet(node, sheetIdx, delta) {
+  function moveExportSheet(node: DraftNode, sheetIdx: number, delta: number): void {
     const sheets = node.sheets
     if (!Array.isArray(sheets)) return
     const target = sheetIdx + delta
@@ -332,8 +442,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     sheets[target] = tmp
   }
 
-  function addParameter(node, type = 'fixed') {
-    ;(node.parameters || (node.parameters = [])).push({
+  function addParameter(node: DraftNode, type = 'fixed'): void {
+    if (!Array.isArray(node.parameters)) node.parameters = []
+    node.parameters.push({
       name: '', type,
       default: type === 'multi_value' ? [] : '',
       source: type === 'relative_date' ? 'yesterday' : '',
@@ -341,32 +452,32 @@ export const useWorkflowStore = defineStore('workflow', () => {
     })
   }
 
-  function removeParameter(node, idx) {
+  function removeParameter(node: DraftNode, idx: number): void {
     if (Array.isArray(node.parameters)) node.parameters.splice(idx, 1)
   }
 
   // ─── Run history loaders ──────────────────────────────────────────────────
 
-  async function loadWorkflowRunHistory(workflowId) {
+  async function loadWorkflowRunHistory(workflowId: string): Promise<void> {
     try {
-      workflowRunHistory.value = await apiGet(`/api/workflows/${workflowId}/runs?limit=20`)
-    } catch (error) {
+      workflowRunHistory.value = await apiGet<ApiWorkflowRunSummary[]>(`/api/workflows/${workflowId}/runs?limit=20`)
+    } catch {
       workflowRunHistory.value = []
     }
   }
 
-  async function loadAllWorkflowRuns() {
+  async function loadAllWorkflowRuns(): Promise<void> {
     try {
-      allWorkflowRuns.value = await apiGet('/api/workflow-runs?limit=200')
-    } catch (error) {
+      allWorkflowRuns.value = await apiGet<ApiWorkflowRunSummary[]>('/api/workflow-runs?limit=200')
+    } catch {
       allWorkflowRuns.value = []
     }
   }
 
-  async function loadWorkflowRunDetail(runId) {
+  async function loadWorkflowRunDetail(runId: string): Promise<void> {
     const notice = useNoticeStore()
     try {
-      const detail = await apiGet(`/api/workflow-runs/${runId}`)
+      const detail = await apiGet<ApiWorkflowRun>(`/api/workflow-runs/${runId}`)
       workflowResult.value = detail
       workflowAsyncStatus.value = null
       workflowAsyncJob.value = null
@@ -376,14 +487,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function reemitWorkflowRunOpenLineage(runId) {
+  async function reemitWorkflowRunOpenLineage(runId: string): Promise<{ ok?: boolean; results?: unknown[] } | null> {
     const notice = useNoticeStore()
     if (!runId) return null
     try {
-      const payload = await apiJson(`/api/workflow-runs/${runId}/openlineage/emit`, 'POST', {})
-      if (workflowResult.value?.run_id === runId) {
-        workflowResult.value.integrations = workflowResult.value.integrations || {}
-        workflowResult.value.integrations.openlineage = payload.results || []
+      const payload = await apiJson<{ ok?: boolean; results?: unknown[] }>(`/api/workflow-runs/${runId}/openlineage/emit`, 'POST', {})
+      const wf = workflowResult.value as (ApiWorkflowRun & { integrations?: Record<string, unknown> }) | null
+      if (wf?.run_id === runId) {
+        wf.integrations = wf.integrations || {}
+        wf.integrations.openlineage = payload.results || []
       }
       notice.setNotice(payload.ok ? 'OpenLineage 已重发' : 'OpenLineage 重发完成，但存在失败项')
       return payload
@@ -393,18 +505,18 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function loadWorkflowTemplates() {
+  async function loadWorkflowTemplates(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     try {
-      workflowTemplates.value = await apiGet('/api/workflow-templates')
+      workflowTemplates.value = await apiGet<ApiWorkflowTemplate[]>('/api/workflow-templates')
       bootstrap.state.workflowTemplates = workflowTemplates.value
     } catch (error) {
       notice.setNotice(`加载模板失败：${_toErrorMessage(error)}`)
     }
   }
 
-  async function saveWorkflowAsTemplate() {
+  async function saveWorkflowAsTemplate(): Promise<ApiWorkflowTemplate | null> {
     const notice = useNoticeStore()
     if (selectedWorkflowId.value === 'new') {
       notice.setNotice('请先保存作业流，再沉淀为模板')
@@ -414,10 +526,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const name = prompt('模板名称', defaultName)
     if (!name) return null
     try {
-      const template = await apiJson(`/api/workflows/${selectedWorkflowId.value}/template`, 'POST', {
+      const template = await apiJson<ApiWorkflowTemplate>(`/api/workflows/${selectedWorkflowId.value}/template`, 'POST', {
         name,
         description: workflowDraft.description || currentWorkflow.value?.description || '',
-        category: workflowDraft.project || currentWorkflow.value?.project || '',
+        category: workflowDraft.project || (currentWorkflow.value as Record<string, unknown> | undefined)?.project || '',
         tags: Array.isArray(workflowDraft.tags) ? workflowDraft.tags : [],
       })
       const bootstrap = useBootstrapStore()
@@ -431,15 +543,24 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function createWorkflowFromTemplate(templateId, options = {}) {
+  interface InstantiateOptions {
+    name?: string
+    project?: string
+    owner?: string
+    status?: string
+    skipPrompt?: boolean
+  }
+
+  async function createWorkflowFromTemplate(templateId: string, options: InstantiateOptions = {}): Promise<ApiWorkflow | null> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     const template = workflowTemplates.value.find((item) => item.id === templateId)
-    const defaultName = options.name || `${template?.workflow?.name || template?.name || 'workflow'} 副本`
+    const tplWf = (template as Record<string, unknown> | undefined)?.workflow as ApiWorkflow | undefined
+    const defaultName = options.name || `${tplWf?.name || template?.name || 'workflow'} 副本`
     const name = options.skipPrompt ? defaultName : prompt('新作业流名称', defaultName)
     if (!name) return null
     try {
-      const workflow = await apiJson(`/api/workflow-templates/${templateId}/instantiate`, 'POST', {
+      const workflow = await apiJson<ApiWorkflow>(`/api/workflow-templates/${templateId}/instantiate`, 'POST', {
         name,
         project: options.project || '',
         owner: options.owner || '',
@@ -455,7 +576,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function deleteWorkflowTemplate(templateId) {
+  async function deleteWorkflowTemplate(templateId: string): Promise<void> {
     const notice = useNoticeStore()
     if (!confirm('确认删除这个作业流模板？不会影响已创建的作业流。')) return
     try {
@@ -471,7 +592,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // ─── CRUD ─────────────────────────────────────────────────────────────────
 
-  function selectWorkflow(id) {
+  function selectWorkflow(id: string): void {
     const bootstrap = useBootstrapStore()
     stopWorkflowAsyncPoll()
     selectedWorkflowId.value = id
@@ -479,11 +600,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowAsyncJob.value = null
     workflowAsyncStatus.value = null
     workflowRunHistory.value = []
-    fillDraft(id === 'new' ? null : bootstrap.state.workflows.find((wf) => wf.id === id))
+    fillDraft(id === 'new' ? null : (bootstrap.state.workflows as ApiWorkflow[]).find((wf) => wf.id === id) || null)
     if (id !== 'new') loadWorkflowRunHistory(id)
   }
 
-  async function saveWorkflow() {
+  async function saveWorkflow(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     const warnings = workflowDraftWarnings()
@@ -494,12 +615,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     notice.setNotice('保存中...')
     try {
       if (selectedWorkflowId.value === 'new') {
-        const created = await apiJson('/api/workflows', 'POST', workflowPayload())
+        const created = await apiJson<ApiWorkflow>('/api/workflows', 'POST', workflowPayload())
         bootstrap.state.workflows.unshift(created)
         selectWorkflow(created.id)
       } else {
-        const updated = await apiJson(`/api/workflows/${selectedWorkflowId.value}`, 'PUT', workflowPayload())
-        const idx = bootstrap.state.workflows.findIndex((wf) => wf.id === selectedWorkflowId.value)
+        const updated = await apiJson<ApiWorkflow>(`/api/workflows/${selectedWorkflowId.value}`, 'PUT', workflowPayload())
+        const idx = (bootstrap.state.workflows as ApiWorkflow[]).findIndex((wf) => wf.id === selectedWorkflowId.value)
         if (idx !== -1) bootstrap.state.workflows[idx] = updated
       }
       notice.setNotice('作业流已保存')
@@ -508,14 +629,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function deleteWorkflow() {
+  async function deleteWorkflow(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (selectedWorkflowId.value === 'new') return
     try {
       await apiJson(`/api/workflows/${selectedWorkflowId.value}`, 'DELETE')
-      bootstrap.state.workflows = bootstrap.state.workflows.filter((wf) => wf.id !== selectedWorkflowId.value)
-      selectWorkflow(bootstrap.state.workflows[0]?.id || 'new')
+      bootstrap.state.workflows = (bootstrap.state.workflows as ApiWorkflow[]).filter((wf) => wf.id !== selectedWorkflowId.value)
+      selectWorkflow((bootstrap.state.workflows[0] as ApiWorkflow | undefined)?.id || 'new')
       notice.setNotice('作业流已删除')
     } catch (error) {
       notice.setNotice(`删除失败：${_toErrorMessage(error)}`)
@@ -524,7 +645,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // ─── Run / cancel ─────────────────────────────────────────────────────────
 
-  async function runWorkflow() {
+  async function runWorkflow(): Promise<void> {
     const notice = useNoticeStore()
     if (selectedWorkflowId.value === 'new') return
     workflowResult.value = null
@@ -533,8 +654,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     notice.setNotice('执行中...')
     try {
       const variables = _parseVariables(workflowDraft.runtime_variables)
-      workflowResult.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run`, 'POST', { variables })
-      notice.setNotice(`执行${workflowResult.value.status === 'success' ? '完成' : '失败'}`)
+      const result = await apiJson<ApiWorkflowRun>(`/api/workflows/${selectedWorkflowId.value}/run`, 'POST', { variables })
+      workflowResult.value = result
+      notice.setNotice(`执行${result.status === 'success' ? '完成' : '失败'}`)
       loadWorkflowRunHistory(selectedWorkflowId.value)
     } catch (error) {
       notice.setNotice(`执行失败：${_toErrorMessage(error)}`)
@@ -542,12 +664,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   // 抽出公共 polling 链路：runAsync / runAsyncWith / rerunFromNode 共享
-  function _attachAsyncPoll(onTerminal) {
+  function _attachAsyncPoll(onTerminal?: () => void): void {
     workflowAsyncPollTimer.value = setInterval(async () => {
       const notice = useNoticeStore()
       try {
-        workflowAsyncStatus.value = await apiGet(`/api/runs/${workflowAsyncJob.value.job_id}`)
-        if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status)) {
+        if (!workflowAsyncJob.value) return
+        workflowAsyncStatus.value = await apiGet<AsyncRunJob>(`/api/runs/${workflowAsyncJob.value.job_id}`)
+        if (['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value.status || '')) {
           stopWorkflowAsyncPoll()
           if (workflowAsyncStatus.value.result) workflowResult.value = workflowAsyncStatus.value.result
           if (typeof onTerminal === 'function') onTerminal()
@@ -563,7 +686,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }, 1200)
   }
 
-  async function runWorkflowAsync() {
+  async function runWorkflowAsync(): Promise<void> {
     const notice = useNoticeStore()
     if (selectedWorkflowId.value === 'new') return
     stopWorkflowAsyncPoll()
@@ -572,7 +695,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowAsyncStatus.value = null
     try {
       const variables = _parseVariables(workflowDraft.runtime_variables)
-      workflowAsyncJob.value = await apiJson(`/api/workflows/${selectedWorkflowId.value}/run-async`, 'POST', { variables })
+      workflowAsyncJob.value = await apiJson<AsyncRunJob>(`/api/workflows/${selectedWorkflowId.value}/run-async`, 'POST', { variables })
       workflowAsyncStatus.value = workflowAsyncJob.value
       notice.setNotice(`后台执行已提交：${workflowAsyncJob.value.job_id?.slice(0, 8) || ''}`)
       const wfId = selectedWorkflowId.value
@@ -584,7 +707,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // 历史 tab 行内"重跑"用：直接给 workflowId + variables 起一次后台执行，
   // 不依赖 selectedWorkflowId 当前值
-  async function runWorkflowAsyncWith(workflowId, variables = {}) {
+  async function runWorkflowAsyncWith(workflowId: string, variables: Record<string, unknown> = {}): Promise<AsyncRunJob | null> {
     const notice = useNoticeStore()
     if (!workflowId) return null
     stopWorkflowAsyncPoll()
@@ -592,7 +715,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowAsyncJob.value = null
     workflowAsyncStatus.value = null
     try {
-      workflowAsyncJob.value = await apiJson(`/api/workflows/${workflowId}/run-async`, 'POST', { variables: variables || {} })
+      workflowAsyncJob.value = await apiJson<AsyncRunJob>(`/api/workflows/${workflowId}/run-async`, 'POST', { variables: variables || {} })
       workflowAsyncStatus.value = workflowAsyncJob.value
       notice.setNotice('后台执行已提交')
       _attachAsyncPoll(() => {
@@ -606,7 +729,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   // 局部重跑：上游已 success 节点复用 output，from_node 及其下游全部重跑
-  async function rerunWorkflowFromNode(runId, fromNodeId, variables = null) {
+  async function rerunWorkflowFromNode(runId: string, fromNodeId: string, variables: Record<string, unknown> | null = null): Promise<AsyncRunJob | null> {
     const notice = useNoticeStore()
     if (!runId || !fromNodeId) return null
     stopWorkflowAsyncPoll()
@@ -614,9 +737,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflowAsyncJob.value = null
     workflowAsyncStatus.value = null
     try {
-      const body = { from_node_id: fromNodeId }
+      const body: Record<string, unknown> = { from_node_id: fromNodeId }
       if (variables !== null) body.variables = variables
-      workflowAsyncJob.value = await apiJson(`/api/workflow-runs/${runId}/rerun`, 'POST', body)
+      workflowAsyncJob.value = await apiJson<AsyncRunJob>(`/api/workflow-runs/${runId}/rerun`, 'POST', body)
       workflowAsyncStatus.value = workflowAsyncJob.value
       notice.setNotice(`已提交从 ${fromNodeId} 起的局部重跑`)
       _attachAsyncPoll(() => {
@@ -630,11 +753,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function cancelWorkflowAsync() {
+  async function cancelWorkflowAsync(): Promise<void> {
     const notice = useNoticeStore()
     if (!workflowAsyncJob.value) return
     try {
-      workflowAsyncStatus.value = await apiJson(`/api/runs/${workflowAsyncJob.value.job_id}/cancel`, 'POST')
+      workflowAsyncStatus.value = await apiJson<AsyncRunJob>(`/api/runs/${workflowAsyncJob.value.job_id}/cancel`, 'POST')
     } catch (error) {
       notice.setNotice(`取消失败：${_toErrorMessage(error)}`)
     }

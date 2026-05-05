@@ -9,6 +9,11 @@
  *   - 跨 store 通过 useNoticeStore + useBootstrapStore 协调
  *   - apiJson/apiGet/apiForm 在 store 内 import
  *   - 不再依赖 App.vue 注入的回调
+ *
+ * S3.B 收尾：迁 .ts。TaskDraft 是表单形态（key_columns 是逗号字符串，rules
+ * 字段拍平），跟 ApiCompareTask 后端模型不同 —— 通过 fillDraft / taskPayload
+ * 互转。runtime/preview/job 类型都用 Record<string, unknown> 兜底；具体
+ * shape 细化留给后续轮次（要先定 PreviewResponse / RunResult Pydantic models）。
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
@@ -17,19 +22,114 @@ import { validateTaskDraft } from '../utils/taskValidation'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
 import { useProjectStore } from './project'
+import type { ApiCompareTask } from '../types/api'
 
-function _toErrorMessage(error) {
-  return error?.message || String(error || '未知错误')
+
+export type CompareTaskSide = 'source' | 'target'
+export type CompareTaskKind = 'sql' | 'excel' | 'csv' | 'parquet'
+
+/** 表单草稿 —— 跟 ApiCompareTask 不同点：
+ * - key_columns / ignore_columns 是逗号分隔字符串（表单友好），提交时 split
+ * - column_mappings 是多行 'a -> b' 字符串
+ * - rules / limits 字段拍平到顶层
+ * - 多了 *_excel_filename / *_excel_sheets 等仅前端需要的辅助字段 */
+export interface TaskDraft {
+  name: string
+  source_kind: CompareTaskKind
+  target_kind: CompareTaskKind
+  source_id: string
+  target_id: string
+  sql_mode: 'single' | 'double'
+  source_sql: string
+  target_sql: string
+  // Excel 字段
+  source_excel_path: string
+  source_excel_filename: string
+  source_excel_sheets: string[]
+  source_sheet: string
+  source_header_row: number
+  target_excel_path: string
+  target_excel_filename: string
+  target_excel_sheets: string[]
+  target_sheet: string
+  target_header_row: number
+  // CSV / Parquet 通用文件字段
+  source_file_path: string
+  source_file_filename: string
+  source_file_encoding: string
+  source_csv_delimiter: string
+  target_file_path: string
+  target_file_filename: string
+  target_file_encoding: string
+  target_csv_delimiter: string
+  // 主键 / 忽略字段 / 映射 —— 字符串形式
+  key_columns: string
+  ignore_columns: string
+  column_mappings: string
+  schema_policy: 'warn' | 'strict'
+  numeric_tolerance: number | string
+  trim_strings: boolean
+  case_insensitive: boolean
+  empty_as_null: boolean
+  // 限额
+  max_rows: number
+  export_max_rows: number
+  fetch_chunk_size: number
+  stream_compare: boolean
+  project_id: string
+  // 索引签名兼容动态 [`${side}_excel_path`] 等动态 key 访问
+  [key: string]: unknown
+}
+
+export interface FieldWarning {
+  type: string
+  level: 'warning' | 'error' | 'info'
+  message: string
+  source_only?: string[]
+  target_only?: string[]
+}
+
+export interface FieldPickerRow {
+  name: string
+  key: string
+  onSource: boolean
+  onTarget: boolean
+  included: boolean
+}
+
+export interface PreviewState {
+  loading?: boolean
+  rows?: unknown[]
+  columns?: string[]
+  warnings?: FieldWarning[]
+  error?: string
+}
+
+/** 异步 job placeholder —— /api/runs/{id} 返回的形态。 */
+export interface RunJobStatus {
+  job_id: string
+  status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | string
+  stage?: string
+  error?: string
+  result?: Record<string, unknown>
+}
+
+
+function _toErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error ?? '未知错误')
 }
 
 // 主键名称启发式：xxx_id / xxx_no / xxx_code / xxx_key 优先；id / pk / no 也算
 const ID_LIKE_RE = /(^|_)(id|pk|key|no|code|sn|uuid|guid)$/i
-function _pickKeyCandidates(fields) {
-  return fields.filter(c => ID_LIKE_RE.test(c))
+function _pickKeyCandidates(fields: string[]): string[] {
+  return fields.filter((c) => ID_LIKE_RE.test(c))
 }
 
 
-const DEFAULT_DRAFT = () => ({
+const DEFAULT_DRAFT = (): TaskDraft => ({
   name: '',
   source_kind: 'sql',
   target_kind: 'sql',
@@ -48,7 +148,6 @@ const DEFAULT_DRAFT = () => ({
   target_excel_sheets: [],
   target_sheet: '',
   target_header_row: 1,
-  // CSV / Parquet 通用文件字段
   source_file_path: '',
   source_file_filename: '',
   source_file_encoding: 'utf-8-sig',
@@ -75,28 +174,28 @@ const DEFAULT_DRAFT = () => ({
 
 export const useTaskStore = defineStore('task', () => {
   // ─── State ────────────────────────────────────────────────────────────────
-  const taskDraft = reactive(DEFAULT_DRAFT())
-  const selectedTaskId = ref('new')
+  const taskDraft = reactive<TaskDraft>(DEFAULT_DRAFT())
+  const selectedTaskId = ref<string>('new')
 
-  const sourceFields = ref([])
-  const targetFields = ref([])
-  const sourceFieldWarnings = ref([])
-  const targetFieldWarnings = ref([])
+  const sourceFields = ref<string[]>([])
+  const targetFields = ref<string[]>([])
+  const sourceFieldWarnings = ref<FieldWarning[]>([])
+  const targetFieldWarnings = ref<FieldWarning[]>([])
 
-  const previewOutput = ref('')
-  const sourcePreviewData = ref(null)
-  const targetPreviewData = ref(null)
+  const previewOutput = ref<string>('')
+  const sourcePreviewData = ref<PreviewState | null>(null)
+  const targetPreviewData = ref<PreviewState | null>(null)
 
-  const compareResult = ref(null)
-  const asyncJob = ref(null)
-  const asyncStatus = ref(null)
-  const asyncPollTimer = ref(null)
+  const compareResult = ref<Record<string, unknown> | null>(null)
+  const asyncJob = ref<RunJobStatus | null>(null)
+  const asyncStatus = ref<RunJobStatus | null>(null)
+  const asyncPollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
   // ─── Utility ──────────────────────────────────────────────────────────────
-  const normalizeColumn = (col) => String(col || '').trim().toLowerCase()
-  const parseCsv = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
-  const parseMappings = (value) => {
-    const result = {}
+  const normalizeColumn = (col: unknown): string => String(col || '').trim().toLowerCase()
+  const parseCsv = (value: unknown): string[] => String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
+  const parseMappings = (value: unknown): Record<string, string> => {
+    const result: Record<string, string> = {}
     String(value || '').split('\n').forEach((line) => {
       const [source, target] = line.split('->').map((item) => item?.trim())
       if (source && target) result[source] = target
@@ -105,16 +204,16 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // ─── Field picker ─────────────────────────────────────────────────────────
-  const ignoredColumnSet = computed(() =>
+  const ignoredColumnSet = computed<Set<string>>(() =>
     new Set(parseCsv(taskDraft.ignore_columns).map(normalizeColumn))
   )
 
-  const fieldPickerRows = computed(() => {
+  const fieldPickerRows = computed<FieldPickerRow[]>(() => {
     const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
     const targetSet = new Set(targetFields.value.map(normalizeColumn))
-    const order = []
-    const seen = new Set()
-    const push = (name) => {
+    const order: Omit<FieldPickerRow, 'included'>[] = []
+    const seen = new Set<string>()
+    const push = (name: string): void => {
       const key = normalizeColumn(name)
       if (!key || seen.has(key)) return
       seen.add(key)
@@ -130,14 +229,14 @@ export const useTaskStore = defineStore('task', () => {
     return order.map((row) => ({ ...row, included: !ignoredColumnSet.value.has(row.key) }))
   })
 
-  const fieldPickerHasFields = computed(() => fieldPickerRows.value.length > 0)
+  const fieldPickerHasFields = computed<boolean>(() => fieldPickerRows.value.length > 0)
 
   const schemaDiagnostics = computed(() => {
     const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
     const targetSet = new Set(targetFields.value.map(normalizeColumn))
-    const sourceOnly = sourceFields.value.filter(c => !targetSet.has(normalizeColumn(c)))
-    const targetOnly = targetFields.value.filter(c => !sourceSet.has(normalizeColumn(c)))
-    const warnings = [
+    const sourceOnly = sourceFields.value.filter((c) => !targetSet.has(normalizeColumn(c)))
+    const targetOnly = targetFields.value.filter((c) => !sourceSet.has(normalizeColumn(c)))
+    const warnings: FieldWarning[] = [
       ...sourceFieldWarnings.value,
       ...targetFieldWarnings.value,
     ]
@@ -160,7 +259,7 @@ export const useTaskStore = defineStore('task', () => {
     return { sourceOnly, targetOnly, warnings }
   })
 
-  function toggleFieldIncluded(name) {
+  function toggleFieldIncluded(name: string): void {
     const key = normalizeColumn(name)
     const currentIgnore = parseCsv(taskDraft.ignore_columns)
     const without = currentIgnore.filter((col) => normalizeColumn(col) !== key)
@@ -171,11 +270,11 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function fieldPickerSelectAll() {
+  function fieldPickerSelectAll(): void {
     taskDraft.ignore_columns = ''
   }
 
-  function fieldPickerExcludeOneSided() {
+  function fieldPickerExcludeOneSided(): void {
     const oneSided = fieldPickerRows.value
       .filter((row) => !(row.onSource && row.onTarget))
       .map((row) => row.name)
@@ -185,56 +284,59 @@ export const useTaskStore = defineStore('task', () => {
   // ─── Validation（前端即时反馈，后端权威） ───────────────────────────────────
   const taskValidation = computed(() => validateTaskDraft(taskDraft))
   const taskValidationIssues = computed(() => taskValidation.value.issues)
-  const canSaveTask = computed(() => taskValidation.value.canSave)
+  const canSaveTask = computed<boolean>(() => taskValidation.value.canSave)
 
   // ─── Saved-task helper ────────────────────────────────────────────────────
-  const isSavedTask = computed(() => selectedTaskId.value !== 'new')
+  const isSavedTask = computed<boolean>(() => selectedTaskId.value !== 'new')
 
   // ─── Draft helpers ────────────────────────────────────────────────────────
-  function fillDraft(task, fallbackDatasourceId = '') {
+  function fillDraft(task: ApiCompareTask | null | undefined, fallbackDatasourceId = ''): void {
+    // task 来自后端 ApiCompareTask（key_columns 是数组、rules / limits 是嵌套对象）；
+    // 表单 draft 形态不一样，这里逐字段映射 + 兜底默认值。
+    const t = task as (ApiCompareTask & Record<string, unknown>) | null | undefined
     Object.assign(taskDraft, {
       ...DEFAULT_DRAFT(),
-      name: task?.name || '',
-      source_kind: task?.source_kind || 'sql',
-      target_kind: task?.target_kind || 'sql',
-      source_id: task?.source_id || fallbackDatasourceId,
-      target_id: task?.target_id || fallbackDatasourceId,
-      sql_mode: task?.sql_mode || 'single',
-      source_sql: task?.source_sql || '',
-      target_sql: task?.target_sql || '',
-      source_excel_path: task?.source_excel_path || '',
-      source_excel_filename: task?.source_excel_path ? task.source_excel_path.split('/').pop() : '',
-      source_sheet: task?.source_sheet || '',
-      source_header_row: task?.source_header_row || 1,
-      target_excel_path: task?.target_excel_path || '',
-      target_excel_filename: task?.target_excel_path ? task.target_excel_path.split('/').pop() : '',
-      target_sheet: task?.target_sheet || '',
-      target_header_row: task?.target_header_row || 1,
-      source_file_path: task?.source_file_path || '',
-      source_file_filename: task?.source_file_path ? task.source_file_path.split('/').pop() : '',
-      source_file_encoding: task?.source_file_encoding || 'utf-8-sig',
-      source_csv_delimiter: task?.source_csv_delimiter || ',',
-      target_file_path: task?.target_file_path || '',
-      target_file_filename: task?.target_file_path ? task.target_file_path.split('/').pop() : '',
-      target_file_encoding: task?.target_file_encoding || 'utf-8-sig',
-      target_csv_delimiter: task?.target_csv_delimiter || ',',
-      key_columns: (task?.key_columns || []).join(', '),
-      ignore_columns: (task?.rules?.ignore_columns || []).join(', '),
-      column_mappings: Object.entries(task?.rules?.column_mappings || {}).map(([s, t]) => `${s} -> ${t}`).join('\n'),
-      schema_policy: task?.rules?.schema_policy || 'warn',
-      numeric_tolerance: task?.rules?.numeric_tolerance ?? '',
-      trim_strings: Boolean(task?.rules?.trim_strings),
-      case_insensitive: Boolean(task?.rules?.case_insensitive),
-      empty_as_null: Boolean(task?.rules?.empty_as_null),
-      max_rows: task?.limits?.max_rows || 100000,
-      export_max_rows: task?.limits?.export_max_rows || 50000,
-      fetch_chunk_size: task?.limits?.fetch_chunk_size || 5000,
-      stream_compare: Boolean(task?.limits?.stream_compare),
-      project_id: task?.project_id || '',
+      name: t?.name || '',
+      source_kind: t?.source_kind || 'sql',
+      target_kind: t?.target_kind || 'sql',
+      source_id: t?.source_id || fallbackDatasourceId,
+      target_id: t?.target_id || fallbackDatasourceId,
+      sql_mode: t?.sql_mode || 'single',
+      source_sql: t?.source_sql || '',
+      target_sql: t?.target_sql || '',
+      source_excel_path: (t?.source_excel_path as string) || '',
+      source_excel_filename: t?.source_excel_path ? String(t.source_excel_path).split('/').pop() : '',
+      source_sheet: (t?.source_sheet as string) || '',
+      source_header_row: (t?.source_header_row as number) || 1,
+      target_excel_path: (t?.target_excel_path as string) || '',
+      target_excel_filename: t?.target_excel_path ? String(t.target_excel_path).split('/').pop() : '',
+      target_sheet: (t?.target_sheet as string) || '',
+      target_header_row: (t?.target_header_row as number) || 1,
+      source_file_path: (t?.source_file_path as string) || '',
+      source_file_filename: t?.source_file_path ? String(t.source_file_path).split('/').pop() : '',
+      source_file_encoding: (t?.source_file_encoding as string) || 'utf-8-sig',
+      source_csv_delimiter: (t?.source_csv_delimiter as string) || ',',
+      target_file_path: (t?.target_file_path as string) || '',
+      target_file_filename: t?.target_file_path ? String(t.target_file_path).split('/').pop() : '',
+      target_file_encoding: (t?.target_file_encoding as string) || 'utf-8-sig',
+      target_csv_delimiter: (t?.target_csv_delimiter as string) || ',',
+      key_columns: ((t?.key_columns as string[]) || []).join(', '),
+      ignore_columns: ((t?.rules?.ignore_columns as string[]) || []).join(', '),
+      column_mappings: Object.entries((t?.rules?.column_mappings as Record<string, string>) || {}).map(([s, tt]) => `${s} -> ${tt}`).join('\n'),
+      schema_policy: (t?.rules?.schema_policy as 'warn' | 'strict') || 'warn',
+      numeric_tolerance: t?.rules?.numeric_tolerance ?? '',
+      trim_strings: Boolean(t?.rules?.trim_strings),
+      case_insensitive: Boolean(t?.rules?.case_insensitive),
+      empty_as_null: Boolean(t?.rules?.empty_as_null),
+      max_rows: (t?.limits?.max_rows as number) || 100000,
+      export_max_rows: (t?.limits?.export_max_rows as number) || 50000,
+      fetch_chunk_size: (t?.limits?.fetch_chunk_size as number) || 5000,
+      stream_compare: Boolean(t?.limits?.stream_compare),
+      project_id: t?.project_id || '',
     })
   }
 
-  function taskPayload() {
+  function taskPayload(): Record<string, unknown> {
     return {
       name: taskDraft.name,
       source_kind: taskDraft.source_kind,
@@ -277,7 +379,7 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function resetSelectionState() {
+  function resetSelectionState(): void {
     previewOutput.value = ''
     sourcePreviewData.value = null
     targetPreviewData.value = null
@@ -289,42 +391,44 @@ export const useTaskStore = defineStore('task', () => {
     asyncStatus.value = null
   }
 
-  function stopAsyncPoll() {
+  function stopAsyncPoll(): void {
     if (asyncPollTimer.value) {
       clearInterval(asyncPollTimer.value)
       asyncPollTimer.value = null
     }
   }
 
-  // currentTask 依赖 bootstrap.state.tasks
-  const currentTask = computed(() => {
+  // currentTask 依赖 bootstrap.state.tasks（仍是 unknown[]，cast 到 ApiCompareTask）
+  const currentTask = computed<ApiCompareTask | undefined>(() => {
     const bootstrap = useBootstrapStore()
-    return bootstrap.state.tasks.find((task) => task.id === selectedTaskId.value)
+    return (bootstrap.state.tasks as ApiCompareTask[]).find(
+      (task) => task.id === selectedTaskId.value,
+    )
   })
 
   // ─── Handlers（跨 store 协调） ───────────────────────────────────────────────
 
-  function selectTask(id) {
+  function selectTask(id: string): void {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     stopAsyncPoll()
     selectedTaskId.value = id
     resetSelectionState()
     notice.setActionStatus(
-      id === 'new' ? 'idle' : 'ready',
+      id === 'new' ? 'idle' : 'running',
       id === 'new' ? '新建任务' : '任务已载入',
       id === 'new' ? '填写任务信息后点击保存任务。' : '可以执行、预览、后台执行或复制当前任务。',
     )
-    const datasourcesFallback = bootstrap.state.datasources[0]?.id || ''
-    const targetTask = id === 'new' ? null : bootstrap.state.tasks.find((task) => task.id === id)
+    const datasourcesFallback = (bootstrap.state.datasources[0] as { id?: string })?.id || ''
+    const targetTask = id === 'new' ? null : (bootstrap.state.tasks as ApiCompareTask[]).find((task) => task.id === id) || null
     fillDraft(targetTask, datasourcesFallback)
   }
 
-  async function saveTask() {
+  async function saveTask(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (!canSaveTask.value) {
-      const errs = taskValidationIssues.value.filter(i => i.level === 'error')
+      const errs = taskValidationIssues.value.filter((i) => i.level === 'error')
       const head = errs[0]?.message || '配置不完整'
       const more = errs.length > 1 ? `（共 ${errs.length} 项问题）` : ''
       notice.setNotice(`保存被拦截：${head}${more}`)
@@ -335,12 +439,12 @@ export const useTaskStore = defineStore('task', () => {
     notice.setActionStatus('running', '正在保存任务', '正在校验数据源、SQL 和主键配置。')
     try {
       if (selectedTaskId.value === 'new') {
-        const created = await apiJson('/api/tasks', 'POST', taskPayload())
+        const created = await apiJson<ApiCompareTask>('/api/tasks', 'POST', taskPayload())
         bootstrap.state.tasks.unshift(created)
         selectTask(created.id)
       } else {
-        const updated = await apiJson(`/api/tasks/${selectedTaskId.value}`, 'PUT', taskPayload())
-        const index = bootstrap.state.tasks.findIndex((task) => task.id === selectedTaskId.value)
+        const updated = await apiJson<ApiCompareTask>(`/api/tasks/${selectedTaskId.value}`, 'PUT', taskPayload())
+        const index = (bootstrap.state.tasks as ApiCompareTask[]).findIndex((task) => task.id === selectedTaskId.value)
         if (index !== -1) bootstrap.state.tasks[index] = updated
       }
       notice.setNotice('任务已保存')
@@ -352,15 +456,15 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function deleteTask() {
+  async function deleteTask(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (selectedTaskId.value === 'new') return
     notice.setActionStatus('running', '正在删除任务')
     try {
       await apiJson(`/api/tasks/${selectedTaskId.value}`, 'DELETE')
-      bootstrap.state.tasks = bootstrap.state.tasks.filter((task) => task.id !== selectedTaskId.value)
-      selectTask(bootstrap.state.tasks[0]?.id || 'new')
+      bootstrap.state.tasks = (bootstrap.state.tasks as ApiCompareTask[]).filter((task) => task.id !== selectedTaskId.value)
+      selectTask((bootstrap.state.tasks[0] as ApiCompareTask | undefined)?.id || 'new')
       notice.setActionStatus('success', '任务已删除')
     } catch (error) {
       previewOutput.value = _toErrorMessage(error)
@@ -368,13 +472,13 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function copyTask() {
+  async function copyTask(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (selectedTaskId.value === 'new') return
     notice.setActionStatus('running', '正在复制任务', currentTask.value?.name || '')
     try {
-      const copied = await apiJson(`/api/tasks/${selectedTaskId.value}/copy`, 'POST')
+      const copied = await apiJson<ApiCompareTask>(`/api/tasks/${selectedTaskId.value}/copy`, 'POST')
       bootstrap.state.tasks.unshift(copied)
       selectTask(copied.id)
       notice.setActionStatus('success', '任务已复制', `已创建：${copied.name}`)
@@ -384,14 +488,14 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function uploadExcel(side, file) {
+  async function uploadExcel(side: CompareTaskSide, file: File | null): Promise<void> {
     const notice = useNoticeStore()
     if (!file) return
     notice.setActionStatus('running', `上传 ${side === 'source' ? '源' : '目标'} Excel`, file.name)
     try {
       const form = new FormData()
       form.append('file', file)
-      const response = await apiForm('/api/uploads/excel', form)
+      const response = await apiForm<{ path: string; filename: string; sheets: string[] }>('/api/uploads/excel', form)
       const prefix = side === 'source' ? 'source' : 'target'
       taskDraft[`${prefix}_excel_path`] = response.path
       taskDraft[`${prefix}_excel_filename`] = response.filename
@@ -405,7 +509,7 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function runTask() {
+  async function runTask(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (selectedTaskId.value === 'new') return
@@ -413,7 +517,9 @@ export const useTaskStore = defineStore('task', () => {
     previewOutput.value = '执行中...'
     notice.setActionStatus('running', '正在执行对比', '查询源/目标数据并生成 JSON、Excel 结果。')
     try {
-      const result = await apiJson(`/api/tasks/${selectedTaskId.value}/run`, 'POST')
+      const result = await apiJson<{ summary?: Record<string, number> } & Record<string, unknown>>(
+        `/api/tasks/${selectedTaskId.value}/run`, 'POST',
+      )
       compareResult.value = result
       previewOutput.value = JSON.stringify(result, null, 2)
       const s = result.summary || {}
@@ -429,19 +535,20 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function runAsync() {
+  async function runAsync(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     if (selectedTaskId.value === 'new') return
     previewOutput.value = ''
     notice.setActionStatus('running', '正在提交后台任务')
     try {
-      asyncJob.value = await apiJson(`/api/tasks/${selectedTaskId.value}/run-async`, 'POST')
+      asyncJob.value = await apiJson<RunJobStatus>(`/api/tasks/${selectedTaskId.value}/run-async`, 'POST')
       asyncStatus.value = asyncJob.value
       notice.setActionStatus('running', '后台任务已提交', `任务号：${asyncJob.value.job_id}`)
       asyncPollTimer.value = setInterval(async () => {
         try {
-          asyncStatus.value = await apiGet(`/api/runs/${asyncJob.value.job_id}`)
+          if (!asyncJob.value) return
+          asyncStatus.value = await apiGet<RunJobStatus>(`/api/runs/${asyncJob.value.job_id}`)
           if (asyncStatus.value.status === 'success' && asyncStatus.value.result) {
             compareResult.value = asyncStatus.value.result
           }
@@ -466,26 +573,26 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function cancelAsync() {
+  async function cancelAsync(): Promise<void> {
     const notice = useNoticeStore()
     if (!asyncJob.value) return
     notice.setActionStatus('running', '正在取消后台任务')
     try {
-      asyncStatus.value = await apiJson(`/api/runs/${asyncJob.value.job_id}/cancel`, 'POST')
+      asyncStatus.value = await apiJson<RunJobStatus>(`/api/runs/${asyncJob.value.job_id}/cancel`, 'POST')
       notice.setActionStatus('success', '已发送取消请求', '后台任务会在当前安全阶段结束后停止。')
     } catch (error) {
       notice.setActionStatus('error', '取消失败', _toErrorMessage(error))
     }
   }
 
-  async function previewTask(side) {
+  async function previewTask(side: CompareTaskSide): Promise<void> {
     const notice = useNoticeStore()
     const previewRef = side === 'source' ? sourcePreviewData : targetPreviewData
     previewRef.value = { loading: true }
-    const kind = taskDraft[`${side}_kind`] || 'sql'
+    const kind = (taskDraft[`${side}_kind`] as CompareTaskKind) || 'sql'
     const sql = side === 'target' && taskDraft.sql_mode === 'double' ? taskDraft.target_sql : taskDraft.source_sql
     const datasourceId = side === 'target' ? taskDraft.target_id : taskDraft.source_id
-    const payload = { side, kind, limit: 10 }
+    const payload: Record<string, unknown> = { side, kind, limit: 10 }
     if (kind === 'sql') {
       payload.sql = sql
       payload.datasource_id = datasourceId
@@ -503,9 +610,9 @@ export const useTaskStore = defineStore('task', () => {
     }
     notice.setActionStatus('running', side === 'target' ? '正在预览目标数据' : '正在预览源数据')
     try {
-      const result = await apiJson('/api/preview/rows', 'POST', payload)
+      const result = await apiJson<PreviewState>('/api/preview/rows', 'POST', payload)
       previewRef.value = result
-      const columns = result.columns?.length ? result.columns : Object.keys(result.rows?.[0] || {})
+      const columns = result.columns?.length ? result.columns : Object.keys((result.rows?.[0] as Record<string, unknown>) || {})
       if (columns.length) {
         if (side === 'source') {
           sourceFields.value = columns
@@ -522,15 +629,15 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function extractFields(side) {
+  async function extractFields(side: CompareTaskSide): Promise<void> {
     const notice = useNoticeStore()
-    const kind = taskDraft[`${side}_kind`] || 'sql'
+    const kind = (taskDraft[`${side}_kind`] as CompareTaskKind) || 'sql'
     notice.setActionStatus('running', '正在提取字段')
     try {
-      let columns = []
-      let warnings = []
+      let columns: string[] = []
+      let warnings: FieldWarning[] = []
       if (kind === 'excel') {
-        const result = await apiJson('/api/preview/columns', 'POST', {
+        const result = await apiJson<{ columns?: string[]; warnings?: FieldWarning[] }>('/api/preview/columns', 'POST', {
           kind: 'excel',
           excel_path: taskDraft[`${side}_excel_path`],
           sheet: taskDraft[`${side}_sheet`],
@@ -539,12 +646,12 @@ export const useTaskStore = defineStore('task', () => {
         columns = result.columns || []
         warnings = result.warnings || []
       } else {
-        const sql = side === 'target' && taskDraft.sql_mode === 'single' ? taskDraft.source_sql : taskDraft[`${side}_sql`]
-        const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
-        columns = (data.output_columns || []).filter(c => !c.includes('*'))
+        const sql = side === 'target' && taskDraft.sql_mode === 'single' ? taskDraft.source_sql : (taskDraft[`${side}_sql`] as string)
+        const data = await apiJson<{ output_columns?: string[] }>('/api/sql/assist', 'POST', { sql, dialect: '' })
+        columns = (data.output_columns || []).filter((c) => !c.includes('*'))
         if (columns.length === 0) {
           notice.setActionStatus('running', 'SELECT * 检测到，正在查询数据库获取字段...')
-          const result = await apiJson('/api/preview/columns', 'POST', {
+          const result = await apiJson<{ columns?: string[]; warnings?: FieldWarning[] }>('/api/preview/columns', 'POST', {
             kind: 'sql',
             datasource_id: side === 'source' ? taskDraft.source_id : taskDraft.target_id,
             sql,
@@ -563,14 +670,14 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function recommendKey() {
+  async function recommendKey(): Promise<void> {
     const notice = useNoticeStore()
     notice.setActionStatus('running', '正在推荐主键')
     try {
       const sourceSet = new Set(sourceFields.value.map(normalizeColumn))
       const targetSet = new Set(targetFields.value.map(normalizeColumn))
       if (sourceSet.size && targetSet.size) {
-        const intersect = sourceFields.value.filter(c => targetSet.has(normalizeColumn(c)))
+        const intersect = sourceFields.value.filter((c) => targetSet.has(normalizeColumn(c)))
         const candidates = _pickKeyCandidates(intersect)
         if (candidates.length) {
           taskDraft.key_columns = candidates.join(', ')
@@ -589,7 +696,7 @@ export const useTaskStore = defineStore('task', () => {
       }
       // 退回旧路径：source 是 SQL 时让 sqlglot 抽
       if (taskDraft.source_kind === 'sql' && taskDraft.source_sql) {
-        const data = await apiJson('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
+        const data = await apiJson<{ key_candidates?: string[] }>('/api/sql/assist', 'POST', { sql: taskDraft.source_sql, dialect: '' })
         if (data.key_candidates?.length) taskDraft.key_columns = data.key_candidates.join(', ')
         notice.setActionStatus('success', '主键推荐完成', `推荐：${data.key_candidates?.join(', ') || '无候选'}`)
         return
@@ -609,12 +716,12 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function formatSql(side) {
+  async function formatSql(side: CompareTaskSide): Promise<void> {
     const notice = useNoticeStore()
     const sql = side === 'source' ? taskDraft.source_sql : taskDraft.target_sql
     notice.setActionStatus('running', '正在格式化 SQL')
     try {
-      const data = await apiJson('/api/sql/assist', 'POST', { sql, dialect: '' })
+      const data = await apiJson<{ formatted_sql?: string }>('/api/sql/assist', 'POST', { sql, dialect: '' })
       if (side === 'source') {
         taskDraft.source_sql = data.formatted_sql || taskDraft.source_sql
       } else {
