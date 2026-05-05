@@ -7,9 +7,18 @@
 import cytoscape from 'cytoscape'
 import dagre from 'cytoscape-dagre'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useLineageGraphData } from '../composables/useLineageGraphData.js'
 
 cytoscape.use(dagre)
+
+// S5 PR12：edge_type 友好标签
+const { t, te } = useI18n()
+function edgeTypeLabel(type) {
+  if (!type) return ''
+  const key = `lineagePanel.common.edgeTypes.${type}`
+  return te(key) ? t(key) : type
+}
 
 const props = defineProps({
   groups: { type: Array, default: () => [] },
@@ -418,7 +427,7 @@ onBeforeUnmount(() => cy?.destroy())
       </div>
       <div class="grid gap-2 md:grid-cols-5">
         <select v-model="roleFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部节点</option><option value="source">来源表</option><option value="target">目标表</option><option value="dependency">条件依赖</option></select>
-        <select v-model="edgeTypeFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部边类型</option><option v-for="item in edgeTypes" :key="item" :value="item">{{ item }}</option></select>
+        <select v-model="edgeTypeFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部边类型</option><option v-for="item in edgeTypes" :key="item" :value="item">{{ edgeTypeLabel(item) }}</option></select>
         <select v-model="confidenceFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部可信度</option><option v-for="item in confidences" :key="item" :value="item">{{ item }}</option></select>
         <select v-model="scriptFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm" :title="scriptFilter || ''"><option value="">全部脚本</option><option v-for="item in scripts" :key="item" :value="item">{{ basename(item) }}</option></select>
         <select v-model="schemaFilter" class="rounded-lg border-none bg-slate-50 px-3 py-2 text-sm"><option value="all">全部 schema</option><option v-for="item in schemas" :key="item" :value="item">{{ item }}</option></select>
@@ -578,7 +587,7 @@ onBeforeUnmount(() => cy?.destroy())
         <div v-else-if="selectedEdgeDetails.length" class="space-y-3">
           <div v-for="item in selectedEdgeDetails" :key="item.source_table + item.target_table + item.statement_index + item.edge_type" class="rounded-xl bg-slate-50 p-3">
             <p class="font-bold text-slate-800">{{ item.source_table }} → {{ item.target_table }}</p>
-            <p class="mt-1 text-slate-500">{{ item.edge_type || '字段来源' }} · 语句 {{ item.statement_index || '-' }} · {{ item.confidence || 'high' }}</p>
+            <p class="mt-1 text-slate-500">{{ edgeTypeLabel(item.edge_type) || '字段来源' }} · 语句 {{ item.statement_index || '-' }} · {{ item.confidence || 'high' }}</p>
             <p class="mt-2 break-all">来源字段：{{ (item.source_columns || []).join(', ') || '-' }}</p>
             <p class="break-all">目标字段：{{ (item.target_columns || []).join(', ') || '-' }}</p>
             <p class="mt-2 break-all text-slate-500">{{ item.reason || '-' }}</p>

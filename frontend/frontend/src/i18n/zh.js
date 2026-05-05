@@ -286,6 +286,20 @@ export default {
       filterAllProcs: '全部存储过程',
       filterAllStatus: '全部解析状态',
       noMatch: '没有命中',
+      // S5 PR12：supplemental edge type 友好标签
+      edgeTypes: {
+        INSERT: 'INSERT',
+        UPDATE: 'UPDATE',
+        MERGE: 'MERGE',
+        DELETE: 'DELETE',
+        CREATE_TABLE_AS: 'CREATE TABLE AS',
+        INSERT_OVERWRITE: 'INSERT OVERWRITE',
+        REPLACE: 'REPLACE',
+        TRUNCATE: 'TRUNCATE',
+        CURSOR_LOOP_INSERT: '游标 LOOP 推断',
+        UDF_CALL: 'UDF 调用推断',
+        BULK_COLLECT: 'BULK COLLECT 推断',
+      },
     },
     summary: {
       title: '总览',
