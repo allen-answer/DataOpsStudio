@@ -31,6 +31,11 @@ npm run dev
 
 # 生产构建 — 输出到 ../../static/spa/
 npm run build
+
+# 单元测试（vitest + jsdom + @vue/test-utils），跑得快（~1s），CI 会跑
+npm test
+npm run test:watch    # watch 模式
+npm run test:coverage # 覆盖率（@vitest/coverage-v8）
 ```
 
 **主要验收以 Docker / WSL 构建为准。** Windows PowerShell 直接跑 `npm run build` 偶发 `Vite/Rolldown spawn EPERM`（Rolldown 子进程启动被 Windows Defender / 文件锁拦），属环境问题；切换到 WSL 跑构建：
@@ -314,7 +319,6 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
 - **TypeScript 渐进迁移**：Pinia store + composable 先于 view，schema 从 Pydantic codegen
-- **Vitest 关键组件单测**（不上 Storybook）
 - **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`（29 个 view/component 用 inject('app') 待替换 → 大改动留一个独立 sprint）
 - **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
 

@@ -49,6 +49,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Vitest 单测（store / api wrapper / ErrorBoundary 等关键组件）
+      # 跑得快（< 2s），先于 build 暴露逻辑层 regression
+      - name: Run Vitest
+        run: npm test
+
       - name: Build SPA
         run: npm run build
 
