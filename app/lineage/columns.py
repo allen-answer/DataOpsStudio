@@ -101,12 +101,18 @@ def source_info(
     subquery_tables: dict[str, list[str]],
     default_tables: list[str] | None = None,
     schema: dict[str, list[str]] | None = None,
+    variable_names: set[str] | None = None,
 ) -> dict[str, Any]:
     """字段级追溯核心：扫表达式里的 Column 节点，对每一个判定它来自哪张表
     （可能是 alias / 子查询 / 单表 / 多表 schema 推断）。返回 source_columns /
     source_tables / confidence / warnings 四元。
 
-    不确定时（多表都有同名字段、schema 缺失）confidence 降级 + 加 warning。"""
+    不确定时（多表都有同名字段、schema 缺失）confidence 降级 + 加 warning。
+
+    S5 PR5：variable_names 是已知的 PL/SQL 变量 / 常量名集合（小写）。如果一个
+    无 table 限定的 Column 名落在这个集合里，跳过，不污染 source_columns /
+    source_tables —— 它本质是常量引用，不是物理列。
+    """
     e = exp()
     source_columns: list[str] = []
     source_tables: list[str] = []
@@ -115,8 +121,14 @@ def source_info(
     confidence = "high"
     default_tables = default_tables or []
     schema = schema or {}
+    variable_names = variable_names or set()
+    has_variable_ref = False
 
     for column in expression.find_all(e.Column):
+        # PR5：未限定的 PL/SQL 变量名（如 g_app_id）跳过 —— 不是物理列
+        if not column.table and variable_names and column.name.lower() in variable_names:
+            has_variable_ref = True
+            continue
         if column.table:
             expanded = subquery_map.get((column.table, column.name))
             if expanded:
@@ -176,8 +188,9 @@ def source_info(
 
     source_type = "column"
     if not source_columns and not source_tables:
-        source_type = "constant"
-        reasons.append("常量/无字段来源")
+        # PR5：纯变量引用（无物理列也无表）标 variable，跟普通 constant 区分
+        source_type = "variable" if has_variable_ref else "constant"
+        reasons.append("PL/SQL 变量引用" if has_variable_ref else "常量/无字段来源")
     elif any(item.get("type") == "字段歧义" for item in warnings):
         source_type = "ambiguous"
     elif any(item.get("type") == "字段来源未知" for item in warnings):
@@ -214,6 +227,7 @@ def select_columns(
     e = exp()
     result: list[dict[str, Any]] = []
     default_tables = select_direct_source_tables(select)
+    var_names = {v["name"].lower() for v in (script_variables or []) if v.get("name")}
     for expression in select.expressions:
         expanded_star = expanded_star_columns(expression, default_tables, schema, alias_map, subquery_tables)
         if expanded_star:
@@ -263,7 +277,7 @@ def select_columns(
                 }],
             })
             continue
-        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
+        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema, variable_names=var_names)
         entry: dict[str, Any] = {
             "select_index": select_index,
             "output_column": expression.alias_or_name or sql(expression),

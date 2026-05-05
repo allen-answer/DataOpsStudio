@@ -233,6 +233,9 @@ def insert_mappings(
 
     mappings: list[dict[str, Any]] = []
     default_tables = select_direct_source_tables(source_select)
+    # PR5：把 PL/SQL 变量名集合传给 source_info，让无限定的变量引用不被误归到
+    # FROM 表里。
+    var_names = {v["name"].lower() for v in (script_variables or []) if v.get("name")}
     for position, expression in enumerate(source_select.expressions, start=1):
         expanded_star = expanded_star_columns(expression, default_tables, schema, alias_map, subquery_tables)
         if expanded_star:
@@ -259,7 +262,7 @@ def insert_mappings(
                 )
             continue
         target_column = target_columns[position - 1] if position <= len(target_columns) else ""
-        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
+        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema, variable_names=var_names)
         mappings.append(
             {
                 "position": position,
@@ -300,6 +303,7 @@ def create_table_mappings(
 
     mappings: list[dict[str, Any]] = []
     default_tables = select_direct_source_tables(source_select)
+    var_names = {v["name"].lower() for v in (script_variables or []) if v.get("name")}
     for position, expression in enumerate(source_select.expressions, start=1):
         expanded_star = expanded_star_columns(expression, default_tables, schema, alias_map, subquery_tables)
         if expanded_star:
@@ -327,7 +331,7 @@ def create_table_mappings(
                 )
             continue
         target_column = expression.alias_or_name or sql(expression)
-        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema)
+        info = source_info(expression, alias_map, subquery_map, subquery_tables, default_tables, schema, variable_names=var_names)
         mappings.append(
             {
                 "position": position,

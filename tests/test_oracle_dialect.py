@@ -448,6 +448,42 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+def test_package_var_not_misattributed_to_from_table():
+    """S5 PR5：`SELECT g_app_id, count(*) FROM ods.orders` 不应把 g_app_id
+    误归到 ods.orders 的 source_columns。它是 PL/SQL 变量，不是物理列。
+    column-level mapping 应标 source_type=variable，且 graph_groups 把
+    ods.orders 列在 dependency_tables 而非 source_tables。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg_etl AS
+      g_app_id CONSTANT VARCHAR2(32) := 'JY';
+      PROCEDURE run IS BEGIN
+        INSERT INTO dwd.t_jy (app_id, cnt)
+        SELECT g_app_id, count(*) FROM ods.orders;
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    mappings = result.get("insert_mappings", [])
+    app_id_map = next((m for m in mappings if m.get("target_column") == "app_id"), None)
+    assert app_id_map is not None, f"应有 app_id 的 mapping: {mappings}"
+    # PR5 关键：source_columns / source_tables 不再包含 g_app_id / ods.orders
+    assert app_id_map["source_columns"] == [], \
+        f"g_app_id 是变量，不该挂到 source_columns: {app_id_map}"
+    assert app_id_map["source_tables"] == [], \
+        f"g_app_id 是变量，FROM ods.orders 不该挂到这条 mapping 的 source_tables: {app_id_map}"
+    # source_type 应标 variable，区分纯常量
+    assert app_id_map["source_type"] == "variable"
+    # variables 字段仍指明引用了哪个变量
+    assert "g_app_id" in app_id_map.get("variables", [])
+
+    # graph_groups: ods.orders 应作为 dependency_tables 出现，不作为 source_tables
+    groups = result.get("graph_groups", [])
+    target_group = next((g for g in groups if g.get("target_table") == "dwd.t_jy"), None)
+    assert target_group is not None
+    assert "ods.orders" in (target_group.get("dependency_tables") or []), \
+        f"ods.orders 应作为 dependency: {target_group}"
+
+
 def test_package_var_extraction_skips_proc_body_locals():
     """PROCEDURE 体内的局部变量不属于 package 顶层 —— 不应被抽进 result.variables
     （会跟模板变量串味）。BEGIN 后的变量靠 `assigned_value()` 兜底机制处理。"""
