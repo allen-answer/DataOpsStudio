@@ -282,11 +282,17 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 结论：focal+BFS truncation 在两个引擎都正常（DOM 恒定 ~450，与 fixture size 无关）；G6 在 5000 节点 first paint 167ms vs Cytoscape 414ms（2.5×）；Cytoscape DOM 略少（~435 vs ~454）。两个引擎在用户操作上都流畅。compound parent 优势在合成 fixture 上没体现（schema 数固定 6 个），需真实多 schema 大图才能验证。**Phase 10 #5 决策：G6 维持默认，Cytoscape 留实验通道**，等真实 Oracle 数据再考虑转正。
 
-**Phase 10 enhancement 候选**（建立在已落地基础之上）：
+**Phase 10 enhancement** ✅ 全部落地（2026-05-05）：
 
-- **字段列表 / 字段血缘热点**：把表的 column 当二级资产显示在详情页 —— 字段名 / 类型 / 是否被 column-lineage 引用 / 上下游字段。前期可拉 datasource 元信息或从 lineage analyzer 的 column_hints 反查
-- **aspect 反查可视化**：`/api/assets/aspects/search` 已就绪，缺 admin 视图把"标 PII 的所有表"、"owner=alice 的所有资产"列成卡片（PII / 敏感数据 governance dashboard 雏形）
-- **classification 用到血缘图**：lineage graph 节点上叠 PII / SLA 徽章，让"敏感数据流向哪里"一眼看见
+- ✅ **字段列表 / 字段血缘热点**（commit `513b846`）—— `services/assets.get_table_columns()` 反查最近 50 workflow_run 的 lineage `insert_mappings`，按 (write+read) 总热度倒序；`/api/assets/columns/{name:path}` 端点；前端 `AssetDetailView` 新表格卡片，含 transforms / 最近 run 跳转
+- ✅ **aspect 反查可视化 / governance dashboard**（commit `c180ef4`）—— `services/asset_aspects.bulk_aspects_index()` + `/api/assets/aspects/index` 批量 endpoint；admin `/admin/governance` 视图按 type + value 子字段（pii.level=high / sla.tier=t0 等）二级过滤，schema-driven UI（加新 type 改 yml 自动出过滤器）
+- ✅ **classification 用到血缘图**（commit `8686c4a`）—— `LineageGraphPanel` onMount 拉一次 aspects 索引传给两引擎，G6 + Cytoscape 共用 emoji 前缀方案（🔒 PII / ⏰ SLA / ⚠️ sensitive / 👤 owner），不动节点几何
+
+**下一批 enhancement 候选**（仍未排期）：
+
+- **字段血缘热点深化**：点字段名展开上下游字段链（当前只显热度，缺一跳钻取）
+- **datasource introspection**：拉真实 information_schema 字段列表，跟 lineage 反查的字段集合做差集（找出"从来没动过"的字段）
+- **Aspect history / audit**：当前 UPSERT 直接覆盖 value，缺 who/when 的变更轨迹（admin 想知道"谁改了 PII 等级"）
 
 **通用未做**：
 
