@@ -20,7 +20,8 @@ import { Search, X, Filter } from 'lucide-vue-next'
 
 const props = defineProps({
   search: { type: String, default: '' },
-  searchPlaceholder: { type: String, default: '搜索' },
+  // 不在 prop default 处放中文 —— 模板里 fallback 到 $t('filterBar.searchDefault')
+  searchPlaceholder: { type: String, default: '' },
   total: { type: Number, default: 0 },
   visible: { type: Number, default: 0 },
   // 是否显示"清空筛选"按钮 —— 默认看 active 是否为 true
@@ -41,14 +42,14 @@ const filtered = computed(() => props.visible !== props.total)
         <input
           :value="search"
           @input="$emit('update:search', $event.target.value)"
-          :placeholder="searchPlaceholder"
+          :placeholder="searchPlaceholder || $t('filterBar.searchDefault')"
           class="w-full rounded-md border border-slate-200 bg-white py-1.5 pl-8 pr-7 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30"
         />
         <button
           v-if="search"
           @click="$emit('update:search', '')"
           class="absolute right-1.5 grid h-5 w-5 place-items-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-          title="清空搜索"
+          :title="$t('filterBar.clearSearch')"
         >
           <X class="h-3 w-3" />
         </button>
@@ -70,10 +71,10 @@ const filtered = computed(() => props.visible !== props.total)
           v-if="active"
           @click="$emit('clear')"
           class="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800"
-          title="清空所有筛选条件"
+          :title="$t('filterBar.clearAllTooltip')"
         >
           <X class="h-3 w-3" />
-          清空筛选
+          {{ $t('filterBar.clearFilters') }}
         </button>
       </div>
     </div>

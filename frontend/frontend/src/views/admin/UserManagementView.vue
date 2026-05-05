@@ -133,18 +133,18 @@ onMounted(() => {
   <section class="space-y-6">
     <header class="flex items-end justify-between">
       <div>
-        <h2 class="text-2xl font-bold text-slate-800">用户管理</h2>
+        <h2 class="text-2xl font-bold text-slate-800">{{ $t('admin.usersTitle') }}</h2>
         <p class="mt-1 text-sm text-slate-500">管理账号 / role / 密码 —— 仅 admin 可见</p>
       </div>
       <button class="btn btn-outline gap-1.5" @click="reload">
         <RefreshCw class="h-4 w-4" :class="loading ? 'animate-spin' : ''" />
-        刷新
+        {{ $t('common.refresh') }}
       </button>
     </header>
 
     <!-- 新建用户 -->
     <div class="card p-5">
-      <h3 class="mb-3 text-sm font-bold text-slate-700">新建用户</h3>
+      <h3 class="mb-3 text-sm font-bold text-slate-700">{{ $t('admin.usersCreate') }}</h3>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-4">
         <input v-model="draft.username" placeholder="用户名" />
         <input v-model="draft.password" type="password" placeholder="初始密码（≥4 字符）" />

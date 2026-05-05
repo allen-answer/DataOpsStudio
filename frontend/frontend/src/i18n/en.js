@@ -175,6 +175,29 @@ export default {
     tabAI: 'AI Assist',
     tabAIInferred: 'AI Inferred',
   },
+  filterBar: {
+    searchDefault: 'Search',
+    clearSearch: 'Clear search',
+    clearFilters: 'Clear filters',
+    clearAllTooltip: 'Clear all filters',
+  },
+  commandPalette: {
+    placeholder: 'Search nav / data sources / tasks / workflows / history / lineage scripts',
+    searching: 'Searching…',
+    noMatch: 'No matches',
+    promptHint: 'Type a keyword to search across data sources / tasks / workflows / history / lineage scripts',
+  },
+  admin: {
+    auditTitle: 'Audit Log',
+    projectsTitle: 'Projects',
+    projectsCreate: 'New Project',
+    usersTitle: 'Users',
+    usersCreate: 'New User',
+    schedulerTitle: 'Scheduler Monitor',
+    aiToggles: 'Feature toggles',
+    aiSecurityStatus: 'Security status',
+    aiConnectionTest: 'Connection test',
+  },
   workbench: {
     taskList: {
       title: 'Compare Tasks',

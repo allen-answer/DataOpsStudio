@@ -87,7 +87,7 @@ onUnmounted(() => {
   <section class="space-y-6">
     <header class="flex items-end justify-between">
       <div>
-        <h2 class="text-2xl font-bold text-slate-800">调度器监控</h2>
+        <h2 class="text-2xl font-bold text-slate-800">{{ $t('admin.schedulerTitle') }}</h2>
         <p class="mt-1 text-sm text-slate-500">查看 cron / sensor 注册状态 + 触发历史；可临时启停或手动 tick</p>
       </div>
       <div class="flex items-center gap-2">

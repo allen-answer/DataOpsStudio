@@ -64,7 +64,7 @@ onMounted(() => {
   <section class="space-y-6">
     <header class="flex items-end justify-between">
       <div>
-        <h2 class="text-2xl font-bold text-slate-800">审计日志</h2>
+        <h2 class="text-2xl font-bold text-slate-800">{{ $t('admin.auditTitle') }}</h2>
         <p class="mt-1 text-sm text-slate-500">所有 mutating 操作 —— 来自 logs/audit.jsonl</p>
       </div>
       <div class="flex items-end gap-2">

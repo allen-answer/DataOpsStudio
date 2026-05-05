@@ -328,7 +328,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
 - **TypeScript 渐进迁移**（S3.B 全 10 store + S4.A api.ts + composable + S4.B codegen 落地）：10/10 store + api.ts（含泛型 apiGet&lt;T&gt; / apiJson&lt;T&gt;）+ useLineageGraphData composable 全部 ts；openapi-typescript 从 /openapi.json 自动生成 `src/types/api-schema.ts`，友好别名在 `src/types/api.ts`（auth / project / datasource / task / workflow 已用）。剩 view（&lt;script setup lang="ts"&gt;）大头（30+ 个 .vue 文件 script 改 lang="ts"）留下个 sprint
-- **i18n 详情页字符串抽取**：S4.C PR1 已抽 page-level title / subtitle / 通用按钮（datasources / workbench / workflows / lineage / history / asset detail / governance 7 个主 view 的 H2 + tabs + 主 action 按钮全部 i18n 化）。剩深层 form label / hint text / 工作流编辑器 / 血缘 9-tab 标题 等长尾字符串抽取（一片片来，避免单 PR 改太多）
+- **i18n 字符串抽取**（S4.C 7 个 PR 收口）：vue-i18n 11.x + zh/en 镜像 + topbar 切换 + i18n key 对齐 vitest 校验。覆盖：7 个主 view header / tabs + LineageReport 9-tab + workbench 4 step + 5 个 workflow node editor (params/compare/lineage/excel/http) + WorkflowSettingsPanel 主体 + LineageReport 6 panel 内部（Risk / Impact / Steps / Asset / AIEnrichment / AIInferred）+ 5 个 workbench 子 view + AspectGovernance + AssetDetail + FilterBar + CommandPalette + admin 5 view H2。namespace：nav / login / topbar / common / pages / lineageReport / lineagePanel / workflowEditor / workbench / filterBar / commandPalette / admin 共 12 个
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 

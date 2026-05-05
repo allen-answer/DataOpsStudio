@@ -196,7 +196,7 @@ function setActive(item) {
             ref="inputEl"
             v-model="query"
             type="text"
-            placeholder="搜索导航 / 数据源 / 任务 / 作业流 / 历史 / 血缘脚本"
+            :placeholder="$t('commandPalette.placeholder')"
             class="flex-1 border-0 bg-transparent p-0 text-sm focus:outline-none focus:ring-0"
             @keydown="onKeyDown"
           />
@@ -210,9 +210,9 @@ function setActive(item) {
         <!-- 结果 -->
         <div class="max-h-[60vh] overflow-auto py-1">
           <div v-if="!groups.length" class="px-4 py-8 text-center text-sm text-slate-400">
-            <span v-if="loading">搜索中…</span>
-            <span v-else-if="query.trim()">没有匹配结果</span>
-            <span v-else>输入关键词搜索 —— 跨数据源 / 任务 / 作业流 / 历史 / 血缘脚本</span>
+            <span v-if="loading">{{ $t('commandPalette.searching') }}</span>
+            <span v-else-if="query.trim()">{{ $t('commandPalette.noMatch') }}</span>
+            <span v-else>{{ $t('commandPalette.promptHint') }}</span>
           </div>
           <div v-for="g in groups" :key="g.title" class="py-1">
             <div class="px-4 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">

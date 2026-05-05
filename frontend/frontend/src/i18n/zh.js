@@ -176,6 +176,29 @@ export default {
     tabAI: 'AI 辅助',
     tabAIInferred: 'AI 兜底推断',
   },
+  filterBar: {
+    searchDefault: '搜索',
+    clearSearch: '清空搜索',
+    clearFilters: '清空筛选',
+    clearAllTooltip: '清空所有筛选条件',
+  },
+  commandPalette: {
+    placeholder: '搜索导航 / 数据源 / 任务 / 作业流 / 历史 / 血缘脚本',
+    searching: '搜索中…',
+    noMatch: '没有匹配结果',
+    promptHint: '输入关键词搜索 —— 跨数据源 / 任务 / 作业流 / 历史 / 血缘脚本',
+  },
+  admin: {
+    auditTitle: '审计日志',
+    projectsTitle: '项目管理',
+    projectsCreate: '新建项目',
+    usersTitle: '用户管理',
+    usersCreate: '新建用户',
+    schedulerTitle: '调度器监控',
+    aiToggles: '功能开关',
+    aiSecurityStatus: '安全状态',
+    aiConnectionTest: '连接测试',
+  },
   workbench: {
     taskList: {
       title: '对比任务',
