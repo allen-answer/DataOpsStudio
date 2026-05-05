@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../stores/auth'
 import { useNoticeStore } from '../stores/notice'
 import {
@@ -19,6 +20,7 @@ const auth = useAuthStore()
 const notice = useNoticeStore()
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 const username = ref('')
 const password = ref('')
@@ -27,18 +29,18 @@ const errorMsg = ref('')
 
 async function onSubmit() {
   if (!username.value || !password.value) {
-    errorMsg.value = '用户名和密码必填'
+    errorMsg.value = t('login.usernameRequired')
     return
   }
   submitting.value = true
   errorMsg.value = ''
   try {
     await auth.login(username.value, password.value)
-    notice.setNotice(`欢迎，${auth.user?.display_name || auth.user?.username}`)
+    notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
     const redirect = route.query.redirect || '/datasources'
     router.push(redirect)
   } catch (error) {
-    errorMsg.value = error?.message || '登录失败'
+    errorMsg.value = error?.message || t('login.error')
   } finally {
     submitting.value = false
   }
@@ -156,7 +158,7 @@ async function onSubmit() {
 
           <div class="space-y-4">
             <label class="block">
-              <span class="mb-1.5 block text-xs font-bold text-slate-600">用户名</span>
+              <span class="mb-1.5 block text-xs font-bold text-slate-600">{{ $t('login.username') }}</span>
               <div class="relative">
                 <UserIcon class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                 <input
@@ -171,7 +173,7 @@ async function onSubmit() {
             </label>
 
             <label class="block">
-              <span class="mb-1.5 block text-xs font-bold text-slate-600">密码</span>
+              <span class="mb-1.5 block text-xs font-bold text-slate-600">{{ $t('login.password') }}</span>
               <div class="relative">
                 <Lock class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                 <input
@@ -179,7 +181,7 @@ async function onSubmit() {
                   type="password"
                   autocomplete="current-password"
                   class="h-11 w-full rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm transition focus:border-primary focus:bg-white focus:ring-primary/20"
-                  placeholder="请输入密码"
+                  :placeholder="$t('login.passwordPlaceholder')"
                 />
               </div>
             </label>
@@ -198,7 +200,7 @@ async function onSubmit() {
             class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             :disabled="submitting"
           >
-            {{ submitting ? '登录中…' : '登录' }}
+            {{ submitting ? $t('login.submitting') : $t('login.submit') }}
           </button>
 
           <div class="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-[11px] leading-5 text-slate-500">

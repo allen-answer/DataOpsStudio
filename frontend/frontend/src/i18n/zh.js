@@ -1,0 +1,57 @@
+// 简体中文 messages —— 项目主语言，作为 fallback。
+// key 命名按"组件 / 视图"分组：nav.* / login.* / notice.* 等。
+export default {
+  nav: {
+    datasources: '数据源',
+    dataCompare: '数据对比',
+    workflows: '作业流',
+    lineage: '血缘分析',
+    history: '执行历史',
+  },
+  adminNav: {
+    sectionLabel: '管理',
+    ai: 'AI 配置',
+    users: '用户管理',
+    audit: '审计日志',
+    projects: '项目管理',
+    scheduler: '调度器监控',
+    governance: '分类治理',
+  },
+  login: {
+    title: '登录 DataOps Studio',
+    subtitle: 'JWT + bcrypt 认证；admin/admin 是默认账户',
+    username: '用户名',
+    password: '密码',
+    passwordPlaceholder: '请输入密码',
+    usernameRequired: '用户名和密码必填',
+    welcome: '欢迎，{name}',
+    submit: '登录',
+    submitting: '登录中…',
+    error: '登录失败',
+  },
+  topbar: {
+    search: '搜索（Ctrl/Cmd+K）',
+    config: '配置',
+    notifications: '通知',
+    language: '语言',
+    logout: '退出登录',
+  },
+  notice: {
+    saved: '已保存',
+    deleted: '已删除',
+    networkError: '网络异常，请稍后重试',
+    permissionDenied: '权限不足',
+    sessionExpired: '会话已过期，请重新登录',
+  },
+  common: {
+    confirm: '确认',
+    cancel: '取消',
+    save: '保存',
+    delete: '删除',
+    edit: '编辑',
+    close: '关闭',
+    refresh: '刷新',
+    loading: '加载中…',
+    empty: '暂无数据',
+  },
+}

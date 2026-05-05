@@ -320,7 +320,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
 - **TypeScript 渐进迁移**：Pinia store + composable 先于 view，schema 从 Pydantic codegen
 - **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`（29 个 view/component 用 inject('app') 待替换 → 大改动留一个独立 sprint）
-- **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
+- **i18n 详情页字符串抽取**：骨架已落（vue-i18n + sidebar + login + topbar），剩详情页 / 工作流编辑器 / 血缘 9-tab 等长尾字符串抽取（一片片来，避免单 PR 改太多）
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 

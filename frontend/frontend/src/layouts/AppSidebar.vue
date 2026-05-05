@@ -23,22 +23,23 @@ import { useProjectStore } from '../stores/project'
 // matchPaths 用于 active 高亮 —— 当前 route 以这些前缀任一开头即认为命中。
 // Phase 4：单脚本血缘 + 多脚本分析合并为"血缘分析"，path 默认 /lineage；
 // /batch-lineage 仍是合法路径（保留外部链接兼容），同样高亮该项。
+// label 走 i18n —— labelKey 是 messages 里的 key，模板用 $t(item.labelKey)
 const NAV_ITEMS = [
-  { id: 'datasources',   label: '数据源',       icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
-  { id: 'data-compare',  label: '数据对比',     icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
-  { id: 'workflows',     label: '作业流',       icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
-  { id: 'lineage',       label: '血缘分析',     icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
-  { id: 'history',       label: '执行历史',     icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
+  { id: 'datasources',   labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
+  { id: 'data-compare',  labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
+  { id: 'workflows',     labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
+  { id: 'lineage',       labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
+  { id: 'history',       labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
 ]
 
 // admin-only nav 项：仅 admin role 可见
 const ADMIN_NAV_ITEMS = [
-  { id: 'ai',        label: 'AI 配置',       icon: Bot,          path: '/admin/ai',        matchPaths: ['/admin/ai'] },
-  { id: 'users',     label: '用户管理',  icon: Users,        path: '/admin/users',     matchPaths: ['/admin/users'] },
-  { id: 'audit',     label: '审计日志',  icon: ScrollText,   path: '/admin/audit',     matchPaths: ['/admin/audit'] },
-  { id: 'projects',  label: '项目管理',  icon: FolderOpen,   path: '/admin/projects',  matchPaths: ['/admin/projects'] },
-  { id: 'scheduler', label: '调度器监控', icon: Activity,     path: '/admin/scheduler', matchPaths: ['/admin/scheduler'] },
-  { id: 'governance', label: '分类治理',   icon: Tag,         path: '/admin/governance', matchPaths: ['/admin/governance'] },
+  { id: 'ai',         labelKey: 'adminNav.ai',         icon: Bot,        path: '/admin/ai',         matchPaths: ['/admin/ai'] },
+  { id: 'users',      labelKey: 'adminNav.users',      icon: Users,      path: '/admin/users',      matchPaths: ['/admin/users'] },
+  { id: 'audit',      labelKey: 'adminNav.audit',      icon: ScrollText, path: '/admin/audit',      matchPaths: ['/admin/audit'] },
+  { id: 'projects',   labelKey: 'adminNav.projects',   icon: FolderOpen, path: '/admin/projects',   matchPaths: ['/admin/projects'] },
+  { id: 'scheduler',  labelKey: 'adminNav.scheduler',  icon: Activity,   path: '/admin/scheduler',  matchPaths: ['/admin/scheduler'] },
+  { id: 'governance', labelKey: 'adminNav.governance', icon: Tag,        path: '/admin/governance', matchPaths: ['/admin/governance'] },
 ]
 
 const route = useRoute()
@@ -103,13 +104,13 @@ async function onProjectChange(event) {
           : 'text-sidebar-fg/80 hover:bg-sidebar-accent hover:text-white'"
       >
         <component :is="item.icon" class="h-5 w-5 shrink-0" :class="isActive(item) ? 'text-white' : 'text-sidebar-fg/60 group-hover:text-white'" />
-        <span class="truncate">{{ item.label }}</span>
+        <span class="truncate">{{ $t(item.labelKey) }}</span>
       </router-link>
 
       <!-- Admin nav 区段（仅 admin） -->
       <template v-if="isAdmin">
         <div class="mt-4 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sidebar-fg/40">
-          管理
+          {{ $t('adminNav.sectionLabel') }}
         </div>
         <router-link
           v-for="item in ADMIN_NAV_ITEMS"
@@ -121,7 +122,7 @@ async function onProjectChange(event) {
             : 'text-sidebar-fg/80 hover:bg-sidebar-accent hover:text-white'"
         >
           <component :is="item.icon" class="h-5 w-5 shrink-0" :class="isActive(item) ? 'text-white' : 'text-sidebar-fg/60 group-hover:text-white'" />
-          <span class="truncate">{{ item.label }}</span>
+          <span class="truncate">{{ $t(item.labelKey) }}</span>
         </router-link>
       </template>
     </nav>

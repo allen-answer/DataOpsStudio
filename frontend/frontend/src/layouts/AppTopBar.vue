@@ -1,13 +1,22 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChevronRight, Search, FileDown, ShieldAlert, LogOut, User as UserIcon } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+import { ChevronRight, Search, FileDown, ShieldAlert, LogOut, Languages, User as UserIcon } from 'lucide-vue-next'
 import CommandPalette from '../components/CommandPalette.vue'
 import NotificationPopover from '../components/NotificationPopover.vue'
 import { useAuthStore } from '../stores/auth'
+import { setLocale, SUPPORTED_LOCALES } from '../i18n'
 
 const authStore = useAuthStore()
 const userMenuOpen = ref(false)
+const langMenuOpen = ref(false)
+const { locale } = useI18n()
+
+function pickLocale(code) {
+  setLocale(code)
+  langMenuOpen.value = false
+}
 
 const props = defineProps({
   // 路由 path → 面包屑文案的 map；若 view 想自定义动态面包屑，可通过 slot 覆盖
@@ -107,7 +116,7 @@ const computedCrumbs = computed(() => {
         @click="paletteOpen = true"
       >
         <Search class="h-4 w-4" />
-        <span class="hidden md:inline text-slate-500">搜索</span>
+        <span class="hidden md:inline text-slate-500">{{ $t('topbar.search') }}</span>
         <kbd class="hidden md:inline rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
           Ctrl K
         </kbd>
@@ -115,6 +124,33 @@ const computedCrumbs = computed(() => {
 
       <!-- 通知 popover：异步任务状态 -->
       <NotificationPopover />
+
+      <!-- 语言切换 -->
+      <div class="relative">
+        <button
+          class="btn btn-ghost flex h-9 items-center gap-1.5 px-2 text-xs"
+          :title="$t('topbar.language')"
+          @click="langMenuOpen = !langMenuOpen"
+        >
+          <Languages class="h-4 w-4" />
+          <span class="hidden md:inline text-slate-500 uppercase">{{ locale.split('-')[0] }}</span>
+        </button>
+        <div
+          v-if="langMenuOpen"
+          class="absolute right-0 top-full z-30 mt-1 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
+        >
+          <button
+            v-for="opt in SUPPORTED_LOCALES"
+            :key="opt.code"
+            class="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-slate-50"
+            :class="locale === opt.code ? 'font-bold text-primary' : 'text-slate-700'"
+            @click="pickLocale(opt.code)"
+          >
+            {{ opt.label }}
+            <span v-if="locale === opt.code" class="text-[10px]">✓</span>
+          </button>
+        </div>
+      </div>
 
       <!-- 用户菜单 —— 当前账号 / 角色徽章 / 注销 -->
       <div v-if="authStore.user" class="relative">
@@ -141,7 +177,7 @@ const computedCrumbs = computed(() => {
             @click="userMenuOpen = false; authStore.logout()"
           >
             <LogOut class="h-3.5 w-3.5" />
-            注销
+            {{ $t('topbar.logout') }}
           </button>
         </div>
       </div>
