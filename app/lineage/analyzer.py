@@ -170,6 +170,19 @@ _RE_CURSOR_DML_TARGET = re.compile(
     r"([\w$#.\"`\[\]]+)",
     flags=re.IGNORECASE,
 )
+# S5 PR11：被 _RE_CURSOR_DML_TARGET 误捕的 SQL 关键字 —— 比如 MERGE 里的
+# `WHEN MATCHED THEN UPDATE SET col=...` 会让 SET 被当成 UPDATE target，
+# 进而生成 `ods.orders → SET` 这种垃圾边。
+_DML_TARGET_KEYWORD_BLACKLIST = frozenset({
+    "SET", "VALUES", "NULL", "TABLE", "FROM", "WHERE", "USING", "WHEN",
+    "MATCHED", "THEN", "ELSE", "ON", "AS",
+})
+
+
+def _is_valid_dml_target(name: str) -> bool:
+    if not name:
+        return False
+    return name.upper() not in _DML_TARGET_KEYWORD_BLACKLIST
 
 
 def _cursor_supplemental_edges(
@@ -210,7 +223,7 @@ def _cursor_supplemental_edges(
         for m in _RE_CURSOR_DML_TARGET.finditer(seg_sql):
             tname = m.group(1).strip().strip('"`[]')
             key = tname.lower()
-            if not tname or key in seen_t:
+            if not _is_valid_dml_target(tname) or key in seen_t:
                 continue
             seen_t.add(key)
             targets.append(tname)
@@ -306,7 +319,7 @@ def _udf_supplemental_edges(
         if not target_match:
             continue
         target = target_match.group(1).strip().strip('"`[]')
-        if not target:
+        if not _is_valid_dml_target(target):
             continue
         # 遍历每个已知 UDF，看 statement 文本里是否引用
         for fn_name, src_tables in udf_reads.items():
@@ -402,7 +415,7 @@ def _bulk_collect_supplemental_edges(
         if not target_match:
             continue
         target = target_match.group(1).strip().strip('"`[]')
-        if not target:
+        if not _is_valid_dml_target(target):
             continue
         # 检查段引用了哪些 bulk var
         for var_name, src_tables in bulk_vars.items():

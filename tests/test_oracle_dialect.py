@@ -448,6 +448,50 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR11：MERGE inside cursor LOOP body 不该误把 SET 当 target ─────────────
+
+
+def test_merge_in_cursor_loop_no_fake_set_target():
+    """MERGE 里 `WHEN MATCHED THEN UPDATE SET col = ...` 的 SET 关键字
+    曾被 _RE_CURSOR_DML_TARGET 误捕成 UPDATE target，导致生成
+    `ods.orders → SET` 这种垃圾 supplemental 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+    BEGIN
+      FOR rec IN (SELECT id, amt FROM ods.orders) LOOP
+        MERGE INTO dwd.fact d
+        USING (SELECT rec.id AS id, rec.amt AS amt FROM dual) s
+        ON (d.id = s.id)
+        WHEN MATCHED THEN UPDATE SET d.amt = s.amt
+        WHEN NOT MATCHED THEN INSERT (id, amt) VALUES (s.id, s.amt);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {e["target_table"].lower() for e in result.get("graph_edges", [])}
+    assert "set" not in targets, \
+        f"SET 是 SQL 关键字，不该当 target_table: {result.get('graph_edges')}"
+    # 真实 target 仍应在
+    assert "dwd.fact" in targets
+
+
+def test_dml_target_blacklist_skips_keywords():
+    """更宽的 blacklist 测：UPDATE VALUES / DELETE FROM WHERE 等也不该
+    生成边到 VALUES / WHERE / NULL 这种关键字。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+    BEGIN
+      FOR r IN (SELECT id FROM ods.t) LOOP
+        UPDATE dwd.x SET col = NULL WHERE id = r.id;
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {e["target_table"].lower() for e in result.get("graph_edges", [])}
+    assert "null" not in targets and "where" not in targets and "set" not in targets, \
+        f"关键字误识别: {result.get('graph_edges')}"
+
+
 # ─── S5 PR9：BULK COLLECT + FORALL pattern 应能补 source 边 ────────────────────
 
 
