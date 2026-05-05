@@ -1,0 +1,25 @@
+name: Release Please
+
+# 每次 push main 触发：解析 conventional commits（feat/fix/perf/...）→ 维护一个
+# 持续更新的 release PR，里面是按类型分组的 CHANGELOG diff + 自动 bump 后的版本号。
+# 用户 review release PR 后 merge → release-please 自动打 tag + 创 GitHub Release。
+# 已有 .github/workflows/release.yml 监听 tag 推送 → 跑 Windows offline 打包。
+#
+# 工作流 = "维护 changelog" + "决定何时发版"，不直接发版（merge 是 manual 闸门）
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write       # 给 release-please 推 release branch + 打 tag
+  pull-requests: write  # 给 release-please 创 / 更新 release PR
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # 配置走 release-please-config.json 跟 .release-please-manifest.json
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

@@ -141,6 +141,17 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 构建产物输出到 `static/spa/`，由 FastAPI 在 `/static/spa/` 服务。`static/spa/index.html` 和 `static/spa/assets/` 已 gitignore，由 CI / Docker / release 脚本生成；手写资源 `static/spa/favicon.svg` 仍跟踪。`/spa` endpoint 加 `Cache-Control: no-cache`，避免 index.html 缓存住引用旧 hash bundle。
 
+### 发版（release-please）
+
+走 conventional commits 自动生成 changelog + 版本：
+
+1. push commit 到 `main` 时格式照旧 (`feat(scope): ... / fix(scope): ... / docs: ...`)
+2. `.github/workflows/release-please.yml` 自动维护一个 release PR，里面是按类型分组的 CHANGELOG diff + 自动 bump 后的版本号（feat → minor / fix → patch / `feat!: ` 或 `BREAKING CHANGE:` → major）
+3. review release PR → merge → release-please 自动打 tag + 创 GitHub Release
+4. tag 推送命中 `release.yml` → 跑 Windows offline 打包 + 上传到 release（draft）
+
+配置：`release-please-config.json`（changelog 分组 / hidden types）+ `.release-please-manifest.json`（版本号 SoT）。`release-type=simple` 不写 `version.txt`，纯靠 manifest 跟踪。**首次发版前**：在 release PR 上手动调整 `manifest.json` 的版本号（比如 0.0.0 → 0.1.0）后 merge。
+
 主要依赖：`@antv/g6`（血缘图）、`cytoscape` + `cytoscape-dagre`（实验引擎）、`@codemirror/*`（SQL 编辑器）、`@vueuse/core`（工具函数）、`lucide-vue-next`（图标）、Tailwind CSS v3（样式）。`vite.config.js` advancedChunks 拆 G6 / cytoscape / codemirror 各独立 vendor chunk。
 
 ### 血缘分析
@@ -307,7 +318,6 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - **Vitest 关键组件单测**（不上 Storybook）
 - **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`
 - **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
-- **release-please / changesets**：自动生成 release notes from conventional commits
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 
