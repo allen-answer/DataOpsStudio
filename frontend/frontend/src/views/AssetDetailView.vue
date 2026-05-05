@@ -7,7 +7,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle, Tag, Plus, Trash2, Pencil, X } from 'lucide-vue-next'
+import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle, Tag, Plus, Trash2, Pencil, X, Columns3, ArrowDownToLine, ArrowUpFromLine } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../api'
 import { useAuthStore } from '../stores/auth'
 
@@ -22,6 +22,10 @@ const asset = ref(null)
 
 // aspect schema 定义（来自后端 yaml）—— 决定编辑器渲染哪些字段
 const aspectTypes = ref([])  // [{type, label, description, schema, color}, ...]
+
+// 字段列表（来自最近 workflow_run 的 lineage insert_mappings）
+const columns = ref([])      // [{name, read_count, write_count, transforms, ...}]
+const columnsLoading = ref(false)
 
 const tableName = computed(() => route.params.name || '')
 
@@ -72,11 +76,25 @@ async function load() {
     ])
     asset.value = assetData
     aspectTypes.value = Array.isArray(types) ? types : []
+    // 字段列表并行拉（独立 endpoint，慢一点不阻塞主面板）
+    loadColumns()
   } catch (e) {
     error.value = `加载失败：${e.message || e}`
     asset.value = null
   } finally {
     loading.value = false
+  }
+}
+
+async function loadColumns() {
+  if (!tableName.value) return
+  columnsLoading.value = true
+  try {
+    columns.value = await apiGet(`/api/assets/columns/${encodeURIComponent(tableName.value)}`)
+  } catch {
+    columns.value = []
+  } finally {
+    columnsLoading.value = false
   }
 }
 
@@ -434,12 +452,88 @@ function setListValue(field, text) {
       </article>
     </div>
 
-    <!-- 下个 sprint：字段列表 / 字段血缘热点 -->
+    <!-- 字段列表（来自最近 workflow_run 的 lineage insert_mappings）-->
+    <article v-if="asset && !loading" class="card p-4">
+      <header class="mb-3 flex items-center gap-2">
+        <Columns3 class="h-4 w-4 text-emerald-600" />
+        <h3 class="text-sm font-bold text-slate-800">字段（lineage 反查）</h3>
+        <span class="pill bg-emerald-100 text-emerald-700">{{ columns.length }}</span>
+        <span v-if="columnsLoading" class="muted text-[11px]">加载中…</span>
+        <span v-else-if="columns.length" class="muted text-[11px]">
+          按热度排序（写次数 + 读次数）
+        </span>
+      </header>
+      <div v-if="columns.length" class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead class="text-slate-500">
+            <tr class="border-b border-slate-100">
+              <th class="py-1.5 pr-3 text-left font-semibold">字段名</th>
+              <th class="py-1.5 pr-3 text-right font-semibold">
+                <ArrowUpFromLine class="inline h-3 w-3 text-slate-400" /> 写
+              </th>
+              <th class="py-1.5 pr-3 text-right font-semibold">
+                <ArrowDownToLine class="inline h-3 w-3 text-slate-400" /> 读
+              </th>
+              <th class="py-1.5 pr-3 text-left font-semibold">变换 transform</th>
+              <th class="py-1.5 text-left font-semibold">最近出现</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="col in columns"
+              :key="col.name"
+              class="border-b border-slate-50 hover:bg-slate-50/60"
+            >
+              <td class="sql-font py-1.5 pr-3 font-medium text-slate-800">{{ col.name }}</td>
+              <td class="py-1.5 pr-3 text-right">
+                <span v-if="col.write_count" class="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">
+                  {{ col.write_count }}
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td class="py-1.5 pr-3 text-right">
+                <span v-if="col.read_count" class="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">
+                  {{ col.read_count }}
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td class="py-1.5 pr-3">
+                <span v-if="col.transforms?.length" class="muted">
+                  {{ col.transforms.slice(0, 3).join(' / ') }}
+                  <span v-if="col.transforms.length > 3" class="opacity-60">
+                    +{{ col.transforms.length - 3 }}
+                  </span>
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td class="muted py-1.5 text-[10px]">
+                <button
+                  v-if="col.last_seen_run_id"
+                  class="text-primary hover:underline"
+                  @click="gotoWorkflowRun(col.last_seen_run_id)"
+                >
+                  run {{ col.last_seen_run_id.slice(0, 8) }}
+                </button>
+                <span v-else>—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else-if="!columnsLoading" class="muted text-xs">
+        最近 50 个 workflow_run 的 lineage 输出里没找到此表的字段引用。
+        跑一个含 INSERT/UPDATE/MERGE 此表的血缘任务后再回来看。
+      </p>
+    </article>
+
+    <!-- 下一步留白卡 -->
     <div v-if="asset && !loading" class="card border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-      <strong>下个 sprint 计划</strong>：字段列表 + 字段血缘热点。当前已支持：反向引用
-      （4 类）+ 全局索引元数据（role / refresh_mode / 上下游计数 / 最近出现 run）+
-      classification aspects（owner / pii / sla / sensitive / tag / business_term，
-      schema 由 <code>config/asset_aspects.yml</code> 外置定义）。
+      <strong>当前覆盖</strong>：反向引用（4 类）+ 全局索引元数据（role / refresh_mode /
+      上下游计数 / 最近出现 run）+ classification aspects（owner / pii / sla /
+      sensitive / tag / business_term）+ 字段列表（lineage 反查热度）。
+      <span class="opacity-70">下一步：字段血缘热点（点字段名展开上下游字段链）+
+      datasource introspection（拉真实 information_schema 列表，含没在 lineage
+      里出现过的字段）。</span>
     </div>
   </section>
 </template>

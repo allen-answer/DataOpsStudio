@@ -17,7 +17,7 @@ from typing import Any
 from app.services.history import list_result_history
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.search import _all_tokens_in, _extract_tables
-from app.services.workflow_history import list_workflow_runs
+from app.services.workflow_history import get_workflow_run, list_workflow_runs
 
 
 def _split_schema(name: str) -> tuple[str, str]:
@@ -218,6 +218,111 @@ def get_table_asset(name: str, *, project_id: str = "") -> dict[str, Any]:
     }
 
 
+def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -> list[dict[str, Any]]:
+    """从最近 run_limit 个 workflow_run 的 lineage 输出 insert_mappings 反查
+    table_name 的字段。返回每列的 read_count / write_count / 最近出现 run_id。
+
+    数据语义：
+    - **write_count**：mapping.target_table == name 时 +1（insert/update/merge 写入此列）
+    - **read_count**：name ∈ mapping.source_tables 时按 source_columns 出现次数 +1。
+      多源 mapping（join 多张表）只有当 source_columns 显式带 `name.` 前缀才算
+    - **transforms**：每列见过的 transform 字符串集合（聚合 / cast / 窗口 等）
+    - **last_seen_run_id**：列最近出现的 run_id
+
+    没在最近 lineage 里出现的表 → 空列表。这是 *workflow_run-based* 视图，不是
+    datasource introspection（不需要活的 DB 连接）。
+    """
+    if not name or not name.strip():
+        raise ValueError("name is required")
+    target = name.strip()
+    target_lower = target.lower()
+    target_basename = target_lower.split(".")[-1]  # ods.t_users → t_users 的 alias 形式
+
+    cols: dict[str, dict[str, Any]] = {}
+
+    def _bump(col_key: str, kind: str, run_id: str, run_started_at: str, transform: str = "") -> None:
+        col_key = col_key.strip()
+        if not col_key:
+            return
+        # 提取最后一段当显示名（"db.t.col" → "col"；"col" → "col"）
+        display = col_key.split(".")[-1]
+        if not display:
+            return
+        entry = cols.setdefault(display, {
+            "name": display,
+            "read_count": 0,
+            "write_count": 0,
+            "transforms": set(),
+            "last_seen_run_id": "",
+            "last_seen_at": "",
+        })
+        entry[f"{kind}_count"] += 1
+        if transform:
+            entry["transforms"].add(transform)
+        if run_started_at >= entry["last_seen_at"]:
+            entry["last_seen_at"] = run_started_at
+            entry["last_seen_run_id"] = run_id
+
+    try:
+        # list_workflow_runs 只返回 summary（不含 nodes），按 run_id 拉完整 payload
+        # —— 跟 lineage_index._rebuild_locked 同样的两阶段。
+        for summary in list_workflow_runs(limit=run_limit):
+            rid = str(summary.get("run_id") or "")
+            if not rid:
+                continue
+            full = get_workflow_run(rid)
+            if not full:
+                continue
+            run_id = rid
+            run_started_at = str(full.get("started_at") or full.get("created_at") or "")
+            for node_run in (full.get("nodes") or []):
+                if str(node_run.get("type") or "").lower() != "lineage":
+                    continue
+                output = node_run.get("output") or {}
+                # files 列表（batch lineage）或 result（单脚本 lineage）
+                packets = output.get("files") or [output]
+                for packet in packets:
+                    if not isinstance(packet, dict):
+                        continue
+                    for mapping in (packet.get("insert_mappings") or []):
+                        if not isinstance(mapping, dict):
+                            continue
+                        target_table = str(mapping.get("target_table") or "").strip().lower()
+                        # write
+                        if target_table == target_lower or target_table == target_basename:
+                            tcol = str(mapping.get("target_column") or "").strip()
+                            transform = str(mapping.get("transform") or "")
+                            if tcol:
+                                _bump(tcol, "write", run_id, run_started_at, transform)
+                        # read
+                        source_tables = [str(t).lower() for t in (mapping.get("source_tables") or [])]
+                        if target_lower in source_tables or target_basename in source_tables:
+                            for sc in (mapping.get("source_columns") or []):
+                                sc = str(sc).strip()
+                                if not sc:
+                                    continue
+                                # 多源 mapping：仅显式带 `name.` 前缀的算（避免误把
+                                # 兄弟表的列归到此表）；单源 mapping 全算
+                                if len(source_tables) > 1:
+                                    sc_lower = sc.lower()
+                                    if not (sc_lower.startswith(target_lower + ".")
+                                            or sc_lower.startswith(target_basename + ".")):
+                                        continue
+                                _bump(sc, "read", run_id, run_started_at)
+    except Exception:  # pragma: no cover —— 兜底；workflow_history 不可用 / payload 异常
+        return []
+
+    out: list[dict[str, Any]] = []
+    for entry in cols.values():
+        out.append({
+            **entry,
+            "transforms": sorted(entry["transforms"]),
+        })
+    # 按 (write+read 总数) 倒序，热度高的排前
+    out.sort(key=lambda c: (c["write_count"] + c["read_count"]), reverse=True)
+    return out
+
+
 def list_datasource_assets(project_id: str = "") -> list[dict[str, Any]]:
     """列举所有 datasource —— 一类辅助资产，让前端可以"按 datasource 看哪些 task 在用"。"""
     out: list[dict[str, Any]] = []
@@ -235,4 +340,4 @@ def list_datasource_assets(project_id: str = "") -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["get_table_asset", "list_datasource_assets"]
+__all__ = ["get_table_asset", "get_table_columns", "list_datasource_assets"]

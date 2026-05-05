@@ -159,3 +159,108 @@ def test_http_datasources_list_excludes_password(client, isolated_storage):
     assert len(body) == 1
     assert "password" not in body[0]
     assert body[0]["name"] == "prod-db"
+
+
+# ─── 字段列表（Phase 10 enhancement #1）──────────────────────────────────────
+
+
+def _persist_lineage_run(insert_mappings: list[dict], run_id: str = "run-1") -> None:
+    """Helper：建一个 workflow_run，含 1 个 lineage 节点 + 给定 insert_mappings。"""
+    from app.models import (
+        NodeRunStatus, WorkflowNodeRun, WorkflowNodeType, WorkflowRun, WorkflowRunStatus,
+    )
+    from app.services import workflow_history
+    run = WorkflowRun(
+        run_id=run_id, workflow_id="wf-x", workflow_name="lineage test",
+        status=WorkflowRunStatus.SUCCESS,
+        nodes=[WorkflowNodeRun(
+            node_id="n1", type=WorkflowNodeType.LINEAGE,
+            status=NodeRunStatus.SUCCESS,
+            output={"insert_mappings": insert_mappings},
+        )],
+        started_at="2026-05-05T10:00:00",
+        finished_at="2026-05-05T10:00:01", elapsed_seconds=1.0,
+    )
+    workflow_history.persist_workflow_run(run)
+
+
+def test_get_table_columns_aggregates_writes_and_reads(isolated_storage):
+    from app.services.assets import get_table_columns
+    _persist_lineage_run([
+        # 写 dwd.t_users.id 一次
+        {"target_table": "dwd.t_users", "target_column": "id",
+         "source_tables": ["ods.t_users"], "source_columns": ["id"]},
+        # 写 dwd.t_users.name 一次
+        {"target_table": "dwd.t_users", "target_column": "name",
+         "source_tables": ["ods.t_users"], "source_columns": ["name"]},
+        # 读 ods.t_users.id 两次（出现在两个 mapping 的 source_columns 里）
+    ])
+    cols = get_table_columns("dwd.t_users")
+    by_name = {c["name"]: c for c in cols}
+    assert by_name["id"]["write_count"] == 1
+    assert by_name["name"]["write_count"] == 1
+    assert all(c["read_count"] == 0 for c in cols)  # 没人读 dwd.t_users 的字段
+
+    # 反过来：ods.t_users 是源表，被读了两次（id + name）
+    src_cols = get_table_columns("ods.t_users")
+    assert {c["name"] for c in src_cols} == {"id", "name"}
+    assert all(c["read_count"] == 1 and c["write_count"] == 0 for c in src_cols)
+
+
+def test_get_table_columns_multi_source_requires_prefix(isolated_storage):
+    """多源 mapping（join）：source_columns 必须显式带表前缀才算入。"""
+    from app.services.assets import get_table_columns
+    _persist_lineage_run([
+        # JOIN：source_tables=[a, b]，源列里 a.x 显式带前缀，y 没前缀
+        {"target_table": "dwd.merged", "target_column": "merged_id",
+         "source_tables": ["ods.a", "ods.b"],
+         "source_columns": ["ods.a.x", "y"]},  # y 不算入 ods.a 也不算入 ods.b
+    ])
+    a_cols = get_table_columns("ods.a")
+    assert {c["name"]: c["read_count"] for c in a_cols} == {"x": 1}
+    # y 没前缀 → 既不算 ods.a 也不算 ods.b
+    b_cols = get_table_columns("ods.b")
+    assert b_cols == []
+
+
+def test_get_table_columns_sorted_by_total_heat(isolated_storage):
+    from app.services.assets import get_table_columns
+    _persist_lineage_run([
+        {"target_table": "t", "target_column": "hot",
+         "source_tables": ["s"], "source_columns": ["hot"]},
+        {"target_table": "t", "target_column": "hot",
+         "source_tables": ["s"], "source_columns": ["hot"]},
+        {"target_table": "t", "target_column": "cold",
+         "source_tables": ["s"], "source_columns": ["cold"]},
+    ])
+    cols = get_table_columns("t")
+    # hot 写 2 次，cold 写 1 次 → hot 在前
+    assert cols[0]["name"] == "hot"
+    assert cols[0]["write_count"] == 2
+    assert cols[1]["name"] == "cold"
+
+
+def test_get_table_columns_empty_when_table_unseen(isolated_storage):
+    from app.services.assets import get_table_columns
+    # 没 workflow_run → 直接空
+    assert get_table_columns("never.seen") == []
+
+
+def test_get_table_columns_endpoint(client, isolated_storage):
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+    ])
+    r = client.get("/api/assets/columns/dwd.users")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["name"] == "id"
+    assert body[0]["write_count"] == 1
+
+
+def test_get_table_columns_empty_name_returns_400(client, isolated_storage):
+    """name=path-converter 不会传空字符串，但 ValueError 兜底应生效（直接调 service）。"""
+    from app.services.assets import get_table_columns
+    with pytest.raises(ValueError):
+        get_table_columns("")

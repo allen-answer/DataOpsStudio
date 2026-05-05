@@ -192,7 +192,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **738 通过 / 0 失败 / 1 skipped**。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 MVP、Prometheus `/metrics` + 结构化日志、路由 lazy loading 全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **806 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 MVP + custom aspects、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -296,9 +296,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - **Vitest 关键组件单测**（不上 Storybook）
 - **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`
 - **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
-- **全局 ErrorBoundary**：捕获组件渲染异常 + 降级 UI
 - **release-please / changesets**：自动生成 release notes from conventional commits
-- **生产 runbook**：备份 / 升级 / 回滚 / 灾备
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
 
