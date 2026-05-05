@@ -1,28 +1,77 @@
 <script setup>
-// Phase 10 #4：表资产详情页 MVP。
+// Phase 10 #4：表资产详情页 MVP + Phase 10 enhancement: custom aspects。
 // 路由 /assets/table/:name —— 拿表名反向查找谁在引用：tasks / workflows /
-// lineage_scripts / history。下个 sprint 接全局 lineage 索引后会补：role /
-// refresh_mode / 字段列表 / classification (PII/SLA/owner) 等。
+// lineage_scripts / history。aspects（owner / pii / sla / sensitive / tag /
+// business_term）editor+ 角色可编辑，schema 由后端 yaml 定义，前端拿
+// /api/assets/aspects/types 动态渲染表单字段。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle } from 'lucide-vue-next'
-import { apiGet } from '../api'
+import { storeToRefs } from 'pinia'
+import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle, Tag, Plus, Trash2, Pencil, X } from 'lucide-vue-next'
+import { apiGet, apiJson } from '../api'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
+const { isEditor } = storeToRefs(authStore)
 
 const loading = ref(false)
 const error = ref('')
 const asset = ref(null)
 
+// aspect schema 定义（来自后端 yaml）—— 决定编辑器渲染哪些字段
+const aspectTypes = ref([])  // [{type, label, description, schema, color}, ...]
+
 const tableName = computed(() => route.params.name || '')
+
+// 编辑器状态：null = 关闭；object = 当前正在编辑的 aspect（含 mode = 'add' / 'edit'）
+const editing = ref(null)
+const saving = ref(false)
+const saveError = ref('')
+
+// aspect type → tailwind 颜色映射（example yml 里的 color hint）
+const ASPECT_COLOR_MAP = {
+  blue: 'bg-blue-100 text-blue-700',
+  red: 'bg-red-100 text-red-700',
+  amber: 'bg-amber-100 text-amber-700',
+  emerald: 'bg-emerald-100 text-emerald-700',
+  slate: 'bg-slate-100 text-slate-700',
+  purple: 'bg-purple-100 text-purple-700',
+}
+function aspectColor(type) {
+  const spec = aspectTypes.value.find((t) => t.type === type)
+  return ASPECT_COLOR_MAP[spec?.color || 'slate'] || ASPECT_COLOR_MAP.slate
+}
+function aspectLabel(type) {
+  return aspectTypes.value.find((t) => t.type === type)?.label || type
+}
+
+// value 简短预览（pill 旁的灰字）
+function previewValue(aspect) {
+  const v = aspect?.value || {}
+  // 优先级：先取 enum 类字段（level/tier）、再取 username、再取 list 第一个
+  if (v.level) return v.level
+  if (v.tier) return v.tier
+  if (v.username) return v.username
+  if (Array.isArray(v.values) && v.values.length) return v.values.slice(0, 3).join(' / ')
+  if (Array.isArray(v.categories) && v.categories.length) return v.categories.slice(0, 3).join(' / ')
+  if (v.glossary_key) return v.glossary_key
+  if (v.reason) return v.reason.slice(0, 32)
+  return ''
+}
 
 async function load() {
   if (!tableName.value) return
   loading.value = true
   error.value = ''
   try {
-    asset.value = await apiGet(`/api/assets/table/${encodeURIComponent(tableName.value)}`)
+    const [assetData, types] = await Promise.all([
+      apiGet(`/api/assets/table/${encodeURIComponent(tableName.value)}`),
+      apiGet('/api/assets/aspects/types').catch(() => []),
+    ])
+    asset.value = assetData
+    aspectTypes.value = Array.isArray(types) ? types : []
   } catch (e) {
     error.value = `加载失败：${e.message || e}`
     asset.value = null
@@ -42,6 +91,86 @@ function gotoWorkflow(id) {
 }
 function gotoWorkflowRun(runId) {
   router.push(`/workflow-runs/${runId}`)
+}
+
+// ─── aspect 编辑 ────────────────────────────────────────────────────────────
+
+function openAdd() {
+  // 默认选第一个 type；用户可在表单里改
+  const firstType = aspectTypes.value[0]?.type || ''
+  editing.value = { mode: 'add', aspect_type: firstType, value: {} }
+  saveError.value = ''
+}
+
+function openEdit(aspect) {
+  // 复制一份避免改原对象（用户取消时回滚）
+  editing.value = {
+    mode: 'edit',
+    aspect_type: aspect.aspect_type,
+    value: JSON.parse(JSON.stringify(aspect.value || {})),
+  }
+  saveError.value = ''
+}
+
+function cancelEdit() {
+  editing.value = null
+  saveError.value = ''
+}
+
+const editingTypeSpec = computed(() =>
+  aspectTypes.value.find((t) => t.type === editing.value?.aspect_type) || null
+)
+
+function onTypeChange() {
+  // 切换 type 时清空 value（不同 type 字段不同，留旧值会很乱）
+  if (editing.value) editing.value.value = {}
+}
+
+async function save() {
+  if (!editing.value || !editingTypeSpec.value) return
+  saving.value = true
+  saveError.value = ''
+  try {
+    await apiJson('/api/assets/aspects', 'PUT', {
+      asset_kind: 'table',
+      asset_name: tableName.value,
+      aspect_type: editing.value.aspect_type,
+      value: editing.value.value,
+      project_id: '',
+    })
+    editing.value = null
+    await load()
+  } catch (e) {
+    saveError.value = e.message || String(e)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeAspect(aspect) {
+  if (!confirm(`确认删除 aspect「${aspectLabel(aspect.aspect_type)}」？`)) return
+  try {
+    const params = new URLSearchParams({
+      asset_kind: 'table',
+      asset_name: tableName.value,
+      aspect_type: aspect.aspect_type,
+      project_id: aspect.project_id || '',
+    })
+    await apiJson(`/api/assets/aspects?${params.toString()}`, 'DELETE')
+    await load()
+  } catch (e) {
+    alert(`删除失败：${e.message || e}`)
+  }
+}
+
+// 编辑器里 list 字段 helper：用 comma 分隔字符串，保存时拆 array
+function listValueAsText(field) {
+  const v = editing.value?.value?.[field]
+  return Array.isArray(v) ? v.join(', ') : (v || '')
+}
+function setListValue(field, text) {
+  if (!editing.value) return
+  editing.value.value[field] = text.split(',').map((s) => s.trim()).filter(Boolean)
 }
 </script>
 
@@ -91,6 +220,138 @@ function gotoWorkflowRun(runId) {
     <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 p-3 text-sm text-status-error">
       <AlertCircle class="mr-1 inline h-4 w-4" /> {{ error }}
     </div>
+
+    <!-- Custom aspects（owner / pii / sla / sensitive / tag / business_term）-->
+    <article v-if="asset && !loading" class="card p-4">
+      <header class="mb-3 flex items-center gap-2">
+        <Tag class="h-4 w-4 text-purple-600" />
+        <h3 class="text-sm font-bold text-slate-800">分类与所属</h3>
+        <span class="pill bg-purple-100 text-purple-700">{{ asset.aspects?.length || 0 }}</span>
+        <button
+          v-if="isEditor && !editing"
+          class="btn btn-outline ml-auto h-7 px-2 text-xs"
+          @click="openAdd"
+        >
+          <Plus class="h-3.5 w-3.5" /> 添加
+        </button>
+      </header>
+
+      <ul v-if="asset.aspects?.length" class="flex flex-wrap items-center gap-2">
+        <li
+          v-for="a in asset.aspects"
+          :key="`${a.aspect_type}_${a.project_id}`"
+          class="group flex items-center gap-1 rounded-full px-2.5 py-1 text-xs"
+          :class="aspectColor(a.aspect_type)"
+        >
+          <strong>{{ aspectLabel(a.aspect_type) }}</strong>
+          <span v-if="previewValue(a)" class="opacity-80">· {{ previewValue(a) }}</span>
+          <span v-if="a.project_id" class="ml-1 rounded bg-white/40 px-1 text-[10px]">
+            project:{{ a.project_id }}
+          </span>
+          <template v-if="isEditor">
+            <button
+              class="ml-1 hidden rounded p-0.5 hover:bg-white/40 group-hover:inline-block"
+              :title="`编辑 ${aspectLabel(a.aspect_type)}`"
+              @click="openEdit(a)"
+            >
+              <Pencil class="h-3 w-3" />
+            </button>
+            <button
+              class="hidden rounded p-0.5 hover:bg-white/40 group-hover:inline-block"
+              :title="`删除 ${aspectLabel(a.aspect_type)}`"
+              @click="removeAspect(a)"
+            >
+              <Trash2 class="h-3 w-3" />
+            </button>
+          </template>
+        </li>
+      </ul>
+      <p v-else class="muted text-xs">
+        尚未标注分类。
+        <span v-if="isEditor">点击右上"添加"挂上 owner / PII / SLA / 业务标签等。</span>
+        <span v-else>需要 editor+ 角色才能编辑。</span>
+      </p>
+
+      <!-- 编辑器 inline 表单 -->
+      <div v-if="editing" class="mt-3 rounded-lg border border-purple-200 bg-purple-50/40 p-3 text-xs">
+        <div class="mb-2 flex items-center gap-2">
+          <strong class="text-slate-700">
+            {{ editing.mode === 'add' ? '新增' : '编辑' }} aspect
+          </strong>
+          <button class="btn btn-ghost ml-auto h-6 px-1.5" @click="cancelEdit">
+            <X class="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block">
+            <span class="muted text-[11px]">类型</span>
+            <select
+              v-model="editing.aspect_type"
+              class="mt-0.5 w-full"
+              :disabled="editing.mode === 'edit'"
+              @change="onTypeChange"
+            >
+              <option v-for="t in aspectTypes" :key="t.type" :value="t.type">
+                {{ t.label }}（{{ t.type }}）
+              </option>
+            </select>
+            <p v-if="editingTypeSpec?.description" class="muted mt-0.5 text-[10px]">
+              {{ editingTypeSpec.description }}
+            </p>
+          </label>
+
+          <!-- 动态字段：根据 schema 渲染 string / list / enum -->
+          <template v-if="editingTypeSpec">
+            <div
+              v-for="(spec, fieldName) in editingTypeSpec.schema"
+              :key="fieldName"
+            >
+              <label class="block">
+                <span class="muted text-[11px]">
+                  {{ fieldName }}
+                  <span v-if="spec.required" class="text-status-error">*</span>
+                  <span class="ml-1 text-[10px] uppercase opacity-60">{{ spec.type }}</span>
+                </span>
+                <select
+                  v-if="spec.type === 'enum'"
+                  v-model="editing.value[fieldName]"
+                  class="mt-0.5 w-full"
+                >
+                  <option value="">—</option>
+                  <option v-for="opt in (spec.values || [])" :key="opt" :value="opt">{{ opt }}</option>
+                </select>
+                <input
+                  v-else-if="spec.type === 'list'"
+                  type="text"
+                  class="mt-0.5 w-full"
+                  placeholder="逗号分隔，如 a, b, c"
+                  :value="listValueAsText(fieldName)"
+                  @input="(e) => setListValue(fieldName, e.target.value)"
+                />
+                <input
+                  v-else
+                  type="text"
+                  class="mt-0.5 w-full"
+                  v-model="editing.value[fieldName]"
+                />
+              </label>
+            </div>
+          </template>
+
+          <p v-if="saveError" class="text-status-error">{{ saveError }}</p>
+
+          <div class="flex items-center justify-end gap-2 pt-1">
+            <button class="btn btn-outline h-7 px-3 text-xs" :disabled="saving" @click="cancelEdit">
+              取消
+            </button>
+            <button class="btn btn-primary h-7 px-3 text-xs" :disabled="saving" @click="save">
+              {{ saving ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>
 
     <div v-if="asset && !loading" class="grid gap-4 md:grid-cols-2">
       <!-- 任务引用 -->
@@ -173,11 +434,12 @@ function gotoWorkflowRun(runId) {
       </article>
     </div>
 
-    <!-- 下个 sprint：classification / 字段列表 -->
+    <!-- 下个 sprint：字段列表 / 字段血缘热点 -->
     <div v-if="asset && !loading" class="card border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-      <strong>下个 sprint 计划</strong>：classification (PII / SLA / owner) +
-      字段列表 + 字段血缘热点。当前已支持：反向引用（4 类）+ 全局索引元数据
-      （role / refresh_mode / 上下游计数 / 最近出现 run）。
+      <strong>下个 sprint 计划</strong>：字段列表 + 字段血缘热点。当前已支持：反向引用
+      （4 类）+ 全局索引元数据（role / refresh_mode / 上下游计数 / 最近出现 run）+
+      classification aspects（owner / pii / sla / sensitive / tag / business_term，
+      schema 由 <code>config/asset_aspects.yml</code> 外置定义）。
     </div>
   </section>
 </template>

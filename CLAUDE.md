@@ -259,8 +259,9 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 1. ✅ **真实大图压测 fixture**（commit `ccd395b`）—— `/api/lineage/stress-fixture?size=N` 合成 [10, 10000] 节点的血缘图（schema 池 / role 分布 / refresh_mode 真实分布）；前端 `/lineage?stress=N` URL hook 跳过分析直接加载，紫色提示卡片提醒 DevTools Performance 录制对比。给用户跑 G6 / Cytoscape 双引擎压测对比（main thread 耗时 / FPS / Memory 峰值）。15 个新 test。
 2. ✅ **全局搜索 / 反向索引**（commit `d86c0ab`）—— `/api/search?q=...&kinds=...&project_id=...&limit=N` 跨 5 类资产搜索（datasource / task / workflow / history / lineage_script）。AND 多 token 语义 + 评分排序 + snippet 高亮 + 项目空间过滤。`CommandPalette.vue` 改后端调用，从图内 Ctrl+F 升级到 DataHub-style 平台级搜索。13 个新 test。
 3. ✅ **`/api/lineage/graph` 服务端查询接口** —— v0 stateless `POST /api/lineage/graph/subgraph`（caller 提供 graph_edges）+ v1 stateful `GET /api/lineage/graph`（全局索引，TTL 300s + run 数变化失效）+ `/stats` + admin `/refresh`
-4. ✅ **资产详情页 MVP** —— `/api/assets/table/{name:path}` 反查 4 类引用 + 索引补 role/refresh_mode/上下游计数；前端 `/assets/table/:name` 路由 + 4 张引用卡片。classification（PII/SLA/owner）+ 字段列表留下个 sprint
-5. ✅ **Cytoscape 决策**：G6 默认 + Cytoscape 实验通道保留（双引擎共享 `useLineageGraphData` composable，等真实大图压测 empirical 数据再判断转正）。元数据扩展点 / custom aspect 留下个 sprint，跟 SQLite 落地一起设计
+4. ✅ **资产详情页 MVP** —— `/api/assets/table/{name:path}` 反查 4 类引用 + 索引补 role/refresh_mode/上下游计数；前端 `/assets/table/:name` 路由 + 4 张引用卡片。字段列表留下个 sprint
+5. ✅ **Cytoscape 决策**：G6 默认 + Cytoscape 实验通道保留（双引擎共享 `useLineageGraphData` composable，等真实大图压测 empirical 数据再判断转正）
+6. ✅ **元数据扩展点 / custom aspect** —— `app/services/asset_aspects.py` + SQLite 表 `asset_aspects` + schema 外置在 `config/asset_aspects.yml`（fallback `.example.yml`，6 种内置 type：owner / pii / sla / sensitive / tag / business_term）。`/api/assets/aspects` PUT/DELETE（editor+）+ `/aspects/types` 前端拉 schema + `/aspects/search` 反查（"哪些表标 PII"）。`/api/assets/table/{name}` 输出多 `aspects` 字段；前端 `AssetDetailView` 顶部分类卡片，editor+ 角色 inline 增删改，dynamic form 按 yml schema 渲染（string / list / enum）。新加 type 改 yml 不动表结构
 
 **压测使用**（用 #1 fixture，empirical 数据决定 #5）：
 1. 起 dev：`cd frontend/frontend && npm run dev` + 后端 `docker compose up -d --build`
@@ -283,10 +284,9 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 **Phase 10 enhancement 候选**（建立在已落地基础之上）：
 
-- **资产详情补 classification**：PII / SLA / owner tag + 字段列表 + 字段血缘热点
-- **`/v1/` API 版本化前缀**：sprint 级决策（既有客户端 / OpenAPI / 前端 api.js 都要改），现在还没外部调用方，改成本最低
-- **Repository 抽象 + SQLite**（Phase 9 ADR 第 6 条）：先把高并发写的 `audit.jsonl` + `jobs.json` 切 SQLite，再统一接口；同时给元数据扩展点（PII / SLA / custom aspect）一个落地处
-- **元数据扩展点 / custom aspect**：当前 `config/lineage_group_rules.yml` 只是 schema/basename/title 关键词，DataHub / Atlan 完整 metadata model 暂未做 —— 跟 SQLite 落地一起设计
+- **字段列表 / 字段血缘热点**：把表的 column 当二级资产显示在详情页 —— 字段名 / 类型 / 是否被 column-lineage 引用 / 上下游字段。前期可拉 datasource 元信息或从 lineage analyzer 的 column_hints 反查
+- **aspect 反查可视化**：`/api/assets/aspects/search` 已就绪，缺 admin 视图把"标 PII 的所有表"、"owner=alice 的所有资产"列成卡片（PII / 敏感数据 governance dashboard 雏形）
+- **classification 用到血缘图**：lineage graph 节点上叠 PII / SLA 徽章，让"敏感数据流向哪里"一眼看见
 
 **通用未做**：
 
@@ -313,16 +313,16 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 ### 跟 DataHub / Atlan / Dagster / dbt Explorer 的差距
 
-参考它们做的是"**前端血缘图可扩展交互模式**"，**不是平台级资产图谱架构**。Phase 10 已经把后端架构从"一次性报告"演进到"资产图谱服务"，5 项差距 4 项已落地：
+参考它们做的是"**前端血缘图可扩展交互模式**"，**不是平台级资产图谱架构**。Phase 10 已经把后端架构从"一次性报告"演进到"资产图谱服务"，5 项差距全部已落地：
 
 **已对齐的 viz 模式**：双图引擎切换、大图收敛 / focal+N-hop、schema 聚合（combo / compound parent）、表格视图逃生通道、role/edge/confidence/script/schema 多 facet 过滤、命中搜索定位、PNG/JSON 导出、Cytoscape 路径高亮。
 
 **5 项平台能力对比 DataHub / Atlan**：
 
 1. ✅ **后端是资产图谱服务** —— Phase 10 #3 v1 落地：全局 lineage 索引 + `GET /api/lineage/graph` 按 `asset_id + direction + depth + filters` 切片查；前端可分 hop 增量加载
-2. ✅ **资产详情页 MVP** —— Phase 10 #4 落地：`/api/assets/table/{name:path}` 反向引用 + 索引补 `primary_role` / `refresh_mode` / 上下游 / `last_seen_run_id`；classification（PII / SLA / owner）留下个 sprint
+2. ✅ **资产详情页 + classification** —— Phase 10 #4 落地反向引用 + 索引补 `primary_role` / `refresh_mode` / 上下游 / `last_seen_run_id`；Phase 10 #6 落地 custom aspects（owner / pii / sla / sensitive / tag / business_term，schema 外置 yml + SQLite 持久化 + editor+ inline 编辑）
 3. ✅ **全局搜索 / 反向索引** —— Phase 10 #2 落地：`/api/search` 跨 5 类资产，AND 多 token + 评分 + project_id 过滤；CommandPalette 接入
-4. **元数据扩展点 / custom aspect** —— `config/lineage_group_rules.yml` 仍是 schema/basename/title 关键词的 mini 版本；DataHub / Atlan 完整 metadata model 暂未做（跟 Repository / SQLite 落地一起设计）
+4. ✅ **元数据扩展点 / custom aspect** —— Phase 10 #6 落地：DataHub-style 多 aspect_type 模型，schema 外置 yml 让加新 type 不动表结构；`/api/assets/aspects/search` 反查"哪些表标 PII"
 5. ✅ **服务端缓存 / 增量加载** —— Phase 10 #3 v1 全局索引 + #1 大图压测 fixture（empirical 数据决定 Cytoscape 转正）
 
-**当前判断**：viz 模式 + 平台架构基础都已就位。下一步重心在**元数据扩展点 + Repository/SQLite + classification**（让"资产"从代码引用图谱进化到含业务语义的元数据图谱）。
+**当前判断**：viz 模式 + 平台架构 + 元数据模型都已就位。下一步重心在**字段级资产 + classification 反查可视化 + lineage graph 上叠 PII/SLA 徽章**（让"敏感数据流向哪里"一眼可见的 governance dashboard）。

@@ -179,6 +179,15 @@ def get_table_asset(name: str, *, project_id: str = "") -> dict[str, Any]:
     except Exception:  # pragma: no cover —— 索引不可用时兜底
         pass
 
+    # Custom aspects（owner / pii / sla / sensitive / tag / business_term）——
+    # 失败兜底（asset_aspects 表未建 / SQLite 不可用），不拖崩资产详情页
+    aspects: list[dict[str, Any]] = []
+    try:
+        from app.services.asset_aspects import list_aspects_for_asset
+        aspects = list_aspects_for_asset("table", name, project_id=project_id)
+    except Exception:  # pragma: no cover
+        pass
+
     return {
         "kind": "table",
         "name": name,
@@ -192,6 +201,7 @@ def get_table_asset(name: str, *, project_id: str = "") -> dict[str, Any]:
         "downstream_count": downstream_count,
         "last_seen_run_id": last_seen_run_id,
         "last_seen_at": last_seen_at,
+        "aspects": aspects,
         "references": {
             "tasks": tasks,
             "workflows": workflows,

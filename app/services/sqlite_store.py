@@ -99,6 +99,25 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
         CREATE INDEX IF NOT EXISTS jobs_started_idx ON jobs(started_at DESC);
+
+        -- Phase 10 enhancement：资产 classification / metadata aspects。
+        -- 跟 DataHub / Atlan custom aspect 思路对齐 —— 一个 (asset_kind, asset_name)
+        -- 资产可挂多个不同 aspect_type（owner / pii / sla / sensitive / tag /
+        -- business_term），每个 aspect_type 的具体 value 形态由
+        -- config/asset_aspects.yml 定义（schema 外置，加新 type 不动表结构）。
+        CREATE TABLE IF NOT EXISTS asset_aspects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_kind TEXT NOT NULL,            -- table / task / field（前期仅 table）
+            asset_name TEXT NOT NULL,            -- 表名 ods.t_users，含 schema
+            aspect_type TEXT NOT NULL,           -- owner / pii / sla / sensitive / tag / business_term
+            value TEXT NOT NULL DEFAULT '',      -- JSON value（structure 由 yml schema 决定）
+            project_id TEXT NOT NULL DEFAULT '', -- 资产可见范围（空 = 全局）
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '', -- username 谁改的
+            UNIQUE(asset_kind, asset_name, aspect_type, project_id)
+        );
+        CREATE INDEX IF NOT EXISTS asset_aspects_asset_idx ON asset_aspects(asset_kind, asset_name);
+        CREATE INDEX IF NOT EXISTS asset_aspects_type_idx ON asset_aspects(aspect_type);
     """)
 
 

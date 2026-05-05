@@ -1,0 +1,85 @@
+# 资产 aspect schema 定义
+#
+# 跟 DataHub / Atlan custom aspect 思路一致 —— 这个 yaml 描述哪些 aspect_type
+# 合法、每种的 value 形态。新加 aspect_type 改这个文件就行（不动 SQLite 表）。
+#
+# 加载逻辑：服务启动时读 config/asset_aspects.yml；不存在则自动 fallback 到
+# 这个 example（保证基础 type 永远可用）。坏 yaml 不拖崩主流程，只 log warning。
+#
+# 每个 type 的 fields：
+#   label: 前端展示名
+#   description: 给 admin 看的说明
+#   schema: 字段定义。type ∈ {string, list, enum}; required; values（仅 enum）
+#   color: 前端徽章配色 hint（可选）
+
+aspects:
+  owner:
+    label: 数据负责人
+    description: 这张表 / 任务的业务 owner（一般是 username 或邮箱）
+    schema:
+      username:
+        type: string
+        required: true
+      team:
+        type: string
+        required: false
+    color: blue
+
+  pii:
+    label: PII 敏感数据
+    description: 个人可识别信息（身份证号 / 手机号 / 邮箱 / 实名 / 银行卡等）；标了之后导出日志做敏感字段脱敏
+    schema:
+      level:
+        type: enum
+        values: [high, medium, low]
+        required: true
+      categories:
+        type: list
+        required: false  # 例如 ["id_card", "phone", "email", "name"]
+    color: red
+
+  sensitive:
+    label: 业务敏感
+    description: 非 PII 但敏感（财报数据 / 内部薪资 / 战略指标），仅授权用户可访问
+    schema:
+      reason:
+        type: string
+        required: false
+    color: amber
+
+  sla:
+    label: SLA 等级
+    description: 表的更新频率 / 可用性承诺 / 时延要求
+    schema:
+      tier:
+        type: enum
+        values: [t0, t1, t2, t3]  # t0 最高，t3 best-effort
+        required: true
+      refresh_interval:
+        type: string
+        required: false  # 例如 "5m" / "1h" / "1d"
+      max_staleness:
+        type: string
+        required: false
+    color: emerald
+
+  tag:
+    label: 标签
+    description: 任意业务标签（CDP / DWD / 客户画像 / 等）
+    schema:
+      values:
+        type: list
+        required: true
+    color: slate
+
+  business_term:
+    label: 业务术语
+    description: 关联到企业级业务术语 glossary 的 key
+    schema:
+      glossary_key:
+        type: string
+        required: true
+      definition:
+        type: string
+        required: false
+    color: purple
