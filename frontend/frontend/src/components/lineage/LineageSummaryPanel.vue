@@ -48,10 +48,31 @@ function onCardClick(card) {
   const preset = typeof card.preset === 'function' ? card.preset() : null
   emit('navigate', { tab: card.to, preset })
 }
+
+// S5 PR14：PL/SQL 变量面板逻辑（PACKAGE BODY 常量/变量 + DECLARE 块 + 模板变量）
+const variables = computed(() => props.report.variables || [])
+const VAR_KIND_LABEL = {
+  package_constant: '包常量',
+  package_variable: '包变量',
+  declare_constant: 'DECLARE 常量',
+  declare_variable: 'DECLARE 变量',
+}
+const VAR_KIND_TONE = {
+  package_constant: 'bg-tag-source-bg text-tag-source',
+  package_variable: 'bg-tag-intermediate-bg text-tag-intermediate',
+  declare_constant: 'bg-tag-source-bg text-tag-source',
+  declare_variable: 'bg-tag-intermediate-bg text-tag-intermediate',
+}
+function varKindLabel(kind) {
+  return VAR_KIND_LABEL[kind] || kind || '模板变量'
+}
+function varKindTone(kind) {
+  return VAR_KIND_TONE[kind] || 'bg-slate-100 text-slate-600'
+}
 </script>
 
 <template>
-  <section>
+  <section class="space-y-3">
     <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
       <component
         :is="c.to ? 'button' : 'div'"
@@ -70,6 +91,32 @@ function onCardClick(card) {
         </div>
         <div class="text-2xl font-bold text-slate-800">{{ c.value ?? '—' }}</div>
       </component>
+    </div>
+
+    <!-- S5 PR14：PL/SQL 变量列表（package constant / package variable / declare 等） -->
+    <div v-if="variables.length" class="card p-4">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-slate-800">PL/SQL 变量与常量 <span class="muted ml-1 text-xs">{{ variables.length }}</span></h3>
+        <span class="muted text-[11px]">来自 PACKAGE BODY / DECLARE 块声明 + 模板变量</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
+            <tr>
+              <th class="px-3 py-2 font-bold">变量名</th>
+              <th class="px-3 py-2 font-bold">类型</th>
+              <th class="px-3 py-2 font-bold">赋值</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr v-for="(v, i) in variables" :key="v.name + i">
+              <td class="sql-font px-3 py-2 font-medium text-slate-800">{{ v.name }}</td>
+              <td class="px-3 py-2"><span class="pill" :class="varKindTone(v.kind)">{{ varKindLabel(v.kind) }}</span></td>
+              <td class="sql-font px-3 py-2 text-xs text-slate-500">{{ v.assigned_value || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </section>
 </template>

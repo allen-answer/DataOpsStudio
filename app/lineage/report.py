@@ -112,6 +112,8 @@ def _build_single_report(result: dict[str, Any]) -> dict[str, Any]:
         "error": (result.get("parse_errors") or [{}])[0].get("error", "") if has_parse_error else "",
     }]
 
+    # S5 PR14：variables 透传到 report，让前端能渲染 PL/SQL 变量列表
+    variables = result.get("variables", []) or []
     return {
         "scope": "single",
         "summary": {
@@ -124,6 +126,7 @@ def _build_single_report(result: dict[str, Any]) -> dict[str, Any]:
             "file_count": 1,
             "success_count": 0 if has_parse_error else 1,
             "dynamic_sql_count": result.get("dynamic_sql_count", 0),
+            "variable_count": len(variables),
         },
         "inputs": inputs,
         "outputs": outputs,
@@ -135,6 +138,7 @@ def _build_single_report(result: dict[str, Any]) -> dict[str, Any]:
         "column_impact_analysis": _column_impact_from_edges(column_edges),
         "risks": risks,
         "files": files,
+        "variables": variables,
         "exports": None,
     }
 

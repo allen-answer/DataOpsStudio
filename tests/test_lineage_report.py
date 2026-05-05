@@ -24,6 +24,7 @@ def test_single_report_has_all_top_level_fields():
         "scope", "summary", "inputs", "outputs", "process_steps",
         "table_edges", "column_edges", "semantic_lineage",
         "impact_analysis", "column_impact_analysis", "risks", "files", "exports",
+        "variables",  # S5 PR14
     }
     assert set(report.keys()) == expected_keys
     assert report["scope"] == "single"
