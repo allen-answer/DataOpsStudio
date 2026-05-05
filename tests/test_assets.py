@@ -264,3 +264,97 @@ def test_get_table_columns_empty_name_returns_400(client, isolated_storage):
     from app.services.assets import get_table_columns
     with pytest.raises(ValueError):
         get_table_columns("")
+
+
+# ─── S1.B 字段血缘深化：column lineage ────────────────────────────────────────
+
+
+def test_column_lineage_upstream_qualified(isolated_storage):
+    """upstream：合格名 ods.t.x → 直接归到 (ods.t, x)。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users", "ref.dim"],   # 多源 → 必须合格名
+         "source_columns": ["ods.users.id", "ref.dim.partition_id"]},
+    ])
+    out = get_column_lineage("dwd.users", "id")
+    upstream = {(u["table"], u["column"]) for u in out["upstream"]}
+    assert ("ods.users", "id") in upstream
+    assert ("ref.dim", "partition_id") in upstream
+
+
+def test_column_lineage_upstream_unqualified_single_source(isolated_storage):
+    """单源 mapping + unqualified col → 归到 source_tables[0]。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "name",
+         "source_tables": ["ods.users"], "source_columns": ["name"]},
+    ])
+    out = get_column_lineage("dwd.users", "name")
+    assert out["upstream"] == [{"table": "ods.users", "column": "name", "count": 1}]
+
+
+def test_column_lineage_upstream_skips_unqualified_when_multi_source(isolated_storage):
+    """多源 + unqualified → 拒绝（不知道归哪张）。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "z",
+         "source_tables": ["a", "b"], "source_columns": ["z"]},  # 不知道 z 来自 a 还是 b
+    ])
+    assert get_column_lineage("dwd.x", "z")["upstream"] == []
+
+
+def test_column_lineage_downstream_finds_target(isolated_storage):
+    """downstream：当前字段被另一 mapping 当 source 用 → 它的 target 是下游。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        # ods.users.id → dwd.users.id
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+        # dwd.users.id → dws.user_summary.user_id
+        {"target_table": "dws.user_summary", "target_column": "user_id",
+         "source_tables": ["dwd.users"], "source_columns": ["id"]},
+    ])
+    out = get_column_lineage("dwd.users", "id")
+    downstream = {(d["table"], d["column"]) for d in out["downstream"]}
+    assert ("dws.user_summary", "user_id") in downstream
+    # 不能把 dwd.users.id 自己当 downstream（自指排除）
+    assert ("dwd.users", "id") not in downstream
+
+
+def test_column_lineage_counts_aggregate_repeats(isolated_storage):
+    """同一 (src,dst) 出现多次 → count 累加。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.y"], "source_columns": ["id"]},
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.y"], "source_columns": ["id"]},
+    ])
+    out = get_column_lineage("dwd.x", "id")
+    assert len(out["upstream"]) == 1
+    assert out["upstream"][0]["count"] == 2
+
+
+def test_column_lineage_endpoint(client, isolated_storage):
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+    ])
+    r = client.get("/api/assets/column-lineage/dwd.users?column=id")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["upstream"][0]["table"] == "ods.users"
+
+
+def test_column_lineage_missing_column_param_400(client, isolated_storage):
+    r = client.get("/api/assets/column-lineage/dwd.users")
+    assert r.status_code == 422  # FastAPI 422 for missing required Query
+
+
+def test_column_lineage_empty_inputs_raise(isolated_storage):
+    from app.services.assets import get_column_lineage
+    with pytest.raises(ValueError):
+        get_column_lineage("", "id")
+    with pytest.raises(ValueError):
+        get_column_lineage("t", "")

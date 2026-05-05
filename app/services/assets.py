@@ -323,6 +323,119 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
     return out
 
 
+def get_column_lineage(
+    table_name: str,
+    column_name: str,
+    *,
+    project_id: str = "",
+    run_limit: int = 50,
+) -> dict[str, list[dict[str, Any]]]:
+    """S1.B：字段血缘热点深化 —— 给定 (table, column)，返回上下游字段链。
+
+    返回 `{"upstream": [{table, column, count}], "downstream": [...]}`。
+    upstream = 这个字段从哪些 source 字段来（看 insert_mappings 中
+    target=(table.column) 的 source_columns）；downstream = 这个字段流向
+    哪些 target 字段（看 insert_mappings 中 source 含 table.column 的
+    target_column）。
+
+    数据源跟 get_table_columns 一样：最近 run_limit 个 workflow_run 的 lineage
+    insert_mappings。同 (src_t, src_c, dst_t, dst_c) 的边累加 count，不去重，
+    让前端可以排序"哪条字段链最频繁"。
+    """
+    if not table_name or not table_name.strip():
+        raise ValueError("table_name is required")
+    if not column_name or not column_name.strip():
+        raise ValueError("column_name is required")
+    target_t = table_name.strip().lower()
+    target_t_base = target_t.split(".")[-1]
+    target_c = column_name.strip().lower()
+
+    upstream_counter: dict[tuple[str, str], int] = {}    # (src_table, src_col) → count
+    downstream_counter: dict[tuple[str, str], int] = {}  # (dst_table, dst_col) → count
+
+    def _matches_table(t: str) -> bool:
+        t = t.strip().lower()
+        return t == target_t or t == target_t_base
+
+    def _matches_source_col(sc: str, source_tables: list[str]) -> bool:
+        """source_column 是否指向 target.target_c。三种形式：
+        - 完全限定 'table.col' → 比较两段
+        - 单源 mapping 且 unqualified col → 比较 col
+        - 多源 + unqualified → 拒绝（无法确认归属，跟 get_table_columns 同规则）
+        """
+        sc_lower = sc.strip().lower()
+        if "." in sc_lower:
+            parts = sc_lower.rsplit(".", 1)
+            return _matches_table(parts[0]) and parts[1] == target_c
+        # unqualified
+        if len(source_tables) == 1 and _matches_table(source_tables[0]):
+            return sc_lower == target_c
+        return False
+
+    try:
+        for summary in list_workflow_runs(limit=run_limit):
+            rid = str(summary.get("run_id") or "")
+            if not rid:
+                continue
+            full = get_workflow_run(rid)
+            if not full:
+                continue
+            for node_run in (full.get("nodes") or []):
+                if str(node_run.get("type") or "").lower() != "lineage":
+                    continue
+                output = node_run.get("output") or {}
+                packets = output.get("files") or [output]
+                for packet in packets:
+                    if not isinstance(packet, dict):
+                        continue
+                    for mapping in (packet.get("insert_mappings") or []):
+                        if not isinstance(mapping, dict):
+                            continue
+                        target_table = str(mapping.get("target_table") or "")
+                        target_column = str(mapping.get("target_column") or "").strip().lower()
+                        source_tables = [str(t) for t in (mapping.get("source_tables") or [])]
+                        source_cols = [str(s) for s in (mapping.get("source_columns") or [])]
+
+                        # upstream：mapping 写到 (target_t, target_c)，则它的 source_columns 是 upstream
+                        if _matches_table(target_table) and target_column == target_c:
+                            for sc in source_cols:
+                                sc_lower = sc.strip().lower()
+                                if "." in sc_lower:
+                                    parts = sc_lower.rsplit(".", 1)
+                                    src_t, src_c = parts[0], parts[1]
+                                else:
+                                    # unqualified —— 仅单源 mapping 能归到 source_tables[0]
+                                    if len(source_tables) != 1:
+                                        continue
+                                    src_t, src_c = source_tables[0].lower(), sc_lower
+                                if not src_t or not src_c:
+                                    continue
+                                key = (src_t, src_c)
+                                upstream_counter[key] = upstream_counter.get(key, 0) + 1
+
+                        # downstream：mapping 的某个 source_column 是当前 (target_t, target_c)
+                        # → 它的 target 是 downstream
+                        if any(_matches_source_col(sc, source_tables) for sc in source_cols):
+                            if target_table and target_column:
+                                key = (target_table.lower(), target_column)
+                                # 排除自指：target == 当前节点
+                                if not (_matches_table(target_table) and target_column == target_c):
+                                    downstream_counter[key] = downstream_counter.get(key, 0) + 1
+    except Exception:  # pragma: no cover
+        return {"upstream": [], "downstream": []}
+
+    def _to_list(counter: dict[tuple[str, str], int]) -> list[dict[str, Any]]:
+        return sorted(
+            [{"table": t, "column": c, "count": n} for (t, c), n in counter.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+
+    return {
+        "upstream": _to_list(upstream_counter),
+        "downstream": _to_list(downstream_counter),
+    }
+
+
 def list_datasource_assets(project_id: str = "") -> list[dict[str, Any]]:
     """列举所有 datasource —— 一类辅助资产，让前端可以"按 datasource 看哪些 task 在用"。"""
     out: list[dict[str, Any]] = []
@@ -340,4 +453,9 @@ def list_datasource_assets(project_id: str = "") -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["get_table_asset", "get_table_columns", "list_datasource_assets"]
+__all__ = [
+    "get_table_asset",
+    "get_table_columns",
+    "get_column_lineage",
+    "list_datasource_assets",
+]
