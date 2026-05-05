@@ -225,6 +225,55 @@ def delete_aspect(
         return cur.rowcount > 0
 
 
+def bulk_aspects_index(
+    aspect_types: list[str],
+    *,
+    asset_kind: str = "table",
+    project_id: str = "",
+) -> dict[str, list[dict[str, Any]]]:
+    """批量按 aspect_type 拉所有命中资产，返回 {asset_name: [aspect, ...]}。
+
+    给 lineage graph "节点叠 PII / SLA / owner 徽章"用 —— 一次拉所有 PII / SLA /
+    owner 标了的表，前端按 name lookup 决定哪个节点画徽章。
+
+    无 aspect_types → 返回 {}。空列表语义不歧义（"我啥也不要"），不当 fallback。
+    """
+    if not aspect_types:
+        return {}
+    types = [str(t).strip() for t in aspect_types if str(t).strip()]
+    if not types:
+        return {}
+    placeholders = ",".join("?" * len(types))
+    out: dict[str, list[dict[str, Any]]] = {}
+    with sqlite_store.connect() as conn:
+        if project_id:
+            cur = conn.execute(
+                f"SELECT asset_name, aspect_type, value, project_id, updated_at, updated_by "
+                f"FROM asset_aspects WHERE asset_kind=? AND aspect_type IN ({placeholders}) "
+                f"AND (project_id=? OR project_id='')",
+                (asset_kind, *types, project_id),
+            )
+        else:
+            cur = conn.execute(
+                f"SELECT asset_name, aspect_type, value, project_id, updated_at, updated_by "
+                f"FROM asset_aspects WHERE asset_kind=? AND aspect_type IN ({placeholders})",
+                (asset_kind, *types),
+            )
+        for row in cur.fetchall():
+            try:
+                value = json.loads(row["value"]) if row["value"] else {}
+            except Exception:
+                value = {}
+            out.setdefault(row["asset_name"], []).append({
+                "aspect_type": row["aspect_type"],
+                "value": value,
+                "project_id": row["project_id"],
+                "updated_at": row["updated_at"],
+                "updated_by": row["updated_by"],
+            })
+    return out
+
+
 def search_assets_by_aspect(
     aspect_type: str,
     *,
@@ -273,4 +322,5 @@ __all__ = [
     "upsert_aspect",
     "delete_aspect",
     "search_assets_by_aspect",
+    "bulk_aspects_index",
 ]

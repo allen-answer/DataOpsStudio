@@ -48,6 +48,7 @@ const routes = [
   { path: '/admin/projects',  name: 'admin-projects',  component: () => import('../views/admin/ProjectManagementView.vue'),  meta: { adminOnly: true } },
   { path: '/admin/ai',        name: 'admin-ai',        component: () => import('../views/admin/AIConfigView.vue'),          meta: { adminOnly: true } },
   { path: '/admin/scheduler', name: 'admin-scheduler', component: () => import('../views/admin/SchedulerMonitorView.vue'),  meta: { adminOnly: true } },
+  { path: '/admin/governance', name: 'admin-governance', component: () => import('../views/admin/AspectGovernanceView.vue'), meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]

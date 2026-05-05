@@ -323,3 +323,54 @@ def test_search_aspects_endpoint(auth_client):
     assert r.status_code == 200
     names = {h["asset_name"] for h in r.json()}
     assert names == {"ods.t_users", "dwd.t_pay"}
+
+
+# ─── bulk_aspects_index（lineage graph 节点徽章用）──────────────────────────
+
+
+def test_bulk_aspects_index_groups_by_asset_name(isolated_storage):
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="ods.t_users",
+        aspect_type="pii", value={"level": "high"},
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="ods.t_users",
+        aspect_type="owner", value={"username": "alice"},
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="dwd.t_pay",
+        aspect_type="sla", value={"tier": "t0"},
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="dim.color",
+        aspect_type="tag", value={"values": ["ref"]},
+    )
+
+    out = asset_aspects.bulk_aspects_index(["pii", "sla", "owner"])
+    # ods.t_users 命中 pii + owner（两条）；dwd.t_pay 命中 sla；dim.color 不在过滤集
+    assert set(out.keys()) == {"ods.t_users", "dwd.t_pay"}
+    assert {a["aspect_type"] for a in out["ods.t_users"]} == {"pii", "owner"}
+    assert out["dwd.t_pay"][0]["aspect_type"] == "sla"
+
+
+def test_bulk_aspects_index_empty_types_returns_empty(isolated_storage):
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="x", aspect_type="pii", value={"level": "low"},
+    )
+    assert asset_aspects.bulk_aspects_index([]) == {}
+    assert asset_aspects.bulk_aspects_index(["", "  "]) == {}  # 全空白也算空
+
+
+def test_bulk_aspects_index_endpoint(auth_client):
+    """HTTP 端点：types comma 分隔字符串 → JSON dict。"""
+    alice_token = _login(auth_client, "alice", "alice123")
+    auth_client.put("/api/assets/aspects", json={
+        "asset_kind": "table", "asset_name": "ods.t_users",
+        "aspect_type": "pii", "value": {"level": "high"},
+    }, headers=_bearer(alice_token))
+
+    r = auth_client.get("/api/assets/aspects/index")
+    assert r.status_code == 200
+    body = r.json()
+    assert "ods.t_users" in body
+    assert body["ods.t_users"][0]["aspect_type"] == "pii"

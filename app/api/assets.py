@@ -47,6 +47,30 @@ def list_datasource_assets_api(
     return list_datasource_assets(project_id=project_id)
 
 
+@router.get("/api/assets/columns/{name:path}")
+def get_table_columns_api(
+    name: str,
+    project_id: str = Query("", description="项目空间过滤；空 = 不过滤"),
+    run_limit: int = Query(50, ge=1, le=200, description="扫描最近多少个 workflow_run"),
+) -> list[dict[str, Any]]:
+    """字段列表 —— 反查最近 workflow_run 的 lineage insert_mappings，按列聚合
+    read/write 次数 + transforms + last_seen_run_id。
+
+    Phase 10 enhancement #1：把字段当二级资产，让用户在表详情页看到"哪几列被
+    频繁写 / 读"。这是 lineage-based 视图（不是 datasource introspection），
+    所以只有出现在过去血缘任务里的列才能拿到。
+
+    URL 故意用 `/api/assets/columns/<name>` 而不是 `/api/assets/table/<name>/columns`
+    —— 后者会被 `/api/assets/table/{name:path}` 的 path-converter 吞掉
+    （`:path` 匹配含 `/` 的字符串，导致 `<name>/columns` 整段被当成 name）。
+    """
+    from app.services.assets import get_table_columns
+    try:
+        return get_table_columns(name, project_id=project_id, run_limit=run_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ─── Aspect / classification API ─────────────────────────────────────────────
 
 
@@ -122,3 +146,19 @@ def search_assets_by_aspect_api(
         project_id=project_id,
         limit=limit,
     )
+
+
+@router.get("/api/assets/aspects/index")
+def aspects_bulk_index_api(
+    types: str = Query("pii,sla,owner", description="逗号分隔的 aspect_type 列表"),
+    asset_kind: str = Query("table"),
+    project_id: str = Query("", description="项目空间过滤"),
+) -> dict[str, list[dict[str, Any]]]:
+    """批量按 aspect_type 拉所有命中资产。返回 {asset_name: [aspect, ...]}。
+
+    给 lineage graph "节点叠 PII / SLA / owner 徽章"用 —— 一次拉所有 PII / SLA /
+    owner 标了的表，前端按 name lookup 决定哪个节点画徽章。
+    """
+    from app.services.asset_aspects import bulk_aspects_index
+    type_list = [t.strip() for t in types.split(",") if t.strip()]
+    return bulk_aspects_index(type_list, asset_kind=asset_kind, project_id=project_id)
