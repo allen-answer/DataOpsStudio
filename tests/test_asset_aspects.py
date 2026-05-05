@@ -374,3 +374,133 @@ def test_bulk_aspects_index_endpoint(auth_client):
     body = r.json()
     assert "ods.t_users" in body
     assert body["ods.t_users"][0]["aspect_type"] == "pii"
+
+
+# ─── S1.A：aspect 变更轨迹 ──────────────────────────────────────────────────
+
+
+def test_history_records_insert_then_update_then_delete(isolated_storage):
+    """完整生命周期：insert → update → delete 各落一条 history。"""
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="ods.t_users",
+        aspect_type="pii", value={"level": "low"}, updated_by="alice",
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="ods.t_users",
+        aspect_type="pii", value={"level": "high"}, updated_by="bob",
+    )
+    asset_aspects.delete_aspect(
+        asset_kind="table", asset_name="ods.t_users",
+        aspect_type="pii", deleted_by="charlie",
+    )
+    history = asset_aspects.list_aspect_history(asset_kind="table", asset_name="ods.t_users")
+    # 时间倒序：delete → update → insert
+    assert [h["action"] for h in history] == ["delete", "update", "insert"]
+    assert history[0]["changed_by"] == "charlie"
+    # update 的 old_value 是 low，new_value 是 high
+    upd = history[1]
+    assert upd["old_value"] == {"level": "low"}
+    assert upd["new_value"] == {"level": "high"}
+    # delete 的 old_value 是 high（最后一次的 value）
+    assert history[0]["old_value"] == {"level": "high"}
+    assert history[0]["new_value"] == {}
+
+
+def test_history_skips_noop_update(isolated_storage):
+    """value 没变的 upsert（用户连点保存）不污染 history。"""
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="x", aspect_type="owner",
+        value={"username": "alice"}, updated_by="alice",
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="x", aspect_type="owner",
+        value={"username": "alice"}, updated_by="alice",  # 完全一样
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="x", aspect_type="owner",
+        value={"username": "alice"}, updated_by="alice",  # 又一次
+    )
+    history = asset_aspects.list_aspect_history(asset_name="x")
+    assert len(history) == 1  # 只有第一次 insert
+    assert history[0]["action"] == "insert"
+
+
+def test_history_delete_miss_records_nothing(isolated_storage):
+    """删一个不存在的 aspect → 不落 history（语义：什么都没发生）。"""
+    assert asset_aspects.delete_aspect(
+        asset_kind="table", asset_name="ghost", aspect_type="owner",
+    ) is False
+    assert asset_aspects.list_aspect_history(asset_name="ghost") == []
+
+
+def test_history_filters_compose_with_AND(isolated_storage):
+    """多过滤：changed_by + aspect_type 同时生效。"""
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="t1", aspect_type="pii",
+        value={"level": "high"}, updated_by="alice",
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="t2", aspect_type="owner",
+        value={"username": "alice"}, updated_by="alice",
+    )
+    asset_aspects.upsert_aspect(
+        asset_kind="table", asset_name="t3", aspect_type="pii",
+        value={"level": "low"}, updated_by="bob",
+    )
+    # alice 改的 pii 只有 t1
+    out = asset_aspects.list_aspect_history(changed_by="alice", aspect_type="pii")
+    assert len(out) == 1
+    assert out[0]["asset_name"] == "t1"
+
+
+def test_history_global_default_returns_all_recent(isolated_storage):
+    """不带任何过滤 = 全局最近变更。"""
+    for i in range(3):
+        asset_aspects.upsert_aspect(
+            asset_kind="table", asset_name=f"t{i}", aspect_type="owner",
+            value={"username": f"u{i}"}, updated_by=f"u{i}",
+        )
+    out = asset_aspects.list_aspect_history()
+    assert len(out) == 3
+    # 倒序，最后建的 t2 在前
+    assert out[0]["asset_name"] == "t2"
+
+
+def test_history_endpoint_via_api(auth_client):
+    alice_token = _login(auth_client, "alice", "alice123")
+    auth_client.put("/api/assets/aspects", json={
+        "asset_kind": "table", "asset_name": "dwd.t_users",
+        "aspect_type": "sla", "value": {"tier": "t1"},
+    }, headers=_bearer(alice_token))
+    auth_client.put("/api/assets/aspects", json={
+        "asset_kind": "table", "asset_name": "dwd.t_users",
+        "aspect_type": "sla", "value": {"tier": "t0"},   # 升级到 t0
+    }, headers=_bearer(alice_token))
+
+    r = auth_client.get(
+        "/api/assets/aspects/history?asset_kind=table&asset_name=dwd.t_users",
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 2
+    assert body[0]["action"] == "update"
+    assert body[0]["new_value"]["tier"] == "t0"
+    assert body[0]["changed_by"] == "alice"
+    assert body[1]["action"] == "insert"
+
+
+def test_history_endpoint_records_delete_with_user(auth_client):
+    """DELETE endpoint 应该带 username 落到 history。"""
+    alice_token = _login(auth_client, "alice", "alice123")
+    auth_client.put("/api/assets/aspects", json={
+        "asset_kind": "table", "asset_name": "x", "aspect_type": "tag",
+        "value": {"values": ["a"]},
+    }, headers=_bearer(alice_token))
+    auth_client.delete(
+        "/api/assets/aspects?asset_kind=table&asset_name=x&aspect_type=tag",
+        headers=_bearer(alice_token),
+    )
+    out = asset_aspects.list_aspect_history(asset_name="x")
+    delete_record = next(h for h in out if h["action"] == "delete")
+    assert delete_record["changed_by"] == "alice"
+    assert delete_record["old_value"] == {"values": ["a"]}

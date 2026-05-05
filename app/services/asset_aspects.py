@@ -179,7 +179,12 @@ def upsert_aspect(
     project_id: str = "",
     updated_by: str = "",
 ) -> dict[str, Any]:
-    """创建或更新一条 aspect。校验失败抛 ValueError。"""
+    """创建或更新一条 aspect。校验失败抛 ValueError。
+
+    S1.A：写 asset_aspects 同时落 asset_aspect_history（insert 或 update）。
+    history 跟 aspect 在同一 transaction 内，不会出现"改了 aspect 但没记录"
+    或反过来的状态（sqlite 单 connection 默认 transaction）。
+    """
     if asset_kind not in _ASSET_KINDS:
         raise ValueError(f"asset_kind must be one of {sorted(_ASSET_KINDS)}")
     asset_name = str(asset_name or "").strip()
@@ -191,6 +196,15 @@ def upsert_aspect(
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     value_json = json.dumps(value, ensure_ascii=False)
     with sqlite_store.connect() as conn:
+        # 先看老 value 在不在 → 决定 history.action（insert / update）+ old_value
+        cur = conn.execute(
+            "SELECT value FROM asset_aspects WHERE asset_kind=? AND asset_name=? "
+            "AND aspect_type=? AND project_id=?",
+            (asset_kind, asset_name, aspect_type, project_id),
+        )
+        row = cur.fetchone()
+        old_value_json = row["value"] if row else ""
+        action = "update" if row else "insert"
         # UPSERT 用 INSERT ... ON CONFLICT；唯一键是 (kind, name, type, project)
         conn.execute(
             "INSERT INTO asset_aspects (asset_kind, asset_name, aspect_type, value, "
@@ -199,6 +213,17 @@ def upsert_aspect(
             "value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by",
             (asset_kind, asset_name, aspect_type, value_json, project_id, now, updated_by),
         )
+        # 跳过 no-op update（value 没变）—— 用户连点保存几次不重复污染 history
+        if action == "update" and old_value_json == value_json:
+            pass
+        else:
+            conn.execute(
+                "INSERT INTO asset_aspect_history (asset_kind, asset_name, aspect_type, "
+                "project_id, action, old_value, new_value, changed_at, changed_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (asset_kind, asset_name, aspect_type, project_id, action,
+                 old_value_json, value_json, now, updated_by),
+            )
     return {
         "aspect_type": aspect_type,
         "value": value,
@@ -214,15 +239,101 @@ def delete_aspect(
     asset_name: str,
     aspect_type: str,
     project_id: str = "",
+    deleted_by: str = "",
 ) -> bool:
-    """删一条 aspect。命中返回 True；没找到返回 False。"""
+    """删一条 aspect。命中返回 True；没找到返回 False。
+
+    S1.A：命中删除时落一条 history（action=delete，new_value=''），保留
+    完整的 audit chain。"""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with sqlite_store.connect() as conn:
+        # 先 SELECT 拿 old_value，再 DELETE，再 INSERT history —— 同 transaction
         cur = conn.execute(
+            "SELECT value FROM asset_aspects WHERE asset_kind=? AND asset_name=? "
+            "AND aspect_type=? AND project_id=?",
+            (asset_kind, asset_name, aspect_type, project_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        old_value_json = row["value"] or ""
+        conn.execute(
             "DELETE FROM asset_aspects WHERE asset_kind=? AND asset_name=? "
             "AND aspect_type=? AND project_id=?",
             (asset_kind, asset_name, aspect_type, project_id),
         )
-        return cur.rowcount > 0
+        conn.execute(
+            "INSERT INTO asset_aspect_history (asset_kind, asset_name, aspect_type, "
+            "project_id, action, old_value, new_value, changed_at, changed_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (asset_kind, asset_name, aspect_type, project_id, "delete",
+             old_value_json, "", now, deleted_by),
+        )
+    return True
+
+
+def list_aspect_history(
+    *,
+    asset_kind: str = "",
+    asset_name: str = "",
+    aspect_type: str = "",
+    changed_by: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """查变更轨迹。所有过滤都是 AND；空字符串 = 不过滤。最近的在前。
+
+    用法：
+    - 看某资产的所有变更：asset_kind=table + asset_name=ods.t_users
+    - 看某用户改过的所有 aspects：changed_by=alice
+    - 全局最近变更：不传任何过滤
+    """
+    where: list[str] = []
+    args: list[Any] = []
+    if asset_kind:
+        where.append("asset_kind=?")
+        args.append(asset_kind)
+    if asset_name:
+        where.append("asset_name=?")
+        args.append(asset_name)
+    if aspect_type:
+        where.append("aspect_type=?")
+        args.append(aspect_type)
+    if changed_by:
+        where.append("changed_by=?")
+        args.append(changed_by)
+    sql = (
+        "SELECT id, asset_kind, asset_name, aspect_type, project_id, action, "
+        "old_value, new_value, changed_at, changed_by "
+        "FROM asset_aspect_history"
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY changed_at DESC, id DESC LIMIT ?"
+    args.append(limit)
+    out: list[dict[str, Any]] = []
+    with sqlite_store.connect() as conn:
+        for row in conn.execute(sql, tuple(args)).fetchall():
+            try:
+                old_v = json.loads(row["old_value"]) if row["old_value"] else {}
+            except Exception:
+                old_v = {}
+            try:
+                new_v = json.loads(row["new_value"]) if row["new_value"] else {}
+            except Exception:
+                new_v = {}
+            out.append({
+                "id": row["id"],
+                "asset_kind": row["asset_kind"],
+                "asset_name": row["asset_name"],
+                "aspect_type": row["aspect_type"],
+                "project_id": row["project_id"],
+                "action": row["action"],
+                "old_value": old_v,
+                "new_value": new_v,
+                "changed_at": row["changed_at"],
+                "changed_by": row["changed_by"],
+            })
+    return out
 
 
 def bulk_aspects_index(
@@ -323,4 +434,5 @@ __all__ = [
     "delete_aspect",
     "search_assets_by_aspect",
     "bulk_aspects_index",
+    "list_aspect_history",
 ]

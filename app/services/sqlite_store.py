@@ -118,6 +118,30 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS asset_aspects_asset_idx ON asset_aspects(asset_kind, asset_name);
         CREATE INDEX IF NOT EXISTS asset_aspects_type_idx ON asset_aspects(aspect_type);
+
+        -- S1.A：aspect 变更轨迹。每次 upsert / delete 落一条 immutable 历史。
+        -- 给 admin 看"谁把 PII 等级从 high 改成 low 了"。append-only，不删。
+        -- old_value / new_value 存完整 JSON value（不只 diff），方便审计 diff
+        -- 算法在前端 / SQL 看心情；语义清晰：insert 时 old_value=''；delete 时
+        -- new_value=''；update 两边都填。
+        CREATE TABLE IF NOT EXISTS asset_aspect_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_kind TEXT NOT NULL,
+            asset_name TEXT NOT NULL,
+            aspect_type TEXT NOT NULL,
+            project_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,              -- insert / update / delete
+            old_value TEXT NOT NULL DEFAULT '',
+            new_value TEXT NOT NULL DEFAULT '',
+            changed_at TEXT NOT NULL DEFAULT '',
+            changed_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS asset_aspect_history_asset_idx
+            ON asset_aspect_history(asset_kind, asset_name, changed_at DESC);
+        CREATE INDEX IF NOT EXISTS asset_aspect_history_user_idx
+            ON asset_aspect_history(changed_by, changed_at DESC);
+        CREATE INDEX IF NOT EXISTS asset_aspect_history_time_idx
+            ON asset_aspect_history(changed_at DESC);
     """)
 
 

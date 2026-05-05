@@ -27,6 +27,23 @@ const aspectTypes = ref([])  // [{type, label, description, schema, color}, ...]
 const columns = ref([])      // [{name, read_count, write_count, transforms, ...}]
 const columnsLoading = ref(false)
 
+// S1.A：变更历史（aspect 改动 timeline）
+const history = ref([])
+const historyOpen = ref(false)
+
+// S1.B：字段血缘深化 —— 点字段名展开上下游字段链。同一时间只展开一行
+const expandedColumn = ref('')             // column name 或 ''
+const columnLineageMap = ref({})           // {colName: {upstream, downstream}}
+const columnLineageLoading = ref('')       // 当前正在拉的 col name
+
+// S1.C：datasource introspection —— 拉真实字段
+const datasources = ref([])                // [{id, name, db_type, ...}]
+const introspectDsId = ref('')             // 当前选中的 datasource_id
+const introspectColumns = ref([])          // 拉到的真实字段列表
+const introspectLoading = ref(false)
+const introspectError = ref('')
+const introspectMeta = ref(null)           // {datasource_name, db_type, ...}
+
 const tableName = computed(() => route.params.name || '')
 
 // 编辑器状态：null = 关闭；object = 当前正在编辑的 aspect（含 mode = 'add' / 'edit'）
@@ -76,8 +93,10 @@ async function load() {
     ])
     asset.value = assetData
     aspectTypes.value = Array.isArray(types) ? types : []
-    // 字段列表并行拉（独立 endpoint，慢一点不阻塞主面板）
+    // 字段列表 + 变更历史 + datasource 列表并行拉
     loadColumns()
+    loadHistory()
+    loadDatasourcesList()
   } catch (e) {
     error.value = `加载失败：${e.message || e}`
     asset.value = null
@@ -95,6 +114,128 @@ async function loadColumns() {
     columns.value = []
   } finally {
     columnsLoading.value = false
+  }
+}
+
+async function toggleColumnLineage(colName) {
+  if (expandedColumn.value === colName) {
+    expandedColumn.value = ''
+    return
+  }
+  expandedColumn.value = colName
+  // 已经拉过 → 不重复拉
+  if (columnLineageMap.value[colName]) return
+  columnLineageLoading.value = colName
+  try {
+    const params = new URLSearchParams({ column: colName })
+    const data = await apiGet(
+      `/api/assets/column-lineage/${encodeURIComponent(tableName.value)}?${params.toString()}`,
+    )
+    columnLineageMap.value = {
+      ...columnLineageMap.value,
+      [colName]: data || { upstream: [], downstream: [] },
+    }
+  } catch {
+    columnLineageMap.value = {
+      ...columnLineageMap.value,
+      [colName]: { upstream: [], downstream: [] },
+    }
+  } finally {
+    columnLineageLoading.value = ''
+  }
+}
+
+function gotoColumn(table, column) {
+  // 跳到目标表 + 自动展开该字段。reset 旧状态让 watch 触发 load
+  router.push(`/assets/table/${encodeURIComponent(table)}`)
+  // 子表单展开放在跳转后；这里设个延迟让 load 完毕后再 toggle
+  setTimeout(() => { toggleColumnLineage(column) }, 600)
+}
+
+async function loadDatasourcesList() {
+  try {
+    datasources.value = await apiGet('/api/assets/datasources') || []
+  } catch {
+    datasources.value = []
+  }
+}
+
+async function runIntrospect() {
+  if (!introspectDsId.value || !tableName.value) return
+  introspectLoading.value = true
+  introspectError.value = ''
+  introspectMeta.value = null
+  introspectColumns.value = []
+  try {
+    const params = new URLSearchParams({ datasource_id: introspectDsId.value })
+    const data = await apiGet(
+      `/api/assets/introspect/${encodeURIComponent(tableName.value)}?${params.toString()}`,
+    )
+    introspectColumns.value = data.columns || []
+    introspectMeta.value = {
+      datasource_name: data.datasource_name,
+      db_type: data.db_type,
+      column_count: data.column_count,
+    }
+  } catch (e) {
+    introspectError.value = e.message || String(e)
+  } finally {
+    introspectLoading.value = false
+  }
+}
+
+// merge：lineage cols + introspect cols。lineage 里有的标 active，introspect
+// 里独有的标 dormant（"从来没动过"）
+const mergedColumns = computed(() => {
+  if (!introspectColumns.value.length) return []
+  const lineageByName = new Map(columns.value.map((c) => [c.name.toLowerCase(), c]))
+  const out = []
+  const seen = new Set()
+  for (const ic of introspectColumns.value) {
+    const lower = ic.name.toLowerCase()
+    seen.add(lower)
+    const linColl = lineageByName.get(lower)
+    out.push({
+      name: ic.name,
+      data_type: ic.data_type,
+      nullable: ic.nullable,
+      comment: ic.comment,
+      ordinal: ic.ordinal,
+      read_count: linColl?.read_count || 0,
+      write_count: linColl?.write_count || 0,
+      lineage_known: !!linColl,
+    })
+  }
+  // lineage 里有但 introspect 没（可能是已删除字段 / 别的 datasource）
+  for (const lc of columns.value) {
+    if (!seen.has(lc.name.toLowerCase())) {
+      out.push({
+        name: lc.name,
+        data_type: '',
+        nullable: null,
+        comment: '',
+        ordinal: 9999,
+        read_count: lc.read_count,
+        write_count: lc.write_count,
+        lineage_known: true,
+        introspect_missing: true,
+      })
+    }
+  }
+  return out
+})
+
+async function loadHistory() {
+  if (!tableName.value) return
+  try {
+    const params = new URLSearchParams({
+      asset_kind: 'table',
+      asset_name: tableName.value,
+      limit: '50',
+    })
+    history.value = await apiGet(`/api/assets/aspects/history?${params.toString()}`) || []
+  } catch {
+    history.value = []
   }
 }
 
@@ -246,13 +387,59 @@ function setListValue(field, text) {
         <h3 class="text-sm font-bold text-slate-800">分类与所属</h3>
         <span class="pill bg-purple-100 text-purple-700">{{ asset.aspects?.length || 0 }}</span>
         <button
+          v-if="history.length"
+          class="ml-auto text-[11px] text-slate-500 hover:text-primary"
+          @click="historyOpen = !historyOpen"
+          :title="historyOpen ? '收起变更历史' : '展开变更历史'"
+        >
+          {{ historyOpen ? '收起' : '历史' }} ({{ history.length }})
+        </button>
+        <button
           v-if="isEditor && !editing"
-          class="btn btn-outline ml-auto h-7 px-2 text-xs"
+          class="btn btn-outline h-7 px-2 text-xs"
+          :class="{ 'ml-auto': !history.length }"
           @click="openAdd"
         >
           <Plus class="h-3.5 w-3.5" /> 添加
         </button>
       </header>
+
+      <!-- 变更历史 timeline -->
+      <div v-if="historyOpen && history.length" class="mb-3 rounded-lg border border-slate-200 bg-slate-50/60 p-2 text-xs">
+        <ol class="space-y-1.5">
+          <li v-for="h in history" :key="h.id" class="flex items-start gap-2">
+            <span
+              class="mt-0.5 inline-block h-2 w-2 flex-shrink-0 rounded-full"
+              :class="{
+                'bg-emerald-500': h.action === 'insert',
+                'bg-blue-500': h.action === 'update',
+                'bg-rose-500': h.action === 'delete',
+              }"
+            ></span>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-baseline gap-1.5">
+                <strong class="text-slate-700">{{ h.changed_by || '—' }}</strong>
+                <span class="muted">{{ h.action }}</span>
+                <span :class="['rounded px-1.5 py-0.5 text-[10px]', aspectColor(h.aspect_type)]">
+                  {{ aspectLabel(h.aspect_type) }}
+                </span>
+                <span class="muted ml-auto text-[10px]">{{ h.changed_at }}</span>
+              </div>
+              <p v-if="h.action === 'update'" class="mt-0.5 muted text-[10px]">
+                <span class="line-through opacity-60">{{ JSON.stringify(h.old_value) }}</span>
+                →
+                <span class="font-medium text-slate-700">{{ JSON.stringify(h.new_value) }}</span>
+              </p>
+              <p v-else-if="h.action === 'insert'" class="mt-0.5 muted text-[10px]">
+                + {{ JSON.stringify(h.new_value) }}
+              </p>
+              <p v-else class="mt-0.5 muted text-[10px]">
+                <span class="line-through opacity-60">{{ JSON.stringify(h.old_value) }}</span>
+              </p>
+            </div>
+          </li>
+        </ol>
+      </div>
 
       <ul v-if="asset.aspects?.length" class="flex flex-wrap items-center gap-2">
         <li
@@ -454,20 +641,57 @@ function setListValue(field, text) {
 
     <!-- 字段列表（来自最近 workflow_run 的 lineage insert_mappings）-->
     <article v-if="asset && !loading" class="card p-4">
-      <header class="mb-3 flex items-center gap-2">
+      <header class="mb-3 flex flex-wrap items-center gap-2">
         <Columns3 class="h-4 w-4 text-emerald-600" />
-        <h3 class="text-sm font-bold text-slate-800">字段（lineage 反查）</h3>
-        <span class="pill bg-emerald-100 text-emerald-700">{{ columns.length }}</span>
-        <span v-if="columnsLoading" class="muted text-[11px]">加载中…</span>
-        <span v-else-if="columns.length" class="muted text-[11px]">
-          按热度排序（写次数 + 读次数）
+        <h3 class="text-sm font-bold text-slate-800">字段</h3>
+        <span class="pill bg-emerald-100 text-emerald-700">
+          {{ introspectMeta ? mergedColumns.length : columns.length }}
         </span>
+        <span v-if="columnsLoading || introspectLoading" class="muted text-[11px]">加载中…</span>
+        <span v-else-if="introspectMeta" class="muted text-[11px]">
+          来源 <strong>{{ introspectMeta.datasource_name }}</strong>
+          ({{ introspectMeta.db_type }}) + lineage merge
+        </span>
+        <span v-else-if="columns.length" class="muted text-[11px]">
+          仅 lineage 反查（按热度倒序）。可拉真实 schema →
+        </span>
+
+        <!-- introspect 控制台 -->
+        <div class="ml-auto flex items-center gap-1.5">
+          <select
+            v-model="introspectDsId"
+            class="h-7 text-xs"
+            :disabled="!datasources.length"
+            title="选 datasource 拉真实字段"
+          >
+            <option value="">— 选数据源 —</option>
+            <option v-for="ds in datasources" :key="ds.id" :value="ds.id">
+              {{ ds.name }} ({{ ds.db_type }})
+            </option>
+          </select>
+          <button
+            class="btn btn-outline h-7 px-2 text-xs"
+            :disabled="!introspectDsId || introspectLoading"
+            @click="runIntrospect"
+            title="从 information_schema / all_tab_columns 拉真实字段"
+          >
+            <Database class="h-3.5 w-3.5" />
+            拉真实
+          </button>
+        </div>
       </header>
-      <div v-if="columns.length" class="overflow-x-auto">
+      <p
+        v-if="introspectError"
+        class="muted mb-2 rounded bg-status-error-bg/40 p-2 text-[11px] text-status-error"
+      >
+        introspect 失败：{{ introspectError }}
+      </p>
+      <div v-if="(introspectMeta ? mergedColumns : columns).length" class="overflow-x-auto">
         <table class="w-full text-xs">
           <thead class="text-slate-500">
             <tr class="border-b border-slate-100">
               <th class="py-1.5 pr-3 text-left font-semibold">字段名</th>
+              <th v-if="introspectMeta" class="py-1.5 pr-3 text-left font-semibold">类型</th>
               <th class="py-1.5 pr-3 text-right font-semibold">
                 <ArrowUpFromLine class="inline h-3 w-3 text-slate-400" /> 写
               </th>
@@ -479,44 +703,117 @@ function setListValue(field, text) {
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="col in columns"
-              :key="col.name"
-              class="border-b border-slate-50 hover:bg-slate-50/60"
-            >
-              <td class="sql-font py-1.5 pr-3 font-medium text-slate-800">{{ col.name }}</td>
-              <td class="py-1.5 pr-3 text-right">
-                <span v-if="col.write_count" class="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">
-                  {{ col.write_count }}
-                </span>
-                <span v-else class="muted">—</span>
-              </td>
-              <td class="py-1.5 pr-3 text-right">
-                <span v-if="col.read_count" class="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">
-                  {{ col.read_count }}
-                </span>
-                <span v-else class="muted">—</span>
-              </td>
-              <td class="py-1.5 pr-3">
-                <span v-if="col.transforms?.length" class="muted">
-                  {{ col.transforms.slice(0, 3).join(' / ') }}
-                  <span v-if="col.transforms.length > 3" class="opacity-60">
-                    +{{ col.transforms.length - 3 }}
+            <template v-for="col in (introspectMeta ? mergedColumns : columns)" :key="col.name">
+              <tr
+                class="border-b border-slate-50 hover:bg-slate-50/60"
+                :class="col.lineage_known === false && 'opacity-60'"
+                :title="col.lineage_known === false ? '此字段在 lineage 里没出现过（dormant）' : ''"
+              >
+                <td class="py-1.5 pr-3">
+                  <button
+                    class="sql-font font-medium text-slate-800 hover:text-primary hover:underline"
+                    @click="toggleColumnLineage(col.name)"
+                    :title="expandedColumn === col.name ? '收起字段血缘' : '展开字段血缘'"
+                  >
+                    {{ expandedColumn === col.name ? '▾' : '▸' }} {{ col.name }}
+                  </button>
+                  <span
+                    v-if="col.introspect_missing"
+                    class="ml-1 rounded bg-rose-100 px-1 text-[9px] text-rose-700"
+                    title="lineage 里有，introspect 拉不到 —— 字段可能已删除"
+                  >已删除?</span>
+                  <span
+                    v-else-if="col.lineage_known === false"
+                    class="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500"
+                    title="表里有但 lineage 从来没动过"
+                  >dormant</span>
+                </td>
+                <td v-if="introspectMeta" class="sql-font py-1.5 pr-3 text-[11px] text-slate-600">
+                  {{ col.data_type || '—' }}
+                  <span v-if="col.nullable === false" class="ml-1 text-[9px] text-rose-600">NN</span>
+                </td>
+                <td class="py-1.5 pr-3 text-right">
+                  <span v-if="col.write_count" class="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">
+                    {{ col.write_count }}
                   </span>
-                </span>
-                <span v-else class="muted">—</span>
-              </td>
-              <td class="muted py-1.5 text-[10px]">
-                <button
-                  v-if="col.last_seen_run_id"
-                  class="text-primary hover:underline"
-                  @click="gotoWorkflowRun(col.last_seen_run_id)"
-                >
-                  run {{ col.last_seen_run_id.slice(0, 8) }}
-                </button>
-                <span v-else>—</span>
-              </td>
-            </tr>
+                  <span v-else class="muted">—</span>
+                </td>
+                <td class="py-1.5 pr-3 text-right">
+                  <span v-if="col.read_count" class="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">
+                    {{ col.read_count }}
+                  </span>
+                  <span v-else class="muted">—</span>
+                </td>
+                <td class="py-1.5 pr-3">
+                  <span v-if="col.transforms?.length" class="muted">
+                    {{ col.transforms.slice(0, 3).join(' / ') }}
+                    <span v-if="col.transforms.length > 3" class="opacity-60">
+                      +{{ col.transforms.length - 3 }}
+                    </span>
+                  </span>
+                  <span v-else class="muted">—</span>
+                </td>
+                <td class="muted py-1.5 text-[10px]">
+                  <button
+                    v-if="col.last_seen_run_id"
+                    class="text-primary hover:underline"
+                    @click="gotoWorkflowRun(col.last_seen_run_id)"
+                  >
+                    run {{ col.last_seen_run_id.slice(0, 8) }}
+                  </button>
+                  <span v-else>—</span>
+                </td>
+              </tr>
+              <!-- 展开行：上下游字段链 -->
+              <tr v-if="expandedColumn === col.name" class="bg-slate-50/40">
+                <td :colspan="introspectMeta ? 6 : 5" class="px-2 pb-2">
+                  <div v-if="columnLineageLoading === col.name" class="muted text-[11px]">
+                    查询字段血缘…
+                  </div>
+                  <div v-else class="flex flex-col gap-2 md:flex-row md:items-start">
+                    <div class="flex-1">
+                      <p class="muted mb-1 text-[10px] uppercase tracking-wider">
+                        ← 上游字段（{{ columnLineageMap[col.name]?.upstream?.length || 0 }}）
+                      </p>
+                      <div v-if="columnLineageMap[col.name]?.upstream?.length"
+                           class="flex flex-wrap gap-1">
+                        <button
+                          v-for="u in columnLineageMap[col.name].upstream"
+                          :key="`up_${u.table}_${u.column}`"
+                          class="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100"
+                          @click="gotoColumn(u.table, u.column)"
+                          :title="`跳到 ${u.table}.${u.column}（${u.count} 次）`"
+                        >
+                          <span class="sql-font">{{ u.table }}.{{ u.column }}</span>
+                          <span class="ml-1 opacity-60">×{{ u.count }}</span>
+                        </button>
+                      </div>
+                      <p v-else class="muted text-[11px]">没有上游字段。</p>
+                    </div>
+                    <div class="px-2 text-slate-300">→</div>
+                    <div class="flex-1">
+                      <p class="muted mb-1 text-[10px] uppercase tracking-wider">
+                        下游字段 → （{{ columnLineageMap[col.name]?.downstream?.length || 0 }}）
+                      </p>
+                      <div v-if="columnLineageMap[col.name]?.downstream?.length"
+                           class="flex flex-wrap gap-1">
+                        <button
+                          v-for="d in columnLineageMap[col.name].downstream"
+                          :key="`dn_${d.table}_${d.column}`"
+                          class="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100"
+                          @click="gotoColumn(d.table, d.column)"
+                          :title="`跳到 ${d.table}.${d.column}（${d.count} 次）`"
+                        >
+                          <span class="sql-font">{{ d.table }}.{{ d.column }}</span>
+                          <span class="ml-1 opacity-60">×{{ d.count }}</span>
+                        </button>
+                      </div>
+                      <p v-else class="muted text-[11px]">没有下游字段。</p>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>

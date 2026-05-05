@@ -7,7 +7,7 @@
 // 前端不做新 API。点资产卡跳 /assets/table/<name> 详情页。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Tag, RefreshCw, Filter, AlertCircle, Search } from 'lucide-vue-next'
+import { Tag, RefreshCw, Filter, AlertCircle, Search, History as HistoryIcon } from 'lucide-vue-next'
 import { apiGet } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 import { useProjectStore } from '../../stores/project'
@@ -15,6 +15,9 @@ import { useProjectStore } from '../../stores/project'
 const router = useRouter()
 const noticeStore = useNoticeStore()
 const projectStore = useProjectStore()
+
+// tab 切换：search（按 type 反查资产）/ history（变更日志）
+const activeTab = ref('search')
 
 const types = ref([])             // [{type,label,description,schema,color}, ...]
 const selectedType = ref('')
@@ -24,6 +27,11 @@ const limit = ref(200)
 const loading = ref(false)
 const error = ref('')
 const records = ref([])           // /api/assets/aspects/search 返回
+
+// S1.A：变更日志 tab 状态
+const historyFilter = ref({ aspect_type: '', changed_by: '' })
+const historyRecords = ref([])
+const historyLoading = ref(false)
 
 // aspect type → tailwind 颜色（跟 AssetDetailView 同一份映射）
 const ASPECT_COLOR_MAP = {
@@ -123,6 +131,29 @@ function previewValue(v) {
   return JSON.stringify(v).slice(0, 60)
 }
 
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const params = new URLSearchParams({ limit: '200' })
+    if (historyFilter.value.aspect_type) params.set('aspect_type', historyFilter.value.aspect_type)
+    if (historyFilter.value.changed_by) params.set('changed_by', historyFilter.value.changed_by)
+    historyRecords.value = await apiGet(`/api/assets/aspects/history?${params.toString()}`) || []
+  } catch (e) {
+    noticeStore.setNotice(`变更日志加载失败：${e.message || e}`)
+    historyRecords.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+watch(activeTab, (val) => {
+  if (val === 'history' && !historyRecords.value.length) loadHistory()
+})
+
+function onAssetClick(rec) {
+  if (rec.asset_kind === 'table') gotoAsset(rec.asset_name)
+}
+
 onMounted(async () => {
   await loadTypes()
   if (selectedType.value) await reload()
@@ -136,15 +167,43 @@ watch(() => projectStore.currentProjectId, reload)
       <div>
         <h2 class="text-2xl font-bold text-slate-800">分类治理（Aspect Governance）</h2>
         <p class="mt-1 text-sm text-slate-500">
-          按 aspect 反查资产 —— 哪些表标了 PII？谁是 owner？哪些表是 t0 SLA？
-          数据来源：所有 editor+ 在表详情页打的 aspect 标签。
+          按 aspect 反查资产 + 全局变更日志。数据来源：所有 editor+ 在表详情页打的 aspect 标签。
         </p>
       </div>
-      <button class="btn btn-outline gap-1.5" :disabled="loading" @click="reload">
-        <RefreshCw class="h-4 w-4" :class="loading && 'animate-spin'" />
+      <button
+        class="btn btn-outline gap-1.5"
+        :disabled="activeTab === 'search' ? loading : historyLoading"
+        @click="activeTab === 'search' ? reload() : loadHistory()"
+      >
+        <RefreshCw class="h-4 w-4" :class="(activeTab === 'search' ? loading : historyLoading) && 'animate-spin'" />
         刷新
       </button>
     </header>
+
+    <!-- Tab 切换 -->
+    <div class="flex border-b border-slate-200">
+      <button
+        class="px-4 py-2 text-sm font-medium"
+        :class="activeTab === 'search'
+          ? 'border-b-2 border-primary text-primary'
+          : 'text-slate-500 hover:text-slate-700'"
+        @click="activeTab = 'search'"
+      >
+        <Search class="mr-1 inline h-3.5 w-3.5" /> 反查资产
+      </button>
+      <button
+        class="px-4 py-2 text-sm font-medium"
+        :class="activeTab === 'history'
+          ? 'border-b-2 border-primary text-primary'
+          : 'text-slate-500 hover:text-slate-700'"
+        @click="activeTab = 'history'"
+      >
+        <HistoryIcon class="mr-1 inline h-3.5 w-3.5" /> 变更日志
+      </button>
+    </div>
+
+    <!-- ─── Tab 1：反查资产 ─── -->
+    <template v-if="activeTab === 'search'">
 
     <!-- 顶部过滤栏 -->
     <article class="card p-4">
@@ -278,5 +337,100 @@ watch(() => projectStore.currentProjectId, reload)
       选 <code>sla</code> + tier=t0 → 看核心 SLA 表。点资产卡跳详情页看反向引用 / 元数据。
       新加 aspect type 改 <code>config/asset_aspects.yml</code>。
     </article>
+
+    </template><!-- /search tab -->
+
+    <!-- ─── Tab 2：变更日志 ─── -->
+    <template v-if="activeTab === 'history'">
+      <article class="card p-4">
+        <div class="flex flex-wrap items-end gap-3 border-b border-slate-100 pb-3">
+          <label class="flex flex-col text-xs text-slate-600">
+            Aspect 类型
+            <select
+              v-model="historyFilter.aspect_type"
+              class="mt-1 min-w-[160px]"
+              @change="loadHistory"
+            >
+              <option value="">— 全部 —</option>
+              <option v-for="t in types" :key="t.type" :value="t.type">
+                {{ t.label }}（{{ t.type }}）
+              </option>
+            </select>
+          </label>
+          <label class="flex flex-col text-xs text-slate-600">
+            变更人 username
+            <input
+              type="text"
+              class="mt-1 min-w-[160px]"
+              placeholder="精确匹配 username"
+              v-model="historyFilter.changed_by"
+              @keyup.enter="loadHistory"
+              @blur="loadHistory"
+            />
+          </label>
+          <p class="muted ml-auto self-center text-[11px]">
+            最近 200 条；append-only；时间倒序
+          </p>
+        </div>
+
+        <div v-if="historyLoading" class="muted py-4 text-sm">加载中…</div>
+        <ol v-else-if="historyRecords.length" class="mt-3 space-y-2">
+          <li
+            v-for="h in historyRecords"
+            :key="h.id"
+            class="flex items-start gap-3 rounded-lg border border-slate-100 p-2 hover:bg-slate-50/60"
+          >
+            <span
+              class="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full"
+              :class="{
+                'bg-emerald-500': h.action === 'insert',
+                'bg-blue-500': h.action === 'update',
+                'bg-rose-500': h.action === 'delete',
+              }"
+              :title="h.action"
+            ></span>
+            <div class="min-w-0 flex-1 text-xs">
+              <div class="flex flex-wrap items-baseline gap-1.5">
+                <strong class="text-slate-800">{{ h.changed_by || '—' }}</strong>
+                <span class="muted">{{ h.action }}</span>
+                <span :class="['rounded px-1.5 py-0.5 text-[10px]', colorFor(h.aspect_type)]">
+                  {{ h.aspect_type }}
+                </span>
+                <button
+                  class="sql-font text-[11px] text-primary hover:underline"
+                  @click="onAssetClick(h)"
+                  :title="h.asset_kind === 'table' ? '跳详情页' : '当前 MVP 仅 table 跳转'"
+                >
+                  {{ h.asset_name }}
+                </button>
+                <span v-if="h.project_id" class="muted text-[10px]">project: {{ h.project_id }}</span>
+                <span class="muted ml-auto text-[10px]">{{ h.changed_at }}</span>
+              </div>
+              <p v-if="h.action === 'update'" class="mt-0.5 muted text-[10px]">
+                <span class="line-through opacity-60">{{ JSON.stringify(h.old_value) }}</span>
+                →
+                <span class="font-medium text-slate-700">{{ JSON.stringify(h.new_value) }}</span>
+              </p>
+              <p v-else-if="h.action === 'insert'" class="mt-0.5 muted text-[10px]">
+                + {{ JSON.stringify(h.new_value) }}
+              </p>
+              <p v-else class="mt-0.5 muted text-[10px]">
+                <span class="line-through opacity-60">{{ JSON.stringify(h.old_value) }}</span>
+              </p>
+            </div>
+          </li>
+        </ol>
+        <p v-else class="muted py-4 text-sm">
+          没有变更记录。<span v-if="historyFilter.aspect_type || historyFilter.changed_by">放宽过滤试试。</span>
+        </p>
+      </article>
+
+      <article class="card border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+        <strong>合规审计</strong>：所有 aspect 的 insert / update / delete 操作都落 SQLite
+        <code>asset_aspect_history</code>，append-only。回答"谁把 PII 等级从 high 改成 low 了"
+        类问题。no-op update（value 没变）不污染日志。
+      </article>
+    </template><!-- /history tab -->
+
   </section>
 </template>
