@@ -448,6 +448,91 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR22：综合集成测试 —— 真实 Oracle PL/SQL 场景全链路 ────────────────────
+
+
+def test_realistic_oracle_package_body_full_pipeline():
+    """模拟真实 Oracle ETL 项目里的 PACKAGE BODY，同时检验 S5 多个 PR：
+    - PR3 package 常量 + PR14 variables 渲染
+    - PR4 UDF 调用追溯
+    - PR7 显式 CURSOR 声明 + PR2 LOOP scope 传播
+    - PR13 包内多 PROCEDURE 共享 cursor
+    - PR15 TRIGGER（独立的）
+    - PR19 MERGE 列级
+    """
+    sql = """
+    CREATE OR REPLACE FUNCTION etl.get_threshold RETURN NUMBER IS
+      v NUMBER;
+    BEGIN
+      SELECT max(amt) INTO v FROM ods.config WHERE flag = 1;
+      RETURN v;
+    END;
+
+    CREATE OR REPLACE PACKAGE BODY etl.daily AS
+      g_app_id CONSTANT VARCHAR2(32) := 'JY';
+      g_run_date CONSTANT DATE := SYSDATE;
+      CURSOR cur_orders IS SELECT id, amt FROM ods.orders WHERE flag = 1;
+
+      PROCEDURE load_fact IS
+      BEGIN
+        FOR rec IN cur_orders LOOP
+          INSERT INTO dwd.fact (id, amt, app_id) VALUES (rec.id, rec.amt, g_app_id);
+        END LOOP;
+      END;
+
+      PROCEDURE load_audit IS
+      BEGIN
+        FOR rec IN cur_orders LOOP
+          INSERT INTO dwd.audit (id, run_date) VALUES (rec.id, g_run_date);
+        END LOOP;
+      END;
+
+      PROCEDURE merge_summary IS
+      BEGIN
+        MERGE INTO dwd.summary d
+        USING (SELECT id, amt FROM ods.orders WHERE amt > etl.get_threshold) s
+        ON (d.id = s.id)
+        WHEN MATCHED THEN UPDATE SET d.amt = s.amt
+        WHEN NOT MATCHED THEN INSERT (id, amt) VALUES (s.id, s.amt);
+      END;
+    END;
+
+    CREATE OR REPLACE TRIGGER trg_audit AFTER INSERT ON ods.orders
+    FOR EACH ROW
+    BEGIN
+      INSERT INTO dwd.audit_trail (id) VALUES (:NEW.id);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"], e.get("edge_type")) for e in result.get("graph_edges", [])]
+
+    # PR2/PR7：包级 CURSOR 给两个 PROC 共享 → 两条 CURSOR_LOOP_INSERT 边
+    assert ("ods.orders", "dwd.fact", "CURSOR_LOOP_INSERT") in edges, \
+        f"load_fact 应有 cursor 边: {edges}"
+    assert ("ods.orders", "dwd.audit", "CURSOR_LOOP_INSERT") in edges, \
+        f"load_audit 也应有 cursor 边（包级 cursor 共享）: {edges}"
+
+    # PR4：UDF etl.get_threshold 读 ods.config，merge_summary 调用了它
+    assert ("ods.config", "dwd.summary", "UDF_CALL") in edges, \
+        f"UDF 调用应补 ods.config → dwd.summary: {edges}"
+
+    # PR15：TRIGGER 应补 ods.orders → dwd.audit_trail
+    assert ("ods.orders", "dwd.audit_trail", "TRIGGER") in edges, \
+        f"TRIGGER 应补源表边: {edges}"
+
+    # PR19：MERGE 列级 mapping
+    mappings = result.get("insert_mappings", [])
+    merge_update = [m for m in mappings if m.get("dml_type") == "MERGE_UPDATE"]
+    merge_insert = [m for m in mappings if m.get("dml_type") == "MERGE_INSERT"]
+    assert merge_update and merge_insert, \
+        f"MERGE 列级 mapping 应有 UPDATE 和 INSERT 分支: {mappings}"
+
+    # PR3/PR14：package 常量
+    var_names = {v.get("name") for v in result.get("variables", [])}
+    assert {"g_app_id", "g_run_date"}.issubset(var_names), \
+        f"包常量应被识别: {var_names}"
+
+
 # ─── S5 PR21：CTE 链穿透到底层物理表 ──────────────────────────────────────────
 
 
