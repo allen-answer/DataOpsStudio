@@ -18,6 +18,25 @@ describe('i18n', () => {
     }
   })
 
+  // PR23：递归对齐所有嵌套层级（lineagePanel.summary.varKinds.* 这类深层 key
+  // 也要中英文同步，避免硬编码字符串迁移到 i18n 时忘加翻译）
+  it('zh / en 所有嵌套层级 key 完全对齐', () => {
+    function flatKeys(obj, prefix = '') {
+      const out = []
+      for (const k of Object.keys(obj || {})) {
+        const path = prefix ? `${prefix}.${k}` : k
+        const v = obj[k]
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          out.push(...flatKeys(v, path))
+        } else {
+          out.push(path)
+        }
+      }
+      return out.sort()
+    }
+    expect(flatKeys(zh)).toEqual(flatKeys(en))
+  })
+
   it('SUPPORTED_LOCALES 跟 messages 一一对应', () => {
     const codes = SUPPORTED_LOCALES.map(l => l.code).sort()
     expect(codes).toEqual(['en-US', 'zh-CN'])
