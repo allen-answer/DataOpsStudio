@@ -448,6 +448,100 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR7：显式 CURSOR 声明 + `FOR rec IN cur_x LOOP` 应能解析 ────────────────
+
+
+def test_declared_cursor_for_loop_resolves_source():
+    """`CURSOR cur_orders IS SELECT FROM ods.orders;` + `FOR rec IN cur_orders LOOP`
+    应该把 ods.orders 作为 cursor_sources 补到 body INSERT 上。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      CURSOR cur_orders IS SELECT id, amt FROM ods.orders WHERE flag = 1;
+    BEGIN
+      FOR rec IN cur_orders LOOP
+        INSERT INTO dwd.fact (id, amt) VALUES (rec.id, rec.amt);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.fact"), \
+        f"显式 cursor 应解析 ods.orders → dwd.fact: {result['graph_edges']}"
+
+
+def test_declared_cursor_with_join_multi_source():
+    """声明的 cursor SELECT 含 JOIN 时，每个源表都应作为 cursor_sources。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      CURSOR cur_x IS
+        SELECT b.id, c.code FROM ods.batches b JOIN ods.codes c ON b.id = c.bid;
+    BEGIN
+      FOR rec IN cur_x LOOP
+        INSERT INTO dwd.fact (id, code) VALUES (rec.id, rec.code);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.batches", "dwd.fact")
+    assert _cursor_edge(result["graph_edges"], "ods.codes", "dwd.fact")
+
+
+def test_declared_cursor_multi_dml_in_loop_body():
+    """显式 cursor + LOOP 体内多 DML —— PR2 的 scope 传播 + PR7 的 cursor 解析
+    要协同：UPDATE/DELETE 段也要继承 cursor_sources。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      CURSOR cur_orders IS SELECT id FROM ods.orders;
+    BEGIN
+      FOR rec IN cur_orders LOOP
+        INSERT INTO dwd.fact (id) VALUES (rec.id);
+        UPDATE dwd.audit SET ts = sysdate WHERE id = rec.id;
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.fact"), "INSERT 段"
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.audit"), "UPDATE 段"
+
+
+def test_multiple_declared_cursors_independent_loops():
+    """同一过程声明多个 cursor + 多个 LOOP，每个 LOOP 用自己的 cursor。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      CURSOR cur_a IS SELECT id FROM ods.orders;
+      CURSOR cur_b IS SELECT code FROM ods.codes;
+    BEGIN
+      FOR r IN cur_a LOOP
+        INSERT INTO dwd.fact (id) VALUES (r.id);
+      END LOOP;
+      FOR c IN cur_b LOOP
+        DELETE FROM dwd.stale WHERE code = c.code;
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.fact")
+    assert _cursor_edge(result["graph_edges"], "ods.codes", "dwd.stale")
+    # 不应交叉污染
+    assert not _cursor_edge(result["graph_edges"], "ods.orders", "dwd.stale")
+    assert not _cursor_edge(result["graph_edges"], "ods.codes", "dwd.fact")
+
+
+def test_for_numeric_range_loop_unaffected():
+    """`FOR i IN 1..10 LOOP` 这种数值范围循环不是 cursor，应不补任何 source。
+    不应误识别为 cursor 引用。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+    BEGIN
+      FOR i IN 1..10 LOOP
+        INSERT INTO dwd.t (n) VALUES (i);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    cursor_edges = [e for e in result["graph_edges"] if e.get("edge_type") == "CURSOR_LOOP_INSERT"]
+    assert cursor_edges == [], f"数值范围 LOOP 不应产生 CURSOR_LOOP_INSERT 边: {cursor_edges}"
+
+
 # ─── S5 PR6：CREATE PROCEDURE / FUNCTION 不应进 target_summary ─────────────────
 
 

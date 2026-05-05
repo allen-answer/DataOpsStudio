@@ -170,39 +170,34 @@ _RE_CURSOR_FOR_LOOP_INLINE = re.compile(
     r"\bFOR\s+[\w$#]+\s+IN\b",
     flags=re.IGNORECASE,
 )
+# S5 PR7：显式 CURSOR 声明 `CURSOR <name> [IS|AS] SELECT ...;`。配合
+# `FOR rec IN <name> LOOP` 用 —— 把 cursor 名映射到声明体里的源表。
+_RE_CURSOR_DECL = re.compile(
+    r"\bCURSOR\s+([A-Za-z_][\w$#]*)\s+(?:IS|AS)\s+",
+    flags=re.IGNORECASE,
+)
 
 
-def _collect_loop_scopes(body: str) -> list[tuple[int, int, list[str]]]:
-    """S5 PR2：扫 body 找所有 `FOR rec IN (...) LOOP ... END LOOP;` 范围。
+def _collect_cursor_decls(body: str) -> dict[str, list[str]]:
+    """S5 PR7：扫 body 找所有 `CURSOR <name> IS SELECT ...;` 声明。
+    返回 {cursor_name_lower: [source_tables]}。
 
-    返回 [(scope_start, scope_end, cursor_sources)]，scope_start 是 `FOR` 起点，
-    scope_end 是匹配的 `END LOOP` 之后的位置。给 _iter_procedure_body_segments
-    的二次 pass 用：cursor LOOP 体内多个 DML 段都该继承同一份 cursor_sources。
-
-    嵌套 LOOP 都独立记录；segment 落在哪个 scope 里就用哪个（取最内层）。
-    字符串内的 LOOP/END LOOP 关键字会被字符串 skip 跳过。
+    `FOR rec IN <cursor_name> LOOP` 这种引用形式靠这个映射回填 cursor_sources。
+    SELECT 体的解析用同样的 _extract_cursor_select_tables，跳字符串。
     """
-    scopes: list[tuple[int, int, list[str]]] = []
+    decls: dict[str, list[str]] = {}
     pos = 0
     length = len(body)
     while pos < length:
-        m = _RE_CURSOR_FOR_LOOP_INLINE.search(body, pos)
+        m = _RE_CURSOR_DECL.search(body, pos)
         if not m:
             break
-        for_start = m.start()
-        cursor_in_end = m.end()
-        # 跳空白找 cursor SELECT 的 (
-        j = cursor_in_end
-        while j < length and body[j].isspace():
-            j += 1
-        if j >= length or body[j] != "(":
-            pos = cursor_in_end
-            continue
-        # 配对找 )，跳过字符串里的 (
-        depth = 1
-        select_start = j + 1
-        j += 1
-        while j < length and depth > 0:
+        cursor_name = m.group(1)
+        select_start = m.end()
+        # 找匹配的 ; 在顶层（depth=0）。SELECT 子查询里可能有 ( ) 嵌套
+        depth = 0
+        j = select_start
+        while j < length:
             ch = body[j]
             if ch in "'\"":
                 quote = ch
@@ -220,15 +215,94 @@ def _collect_loop_scopes(body: str) -> list[tuple[int, int, list[str]]]:
                 depth += 1
             elif ch == ")":
                 depth -= 1
-                if depth == 0:
-                    select_end = j
-                    j += 1
-                    break
+            elif ch == ";" and depth == 0:
+                break
             j += 1
-        if depth != 0:
+        select_text = body[select_start:j]
+        tables = _extract_cursor_select_tables(select_text)
+        if tables:
+            decls[cursor_name.lower()] = tables
+        pos = j + 1 if j < length else length
+    return decls
+
+
+def _collect_loop_scopes(body: str, extra_cursor_decls: dict[str, list[str]] | None = None) -> list[tuple[int, int, list[str]]]:
+    """S5 PR2：扫 body 找所有 `FOR rec IN (...) LOOP ... END LOOP;` 范围。
+
+    返回 [(scope_start, scope_end, cursor_sources)]，scope_start 是 `FOR` 起点，
+    scope_end 是匹配的 `END LOOP` 之后的位置。给 _iter_procedure_body_segments
+    的二次 pass 用：cursor LOOP 体内多个 DML 段都该继承同一份 cursor_sources。
+
+    嵌套 LOOP 都独立记录；segment 落在哪个 scope 里就用哪个（取最内层）。
+    字符串内的 LOOP/END LOOP 关键字会被字符串 skip 跳过。
+
+    S5 PR7：除了 `FOR rec IN (SELECT ...) LOOP` 内联形式，也支持
+    `FOR rec IN <cursor_name> LOOP` 显式 cursor 引用 —— 通过 `cursor_decls`
+    映射查到声明的源表。`cursor_decls` 由 `_collect_cursor_decls(body)` + 上层
+    传入的 extra_cursor_decls（过程 IS/AS 段的 cursor 声明）合并。
+    """
+    scopes: list[tuple[int, int, list[str]]] = []
+    cursor_decls = _collect_cursor_decls(body)
+    if extra_cursor_decls:
+        for name, tables in extra_cursor_decls.items():
+            cursor_decls.setdefault(name, list(tables))
+    pos = 0
+    length = len(body)
+    while pos < length:
+        m = _RE_CURSOR_FOR_LOOP_INLINE.search(body, pos)
+        if not m:
+            break
+        for_start = m.start()
+        cursor_in_end = m.end()
+        # 跳空白找 cursor SELECT 的 ( 或 cursor 名字
+        j = cursor_in_end
+        while j < length and body[j].isspace():
+            j += 1
+        cursor_sources: list[str] = []
+        if j < length and body[j] == "(":
+            # 内联 SELECT 形式：FOR rec IN (SELECT ...) LOOP
+            depth = 1
+            select_start = j + 1
+            j += 1
+            while j < length and depth > 0:
+                ch = body[j]
+                if ch in "'\"":
+                    quote = ch
+                    j += 1
+                    while j < length:
+                        if body[j] == quote:
+                            if j + 1 < length and body[j + 1] == quote:
+                                j += 2
+                                continue
+                            j += 1
+                            break
+                        j += 1
+                    continue
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        select_end = j
+                        j += 1
+                        break
+                j += 1
+            if depth != 0:
+                pos = cursor_in_end
+                continue
+            cursor_sources = _extract_cursor_select_tables(body[select_start:select_end])
+        elif j < length and (body[j].isalpha() or body[j] == "_"):
+            # PR7：显式 cursor 名字引用形式 FOR rec IN cur_name LOOP
+            name_start = j
+            while j < length and (body[j].isalnum() or body[j] in "_$#."):
+                j += 1
+            cursor_name = body[name_start:j].lower()
+            cursor_sources = list(cursor_decls.get(cursor_name, []))
+            # 后面可能有 reverse / 数字范围（FOR i IN 1..N LOOP）—— 不是 cursor，
+            # 没声明就当无 source 处理，不阻断 LOOP 范围识别
+        else:
             pos = cursor_in_end
             continue
-        cursor_sources = _extract_cursor_select_tables(body[select_start:select_end])
         # 跳空白找 LOOP 关键字
         while j < length and body[j].isspace():
             j += 1
@@ -417,7 +491,10 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
                     break
         body_offset = body_start.end()
         body = sql[body_offset:body_end]
-        for index, item in enumerate(_iter_procedure_body_segments(body), start=1):
+        # PR7：过程头到 BEGIN 之间是声明区（IS/AS ... BEGIN）。这里抽 cursor
+        # 声明给 LOOP scope 用 —— `FOR rec IN cur_name LOOP` 形式靠这个解析。
+        declaration_region = sql[header.end():body_start.start()]
+        for index, item in enumerate(_iter_procedure_body_segments(body, declaration_region), start=1):
             preserved = clean_procedure_segment(item.text)
             if not preserved:
                 continue
@@ -463,10 +540,14 @@ def clean_procedure_segment(segment: str) -> str:
     return segment.strip().rstrip(";").strip()
 
 
-def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
+def _iter_procedure_body_segments(body: str, declaration_region: str = "") -> list[_BodySegment]:
     """Split a procedure body into top-level statements, skipping control-flow shells.
 
     返回带 body-内偏移和前置注释的 _BodySegment，方便上层算 line_start/line_end。
+
+    S5 PR7：declaration_region 是过程头部 `IS/AS ... BEGIN` 之间的区域文本，
+    用于抽显式 CURSOR 声明（`CURSOR cur_x IS SELECT ...;`）。下面 LOOP 范围
+    扫描时 `FOR rec IN cur_x LOOP` 形式靠这个映射回填 cursor_sources。
     """
     raw_segments: list[tuple[str, int, int]] = []  # (text, body_start, body_end_inclusive_semicolon)
     depth = 0
@@ -570,7 +651,9 @@ def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
     #     UPDATE dwd.t2 SET x=rec.x WHERE ...; -- 段1：被 ; 切出来时丢了上下文
     #   END LOOP;
     # 取最内层 scope（嵌套时最后匹配到的）。
-    scopes = _collect_loop_scopes(body)
+    # PR7：cursor_decls 从 declaration_region 抽，让 LOOP 扫描能解析 `FOR rec IN cur_x LOOP`
+    extra_decls = _collect_cursor_decls(declaration_region) if declaration_region else {}
+    scopes = _collect_loop_scopes(body, extra_decls)
     if scopes:
         for seg in cleaned:
             if seg.cursor_sources:
