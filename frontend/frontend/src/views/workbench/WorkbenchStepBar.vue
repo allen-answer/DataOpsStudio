@@ -12,11 +12,12 @@ const props = defineProps({
 
 const emit = defineEmits(['change'])
 
+// labelKey / hintKey 走 i18n —— S4.C PR2 用 $t() 渲染
 const STEPS = [
-  { id: 'source',  label: '数据来源', icon: Database,        hint: '数据源 / SQL 或 Excel' },
-  { id: 'rules',   label: '对比规则', icon: Sliders,         hint: '主键 / 忽略字段 / 类型' },
-  { id: 'mapping', label: '字段映射', icon: ArrowLeftRight,  hint: '字段筛选 / 列对齐' },
-  { id: 'result',  label: '执行结果', icon: PlayCircle,      hint: '运行 / 汇总 / 下载' },
+  { id: 'source',  labelKey: 'pages.workbench.stepSource',  hintKey: 'pages.workbench.stepSourceHint',  icon: Database },
+  { id: 'rules',   labelKey: 'pages.workbench.stepRules',   hintKey: 'pages.workbench.stepRulesHint',   icon: Sliders },
+  { id: 'mapping', labelKey: 'pages.workbench.stepMapping', hintKey: 'pages.workbench.stepMappingHint', icon: ArrowLeftRight },
+  { id: 'result',  labelKey: 'pages.workbench.stepResult',  hintKey: 'pages.workbench.stepResultHint',  icon: PlayCircle },
 ]
 
 const currentIndex = computed(() => STEPS.findIndex(s => s.id === props.current))
@@ -64,9 +65,9 @@ function goStep(index) {
           <div class="min-w-0">
             <div class="truncate text-sm font-semibold"
               :class="idx === currentIndex ? 'text-primary' : 'text-slate-700'">
-              {{ idx + 1 }}. {{ step.label }}
+              {{ idx + 1 }}. {{ $t(step.labelKey) }}
             </div>
-            <div class="truncate text-[11px] text-slate-400">{{ step.hint }}</div>
+            <div class="truncate text-[11px] text-slate-400">{{ $t(step.hintKey) }}</div>
           </div>
         </button>
         <div

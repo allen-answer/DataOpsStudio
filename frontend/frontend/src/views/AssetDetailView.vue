@@ -375,7 +375,7 @@ function setListValue(field, text) {
       </span>
     </div>
 
-    <div v-if="loading" class="card p-4 text-sm text-slate-500">加载中…</div>
+    <div v-if="loading" class="card p-4 text-sm text-slate-500">{{ $t('common.loading') }}</div>
     <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 p-3 text-sm text-status-error">
       <AlertCircle class="mr-1 inline h-4 w-4" /> {{ error }}
     </div>
@@ -647,13 +647,13 @@ function setListValue(field, text) {
         <span class="pill bg-emerald-100 text-emerald-700">
           {{ introspectMeta ? mergedColumns.length : columns.length }}
         </span>
-        <span v-if="columnsLoading || introspectLoading" class="muted text-[11px]">加载中…</span>
+        <span v-if="columnsLoading || introspectLoading" class="muted text-[11px]">{{ $t('common.loading') }}</span>
         <span v-else-if="introspectMeta" class="muted text-[11px]">
-          来源 <strong>{{ introspectMeta.datasource_name }}</strong>
+          {{ $t('pages.assetDetail.colsSource') }} <strong>{{ introspectMeta.datasource_name }}</strong>
           ({{ introspectMeta.db_type }}) + lineage merge
         </span>
         <span v-else-if="columns.length" class="muted text-[11px]">
-          仅 lineage 反查（按热度倒序）。可拉真实 schema →
+          {{ $t('pages.assetDetail.colsLineageOnly') }}
         </span>
 
         <!-- introspect 控制台 -->
@@ -662,9 +662,9 @@ function setListValue(field, text) {
             v-model="introspectDsId"
             class="h-7 text-xs"
             :disabled="!datasources.length"
-            title="选 datasource 拉真实字段"
+            :title="$t('pages.assetDetail.introspectPickDs')"
           >
-            <option value="">— 选数据源 —</option>
+            <option value="">{{ $t('pages.assetDetail.introspectPickDsOption') }}</option>
             <option v-for="ds in datasources" :key="ds.id" :value="ds.id">
               {{ ds.name }} ({{ ds.db_type }})
             </option>
@@ -673,10 +673,10 @@ function setListValue(field, text) {
             class="btn btn-outline h-7 px-2 text-xs"
             :disabled="!introspectDsId || introspectLoading"
             @click="runIntrospect"
-            title="从 information_schema / all_tab_columns 拉真实字段"
+            :title="$t('pages.assetDetail.introspectButtonTitle')"
           >
             <Database class="h-3.5 w-3.5" />
-            拉真实
+            {{ $t('pages.assetDetail.introspectButton') }}
           </button>
         </div>
       </header>
@@ -684,22 +684,22 @@ function setListValue(field, text) {
         v-if="introspectError"
         class="muted mb-2 rounded bg-status-error-bg/40 p-2 text-[11px] text-status-error"
       >
-        introspect 失败：{{ introspectError }}
+        {{ $t('pages.assetDetail.introspectFailed') }}：{{ introspectError }}
       </p>
       <div v-if="(introspectMeta ? mergedColumns : columns).length" class="overflow-x-auto">
         <table class="w-full text-xs">
           <thead class="text-slate-500">
             <tr class="border-b border-slate-100">
-              <th class="py-1.5 pr-3 text-left font-semibold">字段名</th>
-              <th v-if="introspectMeta" class="py-1.5 pr-3 text-left font-semibold">类型</th>
+              <th class="py-1.5 pr-3 text-left font-semibold">{{ $t('pages.assetDetail.colName') }}</th>
+              <th v-if="introspectMeta" class="py-1.5 pr-3 text-left font-semibold">{{ $t('common.type') }}</th>
               <th class="py-1.5 pr-3 text-right font-semibold">
-                <ArrowUpFromLine class="inline h-3 w-3 text-slate-400" /> 写
+                <ArrowUpFromLine class="inline h-3 w-3 text-slate-400" /> {{ $t('pages.assetDetail.colWrite') }}
               </th>
               <th class="py-1.5 pr-3 text-right font-semibold">
-                <ArrowDownToLine class="inline h-3 w-3 text-slate-400" /> 读
+                <ArrowDownToLine class="inline h-3 w-3 text-slate-400" /> {{ $t('pages.assetDetail.colRead') }}
               </th>
-              <th class="py-1.5 pr-3 text-left font-semibold">变换 transform</th>
-              <th class="py-1.5 text-left font-semibold">最近出现</th>
+              <th class="py-1.5 pr-3 text-left font-semibold">{{ $t('pages.assetDetail.colTransform') }}</th>
+              <th class="py-1.5 text-left font-semibold">{{ $t('pages.assetDetail.colLastSeen') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -707,26 +707,26 @@ function setListValue(field, text) {
               <tr
                 class="border-b border-slate-50 hover:bg-slate-50/60"
                 :class="col.lineage_known === false && 'opacity-60'"
-                :title="col.lineage_known === false ? '此字段在 lineage 里没出现过（dormant）' : ''"
+                :title="col.lineage_known === false ? $t('pages.assetDetail.dormantTooltip') : ''"
               >
                 <td class="py-1.5 pr-3">
                   <button
                     class="sql-font font-medium text-slate-800 hover:text-primary hover:underline"
                     @click="toggleColumnLineage(col.name)"
-                    :title="expandedColumn === col.name ? '收起字段血缘' : '展开字段血缘'"
+                    :title="expandedColumn === col.name ? $t('pages.assetDetail.collapseColLineage') : $t('pages.assetDetail.expandColLineage')"
                   >
                     {{ expandedColumn === col.name ? '▾' : '▸' }} {{ col.name }}
                   </button>
                   <span
                     v-if="col.introspect_missing"
                     class="ml-1 rounded bg-rose-100 px-1 text-[9px] text-rose-700"
-                    title="lineage 里有，introspect 拉不到 —— 字段可能已删除"
-                  >已删除?</span>
+                    :title="$t('pages.assetDetail.deletedColTooltip')"
+                  >{{ $t('pages.assetDetail.deletedColBadge') }}</span>
                   <span
                     v-else-if="col.lineage_known === false"
                     class="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500"
-                    title="表里有但 lineage 从来没动过"
-                  >dormant</span>
+                    :title="$t('pages.assetDetail.dormantTooltip')"
+                  >{{ $t('pages.assetDetail.dormantBadge') }}</span>
                 </td>
                 <td v-if="introspectMeta" class="sql-font py-1.5 pr-3 text-[11px] text-slate-600">
                   {{ col.data_type || '—' }}

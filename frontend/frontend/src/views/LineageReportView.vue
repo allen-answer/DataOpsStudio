@@ -34,18 +34,19 @@ const props = defineProps({
   ambiguousColumnWarnings: { type: Array, default: () => [] },
 })
 
+// labelKey 走 i18n —— S4.C PR2 用 $t(tab.labelKey) 渲染
 const TABS = [
-  { id: 'summary', label: '总览',     icon: LayoutDashboard },
-  { id: 'inputs',  label: '输入资产', icon: Inbox },
-  { id: 'outputs', label: '输出资产', icon: Upload },
-  { id: 'process', label: '处理过程', icon: Workflow },
-  { id: 'table',   label: '表级血缘', icon: Network },
-  { id: 'column',  label: '字段血缘', icon: Layers },
-  { id: 'semantic',label: '语义血缘', icon: Sparkles },
-  { id: 'impact',  label: '影响分析', icon: GitBranch },
-  { id: 'risks',   label: '风险',     icon: AlertTriangle },
-  { id: 'ai',         label: 'AI 辅助',     icon: Bot },
-  { id: 'ai_inferred',label: 'AI 兜底推断', icon: Sparkles },
+  { id: 'summary',     labelKey: 'lineageReport.tabSummary',    icon: LayoutDashboard },
+  { id: 'inputs',      labelKey: 'lineageReport.tabInputs',     icon: Inbox },
+  { id: 'outputs',     labelKey: 'lineageReport.tabOutputs',    icon: Upload },
+  { id: 'process',     labelKey: 'lineageReport.tabProcess',    icon: Workflow },
+  { id: 'table',       labelKey: 'lineageReport.tabTable',      icon: Network },
+  { id: 'column',      labelKey: 'lineageReport.tabColumn',     icon: Layers },
+  { id: 'semantic',    labelKey: 'lineageReport.tabSemantic',   icon: Sparkles },
+  { id: 'impact',      labelKey: 'lineageReport.tabImpact',     icon: GitBranch },
+  { id: 'risks',       labelKey: 'lineageReport.tabRisks',      icon: AlertTriangle },
+  { id: 'ai',          labelKey: 'lineageReport.tabAI',         icon: Bot },
+  { id: 'ai_inferred', labelKey: 'lineageReport.tabAIInferred', icon: Sparkles },
 ]
 
 const activeTab = ref('summary')
@@ -111,7 +112,7 @@ const tabBadgeCount = computed(() => ({
         @click="onManualTabSwitch(tab.id)"
       >
         <component :is="tab.icon" class="h-3.5 w-3.5" />
-        <span>{{ tab.label }}</span>
+        <span>{{ $t(tab.labelKey) }}</span>
         <span
           v-if="tabBadgeCount[tab.id]"
           class="rounded-full px-1.5 py-0.5 text-[10px] font-bold"

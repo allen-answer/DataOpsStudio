@@ -209,7 +209,7 @@ watch(() => projectStore.currentProjectId, reload)
     <article class="card p-4">
       <div class="flex flex-wrap items-end gap-3">
         <label class="flex flex-col text-xs text-slate-600">
-          Aspect 类型
+          {{ $t('pages.governance.aspectType') }}
           <select
             v-model="selectedType"
             class="mt-1 min-w-[180px]"
@@ -223,7 +223,7 @@ watch(() => projectStore.currentProjectId, reload)
         </label>
 
         <label class="flex flex-col text-xs text-slate-600">
-          资产种类
+          {{ $t('pages.governance.assetKind') }}
           <select v-model="assetKind" class="mt-1 w-32" @change="reload">
             <option value="table">table</option>
             <option value="task">task</option>
@@ -232,7 +232,7 @@ watch(() => projectStore.currentProjectId, reload)
         </label>
 
         <label class="flex flex-col text-xs text-slate-600">
-          条数上限
+          {{ $t('pages.governance.limit') }}
           <select v-model.number="limit" class="mt-1 w-24" @change="reload">
             <option :value="50">50</option>
             <option :value="200">200</option>
@@ -278,13 +278,13 @@ watch(() => projectStore.currentProjectId, reload)
     <div v-if="error" class="card border-status-error-bg bg-status-error-bg/40 p-3 text-sm text-status-error">
       <AlertCircle class="mr-1 inline h-4 w-4" /> {{ error }}
     </div>
-    <div v-if="loading" class="card p-4 text-sm text-slate-500">加载中…</div>
+    <div v-if="loading" class="card p-4 text-sm text-slate-500">{{ $t('common.loading') }}</div>
 
     <!-- 结果 -->
     <article v-if="!loading && !error" class="card p-4">
       <header class="mb-3 flex items-center gap-2 border-b border-slate-100 pb-2">
         <Tag class="h-4 w-4 text-purple-600" />
-        <h3 class="text-sm font-bold text-slate-800">命中资产</h3>
+        <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.governance.hitAssets') }}</h3>
         <span class="pill bg-purple-100 text-purple-700">{{ filteredRecords.length }}</span>
         <span v-if="filteredRecords.length !== records.length" class="muted text-[11px]">
           / 服务端返回 {{ records.length }}
@@ -345,24 +345,24 @@ watch(() => projectStore.currentProjectId, reload)
       <article class="card p-4">
         <div class="flex flex-wrap items-end gap-3 border-b border-slate-100 pb-3">
           <label class="flex flex-col text-xs text-slate-600">
-            Aspect 类型
+            {{ $t('pages.governance.aspectType') }}
             <select
               v-model="historyFilter.aspect_type"
               class="mt-1 min-w-[160px]"
               @change="loadHistory"
             >
-              <option value="">— 全部 —</option>
+              <option value="">{{ $t('pages.governance.allOption') }}</option>
               <option v-for="t in types" :key="t.type" :value="t.type">
                 {{ t.label }}（{{ t.type }}）
               </option>
             </select>
           </label>
           <label class="flex flex-col text-xs text-slate-600">
-            变更人 username
+            {{ $t('pages.governance.changedBy') }}
             <input
               type="text"
               class="mt-1 min-w-[160px]"
-              placeholder="精确匹配 username"
+              :placeholder="$t('pages.governance.usernameMatch')"
               v-model="historyFilter.changed_by"
               @keyup.enter="loadHistory"
               @blur="loadHistory"
