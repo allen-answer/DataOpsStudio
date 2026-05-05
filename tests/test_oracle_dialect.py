@@ -448,6 +448,75 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR13：PACKAGE BODY 多个嵌套 PROCEDURE / 包级 cursor 共享 ────────────────
+
+
+def test_package_body_multiple_nested_procs_all_detected():
+    """同一 PACKAGE BODY 里多个 PROCEDURE，每个的 INSERT 都该被抽出。
+    旧逻辑只识别第一个 PROCEDURE 后就停了。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg AS
+      PROCEDURE proc_a IS BEGIN
+        INSERT INTO dwd.t1 (id) SELECT id FROM ods.s1;
+      END;
+      PROCEDURE proc_b IS BEGIN
+        INSERT INTO dwd.t2 (id) SELECT id FROM ods.s2;
+      END;
+      PROCEDURE proc_c IS BEGIN
+        INSERT INTO dwd.t3 (id) SELECT id FROM ods.s3;
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {s.get("target_table") for s in result.get("target_summary", [])}
+    assert {"dwd.t1", "dwd.t2", "dwd.t3"}.issubset(targets), \
+        f"包内 3 个 PROCEDURE 的 target 都该被识别: {targets}"
+
+
+def test_package_body_level_cursor_shared_by_procs():
+    """PACKAGE BODY 顶层声明的 CURSOR 应被各 PROCEDURE 共享 —— 不只第一个。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg AS
+      CURSOR cur_orders IS SELECT id FROM ods.orders;
+
+      PROCEDURE proc_a IS BEGIN
+        FOR rec IN cur_orders LOOP
+          INSERT INTO dwd.fact (id) VALUES (rec.id);
+        END LOOP;
+      END;
+
+      PROCEDURE proc_b IS BEGIN
+        FOR rec IN cur_orders LOOP
+          INSERT INTO dwd.audit (id) VALUES (rec.id);
+        END LOOP;
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.fact"), \
+        "proc_a 应解析包级 cursor"
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.audit"), \
+        "proc_b 也应解析包级 cursor —— 共享同一个声明"
+
+
+def test_nested_proc_qualified_name():
+    """嵌套 PROCEDURE 的 procedure_name 应限定到包名（pkg.proc_a）。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY my_pkg AS
+      PROCEDURE proc_x IS BEGIN
+        INSERT INTO dwd.t (id) SELECT id FROM ods.s;
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result.get("procedure_segments", [])
+    assert segs, "应抽出至少一个 segment"
+    proc_names = {s.get("procedure_name") for s in segs}
+    # 限定名 my_pkg.proc_x（含包名前缀）
+    assert any("my_pkg" in n for n in proc_names), \
+        f"包内 proc 应带包名前缀: {proc_names}"
+
+
 # ─── S5 PR11：MERGE inside cursor LOOP body 不该误把 SET 当 target ─────────────
 
 

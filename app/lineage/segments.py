@@ -116,6 +116,13 @@ _RE_PROC_HEADER = re.compile(
     r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?P<kind>PROCEDURE|FUNCTION|PACKAGE\s+BODY|TRIGGER)\s+(?P<name>[\w$#.\"`\[\]]+)",
     flags=re.IGNORECASE,
 )
+# S5 PR13：嵌套在 PACKAGE BODY 里的 PROCEDURE / FUNCTION 没有 CREATE 前缀。
+# 单独再扫一遍，但只在已知 PACKAGE BODY block 范围内用 —— 否则随处一段
+# `PROCEDURE foo IS` 都会误识别。
+_RE_NESTED_PROC_HEADER = re.compile(
+    r"\b(?P<kind>PROCEDURE|FUNCTION)\s+(?P<name>[\w$#.\"`\[\]]+)\b",
+    flags=re.IGNORECASE,
+)
 _RE_BEGIN = re.compile(r"\bBEGIN\b", flags=re.IGNORECASE)
 _RE_BLOCK_TOKEN = re.compile(r"\bBEGIN\b|\bEND\b", flags=re.IGNORECASE)
 
@@ -493,60 +500,132 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
     """
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
-    for header in _RE_PROC_HEADER.finditer(sql):
-        name = header.group("name").strip()
-        kind = " ".join(header.group("kind").split()).upper()
-        body_start = _RE_BEGIN.search(sql, pos=header.end())
-        if not body_start:
-            continue
-        depth = 1
-        cursor = body_start.end()
-        body_end = len(sql)
-        for tok_match in _RE_BLOCK_TOKEN.finditer(sql, pos=cursor):
-            tok = tok_match.group(0).upper()
-            if tok == "BEGIN":
-                depth += 1
+    # S5 PR13：把 PACKAGE BODY 拆成多个嵌套 procedure scope，每个独立处理。
+    # 旧逻辑只看第一个 BEGIN 到匹配 END，会漏掉同一 PACKAGE BODY 里的第二个
+    # / 后续 PROCEDURE。
+    for outer_header in _RE_PROC_HEADER.finditer(sql):
+        outer_name = outer_header.group("name").strip()
+        outer_kind = " ".join(outer_header.group("kind").split()).upper()
+        if outer_kind == "PACKAGE BODY":
+            # PACKAGE BODY 自身没有 BEGIN/END 配对（IS/AS ... END pkg; 直接收尾）。
+            # 简化：范围从 header 到下一个 CREATE PROCEDURE/FUNCTION/PACKAGE 或文件末尾。
+            next_outer = _RE_PROC_HEADER.search(sql, outer_header.end())
+            pkg_body_end = next_outer.start() if next_outer else len(sql)
+            # 包级声明区：header 后到第一个嵌套 PROCEDURE/FUNCTION 之前
+            first_nested = _RE_NESTED_PROC_HEADER.search(sql, outer_header.end(), pkg_body_end)
+            pkg_decl_end = first_nested.start() if first_nested else pkg_body_end
+            pkg_declaration_region = sql[outer_header.end():pkg_decl_end]
+            # 找所有嵌套 PROCEDURE/FUNCTION
+            scopes = _find_nested_proc_scopes(sql, outer_header.end(), pkg_body_end, outer_name)
+            if not scopes:
+                # 没嵌套 → 包体本身有 BEGIN 段（rare），按 outer_name 处理
+                scopes = [(outer_name, outer_kind, outer_header.end(), pkg_body_end, pkg_declaration_region)]
+        else:
+            # 普通 PROCEDURE / FUNCTION / TRIGGER：单个 scope
+            body_start = _RE_BEGIN.search(sql, pos=outer_header.end())
+            if not body_start:
+                continue
+            _, body_end = _find_block_end(sql, body_start.end(), depth=1)
+            scopes = [(outer_name, outer_kind, outer_header.end(), body_end, sql[outer_header.end():body_start.start()])]
+            # 用 declaration_region = header 到 BEGIN 之间
+            scopes = [(outer_name, outer_kind, body_start.end(), body_end, sql[outer_header.end():body_start.start()])]
+
+        for name, kind, scope_body_start, scope_body_end, declaration_region in scopes:
+            # PR13：包级 cursor 声明也合并进每个嵌套 proc 的 declaration_region
+            if outer_kind == "PACKAGE BODY":
+                merged_decl = pkg_declaration_region + "\n" + declaration_region
             else:
-                # END 必须是 block-level（`END;` / `END name;`）才算；`END IF;`、
-                # 裸 `case ... end`、`END LOOP;` 是控制流 END，跳过。这是过去
-                # `t_etl_zqsz` 区域 INSERT 被误吞的根因。
-                if not _is_block_end(sql, tok_match.end()):
+                merged_decl = declaration_region
+            body = sql[scope_body_start:scope_body_end]
+            body_offset = scope_body_start
+            for index, item in enumerate(_iter_procedure_body_segments(body, merged_decl), start=1):
+                preserved = clean_procedure_segment(item.text)
+                if not preserved:
                     continue
-                depth -= 1
-                if depth == 0:
-                    body_end = tok_match.start()
-                    break
-        body_offset = body_start.end()
-        body = sql[body_offset:body_end]
-        # PR7：过程头到 BEGIN 之间是声明区（IS/AS ... BEGIN）。这里抽 cursor
-        # 声明给 LOOP scope 用 —— `FOR rec IN cur_name LOOP` 形式靠这个解析。
-        declaration_region = sql[header.end():body_start.start()]
-        for index, item in enumerate(_iter_procedure_body_segments(body, declaration_region), start=1):
-            preserved = clean_procedure_segment(item.text)
-            if not preserved:
-                continue
-            dedupe_key = " ".join(preserved.split())
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            abs_start = body_offset + item.dml_start
-            abs_end = body_offset + item.end
-            result.append(
-                {
-                    "procedure_name": name,
-                    "procedure_kind": kind,
-                    "segment_index": str(index),
-                    "sql": preserved,
-                    "confidence": "high",
-                    "line_start": _line_of(sql, abs_start),
-                    "line_end": _line_of(sql, abs_end),
-                    "preceding_comment": item.preceding_comment,
-                    "parse_status": "unknown",
-                    # S5：cursor FOR 段才有，普通段是空 list
-                    "cursor_sources": list(item.cursor_sources or []),
-                }
-            )
+                dedupe_key = " ".join(preserved.split())
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                abs_start = body_offset + item.dml_start
+                abs_end = body_offset + item.end
+                result.append(
+                    {
+                        "procedure_name": name,
+                        "procedure_kind": kind,
+                        "segment_index": str(index),
+                        "sql": preserved,
+                        "confidence": "high",
+                        "line_start": _line_of(sql, abs_start),
+                        "line_end": _line_of(sql, abs_end),
+                        "preceding_comment": item.preceding_comment,
+                        "parse_status": "unknown",
+                        # S5：cursor FOR 段才有，普通段是空 list
+                        "cursor_sources": list(item.cursor_sources or []),
+                    }
+                )
     return result
+
+
+# S5 PR13：辅助函数 ─────────────────────────────────────────────────────────
+
+
+def _find_block_end(sql: str, start_pos: int, depth: int = 0) -> tuple[int, int]:
+    """从 start_pos 开始找 PL/SQL 块的结束位置，返回 (matched_begin_pos, end_pos)。
+
+    depth=0 时，调用方在 IS/AS 之后；先要 skip 到第一个 BEGIN，然后配对 END。
+    depth=1 时，已经 skip 过 BEGIN 了，直接配对 END。
+    """
+    if depth == 0:
+        begin_match = _RE_BEGIN.search(sql, pos=start_pos)
+        if not begin_match:
+            return -1, len(sql)
+        matched_begin = begin_match.start()
+        cursor = begin_match.end()
+        depth = 1
+    else:
+        matched_begin = start_pos
+        cursor = start_pos
+    for tok_match in _RE_BLOCK_TOKEN.finditer(sql, pos=cursor):
+        tok = tok_match.group(0).upper()
+        if tok == "BEGIN":
+            depth += 1
+        else:
+            if not _is_block_end(sql, tok_match.end()):
+                continue
+            depth -= 1
+            if depth == 0:
+                return matched_begin, tok_match.start()
+    return matched_begin, len(sql)
+
+
+def _find_nested_proc_scopes(sql: str, start: int, end: int, parent_name: str) -> list[tuple[str, str, int, int, str]]:
+    """扫 PACKAGE BODY 范围内所有嵌套 PROCEDURE/FUNCTION，返回每个的
+    (qualified_name, kind, body_start_offset, body_end_offset, declaration_region)。
+
+    每个嵌套 proc 用其自己的 IS/AS → BEGIN 之间作 declaration_region，与 PACKAGE
+    BODY 包级声明区合并使用。
+    """
+    out: list[tuple[str, str, int, int, str]] = []
+    pos = start
+    while pos < end:
+        m = _RE_NESTED_PROC_HEADER.search(sql, pos, end)
+        if not m:
+            break
+        kind = m.group("kind").upper()
+        local_name = m.group("name").strip()
+        # 找 IS|AS 之后的 BEGIN（同时可能跨过参数列表 / RETURN type 子句）
+        body_start_match = _RE_BEGIN.search(sql, m.end(), end)
+        if not body_start_match:
+            pos = m.end()
+            continue
+        scope_decl_region = sql[m.end():body_start_match.start()]
+        body_begin, body_end = _find_block_end(sql, body_start_match.end(), depth=1)
+        if body_end > end:
+            body_end = end
+        qualified = f"{parent_name}.{local_name}" if parent_name and local_name not in parent_name else local_name
+        out.append((qualified, kind, body_start_match.end(), body_end, scope_decl_region))
+        pos = body_end + 1
+    return out
 
 
 def _line_of(text: str, offset: int) -> int:
