@@ -321,7 +321,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **通用未做**：
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **TypeScript 渐进迁移**（S3.B 已起头）：4/10 store 已迁 .ts（auth / notice / project / bootstrap，含 export 类型给 view 用）+ tsconfig + npm typecheck 走 vue-tsc + CI 集成。剩 6 个大 store（task / workflow / datasource / history / lineage / batch）+ composables + view（lang="ts"）+ Pydantic→TS schema codegen 留下个 sprint
+- **TypeScript 渐进迁移**（S3.B 已落 8/10 store）：auth / notice / project / bootstrap / datasource / batch / lineage / history 8 个 store 已迁 .ts（含 export 类型给 view 用）+ tsconfig + npm typecheck 走 vue-tsc + CI 集成。剩 task / workflow 2 个大 store（~660 行各）+ composables + view（lang="ts"）+ Pydantic→TS schema codegen 留下个 sprint
 - **i18n 详情页字符串抽取**：骨架已落（vue-i18n + sidebar + login + topbar），剩详情页 / 工作流编辑器 / 血缘 9-tab 等长尾字符串抽取（一片片来，避免单 PR 改太多）
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）

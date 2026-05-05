@@ -3,6 +3,10 @@
  *
  * S2.B：把 historyTaskOptions / filteredHistory / *HistoryCount 从 App.vue
  * 迁过来。这些 computed 依赖 bootstrapStore.state.history + state.tasks。
+ *
+ * S3.B：迁 .ts。HistoryRecord / HistoryTaskOption 公开类型给 view 用。
+ * tasks / history 在 bootstrap.state 里仍是 unknown[]，这里收口转 cast 到具体
+ * shape；等 task store 也迁 ts 后双向收口。
  */
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
@@ -10,40 +14,67 @@ import { apiGet, apiJson } from '../api'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
 
-function _toErrorMessage(error) {
-  return error?.message || String(error || '未知错误')
+
+export interface HistoryRecord {
+  run_id: string
+  task_id?: string
+  task_name?: string
+  type?: 'compare' | 'lineage' | string
+  started_at?: string
+  status?: string
+  summary?: Record<string, unknown>
+}
+
+export interface TaskMinimal {
+  id: string
+  name: string
+}
+
+export interface HistoryTaskOption {
+  id: string
+  name: string
+}
+
+
+function _toErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error ?? '未知错误')
 }
 
 
 export const useHistoryStore = defineStore('history', () => {
-  const selectedHistory = ref(new Set())
-  const selectedSheets = ref(new Set(['汇总对照']))
-  const selectedHistoryTaskId = ref('')
-  const historyActiveTab = ref('compare') // 'compare' | 'lineage'
+  const selectedHistory = ref<Set<string>>(new Set())
+  const selectedSheets = ref<Set<string>>(new Set(['汇总对照']))
+  const selectedHistoryTaskId = ref<string>('')
+  const historyActiveTab = ref<'compare' | 'lineage'>('compare')
 
-  function clearSelection() {
+  function clearSelection(): void {
     selectedHistory.value = new Set()
   }
 
-  function setHistoryTab(tab) {
+  function setHistoryTab(tab: 'compare' | 'lineage'): void {
     historyActiveTab.value = tab
     // 切 tab 时清掉旧选择避免误导出
     clearSelection()
   }
 
-  async function deleteHistory(runId) {
+  async function deleteHistory(runId: string): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     try {
       await apiJson(`/api/history/${runId}`, 'DELETE')
-      bootstrap.state.history = bootstrap.state.history.filter(h => h.run_id !== runId)
+      bootstrap.state.history = (bootstrap.state.history as HistoryRecord[]).filter(
+        (h) => h.run_id !== runId,
+      )
       selectedHistory.value.delete(runId)
     } catch (error) {
       notice.setNotice(`删除失败：${_toErrorMessage(error)}`)
     }
   }
 
-  async function exportHistory() {
+  async function exportHistory(): Promise<void> {
     const notice = useNoticeStore()
     if (!selectedHistory.value.size) {
       notice.setNotice('请先选择要导出的历史记录')
@@ -52,7 +83,7 @@ export const useHistoryStore = defineStore('history', () => {
     const form = new FormData()
     Array.from(selectedHistory.value).forEach((id) => form.append('run_ids', id))
     Array.from(selectedSheets.value).forEach((sheet) => form.append('sheet_names', sheet))
-    let response
+    let response: Response
     try {
       response = await fetch('/history/export', { method: 'POST', body: form })
     } catch (error) {
@@ -83,21 +114,26 @@ export const useHistoryStore = defineStore('history', () => {
   const _bootstrap = useBootstrapStore()
 
   /** 任务过滤 dropdown 的选项：list 里所有任务 + history 里残留的已删除任务名。 */
-  const historyTaskOptions = computed(() => {
-    const options = _bootstrap.state.tasks.map((task) => ({ id: task.id, name: task.name }))
+  const historyTaskOptions = computed<HistoryTaskOption[]>(() => {
+    const options: HistoryTaskOption[] = (_bootstrap.state.tasks as TaskMinimal[]).map(
+      (task) => ({ id: task.id, name: task.name }),
+    )
     const seen = new Set(options.map((item) => item.id))
-    _bootstrap.state.history.forEach((item) => {
+    ;(_bootstrap.state.history as HistoryRecord[]).forEach((item) => {
       if (item.task_id && !seen.has(item.task_id)) {
         seen.add(item.task_id)
-        options.push({ id: item.task_id, name: item.task_name || `已删除任务 ${item.task_id.slice(0, 8)}` })
+        options.push({
+          id: item.task_id,
+          name: item.task_name || `已删除任务 ${item.task_id.slice(0, 8)}`,
+        })
       }
     })
     return options
   })
 
   /** 当前 tab + 任务过滤后的 history 列表。 */
-  const filteredHistory = computed(() => {
-    let items = _bootstrap.state.history
+  const filteredHistory = computed<HistoryRecord[]>(() => {
+    let items = _bootstrap.state.history as HistoryRecord[]
     if (historyActiveTab.value === 'compare') {
       items = items.filter((item) => item.type !== 'lineage')
     } else if (historyActiveTab.value === 'lineage') {
@@ -107,17 +143,17 @@ export const useHistoryStore = defineStore('history', () => {
     return items.filter((item) => item.task_id === selectedHistoryTaskId.value)
   })
 
-  const compareHistoryCount = computed(
-    () => _bootstrap.state.history.filter((item) => item.type !== 'lineage').length,
+  const compareHistoryCount = computed<number>(
+    () => (_bootstrap.state.history as HistoryRecord[]).filter((item) => item.type !== 'lineage').length,
   )
-  const lineageHistoryCount = computed(
-    () => _bootstrap.state.history.filter((item) => item.type === 'lineage').length,
+  const lineageHistoryCount = computed<number>(
+    () => (_bootstrap.state.history as HistoryRecord[]).filter((item) => item.type === 'lineage').length,
   )
 
   /** 拉一遍 /api/history 写回 bootstrapStore.state；HistoryView 删除 / 跑完 task
    * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。 */
-  async function loadHistory() {
-    _bootstrap.state.history = await apiGet('/api/history')
+  async function loadHistory(): Promise<void> {
+    _bootstrap.state.history = await apiGet('/api/history') as HistoryRecord[]
     selectedHistory.value = new Set()
   }
 

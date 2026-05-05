@@ -9,6 +9,9 @@
  *
  * 数据源列表本身（state.datasources）由 useBootstrapStore 持有；handlers 写入
  * list 时直接操作 bootstrap store 的 state.datasources。
+ *
+ * S3.B：迁 .ts。Datasource 实例 shape 在 view 不强类型，先 unknown[] 处理；
+ * 等 task / workflow store 迁完后统一收口。
  */
 import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
@@ -17,12 +20,42 @@ import { useNoticeStore } from './notice'
 import { useBootstrapStore } from './bootstrap'
 import { useProjectStore } from './project'
 
-function _toErrorMessage(error) {
-  return error?.message || String(error || '未知错误')
+
+export interface DatasourceDraft {
+  name: string
+  db_type: string
+  host: string
+  port: number
+  database: string
+  username: string
+  password: string
+}
+
+export interface DatasourceEditDraft extends DatasourceDraft {
+  project_id: string
+}
+
+export interface Datasource {
+  id: string
+  name: string
+  db_type: string
+  host: string
+  port: number
+  database: string
+  username: string
+  project_id?: string
+}
+
+
+function _toErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error ?? '未知错误')
 }
 
 export const useDatasourceStore = defineStore('datasource', () => {
-  const datasourceDraft = reactive({
+  const datasourceDraft = reactive<DatasourceDraft>({
     name: '',
     db_type: 'mysql',
     host: '',
@@ -32,14 +65,14 @@ export const useDatasourceStore = defineStore('datasource', () => {
     password: '',
   })
 
-  const editingDatasourceId = ref('')
-  const editDraft = reactive({
+  const editingDatasourceId = ref<string>('')
+  const editDraft = reactive<DatasourceEditDraft>({
     name: '', db_type: '', host: '', port: 3306,
     database: '', username: '', password: '',
     project_id: '',
   })
 
-  function startEditDatasource(item) {
+  function startEditDatasource(item: Datasource): void {
     editingDatasourceId.value = item.id
     Object.assign(editDraft, {
       name: item.name,
@@ -53,11 +86,11 @@ export const useDatasourceStore = defineStore('datasource', () => {
     })
   }
 
-  function cancelEditDatasource() {
+  function cancelEditDatasource(): void {
     editingDatasourceId.value = ''
   }
 
-  function resetDatasourceDraft() {
+  function resetDatasourceDraft(): void {
     Object.assign(datasourceDraft, {
       name: '', host: '', database: '', username: '', password: '',
     })
@@ -67,14 +100,14 @@ export const useDatasourceStore = defineStore('datasource', () => {
   // 设计：直接操作 bootstrap store 的 state.datasources，不调 loadBootstrap
   // 跨 store 联动（避免 createDatasource 触发 loadBootstrap → 自动切任务的副作用）
 
-  async function createDatasource() {
+  async function createDatasource(): Promise<Datasource | undefined> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     const project = useProjectStore()
     // 当前选中项目 → 新建资源自动归属该项目（"全部"模式 = 不指定 project_id）
     const payload = { ...datasourceDraft, project_id: project.currentProjectId || '' }
     try {
-      const created = await apiJson('/api/datasources', 'POST', payload)
+      const created = await apiJson('/api/datasources', 'POST', payload) as Datasource
       bootstrap.state.datasources.push(created)
       resetDatasourceDraft()
       notice.setNotice('数据源已创建')
@@ -85,12 +118,12 @@ export const useDatasourceStore = defineStore('datasource', () => {
     }
   }
 
-  async function updateDatasource(id) {
+  async function updateDatasource(id: string): Promise<Datasource | undefined> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     try {
-      const updated = await apiJson(`/api/datasources/${id}`, 'PUT', { ...editDraft })
-      const idx = bootstrap.state.datasources.findIndex(d => d.id === id)
+      const updated = await apiJson(`/api/datasources/${id}`, 'PUT', { ...editDraft }) as Datasource
+      const idx = bootstrap.state.datasources.findIndex((d) => (d as Datasource).id === id)
       if (idx !== -1) bootstrap.state.datasources[idx] = updated
       editingDatasourceId.value = ''
       notice.setNotice('数据源已更新')
@@ -100,19 +133,19 @@ export const useDatasourceStore = defineStore('datasource', () => {
     }
   }
 
-  async function deleteDatasource(id) {
+  async function deleteDatasource(id: string): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
     try {
       await apiJson(`/api/datasources/${id}`, 'DELETE')
-      bootstrap.state.datasources = bootstrap.state.datasources.filter(d => d.id !== id)
+      bootstrap.state.datasources = bootstrap.state.datasources.filter((d) => (d as Datasource).id !== id)
       notice.setNotice('数据源已删除')
     } catch (error) {
       notice.setNotice(`删除失败：${_toErrorMessage(error)}`)
     }
   }
 
-  async function testDatasource(id) {
+  async function testDatasource(id: string): Promise<void> {
     const notice = useNoticeStore()
     try {
       await apiJson(`/api/datasources/${id}/test`, 'POST')

@@ -3,14 +3,41 @@
  *
  * 跟 batch store 拆开是因为 LineageWorkbenchView 同时支持单脚本 / 多脚本 /
  * ZIP 模式，每种模式有自己的本地状态（result + error + 上传文件）。
+ *
+ * S3.B：迁 .ts。result / ai_enrichment 跟 batch store 同样用 unknown 兜底，
+ * 等 lineage 模型在前端有统一类型再细化。
  */
 import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiForm, apiGet, apiJson } from '../api'
 
 
-function makeLineageDraft() {
-  return reactive({
+export interface LineageDraft {
+  sql: string
+  dialect: string
+  schemaDatasourceId: string
+  schemaName: string
+  schemaTableFilter: string
+  schemaOnlySqlTables: boolean
+  schemaDialect: string
+  schemaFiles: File[]
+  sqlFile: File | null
+  aiEnabled: boolean
+  result: Record<string, unknown> | null
+  error: string
+  isAnalyzing: boolean
+  aiPolling: boolean
+}
+
+export interface LineageAIStatus {
+  enabled?: boolean
+  provider?: string
+  [key: string]: unknown
+}
+
+
+function makeLineageDraft(): LineageDraft {
+  return reactive<LineageDraft>({
     sql: '',
     dialect: '',
     schemaDatasourceId: '',
@@ -28,19 +55,19 @@ function makeLineageDraft() {
   })
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 export const useLineageStore = defineStore('lineage', () => {
   const lineage = makeLineageDraft()
-  const lineageAIStatus = ref(null)
+  const lineageAIStatus = ref<LineageAIStatus | null>(null)
 
-  function resetResult() {
+  function resetResult(): void {
     lineage.result = null
     lineage.error = ''
   }
 
-  async function analyzeLineage() {
+  async function analyzeLineage(): Promise<void> {
     lineage.error = ''
     lineage.result = null
     lineage.isAnalyzing = true
@@ -57,7 +84,7 @@ export const useLineageStore = defineStore('lineage', () => {
         form.append('ai_enabled', lineage.aiEnabled ? 'true' : '')
         if (lineage.sqlFile) form.append('sql_file', lineage.sqlFile)
         lineage.schemaFiles.forEach((file) => form.append('schema_file', file))
-        lineage.result = await apiForm('/api/lineage/analyze-form', form)
+        lineage.result = await apiForm('/api/lineage/analyze-form', form) as Record<string, unknown>
       } else {
         lineage.result = await apiJson('/api/lineage/analyze', 'POST', {
           sql: lineage.sql,
@@ -69,41 +96,45 @@ export const useLineageStore = defineStore('lineage', () => {
           schema_dialect: lineage.schemaDialect,
           ai_enabled: lineage.aiEnabled ? 'true' : '',
           schema: '',
-        })
+        }) as Record<string, unknown>
       }
       pollLineageAIJob(lineage)
     } catch (error) {
-      lineage.error = error.message
+      lineage.error = error instanceof Error ? error.message : String(error)
     } finally {
       lineage.isAnalyzing = false
     }
   }
 
-  async function pollLineageAIJob(target) {
-    const jobId = target.result?.ai_enrichment?.job_id
-    if (!jobId || target.result?.ai_enrichment?.status !== 'pending') return
+  async function pollLineageAIJob(target: LineageDraft): Promise<void> {
+    const enrich = target.result?.ai_enrichment as { job_id?: string; status?: string } | undefined
+    const jobId = enrich?.job_id
+    if (!jobId || enrich?.status !== 'pending') return
     target.aiPolling = true
     try {
       for (let i = 0; i < 120; i += 1) {
         await sleep(2000)
-        const enrichment = await apiGet(`/api/lineage/ai/jobs/${jobId}`)
-        if (target.result?.ai_enrichment?.job_id !== jobId) return
-        target.result.ai_enrichment = enrichment
+        const enrichment = await apiGet(`/api/lineage/ai/jobs/${jobId}`) as { status?: string }
+        const cur = target.result?.ai_enrichment as { job_id?: string } | undefined
+        if (cur?.job_id !== jobId) return
+        if (target.result) target.result.ai_enrichment = enrichment
         if (enrichment.status !== 'pending') return
       }
-      if (target.result?.ai_enrichment?.job_id === jobId) {
+      const stillPending = target.result?.ai_enrichment as { job_id?: string } | undefined
+      if (stillPending?.job_id === jobId && target.result) {
         target.result.ai_enrichment = {
-          ...target.result.ai_enrichment,
+          ...(target.result.ai_enrichment as object),
           status: 'error',
           error: 'AI 辅助分析仍未完成，请稍后刷新或提高超时时间',
         }
       }
     } catch (error) {
-      if (target.result?.ai_enrichment?.job_id === jobId) {
+      const cur = target.result?.ai_enrichment as { job_id?: string } | undefined
+      if (cur?.job_id === jobId && target.result) {
         target.result.ai_enrichment = {
-          ...target.result.ai_enrichment,
+          ...(target.result.ai_enrichment as object),
           status: 'error',
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
         }
       }
     } finally {
@@ -111,8 +142,8 @@ export const useLineageStore = defineStore('lineage', () => {
     }
   }
 
-  async function loadLineageAIStatus() {
-    lineageAIStatus.value = await apiGet('/api/lineage/ai/status')
+  async function loadLineageAIStatus(): Promise<LineageAIStatus | null> {
+    lineageAIStatus.value = await apiGet('/api/lineage/ai/status') as LineageAIStatus
     return lineageAIStatus.value
   }
 
