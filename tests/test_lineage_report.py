@@ -142,9 +142,40 @@ def test_batch_report_has_same_top_level_keys():
         "scope", "summary", "inputs", "outputs", "process_steps",
         "table_edges", "column_edges", "semantic_lineage",
         "impact_analysis", "column_impact_analysis", "risks", "files", "exports",
+        "variables",  # PR18
     }
     assert set(report.keys()) == expected_keys
     assert report["scope"] == "batch"
+
+
+def test_batch_report_aggregates_variables_with_file_name():
+    """PR18：批量报告应聚合各脚本的 PL/SQL 变量声明，每条带 file_name 标记。"""
+    from app.lineage.batch_analyzer import analyze_lineage_batch, ScriptInput
+    scripts = [
+        ScriptInput("pkg_a.sql", """
+        CREATE OR REPLACE PACKAGE BODY pkg_a AS
+          g_app_id CONSTANT VARCHAR2(32) := 'JY';
+          PROCEDURE p IS BEGIN INSERT INTO dwd.t (a) VALUES (g_app_id); END;
+        END;
+        """),
+        ScriptInput("script_b.sql", """
+        DECLARE
+          v_cnt NUMBER := 100;
+        BEGIN
+          INSERT INTO dwd.t2 (a) VALUES (v_cnt);
+        END;
+        """),
+    ]
+    result = analyze_lineage_batch(scripts, dialect="oracle")
+    report = result["report"]
+    variables = report.get("variables", [])
+    var_names = {v.get("name") for v in variables}
+    assert "g_app_id" in var_names, f"应聚合 pkg_a 的 g_app_id: {variables}"
+    assert "v_cnt" in var_names, f"应聚合 script_b 的 v_cnt: {variables}"
+    # 每条变量带 file_name 标记
+    for v in variables:
+        assert v.get("file_name"), f"变量缺 file_name: {v}"
+    assert report["summary"]["variable_count"] == len(variables)
 
 
 def test_batch_report_aggregates_inputs_outputs_across_files():

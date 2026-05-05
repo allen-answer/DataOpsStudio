@@ -50,7 +50,9 @@ function onCardClick(card) {
 }
 
 // S5 PR14：PL/SQL 变量面板逻辑（PACKAGE BODY 常量/变量 + DECLARE 块 + 模板变量）
+// PR18：批量场景每条变量带 file_name —— 多一个来源脚本列
 const variables = computed(() => props.report.variables || [])
+const hasFileName = computed(() => variables.value.some(v => v.file_name))
 const VAR_KIND_LABEL = {
   package_constant: '包常量',
   package_variable: '包变量',
@@ -106,6 +108,7 @@ function varKindTone(kind) {
               <th class="px-3 py-2 font-bold">变量名</th>
               <th class="px-3 py-2 font-bold">类型</th>
               <th class="px-3 py-2 font-bold">赋值</th>
+              <th v-if="hasFileName" class="px-3 py-2 font-bold">来源脚本</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100">
@@ -113,6 +116,7 @@ function varKindTone(kind) {
               <td class="sql-font px-3 py-2 font-medium text-slate-800">{{ v.name }}</td>
               <td class="px-3 py-2"><span class="pill" :class="varKindTone(v.kind)">{{ varKindLabel(v.kind) }}</span></td>
               <td class="sql-font px-3 py-2 text-xs text-slate-500">{{ v.assigned_value || '—' }}</td>
+              <td v-if="hasFileName" class="sql-font px-3 py-2 text-xs text-slate-500">{{ v.file_name || '—' }}</td>
             </tr>
           </tbody>
         </table>

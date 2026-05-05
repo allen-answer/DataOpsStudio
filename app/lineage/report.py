@@ -214,6 +214,8 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
         for f in files_in
     ]
 
+    # PR18：聚合多脚本的 PL/SQL 变量声明
+    variables = result.get("variables", []) or []
     return {
         "scope": "batch",
         "summary": {
@@ -226,6 +228,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
             "file_count": summary_in.get("files", len(files_in)),
             "success_count": summary_in.get("success_files", 0),
             "dynamic_sql_count": 0,
+            "variable_count": len(variables),
         },
         "inputs": inputs,
         "outputs": outputs,
@@ -237,6 +240,7 @@ def _build_batch_report(result: dict[str, Any]) -> dict[str, Any]:
         "column_impact_analysis": _column_impact_from_edges(column_edges),
         "risks": risks,
         "files": files_out,
+        "variables": variables,
         "exports": None,
     }
 

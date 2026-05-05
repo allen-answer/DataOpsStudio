@@ -62,6 +62,8 @@ def analyze_lineage_batch(
             if item.get("is_temp")
         )
         variables = _unique_strings(item["name"] for item in result.get("variables", []))
+        # PR18：保留完整变量字典（带 kind / assigned_value），让 report 能聚合显示
+        variable_decls = list(result.get("variables", []) or [])
         mappings = result.get("insert_mappings", [])
         file_warnings.extend(_lineage_warnings(result))
 
@@ -89,6 +91,7 @@ def analyze_lineage_batch(
                 "write_tables": write_tables,
                 "temp_tables": temp_tables,
                 "variables": variables,
+                "variable_decls": variable_decls,
                 "status": "成功",
                 "error": "",
                 "warnings": file_warnings,
@@ -161,6 +164,9 @@ def analyze_lineage_batch(
     aggregated_dynamic_sql: list[dict[str, Any]] = []
     aggregated_tables: list[dict[str, Any]] = []
     aggregated_columns: list[dict[str, Any]] = []
+    # PR18：聚合所有文件的变量声明，按 (name, kind) 去重
+    aggregated_variables: list[dict[str, Any]] = []
+    seen_var_keys: set[tuple[str, str]] = set()
     for f in files:
         if f.get("status") != "成功":
             continue
@@ -173,6 +179,12 @@ def analyze_lineage_batch(
         for c in f.get("columns") or []:
             if isinstance(c, dict):
                 aggregated_columns.append(c)
+        for v in f.get("variable_decls") or []:
+            key = ((v.get("name") or "").lower(), v.get("kind") or "")
+            if key in seen_var_keys or not key[0]:
+                continue
+            seen_var_keys.add(key)
+            aggregated_variables.append({**v, "file_name": f.get("file_name", "")})
 
     base_result = {
         "file_count": len(scripts),
@@ -189,6 +201,7 @@ def analyze_lineage_batch(
         "dynamic_sql_segments": aggregated_dynamic_sql,
         "tables": aggregated_tables,
         "columns": aggregated_columns,
+        "variables": aggregated_variables,  # PR18
         "insert_mappings": field_mappings,  # 字段映射 == insert_mappings 在 batch 里
         "summary": {
             "files": len(scripts),
