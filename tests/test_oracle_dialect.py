@@ -301,6 +301,94 @@ def test_cursor_source_tracking_nested_loops_inner_takes_precedence():
         "嵌套时取最内层 scope，外层 source 不应挂到内层 target"
 
 
+# ─── S5 PR3：PACKAGE BODY / DECLARE 的常量与变量声明应进入 result.variables ─────
+
+
+def _var_by(variables, name):
+    matches = [v for v in variables if v.get("name", "").lower() == name.lower()]
+    return matches[0] if matches else None
+
+
+def test_package_body_constants_extracted():
+    """`CONSTANT TYPE := value` 应被识别为 package_constant，带 assigned_value。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg_etl AS
+      g_app_id CONSTANT VARCHAR2(32) := 'JY';
+      g_threshold CONSTANT NUMBER := 100;
+      PROCEDURE run IS BEGIN INSERT INTO dwd.t (a) VALUES (g_app_id); END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    variables = result.get("variables", [])
+    g_app_id = _var_by(variables, "g_app_id")
+    assert g_app_id is not None, f"应识别 g_app_id package constant: {variables}"
+    assert g_app_id["kind"] == "package_constant"
+    assert "JY" in g_app_id["assigned_value"]
+
+    g_threshold = _var_by(variables, "g_threshold")
+    assert g_threshold is not None
+    assert g_threshold["assigned_value"] == "100"
+
+
+def test_package_body_non_constant_variables_extracted():
+    """非 CONSTANT 的 package 顶层变量也应被识别（kind=package_variable）。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg_etl AS
+      g_counter NUMBER := 0;
+      PROCEDURE run IS BEGIN INSERT INTO dwd.t (cnt) VALUES (g_counter); END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    g_counter = _var_by(result.get("variables", []), "g_counter")
+    assert g_counter is not None, f"应识别 g_counter: {result.get('variables')}"
+    assert g_counter["kind"] == "package_variable"
+    assert g_counter["assigned_value"] == "0"
+
+
+def test_declare_block_variables_extracted():
+    """匿名块 `DECLARE ... BEGIN ... END;` 里的声明也应被抽出。"""
+    sql = """
+    DECLARE
+      v_cnt NUMBER := 100;
+      v_label CONSTANT VARCHAR2(50) := 'demo';
+    BEGIN
+      INSERT INTO dwd.t (cnt, label) VALUES (v_cnt, v_label);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    variables = result.get("variables", [])
+    v_cnt = _var_by(variables, "v_cnt")
+    assert v_cnt is not None
+    assert v_cnt["kind"] == "declare_variable"
+    assert v_cnt["assigned_value"] == "100"
+
+    v_label = _var_by(variables, "v_label")
+    assert v_label is not None
+    assert v_label["kind"] == "declare_constant"
+    assert "demo" in v_label["assigned_value"]
+
+
+def test_package_var_extraction_skips_proc_body_locals():
+    """PROCEDURE 体内的局部变量不属于 package 顶层 —— 不应被抽进 result.variables
+    （会跟模板变量串味）。BEGIN 后的变量靠 `assigned_value()` 兜底机制处理。"""
+    sql = """
+    CREATE OR REPLACE PACKAGE BODY pkg_etl AS
+      g_top CONSTANT NUMBER := 1;
+      PROCEDURE run IS
+        v_local_only NUMBER := 99;
+      BEGIN
+        INSERT INTO dwd.t (a, b) VALUES (g_top, v_local_only);
+      END;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    variables = result.get("variables", [])
+    assert _var_by(variables, "g_top") is not None, "package 顶层常量应被识别"
+    # PROCEDURE 内的局部变量不应该进入 package_variables 列表
+    assert _var_by(variables, "v_local_only") is None, \
+        f"PROCEDURE 体内局部变量不应被当 package var: {variables}"
+
+
 def test_cursor_source_tracking_segment_carries_cursor_sources():
     """procedure_segments 输出的每段应该有 cursor_sources 字段，cursor FOR 段非空，
     其他段为 []。"""
