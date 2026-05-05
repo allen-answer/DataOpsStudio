@@ -53,16 +53,16 @@ function addSensor(type = 'sql') {
     <!-- 运行参数：参数驱动作业流的核心信息 -->
     <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
       <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-        <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">运行参数</p>
-        <span class="text-[10.5px] text-slate-500">{{ parameters.length }} 个</span>
+        <p class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.settings.runtimeParams') }}</p>
+        <span class="text-[10.5px] text-slate-500">{{ parameters.length }}</span>
       </div>
       <ul class="divide-y divide-slate-100">
         <li v-for="param in parameters" :key="param.name" class="px-3 py-2.5">
           <div class="flex items-center gap-1.5">
             <span class="rounded px-1 py-0.5 text-[9.5px] font-bold uppercase ring-1 ring-inset" :class="parameterTypeMeta[param.type].accent">{{ parameterTypeMeta[param.type].glyph }} {{ parameterTypeMeta[param.type].label }}</span>
             <span class="font-mono text-[12px] font-semibold text-slate-800">{{ param.name }}</span>
-            <span v-if="param.required" class="ml-auto text-[10px] font-semibold text-rose-600">必填</span>
-            <span v-else class="ml-auto text-[10px] text-slate-400">可选</span>
+            <span v-if="param.required" class="ml-auto text-[10px] font-semibold text-rose-600">{{ $t('workflowEditor.common.required') }}</span>
+            <span v-else class="ml-auto text-[10px] text-slate-400">{{ $t('workflowEditor.common.optional') }}</span>
           </div>
           <p class="mt-0.5 text-[11px] text-slate-500">{{ param.description }}</p>
           <div class="mt-1 flex items-baseline gap-1.5">
@@ -84,7 +84,7 @@ function addSensor(type = 'sql') {
 
     <!-- 元数据：可编辑，落到 Workflow 模型；保存后即生效 -->
     <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-      <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">元数据</p>
+      <p class="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.settings.metadata') }}</p>
       <div class="space-y-2">
         <label class="block">
           <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">描述</span>
@@ -93,23 +93,23 @@ function addSensor(type = 'sql') {
         </label>
         <div class="grid grid-cols-2 gap-2">
           <label class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">项目</span>
+            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.project') }}</span>
             <input v-model="workflowDraft.project" placeholder="如 dw / risk / growth"
                    class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
           </label>
           <label class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">状态</span>
+            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.status') }}</span>
             <select v-model="workflowDraft.status" class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
-              <option value="draft">草稿</option>
-              <option value="active">已上线</option>
-              <option value="paused">暂停</option>
-              <option value="archived">归档</option>
+              <option value="draft">{{ $t('workflowEditor.settings.statusDraft') }}</option>
+              <option value="active">{{ $t('workflowEditor.settings.statusActive') }}</option>
+              <option value="paused">{{ $t('workflowEditor.settings.statusPaused') }}</option>
+              <option value="archived">{{ $t('workflowEditor.settings.statusArchived') }}</option>
             </select>
           </label>
         </div>
         <div class="grid grid-cols-2 gap-2">
           <label class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">负责人</span>
+            <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.owner') }}</span>
             <input v-model="workflowDraft.owner" placeholder="如 alice@team"
                    class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
           </label>
@@ -120,15 +120,15 @@ function addSensor(type = 'sql') {
           </label>
         </div>
         <label class="block">
-          <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">关联项目空间</span>
+          <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.relatedProject') }}</span>
           <select v-model="workflowDraft.project_id"
                   class="block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700">
-            <option value="">全局（无项目）</option>
+            <option value="">{{ $t('workflowEditor.settings.globalProject') }}</option>
             <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
         </label>
         <label class="block">
-          <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">标签（逗号分隔）</span>
+          <span class="mb-0.5 block text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.tags') }}</span>
           <input :value="(workflowDraft.tags || []).join(', ')"
                  @input="workflowDraft.tags = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
                  placeholder="orders, daily, prod"
@@ -138,7 +138,7 @@ function addSensor(type = 'sql') {
         <!-- Sensor 配置 -->
         <div class="rounded-lg border border-slate-200 bg-slate-50/60 p-2">
           <div class="mb-2 flex items-center justify-between">
-            <span class="text-[10px] font-semibold text-slate-500">Sensor 触发器</span>
+            <span class="text-[10px] font-semibold text-slate-500">{{ $t('workflowEditor.settings.sensors') }}</span>
             <div class="flex gap-1">
               <button class="text-[10.5px] font-semibold text-blue-600 hover:underline" @click="addSensor('sql')">+ SQL</button>
               <button class="text-[10.5px] font-semibold text-blue-600 hover:underline" @click="addSensor('http')">+ HTTP</button>

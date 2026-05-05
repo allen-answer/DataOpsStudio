@@ -71,7 +71,7 @@ const toggleSheet = (idx) => {
   <div class="space-y-3">
     <div class="rounded-lg border border-slate-200 bg-white">
       <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-        <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Sheet 列表（{{ (node.sheets || []).length }}）</span>
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.excel.sectionSheets') }}（{{ (node.sheets || []).length }}）</span>
         <div class="flex items-center gap-1">
           <select class="h-6 rounded border border-slate-200 bg-white px-1.5 text-[10.5px] text-slate-700"
                   @change="addExportSheet(node, $event.target.value); $event.target.value = ''">
@@ -92,7 +92,7 @@ const toggleSheet = (idx) => {
                     @click="toggleSheet(sIdx)">
               {{ expandedSheets[sIdx] ? '▾' : '▸' }}
             </button>
-            <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="Sheet 名">
+            <input v-model="sheet.sheet_name" class="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" :placeholder="$t('workflowEditor.excel.sheetName')">
             <span class="font-mono text-[10.5px] text-slate-500">
               <span v-if="sheet.source_type === 'history_run'" class="rounded bg-purple-50 px-1 py-0.5 text-purple-700 ring-1 ring-inset ring-purple-200">历史</span>
               {{ sheet.node_id || '默认' }}<span class="text-slate-300">.</span>{{ sheet.dataset || '*' }}
@@ -106,19 +106,19 @@ const toggleSheet = (idx) => {
           <div v-if="expandedSheets[sIdx]" class="mt-2 rounded-md bg-slate-50/60 p-2.5 space-y-2">
             <!-- 数据源类型切换：节点输出 vs 历史运行 -->
             <div class="flex items-center gap-2">
-              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据源</span>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.datasource') }}</span>
               <div class="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-[10.5px]">
                 <button type="button"
                         class="rounded px-2 py-0.5 transition"
                         :class="sheet.source_type !== 'history_run' ? 'bg-blue-600 text-white' : 'text-slate-600'"
                         @click="sheet.source_type = 'node_output'; sheet.run_id = ''">
-                  节点输出
+                  {{ $t('workflowEditor.excel.sourceNodeOutput') }}
                 </button>
                 <button type="button"
                         class="rounded px-2 py-0.5 transition"
                         :class="sheet.source_type === 'history_run' ? 'bg-purple-600 text-white' : 'text-slate-600'"
                         @click="sheet.source_type = 'history_run'">
-                  历史运行
+                  {{ $t('workflowEditor.excel.sourceHistoryRun') }}
                 </button>
               </div>
             </div>
@@ -126,7 +126,7 @@ const toggleSheet = (idx) => {
             <!-- node_output 模式 -->
             <div v-if="sheet.source_type !== 'history_run'" class="grid grid-cols-1 gap-2 lg:grid-cols-3">
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">节点</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.node') }}</span>
                 <select v-model="sheet.node_id"
                         @change="ensureSheetDependency(node, sheet)"
                         class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs">
@@ -137,7 +137,7 @@ const toggleSheet = (idx) => {
                 </select>
               </label>
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.dataset') }}</span>
                 <input v-model="sheet.dataset"
                        :list="`dataset-presets-${node.id}-${sIdx}`"
                        class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs"
@@ -147,7 +147,7 @@ const toggleSheet = (idx) => {
                 </datalist>
               </label>
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.maxRows') }}</span>
                 <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
               </label>
             </div>
@@ -167,15 +167,15 @@ const toggleSheet = (idx) => {
                 </select>
               </label>
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">该 run 的节点 id</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.excel.runNodeId') }}</span>
                 <input v-model="sheet.node_id" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="例如 n1">
               </label>
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据集（dataset）</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.dataset') }}</span>
                 <input v-model="sheet.dataset" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="summary / diff / ...">
               </label>
               <label>
-                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">最大行数</span>
+                <span class="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.maxRows') }}</span>
                 <input v-model="sheet.max_rows" type="number" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
               </label>
             </div>
