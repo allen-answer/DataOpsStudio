@@ -169,7 +169,7 @@ const dmlClass = (d) => ({
     <section v-if="parseErrorEdges.length">
       <div class="mb-2 flex items-center gap-2">
         <AlertCircle class="h-4 w-4 text-rose-600" />
-        <h4 class="text-sm font-bold text-slate-800">解析失败兜底</h4>
+        <h4 class="text-sm font-bold text-slate-800">{{ $t('lineagePanel.aiInferred.parseFallback') }}</h4>
         <span class="pill bg-rose-100 text-rose-700 text-[10px]">{{ parseErrorEdges.length }} 条</span>
         <span class="muted text-[11px]">sqlglot 直接抛错的片段，AI 从 0 推断</span>
       </div>
@@ -199,14 +199,14 @@ const dmlClass = (d) => ({
 
           <div v-if="edge.source_columns?.length || edge.target_columns?.length" class="grid grid-cols-1 gap-2 md:grid-cols-2">
             <div v-if="edge.source_columns?.length">
-              <p class="muted mb-1 text-[10px] font-bold uppercase">源字段</p>
+              <p class="muted mb-1 text-[10px] font-bold uppercase">{{ $t('lineagePanel.aiInferred.sourceColumn') }}</p>
               <ul class="flex flex-wrap gap-1">
                 <li v-for="col in edge.source_columns" :key="col"
                     class="sql-font rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">{{ col }}</li>
               </ul>
             </div>
             <div v-if="edge.target_columns?.length">
-              <p class="muted mb-1 text-[10px] font-bold uppercase">目标字段</p>
+              <p class="muted mb-1 text-[10px] font-bold uppercase">{{ $t('lineagePanel.aiInferred.targetColumn') }}</p>
               <ul class="flex flex-wrap gap-1">
                 <li v-for="col in edge.target_columns" :key="col"
                     class="sql-font rounded bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700">{{ col }}</li>
@@ -231,7 +231,7 @@ const dmlClass = (d) => ({
     <section v-if="columnHints.length">
       <div class="mb-2 flex items-center gap-2">
         <Columns class="h-4 w-4 text-blue-600" />
-        <h4 class="text-sm font-bold text-slate-800">字段归属推荐</h4>
+        <h4 class="text-sm font-bold text-slate-800">{{ $t('lineagePanel.aiInferred.columnAttribution') }}</h4>
         <span class="pill bg-blue-100 text-blue-700 text-[10px]">{{ columnHints.length }} 条</span>
         <span class="muted text-[11px]">多表 unqualified column 缺 schema → AI 推荐归属</span>
       </div>
@@ -248,7 +248,7 @@ const dmlClass = (d) => ({
               {{ hint.column }}
             </span>
             <ChevronRight class="h-3.5 w-3.5 text-blue-400" />
-            <span class="muted text-[11px]">归属</span>
+            <span class="muted text-[11px]">{{ $t('lineagePanel.aiInferred.attribution') }}</span>
             <span class="sql-font rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-800 ring-1 ring-blue-200">
               {{ hint.suggested_table }}
             </span>
@@ -297,14 +297,14 @@ const dmlClass = (d) => ({
 
           <div v-if="edge.source_columns?.length || edge.target_columns?.length" class="grid grid-cols-1 gap-2 md:grid-cols-2">
             <div v-if="edge.source_columns?.length">
-              <p class="muted mb-1 text-[10px] font-bold uppercase">源字段</p>
+              <p class="muted mb-1 text-[10px] font-bold uppercase">{{ $t('lineagePanel.aiInferred.sourceColumn') }}</p>
               <ul class="flex flex-wrap gap-1">
                 <li v-for="col in edge.source_columns" :key="col"
                     class="sql-font rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">{{ col }}</li>
               </ul>
             </div>
             <div v-if="edge.target_columns?.length">
-              <p class="muted mb-1 text-[10px] font-bold uppercase">目标字段</p>
+              <p class="muted mb-1 text-[10px] font-bold uppercase">{{ $t('lineagePanel.aiInferred.targetColumn') }}</p>
               <ul class="flex flex-wrap gap-1">
                 <li v-for="col in edge.target_columns" :key="col"
                     class="sql-font rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700">{{ col }}</li>

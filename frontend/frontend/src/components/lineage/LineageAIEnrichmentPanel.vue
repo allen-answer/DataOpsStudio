@@ -75,7 +75,7 @@ const disabledMessage = computed(() =>
       </div>
 
       <div v-if="enrichment.summary" class="rounded-xl border border-violet-100 bg-violet-50/60 p-4">
-        <p class="text-[11px] font-bold uppercase tracking-wider text-violet-700">摘要</p>
+        <p class="text-[11px] font-bold uppercase tracking-wider text-violet-700">{{ $t('lineagePanel.aiEnrichment.summary') }}</p>
         <p class="mt-2 text-sm leading-6 text-slate-700">{{ enrichment.summary }}</p>
       </div>
 
@@ -86,7 +86,7 @@ const disabledMessage = computed(() =>
             <li v-for="(item, i) in list(enrichment.suggestions)" :key="i" class="rounded-lg bg-slate-50 px-3 py-2">
               {{ item.message || item.text || item.summary || JSON.stringify(item) }}
             </li>
-            <li v-if="!list(enrichment.suggestions).length" class="text-xs text-slate-400">暂无建议</li>
+            <li v-if="!list(enrichment.suggestions).length" class="text-xs text-slate-400">{{ $t('lineagePanel.aiEnrichment.noSuggestions') }}</li>
           </ul>
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-3">
@@ -95,7 +95,7 @@ const disabledMessage = computed(() =>
             <li v-for="(item, i) in list(enrichment.risks)" :key="i" class="rounded-lg bg-amber-50 px-3 py-2 text-amber-900">
               {{ item.message || item.text || item.summary || JSON.stringify(item) }}
             </li>
-            <li v-if="!list(enrichment.risks).length" class="text-xs text-slate-400">暂无风险补充</li>
+            <li v-if="!list(enrichment.risks).length" class="text-xs text-slate-400">{{ $t('lineagePanel.aiEnrichment.noRisks') }}</li>
           </ul>
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-3">
@@ -104,7 +104,7 @@ const disabledMessage = computed(() =>
             <li v-for="(item, i) in list(enrichment.column_hints)" :key="i" class="rounded-lg bg-blue-50 px-3 py-2 text-blue-900">
               {{ item.message || item.text || item.column || JSON.stringify(item) }}
             </li>
-            <li v-if="!list(enrichment.column_hints).length" class="text-xs text-slate-400">暂无字段提示</li>
+            <li v-if="!list(enrichment.column_hints).length" class="text-xs text-slate-400">{{ $t('lineagePanel.aiEnrichment.noColumnHints') }}</li>
           </ul>
         </div>
       </div>

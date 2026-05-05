@@ -133,7 +133,7 @@ watch(
   <section class="card space-y-3">
     <div class="flex items-center justify-between">
       <div>
-        <h3 class="text-base font-semibold text-slate-800">处理过程</h3>
+        <h3 class="text-base font-semibold text-slate-800">{{ $t('lineagePanel.steps.title') }}</h3>
         <p class="muted text-xs">{{ steps.length }} 段 DML（按存储过程 / 文件折叠）</p>
       </div>
     </div>
@@ -149,19 +149,19 @@ watch(
     >
       <template #filters>
         <select v-if="fileOptions.length > 1" v-model="fileFilter" class="filter-select" :title="fileFilter === 'all' ? '' : fileFilter">
-          <option value="all">全部脚本</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllScripts') }}</option>
           <option v-for="f in fileOptions" :key="f" :value="f">{{ basename(f) }}</option>
         </select>
         <select v-if="procOptions.length > 1" v-model="procFilter" class="filter-select">
-          <option value="all">全部存储过程</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllProcs') }}</option>
           <option v-for="p in procOptions" :key="p" :value="p">{{ p }}</option>
         </select>
         <select v-if="dmlOptions.length > 1" v-model="dmlFilter" class="filter-select">
-          <option value="all">全部 DML</option>
+          <option value="all">{{ $t('common.all') }} DML</option>
           <option v-for="d in dmlOptions" :key="d" :value="d">{{ d }}</option>
         </select>
         <select v-if="parseOptions.length > 1" v-model="parseFilter" class="filter-select">
-          <option value="all">全部解析状态</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllStatus') }}</option>
           <option v-for="p in parseOptions" :key="p" :value="p">{{ PARSE_LABEL[p] || p }}</option>
         </select>
       </template>
@@ -169,12 +169,12 @@ watch(
 
     <div v-if="!steps.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
       <Workflow class="mx-auto mb-2 h-8 w-8 text-slate-300" />
-      <p class="text-sm">没有抽取到处理步骤</p>
+      <p class="text-sm">{{ $t('lineagePanel.steps.noSteps') }}</p>
       <p class="muted text-xs">单个 INSERT/UPDATE 语句不计入；包/过程内的 DML 才会聚合</p>
     </div>
 
     <div v-else-if="!filteredSteps.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
-      <p class="text-sm">没有命中的处理步骤</p>
+      <p class="text-sm">{{ $t('lineagePanel.steps.noMatch') }}</p>
       <p class="muted text-xs">调整筛选条件，或点击"清空筛选"恢复</p>
     </div>
 

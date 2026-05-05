@@ -129,11 +129,11 @@ watch(
           <option v-for="s in schemaOptions" :key="s" :value="s">{{ s }}</option>
         </select>
         <select v-if="roleOptions.length" v-model="roleFilter" class="filter-select">
-          <option value="all">全部角色</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllRoles') }}</option>
           <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
         </select>
         <select v-if="groupOptions.length" v-model="groupFilter" class="filter-select">
-          <option value="all">全部业务分组</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllGroups') }}</option>
           <option v-for="g in groupOptions" :key="g" :value="g">{{ g }}</option>
         </select>
       </template>
@@ -145,7 +145,7 @@ watch(
     </div>
 
     <div v-else-if="!filtered.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
-      <p class="text-sm">没有命中的资产</p>
+      <p class="text-sm">{{ $t('lineagePanel.asset.noMatch') }}</p>
       <p class="muted text-xs">调整搜索词或筛选条件，或点击"清空筛选"恢复</p>
     </div>
 
@@ -153,12 +153,12 @@ watch(
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 bg-slate-50">
-            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">表名</th>
+            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">{{ $t('lineagePanel.common.tableName') }}</th>
             <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">Schema</th>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">角色</th>
-            <th v-if="isOutput" class="px-3 py-2 text-left text-xs font-semibold text-slate-500">写入模式</th>
-            <th v-if="isOutput" class="px-3 py-2 text-left text-xs font-semibold text-slate-500">业务标题</th>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">业务分组</th>
+            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">{{ $t('lineagePanel.common.role') }}</th>
+            <th v-if="isOutput" class="px-3 py-2 text-left text-xs font-semibold text-slate-500">{{ $t('lineagePanel.common.writeMode') }}</th>
+            <th v-if="isOutput" class="px-3 py-2 text-left text-xs font-semibold text-slate-500">{{ $t('lineagePanel.common.title') }}</th>
+            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">{{ $t('lineagePanel.common.group') }}</th>
           </tr>
         </thead>
         <tbody>

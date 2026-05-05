@@ -176,6 +176,68 @@ export default {
     tabAI: 'AI 辅助',
     tabAIInferred: 'AI 兜底推断',
   },
+  lineagePanel: {
+    // 跨 panel 共用 filter / 表头 label
+    common: {
+      tableName: '表名',
+      role: '角色',
+      group: '业务分组',
+      title: '业务标题',
+      writeMode: '写入模式',
+      lineNo: '行号',
+      action: '操作',
+      script: '脚本',
+      proc: '存储过程',
+      parseStatus: '解析状态',
+      depth: '深度',
+      sourceTable: '源表',
+      filterAllRoles: '全部角色',
+      filterAllGroups: '全部业务分组',
+      filterAllSources: '全部源表',
+      filterAllDepths: '全部深度',
+      filterAllLevels: '全部等级',
+      filterAllTypes: '全部类型',
+      filterAllScripts: '全部脚本',
+      filterAllProcs: '全部存储过程',
+      filterAllStatus: '全部解析状态',
+      noMatch: '没有命中',
+    },
+    summary: {
+      title: '总览',
+      elapsed: '耗时',
+    },
+    risks: {
+      title: '风险与告警',
+      noRisks: '未检测到风险',
+      noMatch: '没有命中的风险',
+    },
+    impact: {
+      title: '影响分析',
+      noChain: '无可分析的下游链路',
+      noMatch: '没有命中的影响链路',
+    },
+    steps: {
+      title: '处理过程',
+      noSteps: '没有抽取到处理步骤',
+      noMatch: '没有命中的处理步骤',
+    },
+    asset: {
+      noMatch: '没有命中的资产',
+    },
+    aiEnrichment: {
+      summary: '摘要',
+      noSuggestions: '暂无建议',
+      noRisks: '暂无风险补充',
+      noColumnHints: '暂无字段提示',
+    },
+    aiInferred: {
+      parseFallback: '解析失败兜底',
+      columnAttribution: '字段归属推荐',
+      sourceColumn: '源字段',
+      targetColumn: '目标字段',
+      attribution: '归属',
+    },
+  },
   workflowEditor: {
     common: {
       type: '类型',

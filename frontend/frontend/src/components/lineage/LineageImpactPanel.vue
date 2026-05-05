@@ -141,7 +141,7 @@ const hasEdges = computed(() => (props.edges || []).length > 0)
   <section class="card space-y-3">
     <div class="flex items-center justify-between">
       <div>
-        <h3 class="text-base font-semibold text-slate-800">影响分析</h3>
+        <h3 class="text-base font-semibold text-slate-800">{{ $t('lineagePanel.impact.title') }}</h3>
         <p class="muted text-xs">每张源表的传递闭包下游（任意一张源表改了，会波及哪些下游）</p>
       </div>
     </div>
@@ -157,13 +157,13 @@ const hasEdges = computed(() => (props.edges || []).length > 0)
     >
       <template #filters>
         <select v-model="minDownstream" class="filter-select">
-          <option value="all">全部源表</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllSources') }}</option>
           <option value="2">下游 ≥ 2</option>
           <option value="5">下游 ≥ 5</option>
           <option value="10">下游 ≥ 10</option>
         </select>
         <select v-if="hasEdges" v-model="maxDepth" class="filter-select" title="只显示 N 跳之内的下游">
-          <option value="all">全部深度</option>
+          <option value="all">{{ $t('lineagePanel.common.filterAllDepths') }}</option>
           <option value="1">仅直接下游 (1 层)</option>
           <option value="2">2 层</option>
           <option value="3">3 层</option>
@@ -173,12 +173,12 @@ const hasEdges = computed(() => (props.edges || []).length > 0)
 
     <div v-if="!allEntries.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
       <GitBranch class="mx-auto mb-2 h-8 w-8 text-slate-300" />
-      <p class="text-sm">无可分析的下游链路</p>
+      <p class="text-sm">{{ $t('lineagePanel.impact.noChain') }}</p>
       <p class="muted text-xs">需要 INSERT 显式列出列名（SELECT * 暂不参与列级 lineage）</p>
     </div>
 
     <div v-else-if="!filtered.length" class="rounded-lg border border-dashed border-slate-200 py-8 text-center text-slate-400">
-      <p class="text-sm">没有命中的影响链路</p>
+      <p class="text-sm">{{ $t('lineagePanel.impact.noMatch') }}</p>
       <p class="muted text-xs">调整搜索词或筛选条件，或点击"清空筛选"恢复</p>
     </div>
 
