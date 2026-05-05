@@ -301,6 +301,86 @@ def test_cursor_source_tracking_nested_loops_inner_takes_precedence():
         "嵌套时取最内层 scope，外层 source 不应挂到内层 target"
 
 
+# ─── S5 PR4：UDF 调用应补 UDF 读的源表 → DML target 边 ─────────────────────────
+
+
+def _udf_edge(edges, source, target):
+    src_l, tgt_l = source.lower(), target.lower()
+    return [
+        e for e in edges
+        if e["source_table"].lower() == src_l
+        and e["target_table"].lower() == tgt_l
+        and e.get("edge_type") == "UDF_CALL"
+    ]
+
+
+def test_udf_call_in_insert_values_adds_source_edge():
+    """`INSERT INTO X VALUES (pkg.fn)` —— pkg.fn 函数体内 SELECT 的源表应作为
+    supplemental 边补到 X 上。"""
+    sql = """
+    CREATE OR REPLACE FUNCTION pkg.get_max_amt RETURN NUMBER IS
+      v_max NUMBER;
+    BEGIN
+      SELECT max(amt) INTO v_max FROM ods.txn WHERE flag = 1;
+      RETURN v_max;
+    END;
+
+    INSERT INTO dwd.summary (max_amt) VALUES (pkg.get_max_amt);
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    udf_edges = _udf_edge(result["graph_edges"], "ods.txn", "dwd.summary")
+    assert udf_edges, \
+        f"应补 ods.txn → dwd.summary 的 UDF_CALL 边: {result['graph_edges']}"
+    edge = udf_edges[0]
+    assert edge["confidence"] == "medium"
+    assert "pkg.get_max_amt" in edge["reason"]
+
+
+def test_udf_call_with_arguments_picked_up():
+    """带参数 `pkg.fn(arg)` 调用形式同样应识别。"""
+    sql = """
+    CREATE OR REPLACE FUNCTION pkg.lookup(p_id IN NUMBER) RETURN VARCHAR2 IS
+      v VARCHAR2(50);
+    BEGIN
+      SELECT name INTO v FROM ods.dim_user WHERE id = p_id;
+      RETURN v;
+    END;
+
+    INSERT INTO dwd.report (id, name) SELECT id, pkg.lookup(id) FROM ods.events;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    # ods.events 应是静态边（INSERT-SELECT），ods.dim_user 应是 UDF_CALL 补的
+    assert _udf_edge(result["graph_edges"], "ods.dim_user", "dwd.report"), \
+        "UDF 内读的 ods.dim_user 应补到 dwd.report"
+
+
+def test_udf_call_function_definition_statement_skipped():
+    """`CREATE FUNCTION ...` 自身的 statement SQL 引用了函数名，但那是定义，
+    不该补边到自己。"""
+    sql = """
+    CREATE OR REPLACE FUNCTION pkg.fn RETURN NUMBER IS
+      v NUMBER;
+    BEGIN
+      SELECT max(amt) INTO v FROM ods.txn;
+      RETURN v;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    udf_edges = [e for e in result["graph_edges"] if e.get("edge_type") == "UDF_CALL"]
+    assert udf_edges == [], \
+        f"只定义 UDF 没有调用方，不应有 UDF_CALL 边: {udf_edges}"
+
+
+def test_udf_call_no_function_no_edges():
+    """普通 INSERT-SELECT 无 UDF —— UDF_CALL 边应空。"""
+    sql = """
+    INSERT INTO dwd.fact (id) SELECT id FROM ods.batches;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    udf_edges = [e for e in result["graph_edges"] if e.get("edge_type") == "UDF_CALL"]
+    assert udf_edges == []
+
+
 # ─── S5 PR3：PACKAGE BODY / DECLARE 的常量与变量声明应进入 result.variables ─────
 
 

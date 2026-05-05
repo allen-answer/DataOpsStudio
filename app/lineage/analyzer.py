@@ -111,6 +111,10 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # 不是 SELECT），_graph_edges 看不到 tabA → tabB 边。这里给 procedure_segment
     # 的 cursor_sources 补 supplemental 边，confidence=medium 区分静态推断
     edges.extend(_cursor_supplemental_edges(procedure_segments, edges))
+    # S5 PR4：UDF source tracking —— `INSERT INTO tabC VALUES (pkg.fn())` 调用
+    # 用户定义函数；函数体内的 SELECT 能看到 ods.txn，但 INSERT 自己 source_tables
+    # 是空。这里把"被调用 UDF 读的表"补成 supplemental 边到 INSERT target。
+    edges.extend(_udf_supplemental_edges(procedure_segments, analyses, edges))
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
     # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
@@ -222,6 +226,105 @@ def _cursor_supplemental_edges(
                     "target_columns": [],
                     "confidence": "medium",
                     "reason": f"cursor FOR loop ({seg.get('procedure_name') or 'anonymous'})",
+                })
+    return out
+
+
+# S5 PR4：UDF source tracking ——————————————————————————————————————————
+
+# 用 segments 模块里的辅助函数提取 SELECT 段里的源表
+from app.lineage.segments import _extract_cursor_select_tables as _extract_select_tables  # noqa: E402
+
+_RE_FUNCTION_REF_FROM_NAME = lambda fn: re.compile(
+    rf"\b{re.escape(fn)}\b(?!\s*(?:IS|AS|RETURN)\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _udf_supplemental_edges(
+    procedure_segments: list[dict[str, Any]],
+    analyses: list[dict[str, Any]],
+    existing_edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """给调用 UDF 的 DML 补 source → target 边。
+
+    示例：
+        CREATE FUNCTION pkg.fn RETURN NUMBER IS BEGIN
+          SELECT max(amt) INTO v FROM ods.txn; RETURN v;
+        END;
+
+        INSERT INTO dwd.summary (max_amt) VALUES (pkg.fn);
+
+    INSERT 自身的 source_tables 是空。但 pkg.fn 函数体内读了 ods.txn —— 这条
+    "通过 UDF 间接读"的依赖应被表达为 ods.txn → dwd.summary 边（confidence=
+    medium / edge_type=UDF_CALL）。
+    """
+    if not procedure_segments or not analyses:
+        return []
+
+    # 1. 从 procedure_segments 的 FUNCTION 段提取 udf_reads 映射
+    udf_reads: dict[str, list[str]] = {}
+    for seg in procedure_segments:
+        kind = (seg.get("procedure_kind") or "").upper()
+        if kind != "FUNCTION":
+            continue
+        fn_name = (seg.get("procedure_name") or "").strip()
+        if not fn_name:
+            continue
+        seg_sql = str(seg.get("sql") or "")
+        if not seg_sql:
+            continue
+        # 函数体段通常是 SELECT INTO；用同一个 cursor 抽源表的 helper
+        tables = _extract_select_tables(seg_sql)
+        if not tables:
+            continue
+        bucket = udf_reads.setdefault(fn_name.lower(), [])
+        for t in tables:
+            if t not in bucket:
+                bucket.append(t)
+
+    if not udf_reads:
+        return []
+
+    # 2. 扫每个 statement SQL，看引用了哪些已知 UDF + DML target 是什么
+    out: list[dict[str, Any]] = []
+    existing: set[tuple[str, str]] = {
+        (str(e.get("source_table") or "").lower(), str(e.get("target_table") or "").lower())
+        for e in existing_edges
+    }
+    for stmt_idx, analysis in enumerate(analyses, start=1):
+        stmt_sql = str(analysis.get("sql") or "")
+        if not stmt_sql:
+            continue
+        # 找该 statement 的 DML target（INSERT/UPDATE/MERGE/DELETE）
+        target_match = _RE_CURSOR_DML_TARGET.search(stmt_sql)
+        if not target_match:
+            continue
+        target = target_match.group(1).strip().strip('"`[]')
+        if not target:
+            continue
+        # 遍历每个已知 UDF，看 statement 文本里是否引用
+        for fn_name, src_tables in udf_reads.items():
+            # 跳过 statement 本身就是 UDF 定义的情况
+            if stmt_sql.upper().lstrip().startswith(("CREATE OR REPLACE FUNCTION", "CREATE FUNCTION")):
+                continue
+            pattern = _RE_FUNCTION_REF_FROM_NAME(fn_name)
+            if not pattern.search(stmt_sql):
+                continue
+            for src in src_tables:
+                key = (src.lower(), target.lower())
+                if key in existing:
+                    continue
+                existing.add(key)
+                out.append({
+                    "source_table": src,
+                    "target_table": target,
+                    "statement_index": stmt_idx,
+                    "edge_type": "UDF_CALL",
+                    "source_columns": [],
+                    "target_columns": [],
+                    "confidence": "medium",
+                    "reason": f"UDF read ({fn_name})",
                 })
     return out
 
