@@ -496,6 +496,24 @@ def test_bulk_collect_with_join_multi_source():
     assert _bulk_edge(result["graph_edges"], "ods.codes", "dwd.fact")
 
 
+def test_bulk_collect_multi_var_only_second_consumed():
+    """`BULK COLLECT INTO v1, v2 FROM ods.t; FORALL ... INSERT VALUES (v2(i))`
+    —— 即使只 INSERT 引用了 v2 而非 v1，应该仍能补 ods.t → target 边。
+    PR10：BULK COLLECT INTO 多变量 list 都进 bulk_vars 映射。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      v_ids x; v_amts y;
+    BEGIN
+      SELECT id, amt BULK COLLECT INTO v_ids, v_amts FROM ods.orders;
+      FORALL i IN 1..v_amts.COUNT
+        INSERT INTO dwd.fact (amt) VALUES (v_amts(i));
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _bulk_edge(result["graph_edges"], "ods.orders", "dwd.fact"), \
+        f"v_amts 是 BULK COLLECT 的第二个变量，仍应解析: {result['graph_edges']}"
+
+
 def test_bulk_collect_no_dml_consumer_no_edge():
     """只有 BULK COLLECT 没有 INSERT 消费 array —— 不该补 BULK_COLLECT 边。"""
     sql = """

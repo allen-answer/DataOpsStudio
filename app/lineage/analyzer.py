@@ -336,9 +336,9 @@ def _udf_supplemental_edges(
 
 # S5 PR9：BULK COLLECT + FORALL ──────────────────────────────────────────
 
-# `SELECT ... BULK COLLECT INTO v_data FROM ods.orders` —— 把 var_name 抽出来
+# `SELECT ... BULK COLLECT INTO v1, v2, ... FROM ods.orders` —— 抽 var 列表（到 FROM）
 _RE_BULK_COLLECT = re.compile(
-    r"\bBULK\s+COLLECT\s+INTO\s+([A-Za-z_][\w$#]*)\b",
+    r"\bBULK\s+COLLECT\s+INTO\s+([\w$#,\s]+?)\s+FROM\b",
     flags=re.IGNORECASE,
 )
 # `SELECT ... FROM tabA, tabB JOIN tabC ...` —— 复用 cursor 抽源表逻辑
@@ -363,21 +363,25 @@ def _bulk_collect_supplemental_edges(
 
     from app.lineage.segments import _extract_cursor_select_tables as _extract_tables
 
-    # 1. 找所有 BULK COLLECT INTO <var> 段，抽 var → source_tables
+    # 1. 找所有 BULK COLLECT INTO <var,...> 段，抽 var → source_tables
     bulk_vars: dict[str, list[str]] = {}
     for seg in procedure_segments:
         seg_sql = str(seg.get("sql") or "")
         m = _RE_BULK_COLLECT.search(seg_sql)
         if not m:
             continue
-        var_name = m.group(1).lower()
+        # 多变量 INTO v1, v2, v3 都拆开
+        var_list = [v.strip().lower() for v in m.group(1).split(",")]
         tables = _extract_tables(seg_sql)
         if not tables:
             continue
-        bucket = bulk_vars.setdefault(var_name, [])
-        for t in tables:
-            if t not in bucket:
-                bucket.append(t)
+        for var_name in var_list:
+            if not var_name:
+                continue
+            bucket = bulk_vars.setdefault(var_name, [])
+            for t in tables:
+                if t not in bucket:
+                    bucket.append(t)
 
     if not bulk_vars:
         return []
