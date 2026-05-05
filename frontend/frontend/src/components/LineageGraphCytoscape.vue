@@ -14,7 +14,24 @@ cytoscape.use(dagre)
 const props = defineProps({
   groups: { type: Array, default: () => [] },
   edges: { type: Array, default: () => [] },
+  // Phase 10 #3 enhancement：节点徽章 —— {table_name: [{aspect_type, value, ...}]}
+  aspectsByTable: { type: Object, default: () => ({}) },
 })
+
+// 跟 LineageGraph.vue 同一份 emoji 映射 —— 双引擎统一视觉
+const ASPECT_BADGES = {
+  pii: '🔒', sla: '⏰', owner: '👤', sensitive: '⚠️',
+}
+function badgePrefix(name) {
+  const aspects = props.aspectsByTable?.[name]
+  if (!aspects?.length) return ''
+  const seen = new Set()
+  for (const a of aspects) {
+    if (ASPECT_BADGES[a.aspect_type]) seen.add(a.aspect_type)
+  }
+  if (!seen.size) return ''
+  return ['pii', 'sla', 'sensitive', 'owner'].filter(t => seen.has(t)).map(t => ASPECT_BADGES[t]).join('') + ' '
+}
 
 const PREFS_KEY = 'lineage-graph-prefs-v1'
 const SPACING_PRESETS = {
@@ -84,7 +101,7 @@ const cyElements = computed(() => {
     elements.push({
       data: {
         id: node.id,
-        label: node.id,
+        label: badgePrefix(node.id) + node.id,
         role: node.data?.role || 'source',
         schema: node.data?.schema,
         matched: !!node.data?.matched,

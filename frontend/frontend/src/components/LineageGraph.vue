@@ -8,7 +8,30 @@ import { useLineageGraphData } from '../composables/useLineageGraphData.js'
 const props = defineProps({
   groups: { type: Array, default: () => [] },
   edges: { type: Array, default: () => [] },
+  // Phase 10 #3 enhancement：节点徽章 —— {table_name: [{aspect_type, value, ...}]}
+  // emoji 前缀方案，对 G6 / Cytoscape 都不需要 engine-specific 改动
+  aspectsByTable: { type: Object, default: () => ({}) },
 })
+
+// Phase 10 #3 enhancement：根据表的 aspects 生成 emoji 前缀。三类高优 type
+// 用一组直观符号；用户自定义类型不展示徽章（避免视觉杂乱）
+const ASPECT_BADGES = {
+  pii: '🔒',     // 红 PII
+  sla: '⏰',     // 时间 SLA
+  owner: '👤',   // 头像 owner
+  sensitive: '⚠️',
+}
+function badgePrefix(name) {
+  const aspects = props.aspectsByTable?.[name]
+  if (!aspects?.length) return ''
+  // 去重（同 type 多 aspect 只显一个 emoji）+ 按固定顺序避免抖动
+  const seen = new Set()
+  for (const a of aspects) {
+    if (ASPECT_BADGES[a.aspect_type]) seen.add(a.aspect_type)
+  }
+  if (!seen.size) return ''
+  return ['pii', 'sla', 'sensitive', 'owner'].filter(t => seen.has(t)).map(t => ASPECT_BADGES[t]).join('') + ' '
+}
 
 const PREFS_KEY = 'lineage-graph-prefs-v1'
 const SPACING_PRESETS = {
@@ -87,7 +110,8 @@ const renderGraph = async () => {
     node: {
       style: (datum) => {
         const isCombo = datum.data?.isCombo
-        const label = isCombo ? `${datum.data.schema} (${datum.data.count} 表)` : datum.id
+        const baseLabel = isCombo ? `${datum.data.schema} (${datum.data.count} 表)` : datum.id
+        const label = isCombo ? baseLabel : badgePrefix(datum.id) + baseLabel
         return {
           labelText: label,
           labelWordWrap: true,

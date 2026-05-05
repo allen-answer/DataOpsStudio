@@ -3,7 +3,13 @@
 // 引擎选择持久化到 localStorage 的 lineage-graph-prefs-v1.engine。
 // 两个组件都接受同一份 (groups, edges) prop，通过 useLineageGraphData
 // 共享数据派生逻辑。
-import { defineAsyncComponent, ref, watch } from 'vue'
+//
+// Phase 10 #3 enhancement：节点叠 PII / SLA / owner 徽章 ——
+// onMount 拉一次 /api/assets/aspects/index 拿表→aspects 映射，传给两引擎。
+// 引擎用 emoji 前缀（🔒 PII / ⏰ SLA / 👤 owner / ⚠️ sensitive）添到 label，
+// 不动节点几何。
+import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { apiGet } from '../../api'
 
 const LineageGraph = defineAsyncComponent(() => import('../LineageGraph.vue'))
 const LineageGraphCytoscape = defineAsyncComponent(() => import('../LineageGraphCytoscape.vue'))
@@ -24,6 +30,8 @@ const loadEngine = () => {
 }
 
 const engine = ref(loadEngine())
+const aspectsByTable = ref({})        // {tableName: [{aspect_type, value, ...}]}
+const aspectsLoading = ref(false)
 
 watch(engine, (val) => {
   try {
@@ -31,6 +39,22 @@ watch(engine, (val) => {
     localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, engine: val }))
   } catch {}
 })
+
+async function loadAspectsIndex() {
+  aspectsLoading.value = true
+  try {
+    aspectsByTable.value = await apiGet(
+      '/api/assets/aspects/index?types=pii,sla,owner,sensitive&asset_kind=table',
+    ) || {}
+  } catch {
+    // 静默失败 —— aspects 拉不到不影响图渲染（只是没徽章）
+    aspectsByTable.value = {}
+  } finally {
+    aspectsLoading.value = false
+  }
+}
+
+onMounted(loadAspectsIndex)
 </script>
 
 <template>
@@ -59,9 +83,24 @@ watch(engine, (val) => {
         </div>
       </div>
     </div>
+    <!-- Aspect 徽章图例 —— 解释节点 label 前缀 emoji -->
+    <div
+      v-if="Object.keys(aspectsByTable).length"
+      class="flex flex-wrap items-center gap-3 border-b border-slate-100 bg-amber-50/60 px-4 py-1.5 text-[11px] text-slate-600"
+    >
+      <span class="font-semibold text-slate-700">分类徽章</span>
+      <span>🔒 PII</span>
+      <span>⏰ SLA</span>
+      <span>👤 owner</span>
+      <span>⚠️ sensitive</span>
+      <span class="muted ml-auto">
+        覆盖 {{ Object.keys(aspectsByTable).length }} 张表 ·
+        <a href="#/admin/governance" class="text-primary hover:underline">分类治理</a>
+      </span>
+    </div>
     <div class="p-2">
-      <LineageGraph v-if="engine === 'g6'" :groups="groups" :edges="edges" />
-      <LineageGraphCytoscape v-else :groups="groups" :edges="edges" />
+      <LineageGraph v-if="engine === 'g6'" :groups="groups" :edges="edges" :aspects-by-table="aspectsByTable" />
+      <LineageGraphCytoscape v-else :groups="groups" :edges="edges" :aspects-by-table="aspectsByTable" />
     </div>
   </section>
 </template>
