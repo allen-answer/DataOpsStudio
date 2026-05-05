@@ -147,6 +147,14 @@ def collect_target_operations(statements: list[Any]) -> list[dict[str, Any]]:
                 target = _table_target(table, e)
                 if target:
                     ops.append(_make_op(index, target, "TRUNCATE", title=title))
+        # S5 PR8：Oracle INSERT ALL / INSERT FIRST —— 多 target fan-out
+        elif type(statement).__name__ == "MultitableInserts":
+            for sub in statement.args.get("expressions", []) or []:
+                inner = sub.this if hasattr(sub, "this") else sub
+                if isinstance(inner, e.Insert):
+                    target = insert_target_table(inner.this)
+                    if target:
+                        ops.append(_make_op(index, target, insert_dml_type(inner), title=title))
     return ops
 
 

@@ -172,8 +172,9 @@ _RE_CURSOR_FOR_LOOP_INLINE = re.compile(
 )
 # S5 PR7：显式 CURSOR 声明 `CURSOR <name> [IS|AS] SELECT ...;`。配合
 # `FOR rec IN <name> LOOP` 用 —— 把 cursor 名映射到声明体里的源表。
+# PR8：可选参数列表 `CURSOR cur(p NUMBER, q VARCHAR2) IS SELECT ...;`
 _RE_CURSOR_DECL = re.compile(
-    r"\bCURSOR\s+([A-Za-z_][\w$#]*)\s+(?:IS|AS)\s+",
+    r"\bCURSOR\s+([A-Za-z_][\w$#]*)\s*(?:\([^)]*\))?\s+(?:IS|AS)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -293,11 +294,37 @@ def _collect_loop_scopes(body: str, extra_cursor_decls: dict[str, list[str]] | N
             cursor_sources = _extract_cursor_select_tables(body[select_start:select_end])
         elif j < length and (body[j].isalpha() or body[j] == "_"):
             # PR7：显式 cursor 名字引用形式 FOR rec IN cur_name LOOP
+            # PR8：可能有调用参数 FOR rec IN cur_name(arg1, arg2) LOOP
             name_start = j
             while j < length and (body[j].isalnum() or body[j] in "_$#."):
                 j += 1
             cursor_name = body[name_start:j].lower()
             cursor_sources = list(cursor_decls.get(cursor_name, []))
+            # PR8：跳过可选的调用参数列表 (...)
+            while j < length and body[j].isspace():
+                j += 1
+            if j < length and body[j] == "(":
+                arg_depth = 1
+                j += 1
+                while j < length and arg_depth > 0:
+                    ch = body[j]
+                    if ch in "'\"":
+                        quote = ch
+                        j += 1
+                        while j < length:
+                            if body[j] == quote:
+                                if j + 1 < length and body[j + 1] == quote:
+                                    j += 2
+                                    continue
+                                j += 1
+                                break
+                            j += 1
+                        continue
+                    if ch == "(":
+                        arg_depth += 1
+                    elif ch == ")":
+                        arg_depth -= 1
+                    j += 1
             # 后面可能有 reverse / 数字范围（FOR i IN 1..N LOOP）—— 不是 cursor，
             # 没声明就当无 source 处理，不阻断 LOOP 范围识别
         else:

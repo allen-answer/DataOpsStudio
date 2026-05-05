@@ -448,6 +448,61 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR8：cursor with parameters / Oracle INSERT ALL fan-out ────────────────
+
+
+def test_declared_cursor_with_parameters():
+    """`CURSOR cur(p NUMBER) IS SELECT ...; FOR rec IN cur(1) LOOP` 应该解析
+    cursor 名 + 跳过参数列表，正常补 source 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      CURSOR cur_orders(p_flag NUMBER) IS
+        SELECT id FROM ods.orders WHERE flag = p_flag;
+    BEGIN
+      FOR rec IN cur_orders(1) LOOP
+        INSERT INTO dwd.fact (id) VALUES (rec.id);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.orders", "dwd.fact"), \
+        f"参数化 cursor 应被解析: {result['graph_edges']}"
+
+
+def test_oracle_insert_all_fans_out():
+    """Oracle `INSERT ALL ... INTO t1 ... INTO t2 ... SELECT ...` 应该被识别
+    成多个独立 INSERT，每个 target 都该有独立的 graph_edges + target_summary。"""
+    sql = """
+    INSERT ALL
+      INTO dwd.t1 (id, amt) VALUES (id, amt)
+      INTO dwd.t2 (id, amt) VALUES (id, amt * 2)
+    SELECT id, amt FROM ods.orders;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {s.get("target_table") for s in result.get("target_summary", [])}
+    assert "dwd.t1" in targets and "dwd.t2" in targets, \
+        f"INSERT ALL 应 fan-out 到 t1+t2: {targets}"
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.orders", "dwd.t1") in edges
+    assert ("ods.orders", "dwd.t2") in edges
+
+
+def test_oracle_insert_all_field_mappings_per_target():
+    """INSERT ALL 每个 target 都要有自己的 insert_mappings 列。"""
+    sql = """
+    INSERT ALL
+      INTO dwd.t1 (id, amt) VALUES (id, amt)
+      INTO dwd.t2 (id, amt) VALUES (id, amt)
+    SELECT id, amt FROM ods.orders;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    mappings = result.get("insert_mappings", [])
+    t1_mappings = [m for m in mappings if m.get("target_table") == "dwd.t1"]
+    t2_mappings = [m for m in mappings if m.get("target_table") == "dwd.t2"]
+    assert len(t1_mappings) >= 2, f"t1 应有 id+amt 两条 mapping: {t1_mappings}"
+    assert len(t2_mappings) >= 2, f"t2 应有 id+amt 两条 mapping: {t2_mappings}"
+
+
 # ─── S5 PR7：显式 CURSOR 声明 + `FOR rec IN cur_x LOOP` 应能解析 ────────────────
 
 

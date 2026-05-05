@@ -71,6 +71,11 @@ def analysis_statements(statement: Any) -> list[Any]:
 
     CREATE TABLE 包 INSERT 时返回内部 INSERTs；CREATE ... AS SELECT 整个 CREATE
     本身就是分析单元；普通 INSERT/SELECT/UNION/UPDATE/MERGE 直接返回。
+
+    S5 PR8：Oracle `INSERT ALL ... INTO t1 ... INTO t2 ... SELECT ...` 拆成多个
+    synthetic Insert（每个 target 一个，共享 source SELECT），让下游 INSERT
+    分析对每个目标都跑一遍 fan-out。INSERT FIRST 同样 kind 也走这条路 ——
+    fan-out 的语义是一样的。
     """
     e = exp()
     if isinstance(statement, e.Create):
@@ -79,6 +84,19 @@ def analysis_statements(statement: Any) -> list[Any]:
             return nested
         if isinstance(statement.args.get("expression"), (e.Select, e.Union)):
             return [statement]
+    # S5 PR8：MultitableInserts 拆成多个独立 Insert
+    if type(statement).__name__ == "MultitableInserts":
+        source = statement.args.get("source")
+        out: list[Any] = []
+        for target in statement.args.get("expressions", []) or []:
+            inner = target.this if hasattr(target, "this") else target
+            if not isinstance(inner, e.Insert) or source is None:
+                continue
+            synthetic = inner.copy()
+            synthetic.set("expression", source.copy())
+            out.append(synthetic)
+        if out:
+            return out
     if isinstance(statement, (e.Insert, e.Select, e.Union, e.Update, e.Merge, e.Delete)):
         return [statement]
     return []
