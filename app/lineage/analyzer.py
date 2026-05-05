@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
@@ -105,6 +106,11 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
         except Exception as exc:
             parse_errors.append({"sql": sql(statement), "error": str(exc)})
     edges = _graph_edges(analyses)
+    # S5：cursor source tracking —— `FOR rec IN (SELECT FROM tabA) LOOP INSERT
+    # INTO tabB VALUES (rec.col); END LOOP;` 的 INSERT 没 source_tables（VALUES
+    # 不是 SELECT），_graph_edges 看不到 tabA → tabB 边。这里给 procedure_segment
+    # 的 cursor_sources 补 supplemental 边，confidence=medium 区分静态推断
+    edges.extend(_cursor_supplemental_edges(procedure_segments, edges))
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
     # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
@@ -146,6 +152,78 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # ai_enrichment 不在 LineageReport 字段表里 —— 它们由 lineage_service._attach_*
     # 后续注入，envelope 不预留 Optional 字段（避免 dump 出 None 噪声键）。
     return _LineageReport.model_validate(base_result).model_dump(by_alias=True)
+
+
+# S5：cursor source tracking ——————————————————————————————————————————————
+
+_RE_CURSOR_DML_TARGET = re.compile(
+    r"\b(?:INSERT\s+(?:OVERWRITE\s+)?(?:INTO\s+|TABLE\s+)?|REPLACE\s+INTO\s+|UPDATE\s+|MERGE\s+INTO\s+)"
+    r"([\w$#.\"`\[\]]+)",
+    flags=re.IGNORECASE,
+)
+
+
+def _cursor_supplemental_edges(
+    procedure_segments: list[dict[str, Any]],
+    existing_edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """给 cursor FOR loop 段补 source → target 边。
+
+    示例：
+        FOR rec IN (SELECT id FROM ods.batches) LOOP
+          INSERT INTO dwd.fact (id) VALUES (rec.id);
+        END LOOP;
+
+    INSERT 的 VALUES 不是 SELECT，flat_insert_mappings 拿不到 source_tables，
+    `_graph_edges` 里就没 ods.batches → dwd.fact 这条边。这里补出来。
+
+    为避免重复（如果用户写的 cursor SELECT 本身被 sqlglot 解析出来再被 INSERT-
+    SELECT 形式消费），先看 existing_edges 是否已经包含同 (source, target)。
+    confidence 标 medium 区分是 cursor-inferred 还是 SELECT-derived。
+    """
+    out: list[dict[str, Any]] = []
+    if not procedure_segments:
+        return out
+    existing: set[tuple[str, str]] = {
+        (str(e.get("source_table") or "").lower(), str(e.get("target_table") or "").lower())
+        for e in existing_edges
+    }
+    for seg in procedure_segments:
+        sources = seg.get("cursor_sources") or []
+        if not sources:
+            continue
+        seg_sql = str(seg.get("sql") or "")
+        if not seg_sql:
+            continue
+        # 段里可能有多个 INSERT/UPDATE/MERGE —— 全部抽出来
+        targets: list[str] = []
+        seen_t: set[str] = set()
+        for m in _RE_CURSOR_DML_TARGET.finditer(seg_sql):
+            tname = m.group(1).strip().strip('"`[]')
+            key = tname.lower()
+            if not tname or key in seen_t:
+                continue
+            seen_t.add(key)
+            targets.append(tname)
+        if not targets:
+            continue
+        for src in sources:
+            for tgt in targets:
+                key = (src.lower(), tgt.lower())
+                if key in existing:
+                    continue
+                existing.add(key)
+                out.append({
+                    "source_table": src,
+                    "target_table": tgt,
+                    "statement_index": 0,
+                    "edge_type": "CURSOR_LOOP_INSERT",
+                    "source_columns": [],
+                    "target_columns": [],
+                    "confidence": "medium",
+                    "reason": f"cursor FOR loop ({seg.get('procedure_name') or 'anonymous'})",
+                })
+    return out
 
 
 def _analyze_statement(

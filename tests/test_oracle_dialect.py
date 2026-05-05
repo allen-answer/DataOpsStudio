@@ -161,3 +161,117 @@ def test_oracle_cursor_for_loop_inner_insert():
     target_tables = {s["target_table"] for s in result["target_summary"]}
     assert any("dwd.fact_amount" in t.lower() for t in target_tables), \
         f"FOR cursor LOOP 内的 INSERT 应被抽出: {target_tables}"
+
+
+# ─── S5：cursor source tracking —— body INSERT VALUES (rec.col) 必须补 source → target 边 ─────
+
+
+def _cursor_edge(edges, source, target):
+    src_l, tgt_l = source.lower(), target.lower()
+    return [
+        e for e in edges
+        if e["source_table"].lower() == src_l
+        and e["target_table"].lower() == tgt_l
+        and e.get("edge_type") == "CURSOR_LOOP_INSERT"
+    ]
+
+
+def test_cursor_source_tracking_single_table():
+    """`FOR rec IN (SELECT FROM tabA) LOOP INSERT INTO tabB VALUES (rec.col)` —
+    INSERT 没 source_tables，应该靠 cursor_sources 补出 ods.batches → dwd.fact 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.demo IS
+    BEGIN
+      FOR rec IN (SELECT id, name FROM ods.batches WHERE flag = 1) LOOP
+        INSERT INTO dwd.fact (id, name) VALUES (rec.id, rec.name);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    cursor_edges = _cursor_edge(result["graph_edges"], "ods.batches", "dwd.fact")
+    assert cursor_edges, \
+        f"应补 ods.batches → dwd.fact 的 CURSOR_LOOP_INSERT 边: {result['graph_edges']}"
+    edge = cursor_edges[0]
+    assert edge["confidence"] == "medium", "cursor 推断的边 confidence 应为 medium"
+    assert "cursor FOR loop" in edge["reason"]
+    assert "pkg.demo" in edge["reason"]
+
+
+def test_cursor_source_tracking_multi_table_join():
+    """cursor SELECT 含 JOIN 时，每个源表都应该补一条边到 INSERT target。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.multi IS
+    BEGIN
+      FOR rec IN (
+        SELECT b.id, b.name, c.code
+        FROM ods.batches b
+        INNER JOIN ods.codes c ON b.id = c.batch_id
+      ) LOOP
+        INSERT INTO dwd.fact (id, name, code) VALUES (rec.id, rec.name, rec.code);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _cursor_edge(result["graph_edges"], "ods.batches", "dwd.fact"), \
+        "JOIN 左表应补边"
+    assert _cursor_edge(result["graph_edges"], "ods.codes", "dwd.fact"), \
+        "JOIN 右表也应补边"
+
+
+def test_cursor_source_tracking_no_dml_body():
+    """cursor LOOP 体里没 DML（仅 dbms_output 等）—— 不应产生任何 supplemental 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.empty_loop IS
+    BEGIN
+      FOR rec IN (SELECT id FROM ods.batches) LOOP
+        dbms_output.put_line(rec.id);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    cursor_loop_edges = [e for e in result["graph_edges"] if e.get("edge_type") == "CURSOR_LOOP_INSERT"]
+    assert cursor_loop_edges == [], \
+        f"无 DML 的 cursor body 不应产生 CURSOR_LOOP_INSERT 边: {cursor_loop_edges}"
+
+
+def test_cursor_source_tracking_dedup_against_existing_edges():
+    """普通 INSERT-SELECT（_graph_edges 已经能抽出 high confidence 边）+ cursor body
+    INSERT VALUES 同时存在时，cursor supplemental 不应重复添加同 (source, target) 边。"""
+    sql = """
+    INSERT INTO dwd.fact (id) SELECT id FROM ods.batches;
+    """
+    # 第一条静态 INSERT-SELECT 已经覆盖 ods.batches → dwd.fact 的边
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    same_pair = [
+        e for e in result["graph_edges"]
+        if e["source_table"].lower() == "ods.batches"
+        and e["target_table"].lower() == "dwd.fact"
+    ]
+    # 至少 1 条边（静态 INSERT-SELECT 的），不应被 cursor 重复添加
+    assert len(same_pair) == 1, f"同 source-target 应只 1 条边: {same_pair}"
+    assert same_pair[0]["confidence"] == "high", "原始静态边应保留 high confidence"
+
+
+def test_cursor_source_tracking_segment_carries_cursor_sources():
+    """procedure_segments 输出的每段应该有 cursor_sources 字段，cursor FOR 段非空，
+    其他段为 []。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.mixed IS
+    BEGIN
+      INSERT INTO dwd.audit (msg) VALUES ('start');
+      FOR rec IN (SELECT id FROM ods.batches) LOOP
+        INSERT INTO dwd.fact (id) VALUES (rec.id);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result.get("procedure_segments", [])
+    assert segs, "应抽到 procedure_segments"
+    # 每段都应有 cursor_sources 字段（即便是空 list）
+    for seg in segs:
+        assert "cursor_sources" in seg, \
+            f"procedure_segments 输出每段都应该有 cursor_sources 字段: {seg}"
+    # 至少一段（cursor 内的 INSERT）应携带 ods.batches
+    cursor_segs = [s for s in segs if s.get("cursor_sources")]
+    assert cursor_segs, f"应有段携带 cursor_sources: {[s.get('cursor_sources') for s in segs]}"
+    assert any("ods.batches" in (s.get("cursor_sources") or []) for s in cursor_segs)

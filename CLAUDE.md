@@ -326,7 +326,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 **通用未做**：
 
-- **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
+- **字段级血缘解析端深化**：Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ + cursor 来源跟踪 ✓ 已落；剩 UDF 调用追溯 + 包变量来源跟踪）。S5 PR1：`FOR rec IN (SELECT FROM tabA) LOOP INSERT INTO tabB VALUES (rec.col)` 这种 INSERT 没 source_tables 的场景，靠 `procedure_segments[*].cursor_sources` + `_cursor_supplemental_edges()` 补 `tabA → tabB` 边（`edge_type=CURSOR_LOOP_INSERT` / `confidence=medium` 区分静态推断）。已知限制：cursor LOOP 体内多 DML 只有第一段携带 cursor_sources，多 DML 场景留 PR2。
 - **TypeScript 渐进迁移**（S3.B 全 10 store + S4.A api.ts + composable + S4.B codegen 落地）：10/10 store + api.ts（含泛型 apiGet&lt;T&gt; / apiJson&lt;T&gt;）+ useLineageGraphData composable 全部 ts；openapi-typescript 从 /openapi.json 自动生成 `src/types/api-schema.ts`，友好别名在 `src/types/api.ts`（auth / project / datasource / task / workflow 已用）。剩 view（&lt;script setup lang="ts"&gt;）大头（30+ 个 .vue 文件 script 改 lang="ts"）留下个 sprint
 - **i18n 字符串抽取**（S4.C 7 个 PR 收口）：vue-i18n 11.x + zh/en 镜像 + topbar 切换 + i18n key 对齐 vitest 校验。覆盖：7 个主 view header / tabs + LineageReport 9-tab + workbench 4 step + 5 个 workflow node editor (params/compare/lineage/excel/http) + WorkflowSettingsPanel 主体 + LineageReport 6 panel 内部（Risk / Impact / Steps / Asset / AIEnrichment / AIInferred）+ 5 个 workbench 子 view + AspectGovernance + AssetDetail + FilterBar + CommandPalette + admin 5 view H2。namespace：nav / login / topbar / common / pages / lineageReport / lineagePanel / workflowEditor / workbench / filterBar / commandPalette / admin 共 12 个
 

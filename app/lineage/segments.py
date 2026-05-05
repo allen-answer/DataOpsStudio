@@ -14,11 +14,20 @@ class _BodySegment:
                      当作"语义起始行"——business title 注释不计入。
     end           —— 段落（含 ;）在 body 中的结束 offset。
     preceding_comment —— 提取出来的业务标题注释（已 strip `--` / `/* */` 标记），无则空串。
+    cursor_sources —— S5：如果段来自 `FOR rec IN (SELECT ... FROM tables) LOOP <body>`
+                     上下文，记录 cursor SELECT 引用的源表。让 analyzer 给 body 里
+                     用 `rec.col` 写入下游表的 INSERT 补出 source → target 边
+                     （否则 INSERT VALUES (rec.col) 没 source_tables，graph 断链）。
     """
     text: str
     dml_start: int
     end: int
     preceding_comment: str
+    cursor_sources: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.cursor_sources is None:
+            self.cursor_sources = []
 
 
 def parse_lineage_statements(sqlglot: Any, sql: str, dialect: str | None) -> list[Any]:
@@ -159,14 +168,64 @@ _RE_LOOP_KEYWORD = re.compile(r"\bLOOP\b", flags=re.IGNORECASE)
 
 
 def _strip_cursor_for_prefix(seg_text: str) -> str:
-    """如果 seg 以 `FOR x IN (...) LOOP` 开头，把头部剥掉，返回 LOOP 后的内容。
-    其他情况原样返回。剥掉时同步括号配平 —— cursor 子查询里可能含括号。"""
+    """老接口：仅返回剥掉 cursor 头部后的文本（不带 source 提取）。"""
+    return _strip_cursor_for_prefix_with_sources(seg_text)[0]
+
+
+# S5：剥 cursor FOR 头部时，顺便从 cursor SELECT 里抽源表 —— 给 analyzer 做
+# `INSERT VALUES (rec.col)` 这种"无 source_tables 的 INSERT"补 source → target
+# 边的依据。否则 graph 在 cursor loop 体内会断链。
+_RE_FROM_TABLE = re.compile(
+    r"\bFROM\s+([\w$#.\"`\[\]]+(?:\s*,\s*[\w$#.\"`\[\]]+)*)",
+    flags=re.IGNORECASE,
+)
+_RE_JOIN_TABLE = re.compile(
+    r"\bJOIN\s+([\w$#.\"`\[\]]+)",
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_cursor_select_tables(cursor_select: str) -> list[str]:
+    """轻量级提取 cursor SELECT 子查询的源表。不走 sqlglot —— 段内的 SELECT 可能
+    嵌套子查询、CTE，sqlglot 全量解析成本高且这里只需"哪些表名出现"的近似列表。
+
+    仅取顶层 FROM / JOIN 后面的标识符；剥引号 / schema.table 保留点号。
+    """
+    tables: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: str) -> None:
+        name = raw.strip().strip('"`[]')
+        # 跳过括号子查询、保留字、空名
+        if not name or name.startswith("(") or name.upper() in {"WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "FETCH"}:
+            return
+        key = name.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        tables.append(name)
+
+    for m in _RE_FROM_TABLE.finditer(cursor_select):
+        # FROM a, b, c —— 多表 comma 分隔
+        for piece in m.group(1).split(","):
+            _push(piece.split()[0] if piece.split() else "")
+    for m in _RE_JOIN_TABLE.finditer(cursor_select):
+        _push(m.group(1))
+    return tables
+
+
+def _strip_cursor_for_prefix_with_sources(seg_text: str) -> tuple[str, list[str]]:
+    """如果 seg 以 `FOR x IN (...) LOOP` 开头，把头部剥掉，返回 `(LOOP 后内容, cursor 源表列表)`。
+    其他情况返回 `(原 seg_text, [])`。剥掉时同步括号配平 —— cursor 子查询里可能含括号。
+    """
     if not _RE_CURSOR_FOR_LOOP_HEAD.match(seg_text):
-        return seg_text
-    # 找首个出现在括号外的 LOOP 关键字
+        return seg_text, []
+    # 找首个出现在括号外的 LOOP 关键字。同时记录最外层 ( ... ) 的内容（cursor SELECT）
     depth = 0
     pos = 0
     length = len(seg_text)
+    cursor_select_start = -1   # 第一次 depth 由 0 → 1 的位置（左括号后）
+    cursor_select_end = -1     # depth 由 1 → 0 的位置（右括号前）
     while pos < length:
         ch = seg_text[pos]
         if ch in "'\"":
@@ -179,19 +238,28 @@ def _strip_cursor_for_prefix(seg_text: str) -> str:
                 pos += 1
             continue
         if ch == "(":
+            if depth == 0:
+                cursor_select_start = pos + 1
             depth += 1
             pos += 1
             continue
         if ch == ")":
             depth -= 1
+            if depth == 0 and cursor_select_end == -1:
+                cursor_select_end = pos
             pos += 1
             continue
         if depth == 0 and ch.isalpha():
             m = _RE_LOOP_KEYWORD.match(seg_text, pos)
             if m and (m.end() >= length or not seg_text[m.end()].isalnum()):
-                return seg_text[m.end():].lstrip()
+                cursor_sources: list[str] = []
+                if 0 <= cursor_select_start < cursor_select_end:
+                    cursor_sources = _extract_cursor_select_tables(
+                        seg_text[cursor_select_start:cursor_select_end]
+                    )
+                return seg_text[m.end():].lstrip(), cursor_sources
         pos += 1
-    return seg_text
+    return seg_text, []
 # 纯空白 + 行注释（`--`） + 块注释（`/* */`）的组合。fullmatch 这个表示 DML 前面
 # 没有控制流壳子（IF/THEN、CASE 等），可以原样保留——业务标题就在前缀注释里。
 _RE_PURE_COMMENT_PREFIX = re.compile(r"(?:\s|--[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*")
@@ -257,6 +325,8 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
                     "line_end": _line_of(sql, abs_end),
                     "preceding_comment": item.preceding_comment,
                     "parse_status": "unknown",
+                    # S5：cursor FOR 段才有，普通段是空 list
+                    "cursor_sources": list(item.cursor_sources or []),
                 }
             )
     return result
@@ -349,7 +419,9 @@ def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
         # Find the first DML keyword and analyze from there.
         # 特殊处理：`FOR rec IN (SELECT ...) LOOP <DML>` —— cursor 子查询里的 SELECT
         # 不是顶层 DML，剥掉 cursor 头部，从 LOOP 后开始找。
-        seg_text = _strip_cursor_for_prefix(seg_text_orig)
+        # S5：同时抽出 cursor SELECT 引用的源表，挂到 _BodySegment.cursor_sources，
+        # 让 analyzer 给 body 里的 INSERT VALUES (rec.col) 补 source → target 边
+        seg_text, cursor_sources = _strip_cursor_for_prefix_with_sources(seg_text_orig)
         cursor_strip = len(seg_text_orig) - len(seg_text)
         match = _RE_BODY_DML.search(seg_text)
         if not match:
@@ -376,6 +448,7 @@ def _iter_procedure_body_segments(body: str) -> list[_BodySegment]:
             dml_start=dml_offset,
             end=raw_end,
             preceding_comment=preceding_comment,
+            cursor_sources=cursor_sources,
         ))
     return cleaned
 
