@@ -21,18 +21,18 @@ const { historyItemTaskLabel, summaryValue } = useNoticeStore()
     <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div class="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 class="text-2xl font-bold text-slate-800">执行历史</h2>
-          <p class="mt-1 text-sm text-slate-500">数据对比与血缘分析结果分开展示，支持多结果合并导出。</p>
+          <h2 class="text-2xl font-bold text-slate-800">{{ $t('pages.history.title') }}</h2>
+          <p class="mt-1 text-sm text-slate-500">{{ $t('pages.history.subtitle') }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="loadHistory">刷新历史</button>
-          <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedHistory.size" @click="exportHistory">导出所选历史</button>
+          <button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="loadHistory">{{ $t('common.refresh') }}</button>
+          <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedHistory.size" @click="exportHistory">{{ $t('pages.history.exportSelected') }}</button>
         </div>
       </div>
 
       <div class="mb-5 flex flex-wrap gap-2">
-        <button class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="historyActiveTab === 'compare' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'" @click="historyActiveTab = 'compare'">数据对比 ({{ compareHistoryCount }})</button>
-        <button class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="historyActiveTab === 'lineage' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'" @click="historyActiveTab = 'lineage'">血缘分析 ({{ lineageHistoryCount }})</button>
+        <button class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="historyActiveTab === 'compare' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'" @click="historyActiveTab = 'compare'">{{ $t('pages.history.tabCompare') }} ({{ compareHistoryCount }})</button>
+        <button class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="historyActiveTab === 'lineage' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'" @click="historyActiveTab = 'lineage'">{{ $t('pages.history.tabLineage') }} ({{ lineageHistoryCount }})</button>
       </div>
 
       <div v-if="historyActiveTab === 'compare'" class="mb-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">

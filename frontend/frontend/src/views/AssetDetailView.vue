@@ -341,7 +341,7 @@ function setListValue(field, text) {
         <ChevronLeft class="h-4 w-4" />
       </button>
       <div class="flex-1">
-        <p class="muted text-[11px] uppercase tracking-wider">表资产</p>
+        <p class="muted text-[11px] uppercase tracking-wider">{{ $t('pages.assetDetail.kindTable') }}</p>
         <h2 class="sql-font text-2xl font-bold text-slate-800">{{ tableName }}</h2>
         <p v-if="asset" class="muted mt-0.5 text-xs">
           schema: <strong>{{ asset.schema }}</strong> · basename:
@@ -384,7 +384,7 @@ function setListValue(field, text) {
     <article v-if="asset && !loading" class="card p-4">
       <header class="mb-3 flex items-center gap-2">
         <Tag class="h-4 w-4 text-purple-600" />
-        <h3 class="text-sm font-bold text-slate-800">分类与所属</h3>
+        <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardAspects') }}</h3>
         <span class="pill bg-purple-100 text-purple-700">{{ asset.aspects?.length || 0 }}</span>
         <button
           v-if="history.length"
@@ -563,7 +563,7 @@ function setListValue(field, text) {
       <article class="card p-4">
         <header class="mb-2 flex items-center gap-2">
           <GitCompareArrows class="h-4 w-4 text-blue-600" />
-          <h3 class="text-sm font-bold text-slate-800">对比任务</h3>
+          <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardTasks') }}</h3>
           <span class="pill bg-blue-100 text-blue-700">{{ asset.references.tasks.length }}</span>
         </header>
         <ul v-if="asset.references.tasks.length" class="space-y-1.5">
@@ -584,7 +584,7 @@ function setListValue(field, text) {
       <article class="card p-4">
         <header class="mb-2 flex items-center gap-2">
           <Workflow class="h-4 w-4 text-purple-600" />
-          <h3 class="text-sm font-bold text-slate-800">作业流</h3>
+          <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardWorkflows') }}</h3>
           <span class="pill bg-purple-100 text-purple-700">{{ asset.references.workflows.length }}</span>
         </header>
         <ul v-if="asset.references.workflows.length" class="space-y-1.5">
@@ -605,7 +605,7 @@ function setListValue(field, text) {
       <article class="card p-4">
         <header class="mb-2 flex items-center gap-2">
           <FileCode class="h-4 w-4 text-emerald-600" />
-          <h3 class="text-sm font-bold text-slate-800">血缘脚本</h3>
+          <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardLineageScripts') }}</h3>
           <span class="pill bg-emerald-100 text-emerald-700">{{ asset.references.lineage_scripts.length }}</span>
         </header>
         <ul v-if="asset.references.lineage_scripts.length" class="space-y-1.5">
@@ -626,7 +626,7 @@ function setListValue(field, text) {
       <article class="card p-4">
         <header class="mb-2 flex items-center gap-2">
           <HistoryIcon class="h-4 w-4 text-amber-600" />
-          <h3 class="text-sm font-bold text-slate-800">执行历史</h3>
+          <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardHistory') }}</h3>
           <span class="pill bg-amber-100 text-amber-700">{{ asset.references.history.length }}</span>
         </header>
         <ul v-if="asset.references.history.length" class="space-y-1.5">
@@ -643,7 +643,7 @@ function setListValue(field, text) {
     <article v-if="asset && !loading" class="card p-4">
       <header class="mb-3 flex flex-wrap items-center gap-2">
         <Columns3 class="h-4 w-4 text-emerald-600" />
-        <h3 class="text-sm font-bold text-slate-800">字段</h3>
+        <h3 class="text-sm font-bold text-slate-800">{{ $t('pages.assetDetail.cardColumns') }}</h3>
         <span class="pill bg-emerald-100 text-emerald-700">
           {{ introspectMeta ? mergedColumns.length : columns.length }}
         </span>

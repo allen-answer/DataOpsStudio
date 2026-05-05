@@ -19,11 +19,11 @@ const report = computed(() => batch.result?.report || null)
     <div class="card">
       <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 class="text-2xl font-bold text-slate-800">多脚本 ETL 流程分析</h2>
-          <p class="muted text-sm">支持 .sql/.txt/.zip、Schema 元数据和导出；与单脚本同 9 维报告</p>
+          <h2 class="text-2xl font-bold text-slate-800">{{ $t('pages.lineage.title') }}</h2>
+          <p class="muted text-sm">{{ $t('pages.lineage.subtitle') }}</p>
         </div>
         <button class="btn btn-primary" @click="analyzeBatch">
-          <Sparkles class="h-4 w-4" /> 分析脚本包
+          <Sparkles class="h-4 w-4" /> {{ $t('pages.lineage.analyze') }}
         </button>
       </div>
       <SchemaPanel :target="batch" sql-tables-label="只拉脚本中出现的表">

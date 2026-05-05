@@ -31,10 +31,10 @@ function projectName(id) {
   <section class="space-y-6">
     <div class="flex items-end justify-between">
       <div>
-        <h2 class="text-2xl font-bold text-slate-800">数据源配置</h2>
-        <p class="mt-1 text-sm text-slate-500">管理对比任务所需的数据库连接信息，驱动状态来自后端容器实际检测。</p>
+        <h2 class="text-2xl font-bold text-slate-800">{{ $t('pages.datasources.title') }}</h2>
+        <p class="mt-1 text-sm text-slate-500">{{ $t('pages.datasources.subtitle') }}</p>
       </div>
-      <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="loadBootstrap">刷新驱动检测</button>
+      <button class="rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="loadBootstrap">{{ $t('common.refresh') }}</button>
     </div>
 
     <div class="grid grid-cols-1 gap-4 md:grid-cols-4">

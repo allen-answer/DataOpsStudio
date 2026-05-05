@@ -141,11 +141,11 @@ function onZipChange(e) {
     <div class="card">
       <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 class="text-2xl font-bold text-slate-800">血缘分析工作台</h2>
-          <p class="muted text-sm">单脚本 / 多脚本 / ZIP 项目包统一入口；9 维报告（输入 / 输出 / 处理 / 影响 / 风险）</p>
+          <h2 class="text-2xl font-bold text-slate-800">{{ $t('pages.lineage.title') }}</h2>
+          <p class="muted text-sm">{{ $t('pages.lineage.subtitle') }}</p>
         </div>
         <button class="btn btn-primary" :disabled="progressVisible" @click="runAnalyze">
-          <Sparkles class="h-4 w-4" /> {{ isSinglePipeline ? '分析血缘' : '分析脚本包' }}
+          <Sparkles class="h-4 w-4" /> {{ $t('pages.lineage.analyze') }}
         </button>
       </div>
 

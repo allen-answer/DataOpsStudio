@@ -165,9 +165,9 @@ watch(() => projectStore.currentProjectId, reload)
   <section class="space-y-6">
     <header class="flex items-end justify-between">
       <div>
-        <h2 class="text-2xl font-bold text-slate-800">分类治理（Aspect Governance）</h2>
+        <h2 class="text-2xl font-bold text-slate-800">{{ $t('pages.governance.title') }}</h2>
         <p class="mt-1 text-sm text-slate-500">
-          按 aspect 反查资产 + 全局变更日志。数据来源：所有 editor+ 在表详情页打的 aspect 标签。
+          {{ $t('pages.governance.subtitle') }}
         </p>
       </div>
       <button
@@ -176,7 +176,7 @@ watch(() => projectStore.currentProjectId, reload)
         @click="activeTab === 'search' ? reload() : loadHistory()"
       >
         <RefreshCw class="h-4 w-4" :class="(activeTab === 'search' ? loading : historyLoading) && 'animate-spin'" />
-        刷新
+        {{ $t('common.refresh') }}
       </button>
     </header>
 
@@ -189,7 +189,7 @@ watch(() => projectStore.currentProjectId, reload)
           : 'text-slate-500 hover:text-slate-700'"
         @click="activeTab = 'search'"
       >
-        <Search class="mr-1 inline h-3.5 w-3.5" /> 反查资产
+        <Search class="mr-1 inline h-3.5 w-3.5" /> {{ $t('pages.governance.tabSearch') }}
       </button>
       <button
         class="px-4 py-2 text-sm font-medium"
@@ -198,7 +198,7 @@ watch(() => projectStore.currentProjectId, reload)
           : 'text-slate-500 hover:text-slate-700'"
         @click="activeTab = 'history'"
       >
-        <HistoryIcon class="mr-1 inline h-3.5 w-3.5" /> 变更日志
+        <HistoryIcon class="mr-1 inline h-3.5 w-3.5" /> {{ $t('pages.governance.tabHistory') }}
       </button>
     </div>
 
