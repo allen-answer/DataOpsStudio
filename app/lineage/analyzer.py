@@ -120,6 +120,13 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # `FORALL i ... INSERT INTO tabB VALUES (v(i).col, ...);` 这种 array
     # 中转模式时，补 tabA → tabB 边（confidence=medium / edge_type=BULK_COLLECT）
     edges.extend(_bulk_collect_supplemental_edges(procedure_segments, edges))
+    # S5 PR15：TRIGGER 体内 DML 应该跟触发源表建立血缘边。
+    #   CREATE TRIGGER trg AFTER INSERT ON ods.orders
+    #   FOR EACH ROW BEGIN
+    #     INSERT INTO dwd.audit_log (id) VALUES (:NEW.id);
+    #   END;
+    # 补 ods.orders → dwd.audit_log 边（edge_type=TRIGGER / confidence=medium）
+    edges.extend(_trigger_supplemental_edges(procedure_segments, edges))
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
     # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
@@ -344,6 +351,61 @@ def _udf_supplemental_edges(
                     "confidence": "medium",
                     "reason": f"UDF read ({fn_name})",
                 })
+    return out
+
+
+# S5 PR15：TRIGGER source table → body DML target ───────────────────────
+
+
+def _trigger_supplemental_edges(
+    procedure_segments: list[dict[str, Any]],
+    existing_edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """TRIGGER 段的源表（AFTER ... ON tabA）应跟体内 DML target 建血缘边。
+
+    示例：
+        CREATE TRIGGER trg AFTER INSERT ON ods.orders FOR EACH ROW
+        BEGIN
+          INSERT INTO dwd.audit_log (id) VALUES (:NEW.id);
+        END;
+
+    数据从 ods.orders 流向 dwd.audit_log（虽然形式上是 :NEW.id 字面引用）。
+    edge_type=TRIGGER / confidence=medium 区分静态推断。
+    """
+    if not procedure_segments:
+        return []
+    out: list[dict[str, Any]] = []
+    existing: set[tuple[str, str]] = {
+        (str(e.get("source_table") or "").lower(), str(e.get("target_table") or "").lower())
+        for e in existing_edges
+    }
+    for seg in procedure_segments:
+        if (seg.get("procedure_kind") or "").upper() != "TRIGGER":
+            continue
+        source = (seg.get("trigger_source") or "").strip()
+        if not source:
+            continue
+        seg_sql = str(seg.get("sql") or "")
+        target_match = _RE_CURSOR_DML_TARGET.search(seg_sql)
+        if not target_match:
+            continue
+        target = target_match.group(1).strip().strip('"`[]')
+        if not _is_valid_dml_target(target):
+            continue
+        key = (source.lower(), target.lower())
+        if key in existing:
+            continue
+        existing.add(key)
+        out.append({
+            "source_table": source,
+            "target_table": target,
+            "statement_index": 0,
+            "edge_type": "TRIGGER",
+            "source_columns": [],
+            "target_columns": [],
+            "confidence": "medium",
+            "reason": f"trigger ({seg.get('procedure_name') or 'anonymous'})",
+        })
     return out
 
 

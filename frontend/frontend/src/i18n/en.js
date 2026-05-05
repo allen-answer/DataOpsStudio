@@ -296,6 +296,7 @@ export default {
         CURSOR_LOOP_INSERT: 'Cursor LOOP (inferred)',
         UDF_CALL: 'UDF call (inferred)',
         BULK_COLLECT: 'BULK COLLECT (inferred)',
+        TRIGGER: 'Trigger (inferred)',
       },
     },
     summary: {

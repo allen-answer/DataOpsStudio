@@ -299,6 +299,7 @@ export default {
         CURSOR_LOOP_INSERT: '游标 LOOP 推断',
         UDF_CALL: 'UDF 调用推断',
         BULK_COLLECT: 'BULK COLLECT 推断',
+        TRIGGER: '触发器推断',
       },
     },
     summary: {

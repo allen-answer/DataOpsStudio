@@ -116,6 +116,12 @@ _RE_PROC_HEADER = re.compile(
     r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?P<kind>PROCEDURE|FUNCTION|PACKAGE\s+BODY|TRIGGER)\s+(?P<name>[\w$#.\"`\[\]]+)",
     flags=re.IGNORECASE,
 )
+# S5 PR15：TRIGGER 头部 `[BEFORE|AFTER|INSTEAD OF] <event(s)> ON <table>` 的
+# 触发源表。trigger 体内的 DML 应该跟这个源表建立血缘关系（数据从源表流入下游）。
+_RE_TRIGGER_SOURCE = re.compile(
+    r"\b(?:BEFORE|AFTER|INSTEAD\s+OF)\s+(?:[\w]+(?:\s+OR\s+[\w]+)*)\s+(?:OF\s+[\w$#,\s]+\s+)?ON\s+([\w$#.\"`\[\]]+)",
+    flags=re.IGNORECASE,
+)
 # S5 PR13：嵌套在 PACKAGE BODY 里的 PROCEDURE / FUNCTION 没有 CREATE 前缀。
 # 单独再扫一遍，但只在已知 PACKAGE BODY block 范围内用 —— 否则随处一段
 # `PROCEDURE foo IS` 都会误识别。
@@ -530,6 +536,14 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
             # 用 declaration_region = header 到 BEGIN 之间
             scopes = [(outer_name, outer_kind, body_start.end(), body_end, sql[outer_header.end():body_start.start()])]
 
+        # S5 PR15：TRIGGER 时从头部抽 source table（AFTER ... ON tab / BEFORE ...
+        # ON tab）。其它 kind 是空字符串。
+        trigger_source = ""
+        if outer_kind == "TRIGGER":
+            header_text = sql[outer_header.end():outer_header.end() + 500]
+            ts_match = _RE_TRIGGER_SOURCE.search(header_text)
+            if ts_match:
+                trigger_source = ts_match.group(1).strip().strip('"`[]')
         for name, kind, scope_body_start, scope_body_end, declaration_region in scopes:
             # PR13：包级 cursor 声明也合并进每个嵌套 proc 的 declaration_region
             if outer_kind == "PACKAGE BODY":
@@ -561,6 +575,8 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
                         "parse_status": "unknown",
                         # S5：cursor FOR 段才有，普通段是空 list
                         "cursor_sources": list(item.cursor_sources or []),
+                        # S5 PR15：仅 TRIGGER kind 才有，其它段是空
+                        "trigger_source": trigger_source,
                     }
                 )
     return result

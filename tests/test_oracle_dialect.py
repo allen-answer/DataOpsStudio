@@ -448,6 +448,79 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR15：TRIGGER 体内 DML 应跟触发源表建血缘 ──────────────────────────────
+
+
+def _trigger_edge(edges, source, target):
+    return [
+        e for e in edges
+        if e["source_table"].lower() == source.lower()
+        and e["target_table"].lower() == target.lower()
+        and e.get("edge_type") == "TRIGGER"
+    ]
+
+
+def test_trigger_after_insert_creates_source_edge():
+    """`AFTER INSERT ON ods.orders ... INSERT INTO dwd.audit (...) VALUES (:NEW.id)`
+    应该补 ods.orders → dwd.audit 边，confidence=medium。"""
+    sql = """
+    CREATE OR REPLACE TRIGGER trg_audit
+    AFTER INSERT ON ods.orders
+    FOR EACH ROW
+    BEGIN
+      INSERT INTO dwd.audit_log (id) VALUES (:NEW.id);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = _trigger_edge(result["graph_edges"], "ods.orders", "dwd.audit_log")
+    assert edges, f"应有 ods.orders → dwd.audit_log TRIGGER 边: {result['graph_edges']}"
+    assert edges[0]["confidence"] == "medium"
+    assert "trigger" in edges[0]["reason"].lower()
+
+
+def test_trigger_before_update_with_of_columns():
+    """`BEFORE UPDATE OF col1, col2 ON tab` 也应解析源表。"""
+    sql = """
+    CREATE OR REPLACE TRIGGER trg_x
+    BEFORE UPDATE OF amt, status ON ods.txn
+    FOR EACH ROW
+    BEGIN
+      INSERT INTO dwd.txn_history (id, amt) VALUES (:NEW.id, :NEW.amt);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _trigger_edge(result["graph_edges"], "ods.txn", "dwd.txn_history")
+
+
+def test_trigger_source_extracted_in_segment():
+    """procedure_segments 应该携带 trigger_source 字段（仅 TRIGGER kind）。"""
+    sql = """
+    CREATE OR REPLACE TRIGGER trg
+    AFTER DELETE ON ods.users
+    BEGIN
+      INSERT INTO dwd.deleted_users (id) VALUES (:OLD.id);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result.get("procedure_segments", [])
+    assert segs and segs[0].get("trigger_source") == "ods.users"
+
+
+def test_non_trigger_segments_have_empty_trigger_source():
+    """普通 PROCEDURE 段的 trigger_source 字段应为空（不是 TRIGGER）。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS BEGIN
+      INSERT INTO dwd.t (a) VALUES (1);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result.get("procedure_segments", [])
+    assert segs
+    for s in segs:
+        assert s.get("trigger_source", "") == "", \
+            f"非 TRIGGER 段应空 trigger_source: {s}"
+
+
 # ─── S5 PR13：PACKAGE BODY 多个嵌套 PROCEDURE / 包级 cursor 共享 ────────────────
 
 
