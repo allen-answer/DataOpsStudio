@@ -122,6 +122,13 @@ _RE_TRIGGER_SOURCE = re.compile(
     r"\b(?:BEFORE|AFTER|INSTEAD\s+OF)\s+(?:[\w]+(?:\s+OR\s+[\w]+)*)\s+(?:OF\s+[\w$#,\s]+\s+)?ON\s+([\w$#.\"`\[\]]+)",
     flags=re.IGNORECASE,
 )
+# S5 PR16：顶层匿名 PL/SQL 块 `DECLARE ... BEGIN ... END;` / `BEGIN ... END;`
+# 没有 CREATE 前缀，旧 _RE_PROC_HEADER 抓不到，整个脚本会因 DECLARE 行让
+# sqlglot 解析失败。当作 anonymous procedure 处理。
+_RE_ANON_PLSQL_BLOCK = re.compile(
+    r"(?m)^[\s]*(DECLARE\b[\s\S]*?\bBEGIN\b|BEGIN\b)",
+    flags=re.IGNORECASE,
+)
 # S5 PR13：嵌套在 PACKAGE BODY 里的 PROCEDURE / FUNCTION 没有 CREATE 前缀。
 # 单独再扫一遍，但只在已知 PACKAGE BODY block 范围内用 —— 否则随处一段
 # `PROCEDURE foo IS` 都会误识别。
@@ -506,6 +513,52 @@ def extract_procedure_segments(sql: str) -> list[dict[str, Any]]:
     """
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
+    # S5 PR16：先扫顶层匿名 PL/SQL 块（DECLARE ... BEGIN / 单独 BEGIN）。
+    # 不在已知 CREATE PROCEDURE/FUNCTION/PACKAGE 范围内的算 anonymous，
+    # 当 procedure_kind=ANONYMOUS 处理 —— 让 cursor / 变量解析照常生效。
+    create_ranges: list[tuple[int, int]] = []
+    for cm in _RE_PROC_HEADER.finditer(sql):
+        # 简化：CREATE 范围从 header start 到下一个 CREATE 或文件末
+        nxt = _RE_PROC_HEADER.search(sql, cm.end())
+        create_ranges.append((cm.start(), nxt.start() if nxt else len(sql)))
+    for am in _RE_ANON_PLSQL_BLOCK.finditer(sql):
+        anon_start = am.start()
+        # 跳过落在 CREATE 范围内的（procedure 体内的内嵌 BEGIN 不是匿名块）
+        if any(s <= anon_start < e for s, e in create_ranges):
+            continue
+        # 匹配组里包含 BEGIN 关键字 —— 找到 BEGIN 后的 body 起点
+        begin_in_match = re.search(r"\bBEGIN\b", am.group(0), flags=re.IGNORECASE)
+        if not begin_in_match:
+            continue
+        body_start_pos = am.start() + begin_in_match.end()
+        # 配对 END
+        _, body_end_pos = _find_block_end(sql, body_start_pos, depth=1)
+        # 声明区：DECLARE 起到 BEGIN 之间
+        decl_region = sql[anon_start:body_start_pos - len("BEGIN")]
+        body = sql[body_start_pos:body_end_pos]
+        for index, item in enumerate(_iter_procedure_body_segments(body, decl_region), start=1):
+            preserved = clean_procedure_segment(item.text)
+            if not preserved:
+                continue
+            dedupe_key = " ".join(preserved.split())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            abs_start = body_start_pos + item.dml_start
+            abs_end = body_start_pos + item.end
+            result.append({
+                "procedure_name": "<anonymous>",
+                "procedure_kind": "ANONYMOUS",
+                "segment_index": str(index),
+                "sql": preserved,
+                "confidence": "high",
+                "line_start": _line_of(sql, abs_start),
+                "line_end": _line_of(sql, abs_end),
+                "preceding_comment": item.preceding_comment,
+                "parse_status": "unknown",
+                "cursor_sources": list(item.cursor_sources or []),
+                "trigger_source": "",
+            })
     # S5 PR13：把 PACKAGE BODY 拆成多个嵌套 procedure scope，每个独立处理。
     # 旧逻辑只看第一个 BEGIN 到匹配 END，会漏掉同一 PACKAGE BODY 里的第二个
     # / 后续 PROCEDURE。

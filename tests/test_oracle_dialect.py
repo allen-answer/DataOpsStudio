@@ -448,6 +448,62 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR16：顶层匿名 PL/SQL 块（DECLARE/BEGIN）应能解析 ──────────────────────
+
+
+def test_anonymous_declare_block_with_cursor_loop():
+    """`DECLARE v NUMBER; BEGIN FOR rec IN (...) LOOP INSERT ... END LOOP; END;`
+    顶层匿名块不被 sqlglot 直接识别 —— 旧逻辑全脚本解析失败。
+    PR16 当 anonymous procedure 处理：cursor 解析照常生效。"""
+    sql = """
+    DECLARE
+      v_total NUMBER;
+    BEGIN
+      FOR rec IN (SELECT id, amt FROM ods.orders WHERE flag = 1) LOOP
+        INSERT INTO dwd.fact (id, amt) VALUES (rec.id, rec.amt);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.orders", "dwd.fact") in edges, \
+        f"匿名块的 cursor LOOP INSERT 应被识别: {edges}"
+    segs = result.get("procedure_segments", [])
+    assert any(s.get("procedure_kind") == "ANONYMOUS" for s in segs)
+
+
+def test_anonymous_begin_only_block():
+    """没有 DECLARE 的顶层 `BEGIN ... END;` 也应当 anonymous procedure 处理。"""
+    sql = """
+    BEGIN
+      FOR rec IN (SELECT id FROM ods.orders) LOOP
+        INSERT INTO dwd.fact (id) VALUES (rec.id);
+      END LOOP;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.orders", "dwd.fact") in edges
+
+
+def test_anonymous_block_does_not_double_count_with_create_proc():
+    """`CREATE PROCEDURE ... BEGIN ... END;` 里面的 BEGIN 不应被当 anonymous
+    块再扫一遍 —— 落在 CREATE 范围内的 BEGIN 应跳过。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+    BEGIN
+      INSERT INTO dwd.t (id) SELECT id FROM ods.s;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    segs = result.get("procedure_segments", [])
+    # 应只有 1 段（procedure 体内 INSERT），不应有 anonymous 副本
+    insert_segs = [s for s in segs if "INSERT INTO dwd.t" in (s.get("sql") or "")]
+    assert len(insert_segs) == 1, \
+        f"不应被 anonymous 块逻辑重复扫描: {insert_segs}"
+    assert insert_segs[0].get("procedure_kind") != "ANONYMOUS"
+
+
 # ─── S5 PR15：TRIGGER 体内 DML 应跟触发源表建血缘 ──────────────────────────────
 
 
