@@ -300,6 +300,8 @@ export default {
         UDF_CALL: 'UDF 调用推断',
         BULK_COLLECT: 'BULK COLLECT 推断',
         TRIGGER: '触发器推断',
+        MERGE_UPDATE: 'MERGE 更新分支',
+        MERGE_INSERT: 'MERGE 插入分支',
       },
     },
     summary: {

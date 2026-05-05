@@ -297,6 +297,8 @@ export default {
         UDF_CALL: 'UDF call (inferred)',
         BULK_COLLECT: 'BULK COLLECT (inferred)',
         TRIGGER: 'Trigger (inferred)',
+        MERGE_UPDATE: 'MERGE update branch',
+        MERGE_INSERT: 'MERGE insert branch',
       },
     },
     summary: {

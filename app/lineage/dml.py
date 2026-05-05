@@ -131,7 +131,12 @@ def update_table_mappings(statement: Any) -> list[dict[str, Any]]:
 
 
 def merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
-    """MERGE 同 UPDATE，给"USING 子句的源表 → 目标表"粒度。"""
+    """MERGE 表级 + 列级映射。
+
+    - 先按 USING 子句源表产表级 mapping（与历史行为兼容）
+    - S5 PR19：再扫 `WHEN MATCHED THEN UPDATE SET col = expr` 和
+      `WHEN NOT MATCHED THEN INSERT (cols) VALUES (exprs)` 子句产列级 mapping
+    """
     e = exp()
     target_table = table_name(statement.this) if isinstance(statement.this, e.Table) else sql(statement.this)
 
@@ -145,7 +150,7 @@ def merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
                 source_tables.append(table_name(table))
 
     source_tables = _unique_strings(source_tables)
-    return [
+    mappings: list[dict[str, Any]] = [
         {
             "position": i + 1,
             "target_table": target_table,
@@ -165,6 +170,77 @@ def merge_table_mappings(statement: Any) -> list[dict[str, Any]]:
         }
         for i, src in enumerate(source_tables)
     ]
+
+    # PR19：列级映射 —— 扫 WHEN MATCHED / WHEN NOT MATCHED 子句
+    pos = len(mappings)
+    for when_clause in statement.find_all(e.When):
+        action = when_clause.args.get("then")
+        if action is None:
+            continue
+        if isinstance(action, e.Update):
+            # WHEN MATCHED THEN UPDATE SET col = src.col, ...
+            for set_item in action.expressions or []:
+                if not isinstance(set_item, e.EQ):
+                    continue
+                target_col = set_item.this
+                source_expr = set_item.expression
+                if target_col is None:
+                    continue
+                target_col_name = target_col.name if hasattr(target_col, "name") else sql(target_col)
+                src_cols = [sql(c) for c in source_expr.find_all(e.Column)] if source_expr is not None else []
+                pos += 1
+                mappings.append({
+                    "position": pos,
+                    "target_table": target_table,
+                    "target_column": target_col_name,
+                    "target": f"{target_table}.{target_col_name}" if target_col_name else target_table,
+                    "select_output_column": target_col_name,
+                    "expression": sql(source_expr) if source_expr is not None else "",
+                    "source_columns": src_cols,
+                    "source_tables": list(source_tables),
+                    "variables": [],
+                    "transform": transform_type(source_expr) if source_expr is not None else "MERGE",
+                    "dml_type": "MERGE_UPDATE",
+                    "confidence": "high",
+                    "reason": "MERGE WHEN MATCHED UPDATE SET",
+                    "source_type": "column",
+                    "warnings": [],
+                })
+        elif isinstance(action, e.Insert):
+            # WHEN NOT MATCHED THEN INSERT (cols) VALUES (exprs)
+            target_cols_expr = action.this
+            target_cols = []
+            if hasattr(target_cols_expr, "expressions") and target_cols_expr.expressions:
+                target_cols = [c.name if hasattr(c, "name") else sql(c) for c in target_cols_expr.expressions]
+            values_expr = action.expression
+            value_exprs = []
+            if values_expr is not None:
+                # VALUES(...) is Tuple-like; try .expressions
+                tuples = list(values_expr.find_all(e.Tuple))
+                if tuples:
+                    value_exprs = list(tuples[0].expressions)
+            for idx, target_col_name in enumerate(target_cols):
+                src_expr = value_exprs[idx] if idx < len(value_exprs) else None
+                src_cols = [sql(c) for c in src_expr.find_all(e.Column)] if src_expr is not None else []
+                pos += 1
+                mappings.append({
+                    "position": pos,
+                    "target_table": target_table,
+                    "target_column": target_col_name,
+                    "target": f"{target_table}.{target_col_name}" if target_col_name else target_table,
+                    "select_output_column": target_col_name,
+                    "expression": sql(src_expr) if src_expr is not None else "",
+                    "source_columns": src_cols,
+                    "source_tables": list(source_tables),
+                    "variables": [],
+                    "transform": transform_type(src_expr) if src_expr is not None else "MERGE",
+                    "dml_type": "MERGE_INSERT",
+                    "confidence": "high",
+                    "reason": "MERGE WHEN NOT MATCHED INSERT VALUES",
+                    "source_type": "column",
+                    "warnings": [],
+                })
+    return mappings
 
 
 def delete_table_mappings(statement: Any) -> list[dict[str, Any]]:

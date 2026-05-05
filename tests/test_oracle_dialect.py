@@ -448,6 +448,49 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR19：MERGE 列级映射 ──────────────────────────────────────────────────
+
+
+def test_merge_column_level_mappings():
+    """MERGE 子句应抽出 WHEN MATCHED THEN UPDATE / WHEN NOT MATCHED THEN INSERT
+    的列级映射，不只是表级。"""
+    sql = """
+    MERGE INTO dwd.fact d
+    USING (SELECT id, amt FROM ods.txn) s
+    ON (d.id = s.id)
+    WHEN MATCHED THEN UPDATE SET d.amt = s.amt
+    WHEN NOT MATCHED THEN INSERT (id, amt) VALUES (s.id, s.amt);
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    mappings = result.get("insert_mappings", [])
+    update_maps = [m for m in mappings if m.get("dml_type") == "MERGE_UPDATE"]
+    insert_maps = [m for m in mappings if m.get("dml_type") == "MERGE_INSERT"]
+    assert update_maps, f"应有 MERGE_UPDATE 列级映射: {mappings}"
+    assert insert_maps, f"应有 MERGE_INSERT 列级映射: {mappings}"
+    # UPDATE SET d.amt = s.amt
+    upd_amt = next((m for m in update_maps if m.get("target_column") == "amt"), None)
+    assert upd_amt is not None
+    assert "s.amt" in upd_amt["source_columns"]
+    # INSERT (id, amt) VALUES (s.id, s.amt) —— 应有 2 条 INSERT 列映射
+    insert_cols = {m.get("target_column") for m in insert_maps}
+    assert "id" in insert_cols and "amt" in insert_cols, \
+        f"INSERT 子句应有 id/amt 两列映射: {insert_maps}"
+
+
+def test_merge_table_level_mapping_still_present():
+    """PR19 不应破坏既有的表级 MERGE mapping（向后兼容）。"""
+    sql = """
+    MERGE INTO dwd.fact d
+    USING ods.txn s
+    ON (d.id = s.id)
+    WHEN MATCHED THEN UPDATE SET d.amt = s.amt;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    table_maps = [m for m in result.get("insert_mappings", [])
+                  if m.get("dml_type") == "MERGE" and m.get("source_type") == "table"]
+    assert table_maps, "MERGE 表级 mapping 应保留"
+
+
 # ─── S5 PR17：PL/SQL 局部变量（含 %ROWTYPE / %TYPE）不污染 tables 列表 ─────────
 
 
