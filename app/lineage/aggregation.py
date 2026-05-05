@@ -27,6 +27,13 @@ _INSERT_FAMILY = frozenset({
     "CREATE_TABLE_AS", "CREATE_OR_REPLACE_TABLE_AS",
 })
 
+# S5 PR6：CREATE 节点产生 target_summary 的 kind 白名单。其他 kind
+# （PROCEDURE / FUNCTION / PACKAGE / PACKAGE BODY / TRIGGER / TYPE / INDEX
+# / SEQUENCE 等）不是 DDL on table，不该把过程名当 target_table。
+_CREATE_TABLE_KINDS = frozenset({
+    "TABLE", "VIEW", "MATERIALIZED VIEW", "MATERIALIZED_VIEW",
+})
+
 
 def extract_statement_title(statement: Any) -> str:
     """从 sqlglot 节点的 .comments 列表里挑出第一段非空文本作为业务标题。
@@ -125,6 +132,12 @@ def collect_target_operations(statements: list[Any]) -> list[dict[str, Any]]:
                 ))
         elif isinstance(statement, e.Create):
             if is_temp_create(statement):
+                continue
+            # S5 PR6：CREATE PROCEDURE / FUNCTION / PACKAGE / TRIGGER 等不是
+            # DDL on table，不该入 target_summary。pkg.refresh_daily 这种过程
+            # 名一直被错当成 target_table，导致 summary 多一条 fake 记录
+            kind = (statement.args.get("kind") or "").upper()
+            if kind and kind not in _CREATE_TABLE_KINDS:
                 continue
             target = create_target_table(statement)
             if target and statement.args.get("expression") is not None:

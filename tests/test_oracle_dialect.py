@@ -448,6 +448,58 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR6：CREATE PROCEDURE / FUNCTION 不应进 target_summary ─────────────────
+
+
+def test_create_procedure_not_in_target_summary():
+    """`CREATE OR REPLACE PROCEDURE pkg.foo IS BEGIN ... END` —— pkg.foo 是
+    过程名不是表名，过去会作为 fake target 出现在 target_summary 里。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.refresh_daily IS
+    BEGIN
+      TRUNCATE TABLE dwd.daily_summary;
+      INSERT INTO dwd.daily_summary (id, amt) SELECT id, amt FROM ods.txn;
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = [s.get("target_table") for s in result.get("target_summary", [])]
+    assert "pkg.refresh_daily" not in targets, \
+        f"pkg.refresh_daily 是过程名不是表，不该进 target_summary: {targets}"
+    # 真实 target 仍应在
+    assert "dwd.daily_summary" in targets
+
+
+def test_create_function_not_in_target_summary():
+    """CREATE FUNCTION 同样不该当 target_table。"""
+    sql = """
+    CREATE OR REPLACE FUNCTION pkg.fn RETURN NUMBER IS BEGIN
+      RETURN 1;
+    END;
+
+    INSERT INTO dwd.t (a) VALUES (pkg.fn);
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = [s.get("target_table") for s in result.get("target_summary", [])]
+    assert "pkg.fn" not in targets, f"FUNCTION 名不该当 target: {targets}"
+    assert "dwd.t" in targets
+
+
+def test_create_table_still_in_target_summary():
+    """PR6 不应破坏 CREATE TABLE 的 target_summary —— TABLE 是真实 DDL on table。"""
+    sql = "CREATE TABLE dwd.t AS SELECT id FROM ods.s;"
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = [s.get("target_table") for s in result.get("target_summary", [])]
+    assert "dwd.t" in targets
+
+
+def test_create_view_still_in_target_summary():
+    """CREATE VIEW 也是有效的"目标"，仍应入 summary。"""
+    sql = "CREATE OR REPLACE VIEW dwd.v AS SELECT id FROM ods.s;"
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = [s.get("target_table") for s in result.get("target_summary", [])]
+    assert "dwd.v" in targets
+
+
 def test_package_var_not_misattributed_to_from_table():
     """S5 PR5：`SELECT g_app_id, count(*) FROM ods.orders` 不应把 g_app_id
     误归到 ods.orders 的 source_columns。它是 PL/SQL 变量，不是物理列。
