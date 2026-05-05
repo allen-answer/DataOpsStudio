@@ -1,5 +1,6 @@
 <script setup>
-import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { healthMeta, workflowHealth, synthesizeEvents, resolveAllParameters } from '../../mock/workflow_meta'
 import WorkflowCompareNodeEditor     from '../../components/workflow/WorkflowCompareNodeEditor.vue'
 import WorkflowParamsNodeEditor      from '../../components/workflow/WorkflowParamsNodeEditor.vue'
@@ -8,23 +9,31 @@ import WorkflowExcelExportNodeEditor from '../../components/workflow/WorkflowExc
 import WorkflowHistoryPanel          from '../../components/workflow/WorkflowHistoryPanel.vue'
 import WorkflowDagCanvas             from '../../components/workflow/WorkflowDagCanvas.vue'
 import WorkflowSettingsPanel         from '../../components/workflow/WorkflowSettingsPanel.vue'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.vue'))
 
 const emit = defineEmits(['back', 'open-run'])
 
 // 注：节点编辑器（params / compare / lineage / excel_export）已抽成子组件，
-// 它们各自从 inject('app') 拿需要的全局方法（addParameter / addExportSheet
+// 它们各自直接 useWorkflowStore() 拿需要的全局方法（addParameter / addExportSheet
 // 等），所以这里不再解构那些 helper。父组件保留 addWorkflowNode 等还在用的。
+const { state } = useBootstrapStore()
+const workflowStore = useWorkflowStore()
+const { workflowDraft } = workflowStore        // reactive
 const {
-  state, workflowDraft, selectedWorkflowId, currentWorkflow, isSavedWorkflow,
+  selectedWorkflowId, currentWorkflow, isSavedWorkflow,
   workflowResult, workflowAsyncJob, workflowAsyncStatus, workflowRunHistory,
-  allWorkflowRuns, loadAllWorkflowRuns,
+  allWorkflowRuns,
+} = storeToRefs(workflowStore)
+const {
+  loadAllWorkflowRuns,
   saveWorkflow, deleteWorkflow, saveWorkflowAsTemplate,
   runWorkflow, runWorkflowAsync, runWorkflowAsyncWith, cancelWorkflowAsync,
   addWorkflowNode, removeWorkflowNode, moveWorkflowNode,
   loadWorkflowRunDetail,
-} = inject('app')
+} = workflowStore
 
 // 注：运行历史 tab 整段（行展开 + mini gantt + 状态徽章 + 复用变量重跑）
 // 已抽到 components/workflow/WorkflowHistoryPanel.vue，保留 selectedNodeId 等

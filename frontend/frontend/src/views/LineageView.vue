@@ -1,14 +1,17 @@
 <script setup>
-import { defineAsyncComponent, inject, computed, onMounted } from 'vue'
+import { defineAsyncComponent, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
 import { apiGet } from '../api'
+import { useLineageStore } from '../stores/lineage'
 
 const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
 
-const { lineage, analyzeLineage } = inject('app')
+const lineageStore = useLineageStore()
+const { lineage } = lineageStore       // reactive 直接拿
+const { analyzeLineage } = lineageStore
 const route = useRoute()
 
 // 从分析结果取 LineageAnalysisReport（Phase 3 后端附加字段）

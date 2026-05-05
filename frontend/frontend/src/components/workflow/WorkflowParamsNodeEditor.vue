@@ -1,14 +1,17 @@
 <script setup>
-import { inject, ref } from 'vue'
+import { ref } from 'vue'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const props = defineProps({
   node: { type: Object, required: true },
 })
 
-// 全局共享状态从父注入：state.datasources（sql_result 类型参数选数据源用）+
-// addParameter / removeParameter（这俩在 App.vue 里，会同时维护 node.parameters
-// 数组并触发其他副作用，所以不在子组件里 inline 实现）
-const { state, addParameter, removeParameter } = inject('app')
+// state.datasources 给 sql_result 类型参数选数据源用；
+// addParameter / removeParameter 在 workflowStore 里，会同时维护 node.parameters
+// 数组并触发其他副作用，所以不在子组件里 inline 实现
+const { state } = useBootstrapStore()
+const { addParameter, removeParameter } = useWorkflowStore()
 
 // 参数类型可选项（与 mock/workflow_meta.parameterTypeMeta 对齐）
 const paramTypeOptions = [

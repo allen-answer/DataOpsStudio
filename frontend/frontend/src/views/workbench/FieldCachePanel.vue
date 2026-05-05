@@ -1,6 +1,8 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { AlertTriangle, Database, Eye, Info, KeyRound, ListChecks, Wand2 } from 'lucide-vue-next'
+import { useTaskStore } from '../../stores/task'
 
 const props = defineProps({
   title: { type: String, default: '已缓存字段' },
@@ -8,20 +10,17 @@ const props = defineProps({
   compact: { type: Boolean, default: false },
 })
 
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore         // reactive
 const {
-  taskDraft,
-  sourcePreviewData,
-  targetPreviewData,
-  sourceFields,
-  targetFields,
-  schemaDiagnostics,
-  fieldPickerRows,
-  fieldPickerHasFields,
-  toggleFieldIncluded,
-  fieldPickerSelectAll,
-  fieldPickerExcludeOneSided,
+  sourcePreviewData, targetPreviewData,
+  sourceFields, targetFields,
+  schemaDiagnostics, fieldPickerRows, fieldPickerHasFields,
+} = storeToRefs(taskStore)
+const {
+  toggleFieldIncluded, fieldPickerSelectAll, fieldPickerExcludeOneSided,
   recommendKey,
-} = inject('app')
+} = taskStore
 
 const sourcePreviewRows = computed(() => sourcePreviewData.value?.rows?.length ?? 0)
 const targetPreviewRows = computed(() => targetPreviewData.value?.rows?.length ?? 0)

@@ -1,21 +1,33 @@
 <script setup>
-import { inject, ref, computed } from 'vue'
+import { ref, computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Play, Square, Download, Inbox, AlertCircle, CheckCircle2 } from 'lucide-vue-next'
+import { useTaskStore } from '../../stores/task'
+import { useNoticeStore } from '../../stores/notice'
 
+// compareBuckets 之前在 App.vue 是常量；S2.B 收口后直接在这里 inline，
+// 不值得为了 4 个对象再起一个 store。如果别处也要用，再抽 constants 模块。
+const compareBuckets = [
+  { id: 'only_source', label: '只在源端' },
+  { id: 'only_target', label: '只在目标端' },
+  { id: 'diff', label: '差异' },
+  { id: 'same', label: '一致' },
+]
+
+const taskStore = useTaskStore()
 const {
-  isSavedTask,
-  compareResult, compareBuckets, asyncJob, asyncStatus, previewOutput,
-  actionStatus,
-  runTask, runAsync, cancelAsync,
-} = inject('app')
+  isSavedTask, compareResult, asyncJob, asyncStatus, previewOutput,
+} = storeToRefs(taskStore)
+const { runTask, runAsync, cancelAsync } = taskStore
+const { actionStatus } = useNoticeStore()
 
 // 结果 bucket 筛选 —— 默认显示全部，点击可切到单 bucket
 const activeBucket = ref('all')
 
 const visibleBuckets = computed(() => {
   if (!compareResult.value) return []
-  if (activeBucket.value === 'all') return compareBuckets.value
-  return compareBuckets.value.filter(b => b.id === activeBucket.value)
+  if (activeBucket.value === 'all') return compareBuckets
+  return compareBuckets.filter(b => b.id === activeBucket.value)
 })
 
 const summaryCards = computed(() => {

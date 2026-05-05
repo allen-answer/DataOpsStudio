@@ -6,14 +6,14 @@
  *   - drivers / dbTypes（驱动可用性 + DB 类型枚举）
  *
  * 暴露 `reload()` 拉一次接口写入 state；业务联动（reload 完后切默认任务、
- * 默认 datasource、默认 db_type）仍由 App.vue 的 loadBootstrap 包一层做，
+ * 默认 datasource、默认 db_type）由 App.vue 的 loadBootstrap 包一层做，
  * 避免 store 内反向 import 其它 store 造成循环。
  *
- * View 通过 `inject('app').state` 访问保持 backward compat —— App.vue 把
- * `bootstrapStore.state` 平铺到 provide('app').state。reactive 解构后仍是
- * 同一个 proxy，不需要 storeToRefs。
+ * S2.B 后所有 view 直接 `useBootstrapStore()` —— state 是 reactive，解构后
+ * 仍是同一个 proxy，不需要 storeToRefs。driverItems 是 computed，给
+ * sidebar 显示驱动可用性 dot 用。
  */
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import { defineStore } from 'pinia'
 import { apiGet } from '../api'
 
@@ -43,5 +43,8 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     return state
   }
 
-  return { state, reload }
+  // sidebar 显示驱动可用性 dot；从 state.drivers map 派生 [(name, ok), ...]
+  const driverItems = computed(() => Object.entries(state.drivers || {}))
+
+  return { state, reload, driverItems }
 })

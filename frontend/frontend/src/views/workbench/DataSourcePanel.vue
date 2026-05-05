@@ -1,6 +1,9 @@
 <script setup>
-import { defineAsyncComponent, inject, computed } from 'vue'
+import { defineAsyncComponent, computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Code2, FileSpreadsheet, Sparkles, Eye, ListTree } from 'lucide-vue-next'
+import { useTaskStore } from '../../stores/task'
+import { useNoticeStore } from '../../stores/notice'
 
 // 源 / 目标 数据来源面板：SQL 编辑器或 Excel 上传 + 字段提取 + 预览
 const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.vue'))
@@ -10,13 +13,15 @@ const props = defineProps({
   side: { type: String, required: true },
 })
 
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore         // reactive
 const {
-  taskDraft,
   sourcePreviewData, targetPreviewData,
   sourceFields, targetFields,
   sourceFieldWarnings, targetFieldWarnings,
-  extractFields, previewTask, formatSql, uploadExcel, copyField,
-} = inject('app')
+} = storeToRefs(taskStore)
+const { extractFields, previewTask, formatSql, uploadExcel } = taskStore
+const { copyField } = useNoticeStore()
 
 // 一组以 side 派生的字段访问器
 const kind   = computed({ get: () => taskDraft[`${props.side}_kind`], set: v => taskDraft[`${props.side}_kind`] = v })

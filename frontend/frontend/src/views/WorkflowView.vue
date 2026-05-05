@@ -1,12 +1,20 @@
 <script setup>
-import { inject, ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import WorkflowListView from './workflow/WorkflowListView.vue'
 import WorkflowDetailView from './workflow/WorkflowDetailView.vue'
 import WorkflowRunView from './workflow/WorkflowRunView.vue'
 import WorkflowTemplateView from './workflow/WorkflowTemplateView.vue'
+import { useBootstrapStore } from '../stores/bootstrap'
+import { useWorkflowStore } from '../stores/workflow'
+import { useNoticeStore } from '../stores/notice'
 
-const { state, selectedWorkflowId, workflowResult, selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync, setNotice } = inject('app')
+const { state } = useBootstrapStore()
+const workflowStore = useWorkflowStore()
+const { selectedWorkflowId, workflowResult } = storeToRefs(workflowStore)
+const { selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync } = workflowStore
+const { setNotice } = useNoticeStore()
 
 const route = useRoute()
 const subPage = ref('list')      // list / detail / run / templates

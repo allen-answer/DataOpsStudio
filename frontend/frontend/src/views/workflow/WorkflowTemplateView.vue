@@ -1,15 +1,17 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useWorkflowStore } from '../../stores/workflow'
+import { useNoticeStore } from '../../stores/notice'
 
 const emit = defineEmits(['open-detail'])
 
+const workflowStore = useWorkflowStore()
+const { workflowTemplates } = storeToRefs(workflowStore)
 const {
-  workflowTemplates,
-  createWorkflowFromTemplate,
-  deleteWorkflowTemplate,
-  loadWorkflowTemplates,
-  setNotice,
-} = inject('app')
+  createWorkflowFromTemplate, deleteWorkflowTemplate, loadWorkflowTemplates,
+} = workflowStore
+const { setNotice } = useNoticeStore()
 
 const categoryFilter = ref('all')
 const searchTerm = ref('')

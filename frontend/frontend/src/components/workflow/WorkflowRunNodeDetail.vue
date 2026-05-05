@@ -1,6 +1,7 @@
 <script setup>
-import { inject, ref } from 'vue'
+import { ref } from 'vue'
 import { nodeStatusMeta } from '../../mock/workflow_meta'
+import { useNoticeStore } from '../../stores/notice'
 
 // 单个节点详情面板（运行视图右侧 main pane）。父传 node + 该节点的事件 +
 // run/workflow id；重跑动作以 emit 回去，由父决定调哪个 API。
@@ -12,7 +13,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['rerun-from-node', 'rerun-defaults'])
 
-const { copyField } = inject('app')
+const { copyField } = useNoticeStore()
 
 // --- per-node 输出视图辅助 ---
 const formatBytes = (n) => {

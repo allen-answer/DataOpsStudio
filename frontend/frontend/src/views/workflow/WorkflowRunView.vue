@@ -1,13 +1,20 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/workflow_meta'
 import WorkflowRunNodeDetail from '../../components/workflow/WorkflowRunNodeDetail.vue'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const emit = defineEmits(['back', 'open-detail'])
-const { workflowResult, currentWorkflow, runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
-        rerunWorkflowFromNode,
-        workflowAsyncJob, workflowAsyncStatus, cancelWorkflowAsync,
-        reemitWorkflowRunOpenLineage } = inject('app')
+const workflowStore = useWorkflowStore()
+const {
+  workflowResult, currentWorkflow,
+  workflowAsyncJob, workflowAsyncStatus,
+} = storeToRefs(workflowStore)
+const {
+  runWorkflow, runWorkflowAsync, runWorkflowAsyncWith,
+  rerunWorkflowFromNode, cancelWorkflowAsync, reemitWorkflowRunOpenLineage,
+} = workflowStore
 
 // 历史 run 复用变量重跑：剥掉内置变量，避免冻结时间。和 detail view 共享
 // 同样的 helper 语义。

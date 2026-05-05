@@ -1,16 +1,17 @@
 <script setup>
-import { inject, ref } from 'vue'
+import { ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { apiGet } from '../../api'
 import { nodeStatusMeta } from '../../mock/workflow_meta'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const emit = defineEmits(['open-run'])
 
-// 共享状态从 inject('app') 拿；列表数据 workflowRunHistory 由 App.vue
-// 在 selectWorkflow / 跑完一次 run 时刷新。
-const {
-  currentWorkflow, workflowRunHistory,
-  runWorkflowAsyncWith,
-} = inject('app')
+// 共享状态从 store 拿；列表数据 workflowRunHistory 由 store 在 selectWorkflow /
+// 跑完一次 run 时刷新。
+const workflowStore = useWorkflowStore()
+const { currentWorkflow, workflowRunHistory } = storeToRefs(workflowStore)
+const { runWorkflowAsyncWith } = workflowStore
 
 
 // --- 行展开 + mini gantt ---

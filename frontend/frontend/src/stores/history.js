@@ -1,12 +1,12 @@
 /**
- * History store —— 执行历史选择 state + 删/导出 handler。
+ * History store —— 执行历史选择 state + 删/导出 handler + 派生 computed。
  *
- * historyTaskOptions / filteredHistory 等 computed 仍在 App.vue：它们依赖
- * useBootstrapStore.state.history + state.tasks，组件少看不值得跨 store 迁。
+ * S2.B：把 historyTaskOptions / filteredHistory / *HistoryCount 从 App.vue
+ * 迁过来。这些 computed 依赖 bootstrapStore.state.history + state.tasks。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { apiJson } from '../api'
+import { apiGet, apiJson } from '../api'
 import { useBootstrapStore } from './bootstrap'
 import { useNoticeStore } from './notice'
 
@@ -79,9 +79,52 @@ export const useHistoryStore = defineStore('history', () => {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
+  // S2.B：从 App.vue 迁来的派生 computed + loadHistory
+  const _bootstrap = useBootstrapStore()
+
+  /** 任务过滤 dropdown 的选项：list 里所有任务 + history 里残留的已删除任务名。 */
+  const historyTaskOptions = computed(() => {
+    const options = _bootstrap.state.tasks.map((task) => ({ id: task.id, name: task.name }))
+    const seen = new Set(options.map((item) => item.id))
+    _bootstrap.state.history.forEach((item) => {
+      if (item.task_id && !seen.has(item.task_id)) {
+        seen.add(item.task_id)
+        options.push({ id: item.task_id, name: item.task_name || `已删除任务 ${item.task_id.slice(0, 8)}` })
+      }
+    })
+    return options
+  })
+
+  /** 当前 tab + 任务过滤后的 history 列表。 */
+  const filteredHistory = computed(() => {
+    let items = _bootstrap.state.history
+    if (historyActiveTab.value === 'compare') {
+      items = items.filter((item) => item.type !== 'lineage')
+    } else if (historyActiveTab.value === 'lineage') {
+      items = items.filter((item) => item.type === 'lineage')
+    }
+    if (!selectedHistoryTaskId.value) return items
+    return items.filter((item) => item.task_id === selectedHistoryTaskId.value)
+  })
+
+  const compareHistoryCount = computed(
+    () => _bootstrap.state.history.filter((item) => item.type !== 'lineage').length,
+  )
+  const lineageHistoryCount = computed(
+    () => _bootstrap.state.history.filter((item) => item.type === 'lineage').length,
+  )
+
+  /** 拉一遍 /api/history 写回 bootstrapStore.state；HistoryView 删除 / 跑完 task
+   * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。 */
+  async function loadHistory() {
+    _bootstrap.state.history = await apiGet('/api/history')
+    selectedHistory.value = new Set()
+  }
+
   return {
     selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
+    historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
     clearSelection, setHistoryTab,
-    deleteHistory, exportHistory,
+    deleteHistory, exportHistory, loadHistory,
   }
 })

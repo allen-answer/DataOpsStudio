@@ -1,22 +1,19 @@
 <script setup>
-import { inject } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useBootstrapStore } from '../stores/bootstrap'
+import { useHistoryStore } from '../stores/history'
+import { useNoticeStore } from '../stores/notice'
 
+const { state } = useBootstrapStore()
+
+const historyStore = useHistoryStore()
 const {
-  state,
-  selectedHistory,
-  selectedSheets,
-  selectedHistoryTaskId,
-  historyActiveTab,
-  historyTaskOptions,
-  filteredHistory,
-  compareHistoryCount,
-  lineageHistoryCount,
-  loadHistory,
-  exportHistory,
-  deleteHistory,
-  historyItemTaskLabel,
-  summaryValue,
-} = inject('app')
+  selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
+  historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
+} = storeToRefs(historyStore)
+const { loadHistory, exportHistory, deleteHistory } = historyStore
+
+const { historyItemTaskLabel, summaryValue } = useNoticeStore()
 </script>
 
 <template>

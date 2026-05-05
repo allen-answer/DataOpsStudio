@@ -1,14 +1,15 @@
 <script setup>
-import { inject, computed } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
+import { useBatchStore } from '../stores/batch'
 
-const {
-  batch,
-  batchSelectedFileNames,
-  analyzeBatch,
-} = inject('app')
+const batchStore = useBatchStore()
+const { batch } = batchStore                           // reactive
+const { batchSelectedFileNames } = storeToRefs(batchStore)
+const { analyzeBatch } = batchStore
 
 const report = computed(() => batch.result?.report || null)
 </script>

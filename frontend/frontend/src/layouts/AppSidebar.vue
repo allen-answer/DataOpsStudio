@@ -1,5 +1,4 @@
 <script setup>
-import { inject } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Database,
@@ -18,6 +17,7 @@ import {
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
 import { useProjectStore } from '../stores/project'
+import { useBootstrapStore } from '../stores/bootstrap'
 
 // 导航项：order 决定 sidebar 上下顺序，icon 来自 lucide。
 // matchPaths 用于 active 高亮 —— 当前 route 以这些前缀任一开头即认为命中。
@@ -45,12 +45,13 @@ const ADMIN_NAV_ITEMS = [
 const route = useRoute()
 const authStore = useAuthStore()
 const projectStore = useProjectStore()
+const bootstrapStore = useBootstrapStore()
 const { isAdmin } = storeToRefs(authStore)
 const { currentProjectId, projects } = storeToRefs(projectStore)
-
-// app context（driverItems 是 App.vue 暴露的 computed ref，模板自动解包；
-// loadBootstrap 是 async 函数）
-const { driverItems, loadBootstrap } = inject('app', { driverItems: [], loadBootstrap: () => {} })
+const { driverItems } = storeToRefs(bootstrapStore)
+// 切项目后用 bootstrapStore.reload 重拉数据；不需要 App.vue 的 loadBootstrap
+// 那一层"自动选第一个任务"副作用 —— 只刷列表，让用户保持当前选择
+const reloadBootstrap = bootstrapStore.reload
 
 function isActive(item) {
   return item.matchPaths.some(p => route.path === p || route.path.startsWith(p + '/'))
@@ -58,8 +59,7 @@ function isActive(item) {
 
 async function onProjectChange(event) {
   projectStore.setProject(event.target.value || '')
-  // 切项目后重新拉 bootstrap —— 列表都按当前项目过滤
-  await loadBootstrap()
+  await reloadBootstrap()
 }
 </script>
 

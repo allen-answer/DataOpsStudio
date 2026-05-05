@@ -1,5 +1,6 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed } from 'vue'
+import { useBootstrapStore } from '../stores/bootstrap'
 
 // `target` is the parent's reactive (lineage / batch).
 // `sqlTablesLabel` differs between Lineage ("只拉 SQL 中出现的表") and Batch ("只拉脚本中出现的表").
@@ -8,7 +9,7 @@ const props = defineProps({
   sqlTablesLabel: { type: String, default: '只拉 SQL 中出现的表' },
 })
 
-const { state } = inject('app')
+const { state } = useBootstrapStore()
 
 const schemaFileNames = computed(() => (props.target.schemaFiles || []).map((file) => file.name))
 </script>

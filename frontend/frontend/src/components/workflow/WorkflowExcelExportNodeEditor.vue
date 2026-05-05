@@ -1,5 +1,7 @@
 <script setup>
-import { inject, ref } from 'vue'
+import { ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -7,13 +9,15 @@ const props = defineProps({
 
 // workflowDraft.nodes：跨节点查 candidate / dataset preset 用
 // allWorkflowRuns / loadAllWorkflowRuns：history_run 模式选历史 run
-// addExportSheet / removeExportSheet / moveExportSheet：保持和 App.vue 中
+// addExportSheet / removeExportSheet / moveExportSheet：跟 store 中
 //   全局 reactive 同步（部分逻辑会触发 expand 默认值或 id 自增）
+const workflowStore = useWorkflowStore()
+const { workflowDraft } = workflowStore                       // reactive 直接拿
+const { allWorkflowRuns } = storeToRefs(workflowStore)        // ref 经 storeToRefs
 const {
-  workflowDraft,
-  allWorkflowRuns, loadAllWorkflowRuns,
+  loadAllWorkflowRuns,
   addExportSheet, removeExportSheet, moveExportSheet,
-} = inject('app')
+} = workflowStore
 
 // Sheet 模板 / 来源中文标签 —— 对应 compare 节点 dataset 短名
 const sheetTemplateIds = ['summary', 'diff', 'only_source', 'only_target', 'same']

@@ -1,9 +1,12 @@
 <script setup>
-import { computed, inject, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { Wand2, AlertTriangle } from 'lucide-vue-next'
 import FieldCachePanel from './FieldCachePanel.vue'
+import { useTaskStore } from '../../stores/task'
 
-const { taskDraft, recommendKey } = inject('app')
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore         // reactive
+const { recommendKey } = taskStore
 
 // 任一边是 Excel 时不能流式分块（Excel reader 不保证按主键有序）。开关需要 disable
 // 并提示，同时一旦切回去自动复位 stream_compare=false 避免后端校验时才报错。

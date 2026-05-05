@@ -1,14 +1,15 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed } from 'vue'
+import { useBootstrapStore } from '../../stores/bootstrap'
 
-// 节点对象作为 reactive prop 传入；本组件直接 mutate 字段（与 App.vue 已有
+// 节点对象作为 reactive prop 传入；本组件直接 mutate 字段（与 store 已有
 // workflowDraft 模式一致）。这样写在 Vue 3 reactive 下是可行的——传过来的
 // 是 parent 同一个 reactive proxy，mutation 自动响应。
 const props = defineProps({
   node: { type: Object, required: true },
 })
 
-const { state } = inject('app')
+const { state } = useBootstrapStore()
 
 // drill-in：根据 task_id 找到任务定义，展示原始 SQL 给用户作为覆盖参考。
 const compareTaskOptions = computed(() => state.tasks.map((t) => ({ id: t.id, name: t.name })))

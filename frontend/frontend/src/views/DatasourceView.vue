@@ -1,22 +1,21 @@
 <script setup>
-import { inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '../stores/project'
+import { useBootstrapStore } from '../stores/bootstrap'
+import { useDatasourceStore } from '../stores/datasource'
 
+const bootstrapStore = useBootstrapStore()
+const { state } = bootstrapStore
+const { driverItems } = storeToRefs(bootstrapStore)
+const loadBootstrap = bootstrapStore.reload    // sidebar / 顶部按钮重新拉数据用
+
+const datasourceStore = useDatasourceStore()
+const { editingDatasourceId } = storeToRefs(datasourceStore)
 const {
-  state,
-  datasourceDraft,
-  editDraft,
-  editingDatasourceId,
-  driverItems,
-  loadBootstrap,
-  startEditDatasource,
-  cancelEditDatasource,
-  updateDatasource,
-  deleteDatasource,
-  createDatasource,
-  testDatasource,
-} = inject('app')
+  datasourceDraft, editDraft,
+  startEditDatasource, cancelEditDatasource,
+  updateDatasource, deleteDatasource, createDatasource, testDatasource,
+} = datasourceStore
 
 const projectStore = useProjectStore()
 const { projects } = storeToRefs(projectStore)

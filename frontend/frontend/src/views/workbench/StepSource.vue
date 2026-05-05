@@ -1,11 +1,13 @@
 <script setup>
-import { inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import DataSourcePanel from './DataSourcePanel.vue'
 import FieldCachePanel from './FieldCachePanel.vue'
 import { useProjectStore } from '../../stores/project'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useTaskStore } from '../../stores/task'
 
-const { state, taskDraft } = inject('app')
+const { state } = useBootstrapStore()
+const { taskDraft } = useTaskStore()
 const { projects } = storeToRefs(useProjectStore())
 </script>
 

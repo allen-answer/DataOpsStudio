@@ -1,14 +1,15 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { AlertTriangle, Info, Sparkles, Check, X } from 'lucide-vue-next'
 import FieldCachePanel from './FieldCachePanel.vue'
 import { apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
+import { useTaskStore } from '../../stores/task'
 
-const {
-  taskDraft, sourceFields, targetFields,
-  fieldPickerRows, fieldPickerHasFields,
-} = inject('app')
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore
+const { sourceFields, targetFields, fieldPickerRows, fieldPickerHasFields } = storeToRefs(taskStore)
 
 const noticeStore = useNoticeStore()
 const aiSuggesting = ref(false)

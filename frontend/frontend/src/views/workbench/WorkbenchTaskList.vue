@@ -1,8 +1,14 @@
 <script setup>
-import { inject, computed } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Plus, Search, FileSpreadsheet, FileCode } from 'lucide-vue-next'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useTaskStore } from '../../stores/task'
 
-const { state, selectedTaskId, selectTask } = inject('app')
+const { state } = useBootstrapStore()
+const taskStore = useTaskStore()
+const { selectedTaskId } = storeToRefs(taskStore)
+const { selectTask } = taskStore
 
 const props = defineProps({
   search: { type: String, default: '' },

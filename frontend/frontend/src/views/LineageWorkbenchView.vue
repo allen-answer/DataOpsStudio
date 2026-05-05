@@ -1,10 +1,13 @@
 <script setup>
-import { defineAsyncComponent, ref, computed, inject, watch, onMounted } from 'vue'
+import { defineAsyncComponent, ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { Code2, FileText, Files, Archive, Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
 import { apiGet } from '../api'
+import { useLineageStore } from '../stores/lineage'
+import { useBatchStore } from '../stores/batch'
 
 // Phase 4：合并"单脚本血缘"和"多脚本分析"为统一血缘分析工作台。
 // 4 种输入模式：粘贴 SQL / 上传单文件 / 上传多文件 / 上传 ZIP
@@ -13,11 +16,15 @@ import { apiGet } from '../api'
 
 const SqlEditor = defineAsyncComponent(() => import('../components/SqlEditor.vue'))
 
-const {
-  lineage, batch, batchSelectedFileNames,
-  lineageAIStatus, loadLineageAIStatus,
-  analyzeLineage, analyzeBatch,
-} = inject('app')
+const lineageStore = useLineageStore()
+const { lineage } = lineageStore                       // reactive
+const { lineageAIStatus } = storeToRefs(lineageStore)  // ref
+const { analyzeLineage, loadLineageAIStatus } = lineageStore
+
+const batchStore = useBatchStore()
+const { batch } = batchStore                           // reactive
+const { batchSelectedFileNames } = storeToRefs(batchStore)
+const { analyzeBatch } = batchStore
 
 const route = useRoute()
 

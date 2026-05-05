@@ -1,9 +1,15 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { healthMeta, workflowHealth } from '../../mock/workflow_meta'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useWorkflowStore } from '../../stores/workflow'
 
 const emit = defineEmits(['open-detail', 'run'])
-const { state, allWorkflowRuns, loadAllWorkflowRuns } = inject('app')
+const { state } = useBootstrapStore()
+const workflowStore = useWorkflowStore()
+const { allWorkflowRuns } = storeToRefs(workflowStore)
+const { loadAllWorkflowRuns } = workflowStore
 
 onMounted(() => { loadAllWorkflowRuns() })
 

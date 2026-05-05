@@ -1,13 +1,21 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { CheckCircle2, AlertCircle, AlertTriangle, Database, FileSpreadsheet, ArrowRight, Play, Square, Save, Copy, Trash2 } from 'lucide-vue-next'
+import { useBootstrapStore } from '../../stores/bootstrap'
+import { useTaskStore } from '../../stores/task'
 
+const { state } = useBootstrapStore()
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore         // reactive
 const {
-  state, taskDraft, selectedTaskId, isSavedTask, currentTask,
+  selectedTaskId, isSavedTask, currentTask,
   compareResult, asyncJob, asyncStatus,
   taskValidationIssues, canSaveTask,
+} = storeToRefs(taskStore)
+const {
   saveTask, runTask, runAsync, cancelAsync, copyTask, deleteTask,
-} = inject('app')
+} = taskStore
 
 const errorIssues = computed(() => taskValidationIssues.value.filter(i => i.level === 'error'))
 

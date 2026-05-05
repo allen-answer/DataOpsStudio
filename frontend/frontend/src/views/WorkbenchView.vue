@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch, computed, inject } from 'vue'
+import { ref, watch, computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ChevronLeft, ChevronRight, Play } from 'lucide-vue-next'
 import WorkbenchTaskList from './workbench/WorkbenchTaskList.vue'
 import WorkbenchStepBar from './workbench/WorkbenchStepBar.vue'
@@ -8,17 +9,22 @@ import StepSource from './workbench/StepSource.vue'
 import StepRules from './workbench/StepRules.vue'
 import StepMapping from './workbench/StepMapping.vue'
 import StepResult from './workbench/StepResult.vue'
+import { useTaskStore } from '../stores/task'
 
 // Phase 2 重构：步骤式工作台 + 任务列表 + 摘要面板
 // 4 步：source → rules → mapping → result
 // 每步可点击步骤条跳转，下一步按钮线性前进。
-// 后端 API / inject('app') 不变。
 
 const STEP_IDS = ['source', 'rules', 'mapping', 'result']
 
 const currentStep = ref('source')
 
-const { taskDraft, selectedTaskId, isSavedTask, runTask, taskValidationIssues, canSaveTask } = inject('app')
+const taskStore = useTaskStore()
+const { taskDraft } = taskStore  // reactive 直接拿
+const {
+  selectedTaskId, isSavedTask, taskValidationIssues, canSaveTask,
+} = storeToRefs(taskStore)
+const { runTask } = taskStore
 
 const search = ref('')
 

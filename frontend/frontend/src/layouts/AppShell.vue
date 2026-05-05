@@ -1,5 +1,4 @@
 <script setup>
-import { inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Sparkles, X, AlertCircle } from 'lucide-vue-next'
 import AppSidebar from './AppSidebar.vue'
@@ -13,10 +12,8 @@ defineProps({
 
 defineEmits(['confirm-include-passwords'])
 
-// 全局 notice 由 App.vue 通过 provide 共享，所有 view 复用同一通知槽位
-const { notice } = inject('app')
 const noticeStore = useNoticeStore()
-const { aiTranslation } = storeToRefs(noticeStore)
+const { notice, aiTranslation } = storeToRefs(noticeStore)
 </script>
 
 <template>
