@@ -448,6 +448,69 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR9：BULK COLLECT + FORALL pattern 应能补 source 边 ────────────────────
+
+
+def _bulk_edge(edges, source, target):
+    src_l, tgt_l = source.lower(), target.lower()
+    return [
+        e for e in edges
+        if e["source_table"].lower() == src_l
+        and e["target_table"].lower() == tgt_l
+        and e.get("edge_type") == "BULK_COLLECT"
+    ]
+
+
+def test_bulk_collect_forall_pattern():
+    """`SELECT BULK COLLECT INTO v FROM tabA;` + `FORALL i ... INSERT INTO tabB
+    VALUES (v(i).col)` —— 应该补 tabA → tabB 的 BULK_COLLECT 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.bulk_load IS
+      v_data x;
+    BEGIN
+      SELECT * BULK COLLECT INTO v_data FROM ods.orders;
+      FORALL i IN 1..v_data.COUNT
+        INSERT INTO dwd.fact (id, amt) VALUES (v_data(i).id, v_data(i).amt);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    bulk_edges = _bulk_edge(result["graph_edges"], "ods.orders", "dwd.fact")
+    assert bulk_edges, f"应补 ods.orders → dwd.fact BULK_COLLECT 边: {result['graph_edges']}"
+    assert bulk_edges[0]["confidence"] == "medium"
+    assert "v_data" in bulk_edges[0]["reason"]
+
+
+def test_bulk_collect_with_join_multi_source():
+    """BULK COLLECT 的 SELECT 含 JOIN 时多个源表都该补边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      v_data x;
+    BEGIN
+      SELECT a.id BULK COLLECT INTO v_data FROM ods.orders a JOIN ods.codes b ON a.id = b.id;
+      FORALL i IN 1..v_data.COUNT
+        INSERT INTO dwd.fact (id) VALUES (v_data(i).id);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    assert _bulk_edge(result["graph_edges"], "ods.orders", "dwd.fact")
+    assert _bulk_edge(result["graph_edges"], "ods.codes", "dwd.fact")
+
+
+def test_bulk_collect_no_dml_consumer_no_edge():
+    """只有 BULK COLLECT 没有 INSERT 消费 array —— 不该补 BULK_COLLECT 边。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE pkg.proc IS
+      v_data x;
+    BEGIN
+      SELECT * BULK COLLECT INTO v_data FROM ods.orders;
+      dbms_output.put_line(v_data.COUNT);
+    END;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    bulk_edges = [e for e in result["graph_edges"] if e.get("edge_type") == "BULK_COLLECT"]
+    assert bulk_edges == [], f"无 INSERT 消费 array 不应有边: {bulk_edges}"
+
+
 # ─── S5 PR8：cursor with parameters / Oracle INSERT ALL fan-out ────────────────
 
 

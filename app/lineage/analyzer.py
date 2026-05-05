@@ -115,6 +115,11 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     # 用户定义函数；函数体内的 SELECT 能看到 ods.txn，但 INSERT 自己 source_tables
     # 是空。这里把"被调用 UDF 读的表"补成 supplemental 边到 INSERT target。
     edges.extend(_udf_supplemental_edges(procedure_segments, analyses, edges))
+    # S5 PR9：BULK COLLECT + FORALL pattern —— 当 procedure 段里有
+    # `SELECT ... BULK COLLECT INTO v FROM tabA;` 然后
+    # `FORALL i ... INSERT INTO tabB VALUES (v(i).col, ...);` 这种 array
+    # 中转模式时，补 tabA → tabB 边（confidence=medium / edge_type=BULK_COLLECT）
+    edges.extend(_bulk_collect_supplemental_edges(procedure_segments, edges))
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
     # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
@@ -325,6 +330,96 @@ def _udf_supplemental_edges(
                     "target_columns": [],
                     "confidence": "medium",
                     "reason": f"UDF read ({fn_name})",
+                })
+    return out
+
+
+# S5 PR9：BULK COLLECT + FORALL ──────────────────────────────────────────
+
+# `SELECT ... BULK COLLECT INTO v_data FROM ods.orders` —— 把 var_name 抽出来
+_RE_BULK_COLLECT = re.compile(
+    r"\bBULK\s+COLLECT\s+INTO\s+([A-Za-z_][\w$#]*)\b",
+    flags=re.IGNORECASE,
+)
+# `SELECT ... FROM tabA, tabB JOIN tabC ...` —— 复用 cursor 抽源表逻辑
+
+
+def _bulk_collect_supplemental_edges(
+    procedure_segments: list[dict[str, Any]],
+    existing_edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Oracle BULK COLLECT + FORALL 模式：
+
+        SELECT col1 BULK COLLECT INTO v_data FROM ods.orders;
+        FORALL i IN 1..v_data.COUNT
+          INSERT INTO dwd.fact (id) VALUES (v_data(i).col1);
+
+    BULK COLLECT 把数据放入数组，FORALL 再批量插入。INSERT 的 VALUES 引用
+    数组元素 v_data(i)，没 source_tables。这里建立 var → source_tables
+    映射，看 INSERT/UPDATE/MERGE 段是否引用同名变量，补 supplemental 边。
+    """
+    if not procedure_segments:
+        return []
+
+    from app.lineage.segments import _extract_cursor_select_tables as _extract_tables
+
+    # 1. 找所有 BULK COLLECT INTO <var> 段，抽 var → source_tables
+    bulk_vars: dict[str, list[str]] = {}
+    for seg in procedure_segments:
+        seg_sql = str(seg.get("sql") or "")
+        m = _RE_BULK_COLLECT.search(seg_sql)
+        if not m:
+            continue
+        var_name = m.group(1).lower()
+        tables = _extract_tables(seg_sql)
+        if not tables:
+            continue
+        bucket = bulk_vars.setdefault(var_name, [])
+        for t in tables:
+            if t not in bucket:
+                bucket.append(t)
+
+    if not bulk_vars:
+        return []
+
+    # 2. 扫每段找 INSERT/UPDATE/MERGE/DELETE target + 引用了哪些 bulk var
+    out: list[dict[str, Any]] = []
+    existing: set[tuple[str, str]] = {
+        (str(e.get("source_table") or "").lower(), str(e.get("target_table") or "").lower())
+        for e in existing_edges
+    }
+    for seg in procedure_segments:
+        seg_sql = str(seg.get("sql") or "")
+        # 跳过 BULK COLLECT 自身段
+        if _RE_BULK_COLLECT.search(seg_sql):
+            continue
+        # 找 DML target
+        target_match = _RE_CURSOR_DML_TARGET.search(seg_sql)
+        if not target_match:
+            continue
+        target = target_match.group(1).strip().strip('"`[]')
+        if not target:
+            continue
+        # 检查段引用了哪些 bulk var
+        for var_name, src_tables in bulk_vars.items():
+            # 匹配 v_data(i) 或 v_data(...)（带任意下标）
+            ref_pattern = re.compile(rf"\b{re.escape(var_name)}\s*\(", flags=re.IGNORECASE)
+            if not ref_pattern.search(seg_sql):
+                continue
+            for src in src_tables:
+                key = (src.lower(), target.lower())
+                if key in existing:
+                    continue
+                existing.add(key)
+                out.append({
+                    "source_table": src,
+                    "target_table": target,
+                    "statement_index": 0,
+                    "edge_type": "BULK_COLLECT",
+                    "source_columns": [],
+                    "target_columns": [],
+                    "confidence": "medium",
+                    "reason": f"BULK COLLECT + FORALL ({var_name})",
                 })
     return out
 
