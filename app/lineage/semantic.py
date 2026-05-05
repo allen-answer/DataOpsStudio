@@ -234,6 +234,7 @@ def _procedure_target_summary(operations: list[dict[str, Any]]) -> list[dict[str
             "refresh_mode": _classify_procedure_refresh_mode(
                 insert_count, update_count, merge_count,
                 delete_before_insert, truncate_before_insert, has_full_delete,
+                delete_count=delete_count, truncate_count=truncate_count,
             ),
         })
     return summaries
@@ -246,7 +247,18 @@ def _classify_procedure_refresh_mode(
     delete_before_insert: bool,
     truncate_before_insert: bool,
     has_full_delete: bool,
+    delete_count: int = 0,
+    truncate_count: int = 0,
 ) -> str | None:
+    """根据 procedure 内对该 target 的所有 DML 计数 + 顺序，判断 refresh 模式。
+
+    优先级：truncate_insert > delete_insert > delete_insert_partial > merge >
+    update > append > **truncate_only** / **delete_only** > mixed > None。
+
+    S2.C 增量：之前 truncate_count / delete_count 但无后续 insert 的 procedure
+    会落到 None / mixed —— 实际是"清理型"过程（清缓存表 / 截断 staging 表）。
+    给它们独立 label 让用户能区分"完整刷新"和"只清不写"。
+    """
     if truncate_before_insert:
         return "truncate_insert"
     if delete_before_insert and has_full_delete:
@@ -261,6 +273,13 @@ def _classify_procedure_refresh_mode(
         return "append"
     if insert_count or update_count or merge_count:
         return "mixed"
+    # S2.C 边角：纯清理型，无任何 insert/update/merge
+    if truncate_count and not delete_count:
+        return "truncate_only"
+    if delete_count and not truncate_count:
+        return "delete_only" if has_full_delete else "delete_only_partial"
+    if truncate_count and delete_count:
+        return "cleanup_mixed"
     return None
 
 

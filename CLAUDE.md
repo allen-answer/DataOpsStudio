@@ -203,7 +203,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **850 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **864 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -313,10 +313,9 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **通用未做**：
 
 - **字段级血缘解析端深化**：UDF / 包变量 / cursor 来源跟踪等 Oracle PL/SQL 深度场景（可视化 ✓ + transform 细化 ✓ 已落，剩解析端精细化）
-- **Phase 4 procedure refresh mode 语义模式**（Phase 7 轨道 A 增量后续）
 - **TypeScript 渐进迁移**：Pinia store + composable 先于 view，schema 从 Pydantic codegen
 - **Vitest 关键组件单测**（不上 Storybook）
-- **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`
+- **App.vue 收尾**：剩下的跨 store handler 拆到对应 store，移除 `provide('app')`（29 个 view/component 用 inject('app') 待替换 → 大改动留一个独立 sprint）
 - **i18n（vue-i18n）**：先 sidebar / login / global notice，详情页后跟
 
 ## 血缘图设计（双引擎：G6 稳定 + Cytoscape 实验）
