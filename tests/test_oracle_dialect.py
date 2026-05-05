@@ -448,6 +448,34 @@ def test_declare_block_variables_extracted():
     assert "demo" in v_label["assigned_value"]
 
 
+# ─── S5 PR20：Oracle RETURNING ... INTO 子句不应让 sqlglot 解析失败 ───────────
+
+
+def test_insert_returning_into_strips_cleanly():
+    """Oracle PL/SQL `INSERT ... RETURNING col INTO :var` 让 sqlglot 报
+    Invalid expression。preprocess 应剥掉 RETURNING ... INTO 尾巴，
+    INSERT 主体血缘完整保留。"""
+    sql = """
+    INSERT INTO dwd.fact (id, amt)
+      SELECT id, amt FROM ods.txn
+      RETURNING id, amt INTO :v_id, :v_amt;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    edges = [(e["source_table"], e["target_table"]) for e in result.get("graph_edges", [])]
+    assert ("ods.txn", "dwd.fact") in edges, \
+        f"剥掉 RETURNING INTO 后 INSERT 血缘仍应抽出: {edges}"
+
+
+def test_update_returning_into_strips():
+    """UPDATE 也支持 RETURNING INTO，preprocess 同样应剥掉。"""
+    sql = """
+    UPDATE dwd.fact SET amt = amt * 2 WHERE id = :p_id RETURNING amt INTO :v_new;
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = {s.get("target_table") for s in result.get("target_summary", [])}
+    assert "dwd.fact" in targets, f"UPDATE RETURNING INTO 仍应识别 target: {targets}"
+
+
 # ─── S5 PR19：MERGE 列级映射 ──────────────────────────────────────────────────
 
 

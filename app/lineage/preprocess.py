@@ -48,6 +48,14 @@ _RE_DELETE_AS_ALIAS = re.compile(
     r"(?=\s*(?:WHERE|USING|RETURNING|ORDER\s+BY|LIMIT|;|$))",
 )
 
+# S5 PR20：Oracle PL/SQL `RETURNING ... INTO :var, :var2` 子句让 sqlglot 报
+# Invalid expression。剥掉这个尾巴（保留分号），不影响表/列血缘 —— 数据流向
+# 由 INSERT/UPDATE/DELETE 主体决定。
+_RE_RETURNING_INTO = re.compile(
+    r"\bRETURNING\b[^;]*?\bINTO\b[^;]*?(?=;|$)",
+    flags=re.IGNORECASE,
+)
+
 
 def normalize_for_parsing(sql: str) -> str:
     """把 SQL 转成 sqlglot 可吞的形式。
@@ -73,8 +81,19 @@ def normalize_for_parsing(sql: str) -> str:
             text = _RE_TEMPLATE_VAR.sub(lambda m: ":" + m.group(1), text)
             text = _normalize_operator_spacing(text)
             text = _normalize_delete_as_alias(text)
+            text = _strip_returning_into(text)
         out.append(text)
     return "".join(out)
+
+
+def _strip_returning_into(text: str) -> str:
+    """PR20：Oracle PL/SQL `RETURNING col INTO :var` —— sqlglot 不接受。
+    剥掉这段尾巴，行号通过等长空格替换保持。"""
+    if "returning" not in text.lower():
+        return text
+    def _replace(match: "re.Match[str]") -> str:
+        return " " * (match.end() - match.start())
+    return _RE_RETURNING_INTO.sub(_replace, text)
 
 
 def _normalize_delete_as_alias(text: str) -> str:
