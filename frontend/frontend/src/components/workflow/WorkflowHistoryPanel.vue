@@ -105,13 +105,13 @@ const historyGantt = (detail) => {
       <thead class="border-b border-slate-200 bg-slate-50/60">
         <tr class="text-left">
           <th class="w-8"></th>
-          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">状态</th>
-          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">运行 ID</th>
-          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">开始时间</th>
-          <th class="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">耗时</th>
-          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">节点</th>
-          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">错误</th>
-          <th class="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">操作</th>
+          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.status') }}</th>
+          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.runId') }}</th>
+          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.startedAt') }}</th>
+          <th class="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.elapsed') }}</th>
+          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.nodes') }}</th>
+          <th class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.errors') }}</th>
+          <th class="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.history.actions') }}</th>
         </tr>
       </thead>
       <tbody>

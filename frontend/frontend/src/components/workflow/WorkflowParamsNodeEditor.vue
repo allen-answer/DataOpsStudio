@@ -36,7 +36,7 @@ const showCheatsheet = ref(false)
 <template>
   <div class="rounded-lg border border-slate-200 bg-white">
     <div class="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-      <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">参数列表（{{ (node.parameters || []).length }}）</span>
+      <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{{ $t('workflowEditor.params.sectionList') }}（{{ (node.parameters || []).length }}）</span>
       <div class="flex items-center gap-1.5">
         <button class="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
                 @click="showCheatsheet = !showCheatsheet">
@@ -56,9 +56,9 @@ const showCheatsheet = ref(false)
       <table class="w-full border-collapse text-[11.5px]">
         <thead>
           <tr class="border-b border-slate-200">
-            <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[44%]">写法</th>
-            <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[34%]">解析后</th>
-            <th class="py-1.5 text-left font-semibold text-slate-500">用于</th>
+            <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[44%]">{{ $t('workflowEditor.params.colSyntax') }}</th>
+            <th class="py-1.5 pr-3 text-left font-semibold text-slate-500 w-[34%]">{{ $t('workflowEditor.params.colResolved') }}</th>
+            <th class="py-1.5 text-left font-semibold text-slate-500">{{ $t('workflowEditor.params.colUseFor') }}</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
@@ -118,21 +118,21 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
       <li v-for="(p, pIdx) in node.parameters" :key="pIdx" class="px-3 py-2.5">
         <div class="grid grid-cols-1 gap-2 lg:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_60px]">
           <label>
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">类型</span>
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.type') }}</span>
             <select v-model="p.type" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
               <option v-for="t in paramTypeOptions" :key="t.id" :value="t.id">{{ t.label }}</option>
             </select>
           </label>
           <label>
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">名称</span>
-            <input v-model="p.name" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="例如 biz_date">
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.name') }}</span>
+            <input v-model="p.name" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" :placeholder="$t('workflowEditor.params.namePlaceholder')">
           </label>
           <label>
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">说明</span>
-            <input v-model="p.description" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs" placeholder="给协作者的简短说明">
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.description') }}</span>
+            <input v-model="p.description" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs" :placeholder="$t('workflowEditor.params.descriptionPlaceholder')">
           </label>
           <div class="flex items-end justify-end gap-1">
-            <label class="flex cursor-pointer items-center gap-1 text-[10.5px] text-slate-600"><input type="checkbox" v-model="p.required" class="h-3 w-3 rounded text-blue-600">必填</label>
+            <label class="flex cursor-pointer items-center gap-1 text-[10.5px] text-slate-600"><input type="checkbox" v-model="p.required" class="h-3 w-3 rounded text-blue-600">{{ $t('workflowEditor.common.required') }}</label>
             <button class="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100" @click="removeParameter(node, pIdx)">×</button>
           </div>
         </div>
@@ -140,20 +140,20 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
         <!-- 类型相关字段 -->
         <div class="mt-2">
           <label v-if="p.type === 'fixed' || p.type === 'date' || p.type === 'json'" class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">默认值</span>
-            <input v-if="p.type !== 'json'" v-model="p.default" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" :placeholder="p.type === 'date' ? '2026-05-01' : '默认值'">
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.defaultValue') }}</span>
+            <input v-if="p.type !== 'json'" v-model="p.default" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" :placeholder="p.type === 'date' ? '2026-05-01' : $t('workflowEditor.common.defaultValue')">
             <textarea v-else v-model="p.default" class="block min-h-[50px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder='{"key": "value"}'></textarea>
           </label>
 
           <label v-if="p.type === 'relative_date'" class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">相对来源</span>
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.params.relativeSource') }}</span>
             <select v-model="p.source" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
               <option v-for="src in relativeDateSources" :key="src.id" :value="src.id">{{ src.label }}</option>
             </select>
           </label>
 
           <label v-if="p.type === 'multi_value'" class="block">
-            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">默认值（每行一个）</span>
+            <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.params.defaultPerLine') }}</span>
             <textarea
               :value="Array.isArray(p.default) ? p.default.join('\n') : (p.default || '')"
               @input="p.default = $event.target.value.split('\n').map(s => s.trim()).filter(Boolean)"
@@ -162,14 +162,14 @@ WHERE user_id IN (${vip_users | sql_in})</pre>
 
           <div v-if="p.type === 'sql_result'" class="grid grid-cols-1 gap-2 lg:grid-cols-[160px_minmax(0,1fr)]">
             <label>
-              <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">数据源</span>
+              <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.common.datasource') }}</span>
               <select v-model="p.datasource" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
-                <option value="">— 选择 —</option>
+                <option value="">— {{ $t('common.search') }} —</option>
                 <option v-for="ds in state.datasources" :key="ds.id" :value="ds.id">{{ ds.name }}</option>
               </select>
             </label>
             <label>
-              <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">SQL（取第一列作为参数值）</span>
+              <span class="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">{{ $t('workflowEditor.params.sqlFirstColumn') }}</span>
               <textarea v-model="p.sql" class="block min-h-[50px] w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs" placeholder="SELECT id FROM ..."></textarea>
             </label>
           </div>
