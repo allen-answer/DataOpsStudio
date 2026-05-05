@@ -192,7 +192,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **806 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 MVP + custom aspects、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **850 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -288,11 +288,16 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - ✅ **aspect 反查可视化 / governance dashboard**（commit `c180ef4`）—— `services/asset_aspects.bulk_aspects_index()` + `/api/assets/aspects/index` 批量 endpoint；admin `/admin/governance` 视图按 type + value 子字段（pii.level=high / sla.tier=t0 等）二级过滤，schema-driven UI（加新 type 改 yml 自动出过滤器）
 - ✅ **classification 用到血缘图**（commit `8686c4a`）—— `LineageGraphPanel` onMount 拉一次 aspects 索引传给两引擎，G6 + Cytoscape 共用 emoji 前缀方案（🔒 PII / ⏰ SLA / ⚠️ sensitive / 👤 owner），不动节点几何
 
-**下一批 enhancement 候选**（仍未排期）：
+**S1 enhancement** ✅ 全部落地（2026-05-05 同日）：
 
-- **字段血缘热点深化**：点字段名展开上下游字段链（当前只显热度，缺一跳钻取）
-- **datasource introspection**：拉真实 information_schema 字段列表，跟 lineage 反查的字段集合做差集（找出"从来没动过"的字段）
-- **Aspect history / audit**：当前 UPSERT 直接覆盖 value，缺 who/when 的变更轨迹（admin 想知道"谁改了 PII 等级"）
+- ✅ **Aspect 变更轨迹** —— SQLite 表 `asset_aspect_history`（append-only），`upsert_aspect` / `delete_aspect` 同 transaction 落 history（insert/update/delete 三 action + old/new value）。no-op update（value 没变）跳过不污染。`/api/assets/aspects/history?asset_kind=&asset_name=&aspect_type=&changed_by=&limit=` AND 过滤组合。前端：`AssetDetailView` aspects 卡顶部"历史"按钮展开 timeline；`AspectGovernanceView` 加"变更日志"tab 全局看
+- ✅ **字段血缘热点深化** —— `get_column_lineage(table, column)` 从 insert_mappings 反查 upstream / downstream 字段链（合格名直接归 source_table，单源 unqualified 归 source_tables[0]，多源 unqualified 拒绝以保持归属确定性）；`/api/assets/column-lineage/{name}?column=xxx` 端点；前端字段表格行点击展开"← 上游 / 下游 →"chip，点 chip 跳目标表 + 自动展开该字段
+- ✅ **Datasource introspection** —— `services/datasource_introspect.introspect_columns(datasource_id, table_name)` 走活的 dbclients pool 拉 `information_schema.COLUMNS`（MySQL）/ `all_tab_columns + all_col_comments`（Oracle / DM）/ `SYSIBM.SYSCOLUMNS`（DB2 stub）；标识符 alphanum/_/$/. 白名单防注入；in-memory cache TTL 300s。`/api/assets/introspect/{name}?datasource_id=` 端点。前端字段卡顶部 datasource 选择器 + "拉真实"按钮 → introspect 拉到后跟 lineage 反查 merge：表里有但 lineage 没动过的标 "dormant"，lineage 有但 introspect 拉不到的标"已删除?"
+
+**下一批 enhancement 候选**（仍未排期，长期 backlog 见下方"通用未做"）：
+
+- **Procedure refresh mode 语义模式深化** —— 识别"先 truncate 后 insert"等 procedure-only 模式（Phase 7 轨道 A 增量）
+- **字段血缘 tracing UI** —— 当前只展开一跳，多跳链路需要横向滚动 / 节点折叠交互
 
 **通用未做**：
 
