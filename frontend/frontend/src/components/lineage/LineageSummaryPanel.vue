@@ -51,14 +51,11 @@ function onCardClick(card) {
 
 // S5 PR14：PL/SQL 变量面板逻辑（PACKAGE BODY 常量/变量 + DECLARE 块 + 模板变量）
 // PR18：批量场景每条变量带 file_name —— 多一个来源脚本列
+// PR23：i18n —— kind 标签 / 表头都走 vue-i18n
+import { useI18n } from 'vue-i18n'
+const { t, te } = useI18n()
 const variables = computed(() => props.report.variables || [])
 const hasFileName = computed(() => variables.value.some(v => v.file_name))
-const VAR_KIND_LABEL = {
-  package_constant: '包常量',
-  package_variable: '包变量',
-  declare_constant: 'DECLARE 常量',
-  declare_variable: 'DECLARE 变量',
-}
 const VAR_KIND_TONE = {
   package_constant: 'bg-tag-source-bg text-tag-source',
   package_variable: 'bg-tag-intermediate-bg text-tag-intermediate',
@@ -66,7 +63,9 @@ const VAR_KIND_TONE = {
   declare_variable: 'bg-tag-intermediate-bg text-tag-intermediate',
 }
 function varKindLabel(kind) {
-  return VAR_KIND_LABEL[kind] || kind || '模板变量'
+  if (!kind) return t('lineagePanel.summary.varKindFallback')
+  const key = `lineagePanel.summary.varKinds.${kind}`
+  return te(key) ? t(key) : kind
 }
 function varKindTone(kind) {
   return VAR_KIND_TONE[kind] || 'bg-slate-100 text-slate-600'
@@ -98,17 +97,17 @@ function varKindTone(kind) {
     <!-- S5 PR14：PL/SQL 变量列表（package constant / package variable / declare 等） -->
     <div v-if="variables.length" class="card p-4">
       <div class="mb-3 flex items-center justify-between">
-        <h3 class="text-sm font-semibold text-slate-800">PL/SQL 变量与常量 <span class="muted ml-1 text-xs">{{ variables.length }}</span></h3>
-        <span class="muted text-[11px]">来自 PACKAGE BODY / DECLARE 块声明 + 模板变量</span>
+        <h3 class="text-sm font-semibold text-slate-800">{{ $t('lineagePanel.summary.variablesTitle') }} <span class="muted ml-1 text-xs">{{ variables.length }}</span></h3>
+        <span class="muted text-[11px]">{{ $t('lineagePanel.summary.variablesHint') }}</span>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
             <tr>
-              <th class="px-3 py-2 font-bold">变量名</th>
-              <th class="px-3 py-2 font-bold">类型</th>
-              <th class="px-3 py-2 font-bold">赋值</th>
-              <th v-if="hasFileName" class="px-3 py-2 font-bold">来源脚本</th>
+              <th class="px-3 py-2 font-bold">{{ $t('lineagePanel.summary.colName') }}</th>
+              <th class="px-3 py-2 font-bold">{{ $t('lineagePanel.summary.colKind') }}</th>
+              <th class="px-3 py-2 font-bold">{{ $t('lineagePanel.summary.colValue') }}</th>
+              <th v-if="hasFileName" class="px-3 py-2 font-bold">{{ $t('lineagePanel.summary.colFileName') }}</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100">

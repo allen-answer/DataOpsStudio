@@ -304,6 +304,19 @@ export default {
     summary: {
       title: 'Summary',
       elapsed: 'Elapsed',
+      variablesTitle: 'PL/SQL variables & constants',
+      variablesHint: 'From PACKAGE BODY / DECLARE block declarations + template vars',
+      colName: 'Name',
+      colKind: 'Kind',
+      colValue: 'Assigned value',
+      colFileName: 'Source script',
+      varKindFallback: 'Template variable',
+      varKinds: {
+        package_constant: 'Package constant',
+        package_variable: 'Package variable',
+        declare_constant: 'DECLARE constant',
+        declare_variable: 'DECLARE variable',
+      },
     },
     risks: {
       title: 'Risks & Alerts',

@@ -307,6 +307,20 @@ export default {
     summary: {
       title: '总览',
       elapsed: '耗时',
+      // S5 PR23：变量面板 i18n
+      variablesTitle: 'PL/SQL 变量与常量',
+      variablesHint: '来自 PACKAGE BODY / DECLARE 块声明 + 模板变量',
+      colName: '变量名',
+      colKind: '类型',
+      colValue: '赋值',
+      colFileName: '来源脚本',
+      varKindFallback: '模板变量',
+      varKinds: {
+        package_constant: '包常量',
+        package_variable: '包变量',
+        declare_constant: 'DECLARE 常量',
+        declare_variable: 'DECLARE 变量',
+      },
     },
     risks: {
       title: '风险与告警',
