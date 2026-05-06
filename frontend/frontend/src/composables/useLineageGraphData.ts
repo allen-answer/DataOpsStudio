@@ -535,6 +535,21 @@ export function useLineageGraphData(
     collapsedScripts.value = new Set()
   }
 
+  // 单选某个脚本：把所有其他脚本加入 collapsed 集合，仅留这一个可见。
+  // 208 个脚本时手动去勾 207 个不现实，这是一键解。
+  function keepOnlyScript(file: string): void {
+    const next = new Set<string>()
+    for (const f of scripts.value) {
+      if (f !== file) next.add(f)
+    }
+    collapsedScripts.value = next
+  }
+
+  // 全部隐藏（搭配上面的"仅此"做反向操作；UI 上是"全不选"按钮）。
+  function hideAllScripts(): void {
+    collapsedScripts.value = new Set(scripts.value)
+  }
+
   // groups/edges 一变就清掉点击聚焦（避免聚焦在已不存在的节点上）
   watch(
     () => [groupsRef.value, edgesRef.value],
@@ -579,7 +594,7 @@ export function useLineageGraphData(
     selectedNodeDetails, selectedEdgeDetails,
 
     // 助手
-    toggleSet, nextMatch, clearCollapsedScripts,
+    toggleSet, nextMatch, clearCollapsedScripts, keepOnlyScript, hideAllScripts,
     basename, schemaName, edgeKey,
     COMBO_PREFIX,
   }

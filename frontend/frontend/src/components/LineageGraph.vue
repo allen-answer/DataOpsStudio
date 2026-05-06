@@ -70,7 +70,7 @@ const {
   effectiveFocalId, graphData, visibleStats,
   tableRows, tableSuggested,
   selectedNodeDetails, selectedEdgeDetails,
-  toggleSet, nextMatch, clearCollapsedScripts, basename,
+  toggleSet, nextMatch, clearCollapsedScripts, keepOnlyScript, hideAllScripts, basename,
   COMBO_PREFIX,
 } = lineage
 
@@ -309,10 +309,16 @@ onBeforeUnmount(() => graph?.destroy())
               placeholder="搜索脚本名"
               class="mb-2 w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
             />
+            <!-- 批量选择快捷：208 脚本时单点逐勾不现实 -->
+            <div class="mb-2 flex items-center justify-end gap-2 px-1 text-[10px]">
+              <button type="button" class="text-slate-500 underline hover:text-slate-700" @click="clearCollapsedScripts">全选</button>
+              <span class="text-slate-300">|</span>
+              <button type="button" class="text-slate-500 underline hover:text-slate-700" @click="hideAllScripts">全不选</button>
+            </div>
             <ul class="space-y-0.5">
               <li v-for="f in filteredScriptList" :key="f">
                 <label
-                  class="flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1 hover:bg-slate-50"
+                  class="group flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1 hover:bg-slate-50"
                   :title="f"
                 >
                   <span class="flex items-center gap-2">
@@ -324,7 +330,15 @@ onBeforeUnmount(() => graph?.destroy())
                     />
                     <span class="sql-font text-[11px] text-slate-700">{{ basename(f) }}</span>
                   </span>
-                  <span class="muted text-[10px]">{{ scriptCounts.get(f) || 0 }} 边</span>
+                  <span class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="hidden rounded bg-primary-light px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary hover:text-white group-hover:inline-block"
+                      :title="`只保留 ${basename(f)}，隐藏其他所有脚本`"
+                      @click.prevent.stop="keepOnlyScript(f)"
+                    >仅此</button>
+                    <span class="muted text-[10px]">{{ scriptCounts.get(f) || 0 }} 边</span>
+                  </span>
                 </label>
               </li>
               <li v-if="!filteredScriptList.length" class="muted px-2 py-2 text-center text-[11px]">无匹配脚本</li>
