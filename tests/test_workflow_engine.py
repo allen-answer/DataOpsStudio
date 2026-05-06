@@ -380,6 +380,64 @@ def test_params_node_output_merges_into_workflow_variables():
     assert seen[0]["tag"] == "B42"
 
 
+def test_params_node_list_output_merges_for_sql_in_filter():
+    """Regression: a `params` node returning a list should propagate into
+    workflow-level variables so downstream `${ids | sql_in}` works directly
+    (not just via `${nodes.params.ids | sql_in}`).
+
+    旧实现只接 (str,int,float,bool) → list/dict 被静默丢，下游 ${var | sql_in}
+    报 unresolved variable。修复后 list 保留原类型回写 resolved_vars。
+    """
+    captured = {}
+
+    def runner(config, variables, **_):
+        if config.get("__which") == "params":
+            return {"sec_code": ["HK02962", "SK02962"], "tier": "vip"}
+        captured["sql"] = config["sql"]
+        captured["sec_code_var"] = variables.get("sec_code")
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="p", type=WorkflowNodeType.PARAMS, config={"__which": "params"}),
+        WorkflowNode(
+            id="cmp", type=WorkflowNodeType.COMPARE,
+            depends_on=["p"],
+            config={"sql": "SELECT * FROM stocks WHERE code IN (${sec_code | sql_in})"},
+        ),
+    ])
+    run_workflow(workflow, runners={
+        WorkflowNodeType.PARAMS: runner,
+        WorkflowNodeType.COMPARE: runner,
+    })
+
+    assert captured["sql"] == "SELECT * FROM stocks WHERE code IN ('HK02962', 'SK02962')"
+    # 变量本体保留 list 类型，没被强转成 str（避免 repr 字符串污染下游）。
+    assert captured["sec_code_var"] == ["HK02962", "SK02962"]
+
+
+def test_params_node_dict_output_merges_into_workflow_variables():
+    """dict 类型 params 输出也应回写 resolved_vars，下游 typed lookup 能拿到。"""
+    captured = {}
+
+    def runner(config, variables, **_):
+        if config.get("__which") == "params":
+            return {"window": {"start": "2026-01-01", "end": "2026-05-06"}}
+        captured["window"] = variables.get("window")
+        return {}
+
+    workflow = _wf([
+        WorkflowNode(id="p", type=WorkflowNodeType.PARAMS, config={"__which": "params"}),
+        WorkflowNode(id="cmp", type=WorkflowNodeType.COMPARE,
+                     depends_on=["p"], config={"_x": 1}),
+    ])
+    run_workflow(workflow, runners={
+        WorkflowNodeType.PARAMS: runner,
+        WorkflowNodeType.COMPARE: runner,
+    })
+
+    assert captured["window"] == {"start": "2026-01-01", "end": "2026-05-06"}
+
+
 # --- placeholder filters ---
 
 def test_sql_in_filter_quotes_strings_and_leaves_numbers_raw():

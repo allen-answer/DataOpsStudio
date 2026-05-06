@@ -221,12 +221,10 @@ def run_workflow(
             node_run.elapsed_seconds = previous.elapsed_seconds
             node_run.reused = True
             completed_outputs[node.id] = node_run.output
-            # 同 normal-run 一样，params 节点把标量结果合并回 variable scope，
-            # 让下游 ${biz_date} 直接引用上次的解析值。
+            # 同 normal-run 一样，params 节点把结果合并回 variable scope，
+            # 让下游 ${biz_date} / ${sec_code | sql_in} 直接引用上次的解析值。
             if str(getattr(node.type, "value", node.type)) == "params":
-                for key, value in node_run.output.items():
-                    if isinstance(value, (str, int, float, bool)):
-                        resolved_vars[key] = str(value)
+                _merge_params_output(node_run.output, resolved_vars)
             continue
 
         # Transitive skip: any failed/skipped upstream blocks this node.
@@ -307,10 +305,10 @@ def run_workflow(
             # `params` nodes feed their resolved values back into the
             # workflow-level variable scope, so downstream nodes can use
             # ${biz_date} directly instead of ${nodes.params.biz_date}.
+            # list/dict 也回写（保留原类型）—— 让 ${ids | sql_in} 这种 IN 子句
+            # 渲染能直接吃到 list；以前只接标量，list 被静默丢导致下游 unresolved。
             if str(getattr(node.type, "value", node.type)) == "params":
-                for key, value in node_run.output.items():
-                    if isinstance(value, (str, int, float, bool)):
-                        resolved_vars[key] = str(value)
+                _merge_params_output(node_run.output, resolved_vars)
         except Exception as exc:
             node_run.status = NodeRunStatus.FAILED
             node_run.error = f"{type(exc).__name__}: {exc}"
@@ -358,6 +356,21 @@ def _default_variables() -> dict[str, str]:
         "month": f"{today.month:02d}",
         "day": f"{today.day:02d}",
     }
+
+
+def _merge_params_output(output: Mapping[str, Any], resolved_vars: dict[str, Any]) -> None:
+    """Merge a `params` node's output back into the workflow-level variable scope.
+
+    标量 (str/int/float/bool) 转 str（保留旧行为：模板插值时 None→"None" 这类
+    退化路径已经在用 str 了）；list/dict 保留原类型，让 ${ids | sql_in} /
+    ${row.col} 这种 typed lookup 能拿到真实值而不是 repr 字符串。其他类型
+    （None / 自定义对象）跳过 —— 落 variable scope 没意义还可能让 SQL 渲染
+    成 `None` 字面量。"""
+    for key, value in output.items():
+        if isinstance(value, (list, dict)):
+            resolved_vars[key] = value
+        elif isinstance(value, (str, int, float, bool)):
+            resolved_vars[key] = str(value)
 
 
 def _interpolate(value: Any, variables: Mapping[str, str], outputs: Mapping[str, Mapping[str, Any]]) -> Any:
