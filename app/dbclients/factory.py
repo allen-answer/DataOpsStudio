@@ -145,7 +145,15 @@ def _fetch_with_dbapi(
                 warnings=column_warnings(raw_columns, columns),
             )
         except Exception as exc:
-            raise DbClientError(f"fetch rows failed: {exc}") from exc
+            # ibm_db / dmPython 等 C 扩展驱动在 cursor 里调 PyErr_Set 标真错，
+            # Python 看到 "returned a result with an exception set" 这种 generic
+            # 描述 → 真 DB 报错（SQLCODE / SQLSTATE / errno）被吞。把 SQL +
+            # 能挖到的底层状态都拼进 message，避免只看到 Python wrapper。
+            detail = _extract_driver_error_detail(connection, cursor)
+            raise DbClientError(
+                f"fetch rows failed: {exc}; SQL={_short_sql(sql)}"
+                + (f"; driver_detail={detail}" if detail else "")
+            ) from exc
     finally:
         if cursor is not None:
             try:
@@ -316,6 +324,53 @@ def _iter_with_dbapi(
 def _short_sql(sql: str) -> str:
     compact = " ".join(sql.split())
     return compact[:500] + ("..." if len(compact) > 500 else "")
+
+
+def _extract_driver_error_detail(connection: Any, cursor: Any) -> str:
+    """Pull driver-native error info that the generic Python wrapper hides.
+
+    ibm_db cursor 在出错时设了 PyErr 标记位，但 Python 层只看到
+    "fetchmany returned a result with an exception set" 这种 generic 描述。
+    真正的 SQLCODE / SQLSTATE / errno 必须从 driver 对象里挖。各驱动接口不
+    一致：ibm_db 走 `ibm_db.stmt_errormsg()` / `ibm_db.conn_errormsg()`、
+    pymysql 走 `connection.show_warnings()`、dmPython 走 `cursor.errno` /
+    `cursor.errmsg`。这里 best-effort 探测，拿不到就返回空串，不影响主路径。
+    """
+    parts: list[str] = []
+    # ibm_db 风格：errorcode / errormessage 属性
+    for obj_name, obj in (("cursor", cursor), ("connection", connection)):
+        for attr in ("errorcode", "errno", "error_code"):
+            try:
+                val = getattr(obj, attr, None)
+                if val and val != 0:
+                    parts.append(f"{obj_name}.{attr}={val}")
+            except Exception:
+                pass
+        for attr in ("errormessage", "errmsg", "error_message"):
+            try:
+                val = getattr(obj, attr, None)
+                if val:
+                    parts.append(f"{obj_name}.{attr}={val}")
+            except Exception:
+                pass
+    # ibm_db 模块级 helper（如果驱动是 ibm_db）
+    try:
+        import ibm_db  # type: ignore
+        try:
+            stmt_msg = ibm_db.stmt_errormsg()
+            if stmt_msg:
+                parts.append(f"ibm_db.stmt_errormsg={stmt_msg}")
+        except Exception:
+            pass
+        try:
+            conn_msg = ibm_db.conn_errormsg()
+            if conn_msg:
+                parts.append(f"ibm_db.conn_errormsg={conn_msg}")
+        except Exception:
+            pass
+    except ImportError:
+        pass
+    return " | ".join(parts)
 
 
 def _fetch_rows_in_chunks(
