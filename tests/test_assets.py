@@ -507,6 +507,50 @@ def test_column_edge_index_cache_explicit_invalidate(isolated_storage, monkeypat
     assert not assets_svc._column_edge_cache, "invalidate 后必须清空"
 
 
+def test_run_payloads_cache_shared_across_aggregators(isolated_storage, monkeypatch):
+    """get_column_lineage 跟 get_table_columns 共用 _get_cached_run_payloads。
+    第一次扫完后第二个聚合不应再读 JSON。"""
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+
+    call_count = {"n": 0}
+    real_get = assets_svc.get_workflow_run
+
+    def counting_get(rid):
+        call_count["n"] += 1
+        return real_get(rid)
+
+    monkeypatch.setattr(assets_svc, "get_workflow_run", counting_get)
+
+    # 1st：column lineage 触发 payload 解析
+    assets_svc.get_column_lineage("dwd.x", "id")
+    after_first = call_count["n"]
+    assert after_first >= 1
+
+    # 2nd：换一个聚合（get_table_columns）—— 不应再读 JSON
+    cols = assets_svc.get_table_columns("dwd.x")
+    assert call_count["n"] == after_first, "共享 payload 缓存应让第二个聚合零 JSON 读"
+    assert any(c["name"] == "id" for c in cols)
+
+
+def test_run_payloads_cache_invalidates_on_explicit_clear(isolated_storage):
+    """invalidate_column_edge_index_cache 同时清空 payload 缓存（互相依赖）。"""
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+    assets_svc.get_column_lineage("dwd.x", "id")
+    assert assets_svc._run_payloads_cache, "首次调用应填 payload 缓存"
+    assets_svc.invalidate_column_edge_index_cache()
+    assert not assets_svc._run_payloads_cache, "invalidate 必须把 payload 一起清"
+
+
 def test_column_lineage_depth_breaks_cycle(isolated_storage):
     """a → b → a 这种环不应导致死循环或重复访问。"""
     from app.services.assets import get_column_lineage

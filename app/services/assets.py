@@ -266,16 +266,11 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
             entry["last_seen_run_id"] = run_id
 
     try:
-        # list_workflow_runs 只返回 summary（不含 nodes），按 run_id 拉完整 payload
-        # —— 跟 lineage_index._rebuild_locked 同样的两阶段。
-        for summary in list_workflow_runs(limit=run_limit):
-            rid = str(summary.get("run_id") or "")
-            if not rid:
+        # 走共享 payload 缓存 —— 跟 _build_column_edge_index 同一份解析后的 runs
+        for full in _get_cached_run_payloads(run_limit):
+            run_id = str(full.get("run_id") or "")
+            if not run_id:
                 continue
-            full = get_workflow_run(rid)
-            if not full:
-                continue
-            run_id = rid
             run_started_at = str(full.get("started_at") or full.get("created_at") or "")
             for node_run in (full.get("nodes") or []):
                 if str(node_run.get("type") or "").lower() != "lineage":
@@ -325,10 +320,51 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
     return out
 
 
-# ─── column edge index 缓存 ───────────────────────────────────────────────
-# 反复点字段血缘（同一个 AssetDetailView 上 5+ 字段、多跳切换）会重复扫所有 run。
-# 跟 services/lineage_index.py 一个套路：内存缓存 + TTL + run-count 失效。
-# key 是 run_limit（不同 caller 可能传不同值，互不污染）。
+# ─── 工作流 run payload 共享缓存 ───────────────────────────────────────────
+# `get_table_columns` 和 `_build_column_edge_index` 都按同一组 run_limit 扫
+# 最近 N 个 workflow_run JSON。每个 run 的 lineage 输出可能上 MB，让两个
+# 聚合各扫一遍 = 同样磁盘 I/O 跑两次。这一层缓存解析后的 payloads（TTL+
+# run_count 双失效），所有聚合从 in-memory list 拿，再各自计算结果。
+#
+# 上层结果缓存（如 _column_edge_cache）仍保留 —— 单次聚合的输出比再次
+# 遍历 payloads 更便宜（常用 API 命中无需迭代）。
+_PAYLOAD_TTL = 300.0
+_run_payloads_cache: dict[int, dict[str, Any]] = {}
+_run_payloads_lock = threading.RLock()
+
+
+def _get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
+    """返回最近 run_limit 个 workflow_run 的完整 payload 列表（newest first）。
+    多 caller 共享 —— 一次 JSON parse 给多个聚合用。
+    """
+    now = time.time()
+    with _run_payloads_lock:
+        entry = _run_payloads_cache.get(run_limit)
+        current_run_count = _count_runs_for_invalidation(run_limit)
+        if entry is not None and (
+            now - entry["built_at"] < _PAYLOAD_TTL
+            and entry["source_run_count"] == current_run_count
+        ):
+            return entry["payloads"]
+        payloads: list[dict[str, Any]] = []
+        for summary in list_workflow_runs(limit=run_limit):
+            rid = str(summary.get("run_id") or "")
+            if not rid:
+                continue
+            full = get_workflow_run(rid)
+            if full:
+                payloads.append(full)
+        _run_payloads_cache[run_limit] = {
+            "built_at": now,
+            "source_run_count": current_run_count,
+            "payloads": payloads,
+        }
+        return payloads
+
+
+# ─── column edge index 缓存（上层） ─────────────────────────────────────────
+# 跟 lineage_index.py 一个套路：列出 (src_t, src_c) → (tgt_t, tgt_c) 边的
+# 反向 / 正向索引。复用 _get_cached_run_payloads 不重复扫文件。
 _COLUMN_EDGE_TTL = 300.0
 _column_edge_cache: dict[int, dict[str, Any]] = {}
 _column_edge_lock = threading.RLock()
@@ -372,9 +408,11 @@ def _count_runs_for_invalidation(run_limit: int) -> int:
 
 
 def invalidate_column_edge_index_cache() -> None:
-    """admin / 测试用：清空所有 run_limit 的 cache 槽。"""
+    """admin / 测试用：清空所有 run_limit 的 cache 槽（含底层 payload 缓存）。"""
     with _column_edge_lock:
         _column_edge_cache.clear()
+    with _run_payloads_lock:
+        _run_payloads_cache.clear()
 
 
 def _build_column_edge_index(run_limit: int) -> tuple[
@@ -394,13 +432,7 @@ def _build_column_edge_index(run_limit: int) -> tuple[
     down: dict[tuple[str, str], dict[tuple[str, str], int]] = {}
 
     try:
-        for summary in list_workflow_runs(limit=run_limit):
-            rid = str(summary.get("run_id") or "")
-            if not rid:
-                continue
-            full = get_workflow_run(rid)
-            if not full:
-                continue
+        for full in _get_cached_run_payloads(run_limit):
             for node_run in (full.get("nodes") or []):
                 if str(node_run.get("type") or "").lower() != "lineage":
                     continue
