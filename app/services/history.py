@@ -8,10 +8,19 @@ from typing import Any
 from app.utils.paths import RESULTS_DIR
 
 
-def list_result_history(task_id: str = "", project_id: str = "") -> list[dict[str, Any]]:
+def list_result_history(
+    task_id: str = "",
+    project_id: str = "",
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
     """列历史结果。
     - task_id 非空：仅匹配该 task 的 run
     - project_id 非空：仅匹配该项目下 task 的 run + task 已删的孤儿 run（保留历史）
+    - limit：截断返回前 N 条（None = 全量保 backward compat）。设了 limit 时
+      先按文件 mtime DESC 排序（fs metadata 免读），只读 `limit*2+10` 个候选
+      JSON，再按 `sort_time`（started_at 优先 / mtime 兜底）二次排序。跟
+      `list_workflow_runs` 同套路，避免「目录里几千条历史每次都全量读」。
     """
     # project 过滤要 join task_store —— lazy import 避免循环
     project_task_ids: set[str] | None = None
@@ -21,8 +30,18 @@ def list_result_history(task_id: str = "", project_id: str = "") -> list[dict[st
             t.id for t in task_store.list()
             if (t.project_id or "") == project_id or not (t.project_id or "")
         }
+    paths = list(RESULTS_DIR.glob("*.json"))
+    if limit is not None:
+        # 先按 mtime 预排，限制读取量。读取预算 hedge 2× 应对 mtime ≠ sort_time
+        # 偏离（compare 任务跑得久才落盘）。
+        paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        read_budget = max(limit * 2 + 10, limit + 20)
+    else:
+        read_budget = None
     items = []
-    for path in RESULTS_DIR.glob("*.json"):
+    for path in paths:
+        if read_budget is not None and len(items) >= read_budget:
+            break
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -57,7 +76,10 @@ def list_result_history(task_id: str = "", project_id: str = "") -> list[dict[st
                 "type": result_type,
             }
         )
-    return sorted(items, key=lambda item: item["sort_time"], reverse=True)
+    items.sort(key=lambda item: item["sort_time"], reverse=True)
+    if limit is not None:
+        return items[:limit]
+    return items
 
 
 def delete_result(run_id: str) -> None:

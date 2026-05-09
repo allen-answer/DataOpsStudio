@@ -1,7 +1,7 @@
 """compare 任务的历史结果列表 / 删除 / 多选合并导出。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException
+from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from app.models import HistoryItem, OkResponse
@@ -13,8 +13,12 @@ router = APIRouter()
 
 
 @router.get("/api/history", response_model=list[HistoryItem])
-def result_history_api(task_id: str = "", project_id: str = ""):
-    return list_result_history(task_id, project_id)
+def result_history_api(
+    task_id: str = "",
+    project_id: str = "",
+    limit: int = Query(200, ge=1, le=2000, description="返回前 N 条；项目里历史多的话避免全量解析"),
+):
+    return list_result_history(task_id, project_id, limit=limit)
 
 
 @router.delete("/api/history/{run_id}", response_model=OkResponse)
