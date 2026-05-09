@@ -175,3 +175,62 @@ def test_persist_failure_logs_but_does_not_raise(tmp_path, monkeypatch, caplog):
         # Should not raise.
         path = workflow_history.persist_workflow_run(run)
     assert "run-x" in str(path)
+
+
+def test_list_does_not_read_all_jsons_when_limit_set(tmp_path, monkeypatch):
+    """有 200 个 run 但 caller 只要 50 时不应该全量解析每个 JSON。
+
+    Phase 11 优化：先按文件 mtime DESC 排序（fs metadata 免读），只读
+    `limit*2+10` 个候选 JSON，再按 started_at 二次排序。
+    """
+    from app.services import workflow_history
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+
+    # 造 200 个 run，每个 started_at 递增（run-001 最早，run-200 最新）
+    for i in range(1, 201):
+        run = _make_run(f"run-{i:03d}", workflow_id=f"wf-{i % 3}")
+        run.started_at = f"2026-01-{(i % 28) + 1:02d}T10:00:{i % 60:02d}"
+        workflow_history.persist_workflow_run(run)
+
+    read_count = {"n": 0}
+    real_read = workflow_history.Path.read_text
+
+    def counting_read(self, *args, **kwargs):
+        read_count["n"] += 1
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(workflow_history.Path, "read_text", counting_read)
+
+    runs = workflow_history.list_workflow_runs(limit=50)
+    assert len(runs) == 50
+    # 200 文件中只读了 read_budget = 2*50+10 = 110 个，远少于 200
+    assert read_count["n"] <= 110, f"read 太多 JSON：{read_count['n']}（应 ≤ 110）"
+
+
+def test_list_respects_started_at_order_when_mtime_diverges(tmp_path, monkeypatch):
+    """mtime 跟 started_at 不一致时，最终顺序按 started_at（语义正确）。
+
+    模拟「跑得久的任务后写盘」：run-old started_at 早，但 mtime 晚（更晚落盘）。
+    """
+    import os
+    from app.services import workflow_history
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+
+    # run-A：started_at 较新（2026-05-02），mtime 较旧
+    a = _make_run("run-A")
+    a.started_at = "2026-05-02T10:00:00"
+    workflow_history.persist_workflow_run(a)
+    a_path = tmp_path / "run-A.json"
+    # 把 mtime 调到很早
+    early = 1_700_000_000  # 2023 年附近
+    os.utime(a_path, (early, early))
+
+    # run-B：started_at 较旧（2026-04-30），但刚落盘，mtime 是现在（最新）
+    b = _make_run("run-B")
+    b.started_at = "2026-04-30T10:00:00"
+    workflow_history.persist_workflow_run(b)
+
+    # mtime 顺序：B 新 → A 旧；started_at 顺序：A 新 → B 旧
+    runs = workflow_history.list_workflow_runs(limit=50)
+    # 最终结果按 started_at —— A 应在前
+    assert [r["run_id"] for r in runs] == ["run-A", "run-B"]

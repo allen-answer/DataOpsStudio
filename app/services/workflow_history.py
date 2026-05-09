@@ -37,11 +37,32 @@ def persist_workflow_run(run: WorkflowRun) -> Path:
 
 def list_workflow_runs(workflow_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
     """Return summaries (not full payloads) of past runs, newest first.
-    Pass `workflow_id` to filter, or empty string for all."""
+    Pass `workflow_id` to filter, or empty string for all.
+
+    Perf：先按文件 mtime 排序（fs metadata 免读 JSON），再按这个顺序读，
+    最后按 `started_at` 二次排序得到精确顺序。读到 `limit*2+10` 个匹配项
+    （或 filter 场景的等同 limit）就停 —— 避免「项目跑了几千个 run，每次列
+    页都全量解析 JSON」这种线性放大。
+
+    安全 hedge：mtime 跟 `started_at` 在「跑很久才落盘」的长任务上会偏离
+    （例如开始时间 10:00、结束 11:00 → mtime=11:00），所以读取量取 2× 留
+    缓冲，再按 `started_at` 重排，确保返回的最终顺序和精确语义一致。
+    """
     if not WORKFLOW_RUNS_DIR.exists():
         return []
+    # 按 mtime DESC 预排序（不读 JSON 内容）
+    paths = sorted(
+        WORKFLOW_RUNS_DIR.glob("*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    # 读取预算：2× limit + 10 留 hedge 给 mtime≠started_at 的偏离。filter 场景
+    # 同样按 limit 预算（命中数足够就停；命中不足就读完所有）。
+    read_budget = max(limit * 2 + 10, limit + 20)
     items: list[dict[str, Any]] = []
-    for path in WORKFLOW_RUNS_DIR.glob("*.json"):
+    for path in paths:
+        if len(items) >= read_budget:
+            break
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
