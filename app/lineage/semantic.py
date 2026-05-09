@@ -298,6 +298,9 @@ def _build_targets(
             "roles": role_entry.get("roles") or ["target"],
             "refresh_mode": summary.get("refresh_mode"),
             "titles": summary.get("titles", []) or [],
+            # procedure_origins：写本表的 procedure 名（含 <anonymous>）。
+            # 让 UI 展示「此表被 procX 重刷」溯源信息。
+            "procedure_origins": summary.get("procedure_origins", []) or [],
             "counts": {
                 "insert": summary.get("insert_count", 0),
                 "update": summary.get("update_count", 0),

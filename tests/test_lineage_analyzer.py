@@ -849,6 +849,31 @@ def test_target_summary_anonymous_block_origins():
     assert summary["procedure_origins"] == ["<anonymous>"]
 
 
+def test_semantic_lineage_targets_carry_procedure_origins():
+    """semantic_lineage.targets 应透传 procedure_origins，让前端能展示溯源。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE p_refresh AS
+    BEGIN
+      TRUNCATE TABLE dwd.t;
+      INSERT INTO dwd.t SELECT * FROM ods.t;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    targets = result["semantic_lineage"]["targets"]
+    matches = [t for t in targets if t["table"].lower() == "dwd.t"]
+    assert matches and "p_refresh" in matches[0]["procedure_origins"]
+
+
+def test_semantic_lineage_top_level_target_has_empty_origins():
+    """纯顶层 INSERT 在 semantic_lineage.targets 上 procedure_origins 为空 list。"""
+    sql = "INSERT INTO dwd.x SELECT * FROM ods.y;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    targets = result["semantic_lineage"]["targets"]
+    matches = [t for t in targets if t["table"].lower() == "dwd.x"]
+    assert matches and matches[0]["procedure_origins"] == []
+
+
 def test_target_summary_delete_with_where_is_partial():
     sql = """
     DELETE FROM dwd.fact_order WHERE biz_date = '2025-01-01';

@@ -291,6 +291,7 @@ const PARSE_STATUS_LABEL = {
               <th class="py-2 pr-4 font-bold">表名</th>
               <th class="py-2 pr-4 font-bold">角色</th>
               <th class="py-2 pr-4 font-bold">写入模式</th>
+              <th class="py-2 pr-4 font-bold">由谁写入</th>
               <th class="py-2 pr-4 font-bold">操作计数</th>
               <th class="py-2 font-bold">业务标题</th>
             </tr>
@@ -315,6 +316,22 @@ const PARSE_STATUS_LABEL = {
                   :class="REFRESH_PILL[t.refresh_mode] || 'bg-slate-100 text-slate-700'"
                 >{{ REFRESH_LABEL[t.refresh_mode] || t.refresh_mode }}</span>
                 <span v-else class="text-slate-300">—</span>
+              </td>
+              <td class="py-3 pr-4">
+                <!-- procedure_origins：哪些过程内部写过本表。空 list 表示纯顶层 DML，
+                     这种情况下显示 "顶层" pill；有 origin 时把过程名/匿名块标出来。 -->
+                <div v-if="t.procedure_origins?.length" class="flex flex-wrap gap-1">
+                  <span
+                    v-for="origin in t.procedure_origins"
+                    :key="origin"
+                    class="rounded bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700"
+                    :title="`由 ${origin} 写入`"
+                  >
+                    <span v-if="origin === '&lt;anonymous&gt;'">匿名块</span>
+                    <span v-else class="sql-font">{{ origin }}</span>
+                  </span>
+                </div>
+                <span v-else class="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">顶层</span>
               </td>
               <td class="py-3 pr-4 text-xs text-slate-600">
                 <span v-if="t.counts.insert" class="mr-2">INS×{{ t.counts.insert }}</span>
