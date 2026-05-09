@@ -125,11 +125,14 @@ def _scan_lineage_scripts_referencing(table_name: str) -> list[dict[str, Any]]:
 
 def _scan_history_referencing(table_name: str, project_id: str) -> list[dict[str, Any]]:
     """history record 是 task 的运行实例 —— task_name 命中或关联 task 引用过 table_name。
-    MVP 简化：只看 task_name 完全 / 部分匹配。"""
+    MVP 简化：只看 task_name 完全 / 部分匹配。
+
+    只看最新 200 条历史 —— 旧 task 命中对资产详情的价值有限，跟 search 一致界限。
+    """
     target = table_name.lower()
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for record in list_result_history(project_id=project_id):
+    for record in list_result_history(project_id=project_id, limit=200):
         rid = str(record.get("id") or record.get("run_id") or "")
         if not rid or rid in seen:
             continue

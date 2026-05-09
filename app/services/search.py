@@ -255,8 +255,13 @@ def _search_workflows(tokens: list[str], project_id: str) -> list[dict[str, Any]
 
 
 def _search_history(tokens: list[str], project_id: str) -> list[dict[str, Any]]:
+    """搜 compare history records by task_name。
+
+    搜索只看最新 200 条历史 —— 旧的 task 通常已经 rename 或已删，命中价值低。
+    避免每次 /api/search 都把 results/ 目录里几千个 JSON 全量解析。
+    """
     out: list[dict[str, Any]] = []
-    for record in list_result_history(project_id=project_id):
+    for record in list_result_history(project_id=project_id, limit=200):
         rid = str(record.get("id") or record.get("run_id") or "")
         if not rid:
             continue
