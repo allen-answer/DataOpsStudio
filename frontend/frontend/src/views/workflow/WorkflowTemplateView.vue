@@ -1,8 +1,23 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '../../stores/workflow'
 import { useNoticeStore } from '../../stores/notice'
+
+interface TemplateItem {
+  id: string
+  name?: string
+  description?: string
+  category?: string
+  tags?: string[]
+  workflow?: {
+    id?: string
+    name?: string
+    description?: string
+    project?: string
+    nodes?: unknown[]
+  }
+}
 
 const emit = defineEmits(['open-detail'])
 
@@ -13,15 +28,15 @@ const {
 } = workflowStore
 const { setNotice } = useNoticeStore()
 
-const categoryFilter = ref('all')
-const searchTerm = ref('')
+const categoryFilter = ref<string>('all')
+const searchTerm = ref<string>('')
 
-const templates = computed(() => Array.isArray(workflowTemplates?.value)
-  ? workflowTemplates.value
-  : (workflowTemplates || []))
+const templates = computed<TemplateItem[]>(() => Array.isArray(workflowTemplates?.value)
+  ? (workflowTemplates.value as TemplateItem[])
+  : ((workflowTemplates as unknown as TemplateItem[]) || []))
 
-const categories = computed(() => {
-  const out = new Set()
+const categories = computed<string[]>(() => {
+  const out = new Set<string>()
   for (const item of templates.value) {
     const category = item.category || item.workflow?.project || ''
     if (category) out.add(category)
@@ -29,7 +44,7 @@ const categories = computed(() => {
   return [...out].sort()
 })
 
-const filtered = computed(() => templates.value.filter((item) => {
+const filtered = computed<TemplateItem[]>(() => templates.value.filter((item) => {
   const category = item.category || item.workflow?.project || ''
   if (categoryFilter.value !== 'all' && category !== categoryFilter.value) return false
   if (searchTerm.value) {
@@ -53,7 +68,7 @@ const stats = computed(() => ({
   categories: categories.value.length,
 }))
 
-const instantiate = async (template) => {
+const instantiate = async (template: TemplateItem) => {
   const workflow = await createWorkflowFromTemplate?.(template.id)
   if (workflow?.id) emit('open-detail', workflow.id)
 }

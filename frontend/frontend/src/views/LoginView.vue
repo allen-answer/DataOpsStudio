@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -27,7 +27,7 @@ const password = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
-async function onSubmit() {
+async function onSubmit(): Promise<void> {
   if (!username.value || !password.value) {
     errorMsg.value = t('login.usernameRequired')
     return
@@ -37,9 +37,9 @@ async function onSubmit() {
   try {
     await auth.login(username.value, password.value)
     notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
-    const redirect = route.query.redirect || '/datasources'
+    const redirect = (route.query.redirect as string) || '/datasources'
     router.push(redirect)
-  } catch (error) {
+  } catch (error: any) {
     errorMsg.value = error?.message || t('login.error')
   } finally {
     submitting.value = false

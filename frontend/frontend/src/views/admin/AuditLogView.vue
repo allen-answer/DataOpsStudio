@@ -1,19 +1,27 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RefreshCw, Filter } from 'lucide-vue-next'
 import { apiGet } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 
+interface AuditLogEntry {
+  username: string
+  method: string
+  resource_type?: string
+  status?: number
+  [key: string]: unknown
+}
+
 const noticeStore = useNoticeStore()
 
-const logs = ref([])
-const loading = ref(false)
-const limit = ref(200)
-const userFilter = ref('')
-const methodFilter = ref('')
-const resourceFilter = ref('')
+const logs = ref<AuditLogEntry[]>([])
+const loading = ref<boolean>(false)
+const limit = ref<number>(200)
+const userFilter = ref<string>('')
+const methodFilter = ref<string>('')
+const resourceFilter = ref<string>('')
 
-const filteredLogs = computed(() => {
+const filteredLogs = computed<AuditLogEntry[]>(() => {
   return logs.value.filter(log => {
     if (userFilter.value && !log.username.toLowerCase().includes(userFilter.value.toLowerCase())) return false
     if (methodFilter.value && log.method !== methodFilter.value) return false
@@ -22,20 +30,20 @@ const filteredLogs = computed(() => {
   })
 })
 
-const distinctResources = computed(() => {
-  const set = new Set()
+const distinctResources = computed<string[]>(() => {
+  const set = new Set<string>()
   logs.value.forEach(l => l.resource_type && set.add(l.resource_type))
   return [...set].sort()
 })
 
-const METHOD_COLORS = {
+const METHOD_COLORS: Record<string, string> = {
   POST:   'bg-green-100 text-green-700',
   PUT:    'bg-blue-100 text-blue-700',
   PATCH:  'bg-blue-100 text-blue-700',
   DELETE: 'bg-rose-100 text-rose-700',
 }
 
-function statusClass(code) {
+function statusClass(code: number | undefined): string {
   if (!code) return 'text-slate-400'
   if (code >= 200 && code < 300) return 'text-status-success'
   if (code >= 400 && code < 500) return 'text-status-warning'
@@ -43,13 +51,13 @@ function statusClass(code) {
   return 'text-slate-500'
 }
 
-async function reload() {
+async function reload(): Promise<void> {
   loading.value = true
   try {
-    const data = await apiGet(`/api/audit-logs?limit=${limit.value}`)
+    const data = await apiGet<{ logs?: AuditLogEntry[] }>(`/api/audit-logs?limit=${limit.value}`)
     logs.value = Array.isArray(data?.logs) ? data.logs : []
-  } catch (err) {
-    noticeStore.setNotice(`加载审计日志失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`加载审计日志失败：${err?.message || err}`)
   } finally {
     loading.value = false
   }
