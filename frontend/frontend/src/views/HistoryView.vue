@@ -1,4 +1,5 @@
 <script setup>
+import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useHistoryStore } from '../stores/history'
@@ -14,6 +15,10 @@ const {
 const { loadHistory, exportHistory, deleteHistory } = historyStore
 
 const { historyItemTaskLabel, summaryValue } = useNoticeStore()
+
+// bootstrap 默认只拉前 200 条历史（首屏轻量）。HistoryView 是「看所有历史」
+// 的专属页面，进来时主动调一次 loadHistory() 拉满（limit=2000）。
+onMounted(() => { loadHistory() })
 </script>
 
 <template>

@@ -151,9 +151,13 @@ export const useHistoryStore = defineStore('history', () => {
   )
 
   /** 拉一遍 /api/history 写回 bootstrapStore.state；HistoryView 删除 / 跑完 task
-   * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。 */
+   * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。
+   *
+   * limit=2000 是 /api/history 当前允许的上限。HistoryView 是「看所有历史」的专属
+   * 页面，bootstrap 默认 200 条不够；显式拉够。如果将来真有项目历史超 2000 条，
+   * 再考虑前端分页。 */
   async function loadHistory(): Promise<void> {
-    _bootstrap.state.history = await apiGet<HistoryRecord[]>('/api/history')
+    _bootstrap.state.history = await apiGet<HistoryRecord[]>('/api/history?limit=2000')
     selectedHistory.value = new Set()
   }
 
