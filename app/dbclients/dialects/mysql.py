@@ -9,6 +9,9 @@ from app.models import DatabaseType
 class MysqlDialect(Dialect):
     name = "mysql"
 
+    def connection_test_sql(self) -> str:
+        return "select 1 as ok"
+
     def introspect_columns_sql(self, schema: str, table: str) -> str:
         if schema:
             return (

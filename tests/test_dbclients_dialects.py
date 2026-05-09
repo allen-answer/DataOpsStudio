@@ -47,3 +47,33 @@ def test_introspect_sql_handles_no_schema():
     for db_type in (DatabaseType.MYSQL, DatabaseType.ORACLE, DatabaseType.DB2):
         sql = get_dialect(db_type).introspect_columns_sql("", "t1")
         assert isinstance(sql, str) and sql.strip()
+
+
+# ─── connection_test_sql ─────────────────────────────────────────────────────
+
+
+def test_mysql_connection_test_has_no_from():
+    """MySQL 没 dual 表，select 1 直出，不能带 FROM。"""
+    sql = get_dialect(DatabaseType.MYSQL).connection_test_sql()
+    assert "select 1" in sql.lower()
+    assert "from" not in sql.lower()
+
+
+def test_oracle_and_dm_connection_test_use_dual():
+    """Oracle / DM 要求 select 必有 FROM；用 dual 伪表。"""
+    for db_type in (DatabaseType.ORACLE, DatabaseType.DM):
+        sql = get_dialect(db_type).connection_test_sql()
+        assert "from dual" in sql.lower()
+
+
+def test_db2_connection_test_uses_sysdummy1():
+    """DB2 用 sysibm.sysdummy1 当 dual 等价。"""
+    sql = get_dialect(DatabaseType.DB2).connection_test_sql()
+    assert "sysibm.sysdummy1" in sql.lower()
+
+
+def test_connection_test_sql_aliases_ok_column():
+    """所有方言都把列起名 ok，方便 caller 读 sample。"""
+    for db_type in (DatabaseType.MYSQL, DatabaseType.ORACLE, DatabaseType.DM, DatabaseType.DB2):
+        sql = get_dialect(db_type).connection_test_sql()
+        assert "as ok" in sql.lower()

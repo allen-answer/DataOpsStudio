@@ -9,6 +9,9 @@ from app.models import DatabaseType
 class Db2Dialect(Dialect):
     name = "db2"
 
+    def connection_test_sql(self) -> str:
+        return "select 1 as ok from sysibm.sysdummy1"
+
     def introspect_columns_sql(self, schema: str, table: str) -> str:
         if schema:
             return (

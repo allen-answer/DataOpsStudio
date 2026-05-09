@@ -6,6 +6,7 @@ import time
 from typing import NamedTuple
 from typing import Any
 
+from app.dbclients.dialects import get_dialect
 from app.dbclients.drivers import add_db2_dll_directories, first_available_module
 from app.dbclients import pool as _pool
 from app.models import DataSource, DatabaseType
@@ -94,7 +95,7 @@ def fetch_rows_with_schema(
 
 def test_connection(source: DataSource) -> dict[str, Any]:
     start = time.perf_counter()
-    sql = _connection_test_sql(source.db_type)
+    sql = get_dialect(source.db_type).connection_test_sql()
     rows = fetch_rows(source, sql, max_rows=1)
     return {
         "ok": True,
@@ -104,14 +105,6 @@ def test_connection(source: DataSource) -> dict[str, Any]:
         "elapsed_seconds": round(time.perf_counter() - start, 3),
         "sample": rows[:1],
     }
-
-
-def _connection_test_sql(db_type: DatabaseType) -> str:
-    if db_type in {DatabaseType.ORACLE, DatabaseType.DM}:
-        return "select 1 as ok from dual"
-    if db_type == DatabaseType.DB2:
-        return "select 1 as ok from sysibm.sysdummy1"
-    return "select 1 as ok"
 
 
 def _fetch_with_dbapi(

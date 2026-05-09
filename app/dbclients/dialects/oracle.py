@@ -13,6 +13,9 @@ from app.models import DatabaseType
 class OracleDialect(Dialect):
     name = "oracle"
 
+    def connection_test_sql(self) -> str:
+        return "select 1 as ok from dual"
+
     def introspect_columns_sql(self, schema: str, table: str) -> str:
         # NULLABLE 是 'Y' / 'N'；comments 在 all_col_comments 里需 join
         # Oracle 标识符默认大写 → 用 UPPER() 包 schema/table

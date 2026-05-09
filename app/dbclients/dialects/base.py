@@ -29,3 +29,14 @@ class Dialect(ABC):
         - 子类负责自己方言的 ORDER BY / 大小写处理。
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def connection_test_sql(self) -> str:
+        """连接探活 SQL（`test_connection` 用）。
+
+        约定：返回结果至少含一行一列，列别名 `ok`。各方言「无 FROM」语义不同：
+        - MySQL：`select 1 as ok`
+        - Oracle / DM：`select 1 as ok from dual`（必须有 FROM）
+        - DB2：`select 1 as ok from sysibm.sysdummy1`
+        """
+        raise NotImplementedError
