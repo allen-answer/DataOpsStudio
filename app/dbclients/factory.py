@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import importlib
 import logging
 import time
 from typing import NamedTuple
 from typing import Any
 
 from app.dbclients.dialects import get_dialect
-from app.dbclients.drivers import add_db2_dll_directories, first_available_module
+from app.dbclients.drivers import first_available_module
 from app.dbclients import pool as _pool
-from app.models import DataSource, DatabaseType
+from app.models import DataSource
 from app.services.compare_schema import column_warnings, uniquify_columns
 
 
@@ -18,8 +17,6 @@ class DbClientError(RuntimeError):
 
 
 logger = logging.getLogger(__name__)
-CONNECT_TIMEOUT_SECONDS = 10
-QUERY_TIMEOUT_SECONDS = 300
 
 
 class QueryRows(NamedTuple):
@@ -218,65 +215,7 @@ def iter_rows(
 
 
 def _connect(source: DataSource, module_name: str) -> Any:
-    if source.db_type == DatabaseType.MYSQL:
-        driver = importlib.import_module(module_name)
-        if module_name == "pymysql":
-            return driver.connect(
-                host=source.host,
-                port=source.port,
-                user=source.username,
-                password=source.password,
-                database=source.database or None,
-                charset=source.extra.get("charset", "utf8mb4"),
-                connect_timeout=int(source.extra.get("connect_timeout", CONNECT_TIMEOUT_SECONDS)),
-                read_timeout=int(source.extra.get("read_timeout", QUERY_TIMEOUT_SECONDS)),
-                write_timeout=int(source.extra.get("write_timeout", QUERY_TIMEOUT_SECONDS)),
-            )
-        return driver.connect(
-            host=source.host,
-            port=source.port,
-            user=source.username,
-            passwd=source.password,
-            db=source.database or None,
-            connect_timeout=int(source.extra.get("connect_timeout", CONNECT_TIMEOUT_SECONDS)),
-        )
-    if source.db_type == DatabaseType.ORACLE:
-        driver = importlib.import_module(module_name)
-        dsn = source.extra.get("dsn") or f"{source.host}:{source.port}/{source.database}"
-        options = {}
-        if "tcp_connect_timeout" in source.extra:
-            options["tcp_connect_timeout"] = source.extra["tcp_connect_timeout"]
-        return driver.connect(user=source.username, password=source.password, dsn=dsn, **options)
-    if source.db_type == DatabaseType.DB2:
-        add_db2_dll_directories()
-        if module_name == "ibm_db_dbi":
-            driver = importlib.import_module(module_name)
-        else:
-            import ibm_db_dbi as driver
-        conn_str = source.extra.get("conn_str") or (
-            f"DATABASE={source.database};HOSTNAME={source.host};PORT={source.port};"
-            f"PROTOCOL=TCPIP;UID={source.username};PWD={source.password};"
-        )
-        if "CONNECTTIMEOUT" not in conn_str.upper():
-            conn_str += f"CONNECTTIMEOUT={int(source.extra.get('connect_timeout', CONNECT_TIMEOUT_SECONDS))};"
-        return driver.connect(conn_str, "", "")
-    if source.db_type == DatabaseType.DM:
-        driver = importlib.import_module(module_name)
-        options = dict(source.extra)
-        if source.database and "schema" not in options:
-            options["schema"] = source.database
-        options.setdefault("login_timeout", CONNECT_TIMEOUT_SECONDS)
-        try:
-            return driver.connect(
-                user=source.username,
-                password=source.password,
-                server=source.host,
-                port=source.port,
-                **options,
-            )
-        except Exception:
-            return driver.connect(source.username, source.password, f"{source.host}:{source.port}", **options)
-    raise RuntimeError(f"Unsupported database type: {source.db_type}")
+    return get_dialect(source.db_type).connect(source, module_name)
 
 
 def _iter_with_dbapi(
