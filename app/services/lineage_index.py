@@ -27,7 +27,10 @@ from collections import Counter
 from typing import Any, Iterable, Literal
 
 from app.services.lineage_graph_query import bfs_subgraph
-from app.services.workflow_history import get_workflow_run, list_workflow_runs
+from app.services.workflow_history import (
+    get_cached_run_payloads,
+    list_workflow_runs,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -95,22 +98,21 @@ class LineageIndex:
     def _rebuild_locked(self) -> None:
         """实际重建 —— 必须持锁调用。"""
         started = time.perf_counter()
+        # 走 workflow_history.get_cached_run_payloads —— 跟 assets / search 共享
+        # 同一份解析后的 payloads。LineageIndex 自身的 TTL+run_count 检查仍
+        # 保留（其内部状态比单纯 payload 更复杂），但底层 JSON parse 不重复。
         try:
-            summaries = list_workflow_runs(limit=self._run_limit)
-        except Exception as exc:
-            logger.warning("lineage index: list_workflow_runs failed: %s", exc)
-            summaries = []
-
-        # list_workflow_runs 返回 summary（不含 nodes）—— 一个个 get_workflow_run
-        # 拿完整 payload。
-        runs: list[dict[str, Any]] = []
-        for s in summaries:
-            run_id = s.get("run_id") or ""
-            if not run_id:
-                continue
-            full = get_workflow_run(run_id)
-            if full:
-                runs.append(full)
+            runs = list(get_cached_run_payloads(self._run_limit))
+        except Exception as exc:  # pragma: no cover
+            logger.warning("lineage index: get_cached_run_payloads failed: %s", exc)
+            runs = []
+        # source_run_count 跟 _needs_rebuild() 里的 count 用同一指标
+        # （list_workflow_runs 长度），避免「JSON corrupted 让两个 count 永远不等
+        # → constant rebuild」。
+        try:
+            run_count_for_invalidation = len(list_workflow_runs(limit=self._run_limit))
+        except Exception:  # pragma: no cover
+            run_count_for_invalidation = len(runs)
 
         edges: list[dict[str, Any]] = []
         edge_seen: set[tuple[str, str, str]] = set()  # (src, tgt, edge_type) 去重
@@ -217,7 +219,7 @@ class LineageIndex:
         self._all_edges = edges
         self._all_table_roles = all_roles
         self._table_meta = meta
-        self._source_run_count = len(summaries)
+        self._source_run_count = run_count_for_invalidation
         self._built_at = time.time()
         elapsed = time.perf_counter() - started
         logger.info(

@@ -241,3 +241,35 @@ def test_get_table_asset_keeps_null_role_when_not_in_index(isolated_storage):
     assert asset["refresh_mode"] is None
     assert asset["upstream_count"] == 0
     assert asset["stats"]["task_count"] == 1
+
+
+def test_lineage_index_shares_cached_run_payloads(isolated_storage, monkeypatch):
+    """LineageIndex 重建走 workflow_history.get_cached_run_payloads ——
+    跟 assets / search 共用同一份解析后的 runs，避免重复 JSON parse。"""
+    from app.services import workflow_history
+    _write_run(isolated_storage["wf_runs"],
+               edges=[{"source_table": "ods.x", "target_table": "dwd.x"}])
+    workflow_history.invalidate_run_payloads_cache()
+    get_lineage_index().invalidate()
+
+    # 先让 assets 把 payload cache 预热（一次 JSON parse）
+    from app.services import assets as assets_svc
+    assets_svc.invalidate_column_edge_index_cache()
+    # invalidate_column_edge_index_cache 会清 payload cache —— 重新预热
+    workflow_history.get_cached_run_payloads(50)
+    assert workflow_history._run_payloads_cache, "预热后 payload cache 应有条目"
+
+    # 计 get_workflow_run 调用数
+    call_count = {"n": 0}
+    real = workflow_history.get_workflow_run
+
+    def counting(rid):
+        call_count["n"] += 1
+        return real(rid)
+
+    monkeypatch.setattr(workflow_history, "get_workflow_run", counting)
+
+    # LineageIndex 重建走 cached payloads → 不应再 get_workflow_run
+    get_lineage_index().invalidate()
+    get_lineage_index().query_subgraph("ods.x", direction="downstream", depth=1)
+    assert call_count["n"] == 0, "重建走共享 cache，不应额外调 get_workflow_run"
