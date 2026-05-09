@@ -816,6 +816,10 @@ function setListValue(field, text) {
                       <p class="muted mb-1 text-[10px] uppercase tracking-wider">
                         ← 上游字段（{{ columnLineageMap[col.name]?.upstream?.length || 0 }}）
                       </p>
+                      <p v-if="columnLineageMap[col.name]?.upstream_truncated"
+                         class="mb-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+                        ⚠ 已达上限 {{ columnLineageMap[col.name]?.max_nodes || 200 }} 节点，可能漏链路（试着减小 depth）
+                      </p>
                       <div v-if="columnLineageMap[col.name]?.upstream?.length"
                            class="flex flex-col gap-1">
                         <!-- 按 hop 分组渲染。depth=1 时只有 hop=1 一组 -->
@@ -846,6 +850,10 @@ function setListValue(field, text) {
                     <div class="flex-1">
                       <p class="muted mb-1 text-[10px] uppercase tracking-wider">
                         下游字段 → （{{ columnLineageMap[col.name]?.downstream?.length || 0 }}）
+                      </p>
+                      <p v-if="columnLineageMap[col.name]?.downstream_truncated"
+                         class="mb-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+                        ⚠ 已达上限 {{ columnLineageMap[col.name]?.max_nodes || 200 }} 节点，可能漏链路（试着减小 depth）
                       </p>
                       <div v-if="columnLineageMap[col.name]?.downstream?.length"
                            class="flex flex-col gap-1">

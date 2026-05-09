@@ -217,7 +217,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **924 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **925 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -322,7 +322,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **下一批 enhancement 候选**（仍未排期，长期 backlog 见下方"通用未做"）：
 
 - ✅ **Procedure refresh mode 语义模式深化**（2026-05-09 落地）—— 修了「procedure 体内 TRUNCATE → INSERT 没识别成 truncate_insert」的 bug：顶层 `parse_lineage_statements` 在 procedure 解析失败回退时用 `extract_analyzable_segments` 拆 `;`，但拆出来的 statements 顺序跟源 SQL 不一致，导致 `_has_followed_by` 判断 TRUNCATE 在 INSERT 之后。修法：`aggregation.py` 加 `collect_procedure_operations()` 直接走 `procedure_segments`（已按 line_start 排序）独立产 ops，每 op 带 `procedure_name`；analyzer 把顶层 ops（去掉 procedure-内重复）+ proc ops 合并喂入 `aggregate_target_summary`。dedup 用「sqlglot parse → 再序列化」做 canonical 比较，避免 `ods.orders o` vs `ods.orders AS o` 字符串差异错配。`_has_followed_by_within_scope` 替代 `_has_followed_by`，让先后顺序在同一 procedure 内成立才算（避免 proc1 truncate / proc2 insert 跨过程巧合）。`TargetSummary` 加 `procedure_origins: list[str]` 字段让 UI 能展示「此表被 procX / pkg.refresh_daily 重刷」。`semantic._build_targets` 透传 `procedure_origins` 到 `semantic_lineage.targets[*]`，前端 `SemanticLineagePanel` 表格新增「由谁写入」列：有 origins 时按 chip 显示过程名（`<anonymous>` 渲染为「匿名块」），空时显示「顶层」。补 7 个测试覆盖 procedure-only TRUNCATE+INSERT / DELETE+INSERT / 匿名块 / dedup 不双重计数 / 纯顶层无 origins / semantic_lineage.targets 透传。回归 917 → 924
-- ✅ **字段血缘 tracing UI 多跳**（2026-05-09 落地）—— `services/assets.get_column_lineage()` 加 `depth` / `max_nodes` 参数，重构内部为「先建 edge index 再 BFS」。`depth=1`（默认）保留旧 shape；`depth>=2` 每个 item 多带 `hop` / `from`，cycle 切断 + max_nodes 截断。`/api/assets/column-lineage` 加 `depth` `max_nodes` query。前端 `AssetDetailView` 字段展开行加 1/2/3 跳 picker；多跳场景按 hop 缩进渲染 chip，每个 hop≥2 chip 显示 `← from parent` micro-label 让用户追溯路径。补 6 个测试（depth=2 上下游 / depth=1 向后兼容 / max_nodes 截断 / cycle 切断 / endpoint depth 参数）。回归 911 → 917
+- ✅ **字段血缘 tracing UI 多跳**（2026-05-09 落地）—— `services/assets.get_column_lineage()` 加 `depth` / `max_nodes` 参数，重构内部为「先建 edge index 再 BFS」。`depth=1`（默认）保留旧 shape；`depth>=2` 每个 item 多带 `hop` / `from`，cycle 切断 + max_nodes 截断。`/api/assets/column-lineage` 加 `depth` `max_nodes` query。前端 `AssetDetailView` 字段展开行加 1/2/3 跳 picker；多跳场景按 hop 缩进渲染 chip，每个 hop≥2 chip 显示 `← from parent` micro-label 让用户追溯路径。补 6 个测试（depth=2 上下游 / depth=1 向后兼容 / max_nodes 截断 / cycle 切断 / endpoint depth 参数）。回归 911 → 917。**后续小补**：response 多 `upstream_truncated` / `downstream_truncated` / `max_nodes` 字段；前端在该方向用 amber banner「⚠ 已达上限 N 节点，可能漏链路」提示用户结果不全
 
 **Phase 11 候选 · 数据对比 × 血缘联动**（待启动，2026-05-08 立项）—— 把 Compare 和 Lineage 两套独立能力拼成「沿血缘逐层对比 → 定位数据偏离层」的诊断工具：
 

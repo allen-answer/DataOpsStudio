@@ -55,7 +55,7 @@ def get_column_lineage_api(
     run_limit: int = Query(50, ge=1, le=200, description="扫描最近多少个 workflow_run"),
     depth: int = Query(1, ge=1, le=5, description="BFS 跳数；>1 时返回 hop / from 字段"),
     max_nodes: int = Query(200, ge=1, le=1000, description="单方向 BFS 节点上限"),
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     """S1.B：字段血缘热点深化 —— 给定 (table, column)，返回上下游字段链。
 
     `name` 路径段是表名，`column` query 参数是字段名（避免再嵌一层 path-converter

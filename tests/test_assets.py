@@ -415,7 +415,7 @@ def test_column_lineage_depth1_omits_hop_and_from_for_back_compat(isolated_stora
 
 
 def test_column_lineage_depth_caps_at_max_nodes(isolated_storage):
-    """max_nodes 截断 BFS，避免响应爆炸。"""
+    """max_nodes 截断 BFS，避免响应爆炸；并通过 truncated 标记告诉 caller。"""
     from app.services.assets import get_column_lineage
     # 造一个有 5 个直接 upstream 的字段
     mappings = []
@@ -427,6 +427,20 @@ def test_column_lineage_depth_caps_at_max_nodes(isolated_storage):
     _persist_lineage_run(mappings)
     out = get_column_lineage("dwd.x", "id", depth=2, max_nodes=3)
     assert len(out["upstream"]) == 3
+    assert out["upstream_truncated"] is True
+    assert out["max_nodes"] == 3
+
+
+def test_column_lineage_not_truncated_when_under_cap(isolated_storage):
+    """节点数没到 max_nodes 时 truncated=False。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    out = get_column_lineage("dwd.x", "id", depth=2, max_nodes=200)
+    assert out["upstream_truncated"] is False
+    assert out["downstream_truncated"] is False
 
 
 def test_column_lineage_depth_breaks_cycle(isolated_storage):

@@ -400,7 +400,7 @@ def _bfs_column_chain(
     max_nodes: int,
     *,
     annotate_hop: bool,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """从 focal 出发按 BFS 走 depth 跳，每个边 (parent → child) 产一个 item。
 
     `annotate_hop=False` 时只返回 `{table, column, count}` —— 旧 depth=1 caller 用，
@@ -409,14 +409,23 @@ def _bfs_column_chain(
 
     cycle 通过 visited set 切断。同一节点经多条路径到达只取首次（按 count desc 排序后
     的最频繁路径优先），避免树爆炸。
+
+    返回 `(items, truncated)`：truncated=True 表示 BFS 在 max_nodes 上限处停了，
+    实际链路可能更深 —— 让 caller 提示用户「未尽展示」。
     """
     if depth <= 0:
-        return []
+        return [], False
     visited: set[tuple[str, str]] = {focal}
     result: list[dict[str, Any]] = []
+    truncated = False
     from collections import deque
     queue: deque[tuple[tuple[str, str], int]] = deque([(focal, 0)])
-    while queue and len(result) < max_nodes:
+    while queue:
+        if len(result) >= max_nodes:
+            # 队列还有未处理的节点 → 视为截断（即便恰好等于 max_nodes 也算，因为
+            # 我们没法保证再多走一步不会发现新节点）。
+            truncated = True
+            break
         node, hop = queue.popleft()
         if hop >= depth:
             continue
@@ -432,8 +441,9 @@ def _bfs_column_chain(
             result.append(item)
             queue.append(((n_t, n_c), hop + 1))
             if len(result) >= max_nodes:
+                truncated = True
                 break
-    return result
+    return result, truncated
 
 
 def get_column_lineage(
@@ -484,11 +494,16 @@ def get_column_lineage(
         focal = (target_t, target_c)
 
     annotate = depth > 1
-    upstream = _bfs_column_chain(up_edges, focal, depth, max_nodes, annotate_hop=annotate)
-    downstream = _bfs_column_chain(down_edges, focal, depth, max_nodes, annotate_hop=annotate)
+    upstream, up_trunc = _bfs_column_chain(up_edges, focal, depth, max_nodes, annotate_hop=annotate)
+    downstream, down_trunc = _bfs_column_chain(down_edges, focal, depth, max_nodes, annotate_hop=annotate)
     return {
         "upstream": upstream,
         "downstream": downstream,
+        # truncated 在 depth>=2 时才有意义（depth=1 不会因 max_nodes 触顶 —— 单个节点
+        # 的直接邻居数通常远少于 max_nodes 200）。但仍透传以让 caller 自己判定。
+        "upstream_truncated": up_trunc,
+        "downstream_truncated": down_trunc,
+        "max_nodes": max_nodes,
     }
 
 
