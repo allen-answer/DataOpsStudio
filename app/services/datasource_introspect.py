@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 from app.dbclients import factory as dbclients_factory
+from app.dbclients.dialects import get_dialect
 from app.models import DatabaseType
 from app.services.repositories import datasource_store
 
@@ -47,89 +48,24 @@ def _split_schema_table(name: str) -> tuple[str, str]:
 
 
 def _columns_sql(db_type: DatabaseType, schema: str, table: str) -> tuple[str, list[Any]]:
-    """根据方言返回 (SQL, params)。SQL 里用 ? 占位，会被 dbclients 后续按 driver
-    转成 %s / :name。
+    """根据方言返回 (SQL, params)。
 
     实际上 dbclients/factory 的 fetch_rows 不接受 params —— 全部通过字符串拼接 SQL。
-    所以这里返回的"params"实际上要 inline 进 SQL（保持接口对称，但 caller 自己拼）。
-    我们对 schema / table 名字做 strict allowlist 校验防注入。
+    所以这里 params 永远空（保持 tuple 形状向后兼容），SQL 里 schema / table 已 inline。
+    schema / table 经过 strict allowlist 校验防注入，dialect 子类可放心 inline。
+
+    实际 SQL 生成委托给 `app.dbclients.dialects.get_dialect(db_type)`。
     """
-    # 防注入：只允许 [\w$.] —— 标识符的合法字符
     _validate_identifier(table)
     if schema:
         _validate_identifier(schema)
 
-    if db_type == DatabaseType.MYSQL:
-        if schema:
-            sql = (
-                "SELECT COLUMN_NAME AS name, DATA_TYPE AS data_type, "
-                "IS_NULLABLE AS nullable, COLUMN_COMMENT AS comment, "
-                "ORDINAL_POSITION AS ordinal "
-                "FROM information_schema.COLUMNS "
-                f"WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}' "
-                "ORDER BY ORDINAL_POSITION"
-            )
-        else:
-            sql = (
-                "SELECT COLUMN_NAME AS name, DATA_TYPE AS data_type, "
-                "IS_NULLABLE AS nullable, COLUMN_COMMENT AS comment, "
-                "ORDINAL_POSITION AS ordinal "
-                "FROM information_schema.COLUMNS "
-                f"WHERE TABLE_NAME = '{table}' "
-                "ORDER BY TABLE_SCHEMA, ORDINAL_POSITION"
-            )
-        return sql, []
-
-    if db_type in {DatabaseType.ORACLE, DatabaseType.DM}:
-        # Oracle / DM 的 standard data dictionary：all_tab_columns
-        # NULLABLE 是 'Y' / 'N'，比 MySQL 的 'YES' / 'NO' 简短
-        # comments 在 all_col_comments 里，需要 join
-        if schema:
-            sql = (
-                "SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, "
-                "c.NULLABLE AS nullable, cc.COMMENTS AS comment, "
-                "c.COLUMN_ID AS ordinal "
-                "FROM all_tab_columns c "
-                "LEFT JOIN all_col_comments cc ON cc.OWNER = c.OWNER "
-                "  AND cc.TABLE_NAME = c.TABLE_NAME "
-                "  AND cc.COLUMN_NAME = c.COLUMN_NAME "
-                f"WHERE c.OWNER = UPPER('{schema}') AND c.TABLE_NAME = UPPER('{table}') "
-                "ORDER BY c.COLUMN_ID"
-            )
-        else:
-            sql = (
-                "SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, "
-                "c.NULLABLE AS nullable, cc.COMMENTS AS comment, "
-                "c.COLUMN_ID AS ordinal "
-                "FROM all_tab_columns c "
-                "LEFT JOIN all_col_comments cc ON cc.OWNER = c.OWNER "
-                "  AND cc.TABLE_NAME = c.TABLE_NAME "
-                "  AND cc.COLUMN_NAME = c.COLUMN_NAME "
-                f"WHERE c.TABLE_NAME = UPPER('{table}') "
-                "ORDER BY c.OWNER, c.COLUMN_ID"
-            )
-        return sql, []
-
-    if db_type == DatabaseType.DB2:
-        if schema:
-            sql = (
-                "SELECT NAME AS name, COLTYPE AS data_type, NULLS AS nullable, "
-                "REMARKS AS comment, COLNO AS ordinal "
-                "FROM SYSIBM.SYSCOLUMNS "
-                f"WHERE TBCREATOR = UPPER('{schema}') AND TBNAME = UPPER('{table}') "
-                "ORDER BY COLNO"
-            )
-        else:
-            sql = (
-                "SELECT NAME AS name, COLTYPE AS data_type, NULLS AS nullable, "
-                "REMARKS AS comment, COLNO AS ordinal "
-                "FROM SYSIBM.SYSCOLUMNS "
-                f"WHERE TBNAME = UPPER('{table}') "
-                "ORDER BY COLNO"
-            )
-        return sql, []
-
-    raise ValueError(f"introspection not supported for db_type={db_type.value}")
+    try:
+        dialect = get_dialect(db_type)
+    except ValueError as exc:
+        # 兼容旧错误消息：introspection not supported for db_type=...
+        raise ValueError(f"introspection not supported for db_type={db_type.value}") from exc
+    return dialect.introspect_columns_sql(schema, table), []
 
 
 def _validate_identifier(s: str) -> None:

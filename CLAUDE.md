@@ -217,7 +217,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **864 通过 / 0 失败 / 1 skipped**（Docker 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **899 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -334,11 +334,12 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - **Tradeoff 核心**：transform 类型的非 1:1 性 —— 聚合（GROUP BY / SUM）和过滤（WHERE）不能行级 diff，要么按 join key 重算 + 区间对比、要么退化口径检查。这部分**适合 AI 兜底**（让 LLM 看 transform SQL 决定每跳对比策略，比纯规则更合适，且复用已有 enrichment provider 抽象）
 - **参考 hooks**：`services/assets.get_column_lineage()` / `app/lineage/columns.py` insert_mappings / `app/services/workflow_engine.py` DAG 编排 / `app/services/runner.run_task` 单跳对比 / `app/ai/providers/` LLM 抽象
 
-**Phase 11 候选 · 数据库方言模块化**（spike-driven 重构，2026-05-08 立项）—— 把当前散在 ~10 处的 `if db_type == ...` 收口到 `Dialect` 类，给后续接 OceanBase / PG / TiDB + 加方言相关能力（pagination / quote / 错误码翻译）打底：
+**Phase 11 候选 · 数据库方言模块化**（spike-driven 重构，2026-05-08 立项 / 2026-05-09 MVP spike 落地）—— 把当前散在 ~10 处的 `if db_type == ...` 收口到 `Dialect` 类，给后续接 OceanBase / PG / TiDB + 加方言相关能力（pagination / quote / 错误码翻译）打底：
 
 - **动机**：DB-specific switch 当前散在 `dbclients/factory.py` 6 处（连接构造 + 错误抽取）/ `dbclients/pool.py` 1 处（MySQL ping）/ `services/datasource_introspect.py` 3 处（列元数据 SQL）。还没乱但已经痒；再加一两个 DB 或一两个方言能力（生成对比 SQL 时分页 / 引用符 / 类型映射）就会失控
-- **设计**：`app/dbclients/dialects/<db>.py` 每库一个 `Dialect` 类，**只放真正会分叉的能力** —— `quote_identifier` / `pagination_clause` / `introspect_columns_sql` / `extract_error_detail` / `ping_sql` / `dialect_for_sqlglot`。`@register("mysql")` 装饰器做 lazy registry，`get_dialect(db_type).foo()` 单一调用入口。**血缘那边不改**（`app/lineage/dialects.py` 已经按 sqlglot dialect 路由，已经够清爽）
-- **MVP spike**：第一步只搬 `services/datasource_introspect.py` 的 3 个分支到 `dialects/{mysql,oracle,db2,dm}.py` 各自的 `introspect_columns_sql()` —— 最干净 + 收益最直接 + 现成的回归测试。跑顺了再决定下一个搬哪个（候选：`factory._extract_driver_error_detail` / `pool._ping_*`）—— **不预先设计完整接口，让 interface 由实际搬迁的 commit 拼出来**
+- **设计**：`app/dbclients/dialects/<db>.py` 每库一个 `Dialect` 类，**只放真正会分叉的能力** —— `quote_identifier` / `pagination_clause` / `introspect_columns_sql` / `extract_error_detail` / `ping_sql` / `dialect_for_sqlglot`。`register(DatabaseType, dialect)` lazy registry（用独立 `_LOADED` flag 避免「test 先 import 单个 dialect 子模块只 register 一个 → _REGISTRY 非空 → 早退漏其它注册」的坑），`get_dialect(db_type).foo()` 单一调用入口。**血缘那边不改**（`app/lineage/dialects.py` 已经按 sqlglot dialect 路由，已经够清爽）
+- **✅ MVP spike（已落地）**：`app/dbclients/dialects/{__init__, base, mysql, oracle, dm, db2}.py` —— `Dialect` ABC 只声明 `introspect_columns_sql(schema, table) -> str` 一个方法。`OracleDialect` 同时被 `DM` register（DM 兼容 Oracle 数据字典视图，避免空壳子继承）。`services/datasource_introspect._columns_sql` 改成 thin shim：保留 `_validate_identifier` 防注入校验 + 委托给 `get_dialect(db_type).introspect_columns_sql(...)`，外部 API（`introspect_columns`）契约不变。新增 `tests/test_dbclients_dialects.py` 5 测：registry 单例 / DM 共享 Oracle 实例 / 4 个 db_type 都注册 / SQL 含 5 个必需输出列 alias / schema='' 跨库不抛错。回归 894 → 899 通过 0 失败
+- **下一个候选**（spike 跑顺了再决定）：`factory._extract_driver_error_detail`（按 driver 抽错误码 / SQLSTATE / 中文翻译）/ `pool._ping_*`（MySQL `SELECT 1` 验活，Oracle 已经走 dmPython 自带）—— **不预先设计完整接口，让 interface 由实际搬迁的 commit 拼出来**
 - **Tradeoff 核心**：抽象层数 vs 接入新 DB 成本。原则是**只在已有 ≥2 个分支的能力上抽**（present pain），future-pain 不抽（YAGNI）；避免变成"补 1 个 driver 映射 + 1 行 sqlglot dialect → 实现 12 个空方法"的过度抽象
 - **不要做的**：DB 全栈适配器（连接 + SQL 解析 + lineage + UI 都按 DB 拆 = 把 10 个 switch 换成 6 个空方法）；`utils/sql_guard.py` 现在 dialect-agnostic 工作得很好，不强行接入
 
