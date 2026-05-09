@@ -93,68 +93,134 @@ def _looks_like_oracle_hint(text: str) -> bool:
     return match.group(1).lower() in _ORACLE_HINT_KEYWORDS
 
 
+def _statement_to_ops(
+    statement: Any,
+    order: int,
+    *,
+    title_override: str | None = None,
+    procedure_name: str = "",
+) -> list[dict[str, Any]]:
+    """把单个 parsed statement 转成 0..N 条 op 记录。
+
+    多 target fan-out（INSERT ALL / TRUNCATE TABLE a, b）会产多条。
+    `title_override` 走专用注释（procedure_segment 的 preceding_comment）；
+    传 None 则从 statement.comments 自动抽。
+    """
+    if statement is None:
+        return []
+    e = exp()
+    title = title_override if title_override is not None else extract_statement_title(statement)
+    out: list[dict[str, Any]] = []
+    if isinstance(statement, e.Insert):
+        target = insert_target_table(statement.this)
+        if target:
+            out.append(_make_op(order, target, insert_dml_type(statement),
+                                title=title, procedure_name=procedure_name))
+    elif isinstance(statement, e.Update):
+        target = _table_target(statement.this, e)
+        if target:
+            out.append(_make_op(
+                order, target, "UPDATE",
+                has_where=statement.args.get("where") is not None,
+                title=title, procedure_name=procedure_name,
+            ))
+    elif isinstance(statement, e.Merge):
+        target = _table_target(statement.this, e)
+        if target:
+            out.append(_make_op(order, target, "MERGE",
+                                title=title, procedure_name=procedure_name))
+    elif isinstance(statement, e.Delete):
+        target = _table_target(statement.this, e)
+        if target:
+            out.append(_make_op(
+                order, target, "DELETE",
+                has_where=statement.args.get("where") is not None,
+                title=title, procedure_name=procedure_name,
+            ))
+    elif isinstance(statement, e.Create):
+        if is_temp_create(statement):
+            return out
+        # S5 PR6：CREATE PROCEDURE / FUNCTION / PACKAGE / TRIGGER 等不是
+        # DDL on table，不该入 target_summary
+        kind = (statement.args.get("kind") or "").upper()
+        if kind and kind not in _CREATE_TABLE_KINDS:
+            return out
+        target = create_target_table(statement)
+        if target and statement.args.get("expression") is not None:
+            out.append(_make_op(order, target, create_dml_type(statement),
+                                title=title, procedure_name=procedure_name))
+    elif type(statement).__name__ == "TruncateTable":
+        for table in statement.expressions or []:
+            target = _table_target(table, e)
+            if target:
+                out.append(_make_op(order, target, "TRUNCATE",
+                                    title=title, procedure_name=procedure_name))
+    # S5 PR8：Oracle INSERT ALL / INSERT FIRST —— 多 target fan-out
+    elif type(statement).__name__ == "MultitableInserts":
+        for sub in statement.args.get("expressions", []) or []:
+            inner = sub.this if hasattr(sub, "this") else sub
+            if isinstance(inner, e.Insert):
+                target = insert_target_table(inner.this)
+                if target:
+                    out.append(_make_op(order, target, insert_dml_type(inner),
+                                        title=title, procedure_name=procedure_name))
+    return out
+
+
 def collect_target_operations(statements: list[Any]) -> list[dict[str, Any]]:
     """按 statement 顺序扫一遍，每个 DML 产出一条 op 记录。
 
     返回字段：order（脚本里的顺序，1-based）、target_table、dml_type、
     has_where（DELETE 没 WHERE 视为全表重置）、title（前置注释第一段，
-    没注释则空）。CREATE TEMP 跳过——临时表不应进 target_summary 业务视图。
+    没注释则空）、procedure_name（top-level 时为 ""）。CREATE TEMP 跳过
+    —— 临时表不应进 target_summary 业务视图。
     """
-    e = exp()
     ops: list[dict[str, Any]] = []
     for index, statement in enumerate(statements, start=1):
-        if statement is None:
+        ops.extend(_statement_to_ops(statement, index))
+    return ops
+
+
+def collect_procedure_operations(
+    procedure_segments: list[dict[str, Any]],
+    sqlglot_module: Any,
+    dialect: str | None,
+) -> list[dict[str, Any]]:
+    """从 procedure_segments 抽 ops，order 用 line_start 保证源 SQL 顺序。
+
+    每个 segment 是单条 procedure-内 DML（已被 segments.py 拆开）。这里
+    重新喂 sqlglot 解析 —— 顶层 `parse_lineage_statements` 在过程体外壳
+    解析失败时会用 `extract_analyzable_segments` 兜底，但兜底拿到的
+    statements 顺序跟源不一致，导致 truncate→insert 模式判错。
+    procedure_segments 本身就是按行号顺序，靠它们做主线最稳。
+
+    `procedure_name` 来自 segment 的同名字段，让 aggregator 能区分
+    多过程同表写入并把 procedure_origins 列在 summary。
+    """
+    ops: list[dict[str, Any]] = []
+    sorted_segs = sorted(
+        procedure_segments,
+        key=lambda s: (int(s.get("line_start") or 0), str(s.get("segment_index") or "")),
+    )
+    for seg in sorted_segs:
+        seg_sql = str(seg.get("sql") or "").strip()
+        if not seg_sql:
             continue
-        title = extract_statement_title(statement)
-        if isinstance(statement, e.Insert):
-            target = insert_target_table(statement.this)
-            if target:
-                ops.append(_make_op(index, target, insert_dml_type(statement), title=title))
-        elif isinstance(statement, e.Update):
-            target = _table_target(statement.this, e)
-            if target:
-                ops.append(_make_op(
-                    index, target, "UPDATE",
-                    has_where=statement.args.get("where") is not None,
-                    title=title,
-                ))
-        elif isinstance(statement, e.Merge):
-            target = _table_target(statement.this, e)
-            if target:
-                ops.append(_make_op(index, target, "MERGE", title=title))
-        elif isinstance(statement, e.Delete):
-            target = _table_target(statement.this, e)
-            if target:
-                ops.append(_make_op(
-                    index, target, "DELETE",
-                    has_where=statement.args.get("where") is not None,
-                    title=title,
-                ))
-        elif isinstance(statement, e.Create):
-            if is_temp_create(statement):
-                continue
-            # S5 PR6：CREATE PROCEDURE / FUNCTION / PACKAGE / TRIGGER 等不是
-            # DDL on table，不该入 target_summary。pkg.refresh_daily 这种过程
-            # 名一直被错当成 target_table，导致 summary 多一条 fake 记录
-            kind = (statement.args.get("kind") or "").upper()
-            if kind and kind not in _CREATE_TABLE_KINDS:
-                continue
-            target = create_target_table(statement)
-            if target and statement.args.get("expression") is not None:
-                ops.append(_make_op(index, target, create_dml_type(statement), title=title))
-        elif type(statement).__name__ == "TruncateTable":
-            for table in statement.expressions or []:
-                target = _table_target(table, e)
-                if target:
-                    ops.append(_make_op(index, target, "TRUNCATE", title=title))
-        # S5 PR8：Oracle INSERT ALL / INSERT FIRST —— 多 target fan-out
-        elif type(statement).__name__ == "MultitableInserts":
-            for sub in statement.args.get("expressions", []) or []:
-                inner = sub.this if hasattr(sub, "this") else sub
-                if isinstance(inner, e.Insert):
-                    target = insert_target_table(inner.this)
-                    if target:
-                        ops.append(_make_op(index, target, insert_dml_type(inner), title=title))
+        try:
+            parsed = sqlglot_module.parse(seg_sql, read=dialect or None)
+        except Exception:
+            continue
+        line_start = int(seg.get("line_start") or 0)
+        proc_name = str(seg.get("procedure_name") or "")
+        title = str(seg.get("preceding_comment") or "")
+        for offset, stmt in enumerate(parsed):
+            # order 编码：(line_start * 1000 + offset) 让同一行多语句仍有先后
+            order = line_start * 1000 + offset
+            ops.extend(_statement_to_ops(
+                stmt, order,
+                title_override=title if offset == 0 else "",
+                procedure_name=proc_name,
+            ))
     return ops
 
 
@@ -185,8 +251,12 @@ def aggregate_target_summary(operations: list[dict[str, Any]]) -> list[dict[str,
         delete_count = sum(1 for o in ops if o["dml_type"] == "DELETE")
         truncate_count = sum(1 for o in ops if o["dml_type"] == "TRUNCATE")
 
-        delete_before_insert = _has_followed_by(ops, {"DELETE"}, _INSERT_FAMILY)
-        truncate_before_insert = _has_followed_by(ops, {"TRUNCATE"}, _INSERT_FAMILY)
+        # delete_before_insert / truncate_before_insert：跨范围（top-level + 各
+        # procedure 体内）任一处出现「先 X 后 Y」就算成立。procedure 内部的
+        # 顺序通过 _has_followed_by_within_scope 单独检查，避免「proc1 truncate
+        # → proc2 insert」这种跨过程巧合也被当成主动重刷模式。
+        delete_before_insert = _has_followed_by_within_scope(ops, {"DELETE"}, _INSERT_FAMILY)
+        truncate_before_insert = _has_followed_by_within_scope(ops, {"TRUNCATE"}, _INSERT_FAMILY)
         has_full_delete = any(
             o["dml_type"] == "DELETE" and not o.get("has_where") for o in ops
         )
@@ -199,6 +269,17 @@ def aggregate_target_summary(operations: list[dict[str, Any]]) -> list[dict[str,
             if title and title not in seen_titles:
                 seen_titles.add(title)
                 titles.append(title)
+
+        # procedure_origins：所有 procedure-内写过本目标表的 procedure 名（去重保序）。
+        # 让 UI 能展示「dwd.users 被 refresh_dwd_users 过程重刷」等溯源信息。
+        # top-level ops 的 procedure_name="" 不计入。
+        proc_origins: list[str] = []
+        seen_origins: set[str] = set()
+        for op in sorted(ops, key=lambda o: o["order"]):
+            pn = op.get("procedure_name") or ""
+            if pn and pn not in seen_origins:
+                seen_origins.add(pn)
+                proc_origins.append(pn)
 
         summaries.append({
             "target_table": bucket["target_table"],
@@ -214,17 +295,22 @@ def aggregate_target_summary(operations: list[dict[str, Any]]) -> list[dict[str,
                 delete_before_insert, truncate_before_insert, has_full_delete,
             ),
             "titles": titles,
+            "procedure_origins": proc_origins,
         })
     return summaries
 
 
-def _make_op(order: int, target: str, dml_type: str, has_where: bool = False, title: str = "") -> dict[str, Any]:
+def _make_op(
+    order: int, target: str, dml_type: str,
+    has_where: bool = False, title: str = "", procedure_name: str = "",
+) -> dict[str, Any]:
     return {
         "order": order,
         "target_table": target,
         "dml_type": dml_type,
         "has_where": has_where,
         "title": title,
+        "procedure_name": procedure_name,
     }
 
 
@@ -235,7 +321,11 @@ def _table_target(node: Any, e: Any) -> str:
 
 
 def _has_followed_by(ops: list[dict[str, Any]], earlier: set[str], later: set[str]) -> bool:
-    """earlier 类的 op 之后是否再出现过 later 类——按 order 升序判断。"""
+    """earlier 类的 op 之后是否再出现过 later 类——按 order 升序判断。
+
+    保留向后兼容（旧调用方不分 procedure scope）。新代码请用
+    `_has_followed_by_within_scope`，避免跨过程的偶然顺序被当成 refresh 模式。
+    """
     seen_earlier = False
     for op in sorted(ops, key=lambda o: o["order"]):
         if op["dml_type"] in earlier:
@@ -243,6 +333,47 @@ def _has_followed_by(ops: list[dict[str, Any]], earlier: set[str], later: set[st
             continue
         if seen_earlier and op["dml_type"] in later:
             return True
+    return False
+
+
+def _has_followed_by_within_scope(
+    ops: list[dict[str, Any]], earlier: set[str], later: set[str],
+) -> bool:
+    """同 _has_followed_by，但「先后」必须在同一作用域里成立。
+
+    作用域 = `procedure_name`：
+    - 同一过程内 TRUNCATE → INSERT 算成立（典型刷数过程）
+    - 顶层（procedure_name=""）的 TRUNCATE → 顶层 INSERT 算成立
+    - proc1 TRUNCATE / proc2 INSERT 不算 —— 跨过程顺序不可推
+    - 顶层 TRUNCATE / proc INSERT 算成立（用户先手 truncate 再调 proc 装载）
+    - proc TRUNCATE / 顶层 INSERT 反过来也算（proc 清表后顶层补数据）
+    """
+    sorted_ops = sorted(ops, key=lambda o: o["order"])
+    # 按 scope 分组：每个 procedure_name 独立 + 一个「跨范围」组（top + 任一 proc）
+    by_scope: dict[str, list[dict[str, Any]]] = {}
+    for op in sorted_ops:
+        scope = op.get("procedure_name") or ""
+        by_scope.setdefault(scope, []).append(op)
+    # 1) 每个 procedure 内单独检查
+    for scope, scope_ops in by_scope.items():
+        if scope and _has_followed_by(scope_ops, earlier, later):
+            return True
+    # 2) 顶层 + 全局 ops（包含 proc）按 order 检查 —— 顶层 op 跟任意 proc op 跨界算
+    top_ops = by_scope.get("", [])
+    if top_ops:
+        # 取顶层 op + 与之有时间关系的 proc op，混合按 order 看
+        if _has_followed_by(sorted_ops, earlier, later):
+            # 但要排除 proc1→proc2 的纯跨过程巧合：必须至少一端是顶层
+            for op in sorted_ops:
+                if op["dml_type"] in earlier and not op.get("procedure_name"):
+                    # 顶层 earlier 后是否有任何 later
+                    later_ops = [o for o in sorted_ops if o["order"] > op["order"] and o["dml_type"] in later]
+                    if later_ops:
+                        return True
+                if op["dml_type"] in later and not op.get("procedure_name"):
+                    earlier_ops = [o for o in sorted_ops if o["order"] < op["order"] and o["dml_type"] in earlier]
+                    if earlier_ops:
+                        return True
     return False
 
 

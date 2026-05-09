@@ -774,6 +774,81 @@ def test_target_summary_delete_insert_full_refresh():
     assert summary["refresh_mode"] == "delete_insert"
 
 
+def test_target_summary_procedure_only_truncate_insert():
+    """CREATE PROCEDURE 体内的 TRUNCATE → INSERT 应识别成 truncate_insert，
+    且 procedure_origins 列出过程名（沿血缘 trace 用）。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE refresh_dwd_users AS
+    BEGIN
+      TRUNCATE TABLE dwd.users;
+      INSERT INTO dwd.users (id, name) SELECT id, name FROM ods.users;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by(result["target_summary"], "dwd.users")
+    assert summary["truncate_before_insert"] is True
+    assert summary["truncate_count"] == 1
+    assert summary["insert_count"] == 1
+    assert summary["refresh_mode"] == "truncate_insert"
+    assert "refresh_dwd_users" in summary["procedure_origins"]
+
+
+def test_target_summary_procedure_only_delete_insert():
+    """PROCEDURE 内 DELETE FROM x（无 WHERE）→ INSERT INTO x → delete_insert。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE rebuild_dwd_orders AS
+    BEGIN
+      DELETE FROM dwd.orders;
+      INSERT INTO dwd.orders SELECT * FROM ods.orders;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by(result["target_summary"], "dwd.orders")
+    assert summary["delete_before_insert"] is True
+    assert summary["refresh_mode"] == "delete_insert"
+    assert "rebuild_dwd_orders" in summary["procedure_origins"]
+
+
+def test_target_summary_procedure_origins_empty_for_top_level_only():
+    """纯顶层 INSERT 不应有 procedure_origins。"""
+    sql = "INSERT INTO dwd.x SELECT * FROM ods.y;"
+    result = analyze_sql_lineage(sql, dialect="mysql")
+    summary = _summary_by(result["target_summary"], "dwd.x")
+    assert summary["procedure_origins"] == []
+
+
+def test_target_summary_no_double_count_when_dedup_works():
+    """procedure-内 statements 不应同时被算入顶层 + 过程 ops。"""
+    sql = """
+    CREATE OR REPLACE PROCEDURE p AS
+    BEGIN
+      INSERT INTO dwd.t SELECT * FROM ods.s;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by(result["target_summary"], "dwd.t")
+    assert summary["insert_count"] == 1
+    assert summary["procedure_origins"] == ["p"]
+
+
+def test_target_summary_anonymous_block_origins():
+    """匿名 BEGIN/END 块的 procedure_origins 用 <anonymous>。"""
+    sql = """
+    BEGIN
+      TRUNCATE TABLE dwd.fact;
+      INSERT INTO dwd.fact SELECT * FROM ods.fact;
+    END;
+    /
+    """
+    result = analyze_sql_lineage(sql, dialect="oracle")
+    summary = _summary_by(result["target_summary"], "dwd.fact")
+    assert summary["refresh_mode"] == "truncate_insert"
+    assert summary["procedure_origins"] == ["<anonymous>"]
+
+
 def test_target_summary_delete_with_where_is_partial():
     sql = """
     DELETE FROM dwd.fact_order WHERE biz_date = '2025-01-01';

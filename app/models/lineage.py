@@ -143,6 +143,9 @@ class TargetSummary(BaseModel):
     truncate_before_insert: bool = False
     refresh_mode: RefreshMode | None = None
     titles: list[str] = Field(default_factory=list)
+    # 哪些 PROCEDURE / FUNCTION / PACKAGE BODY / TRIGGER 内部写过本目标表 —— 让 UI
+    # 能展示「此表被 procX 重刷」之类的溯源信息。空 list 表示纯顶层写入。
+    procedure_origins: list[str] = Field(default_factory=list)
 
 
 class ProcessStep(BaseModel):

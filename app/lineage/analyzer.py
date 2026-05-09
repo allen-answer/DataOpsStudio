@@ -19,6 +19,7 @@ from app.lineage._common import raw_sql_aliases as _raw_sql_aliases
 from app.lineage._common import unique_strings as _unique_strings
 from app.lineage.aggregation import (
     aggregate_target_summary as _aggregate_target_summary,
+    collect_procedure_operations as _collect_procedure_operations,
     collect_target_operations as _collect_target_operations,
     extract_statement_title as _extract_statement_title,
 )
@@ -142,11 +143,41 @@ def analyze_sql_lineage(sql_text: str, dialect: str | None = None, schema: dict[
     edges.extend(_trigger_supplemental_edges(procedure_segments, edges))
     groups = _graph_groups(edges, analyses)
     warnings = _analysis_warnings(analyses, dynamic_sql_segments, parse_errors, procedure_segments)
-    # target_summary 走 statements（含 DELETE/TRUNCATE）；deduped_statements 已被
-    # analysis_statements() 过滤掉非 SELECT/INSERT/UPDATE/MERGE，会漏掉删表 / 截断。
-    target_summary = _aggregate_target_summary(
-        _collect_target_operations([s for s in statements if s is not None])
-    )
+    # target_summary 走两条路径合并：
+    # 1) 顶层 + dynamic 段的 statements（不含 procedure-内 DML，避免双重计数）
+    # 2) procedure_segments 单独按 line_start 顺序产 ops（procedure 内部的
+    #    TRUNCATE→INSERT 顺序在顶层 statements 里被 dedup 打乱，靠 segment 顺序拿回来）
+    # 每个 op 带 procedure_name，aggregate 出来的 summary 多 procedure_origins 字段。
+    #
+    # dedup 策略：比对必须用「sqlglot 解析后再序列化」的形态。直接比 raw text 会因
+    # 别名 AS 关键字、大小写、空白等 normalization 差异错配（如 raw `ods.orders o`
+    # vs sqlglot 序列化 `ods.orders AS o`）。
+    def _canonical(stmt: Any) -> str:
+        if stmt is None:
+            return ""
+        return " ".join(sql(stmt).lower().split())
+
+    proc_canonicals: set[str] = set()
+    for seg in procedure_segments:
+        seg_sql = str(seg.get("sql") or "")
+        if not seg_sql.strip():
+            continue
+        try:
+            for parsed in sqlglot.parse(seg_sql, read=dialect or None):
+                c = _canonical(parsed)
+                if c:
+                    proc_canonicals.add(c)
+        except Exception:
+            # 解析失败的段保持 raw 文本兜底（聊胜于无）
+            proc_canonicals.add(" ".join(seg_sql.lower().split()))
+
+    top_level_only = [
+        s for s in statements
+        if s is not None and _canonical(s) not in proc_canonicals
+    ]
+    top_level_ops = _collect_target_operations(top_level_only)
+    proc_ops = _collect_procedure_operations(procedure_segments, sqlglot, dialect)
+    target_summary = _aggregate_target_summary(top_level_ops + proc_ops)
     flat_tables = unique_items(item for analysis in analyses for item in analysis["tables"])
     # PR17：过滤被 sqlglot 误识别为表的 PL/SQL 局部变量。比如 `SELECT INTO v_row
     # FROM ods.orders` 被 sqlglot 重写为 `CREATE TABLE v_row AS SELECT FROM

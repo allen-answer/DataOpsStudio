@@ -41,6 +41,7 @@ def test_target_summary_round_trip_full_fields() -> None:
         "truncate_before_insert": False,
         "refresh_mode": "delete_insert",
         "titles": ["集中交易", "订单回写"],
+        "procedure_origins": ["pkg.refresh_daily"],
     }
     model = TargetSummary.model_validate(payload)
     dumped = model.model_dump()
