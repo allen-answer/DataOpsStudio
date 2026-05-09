@@ -449,6 +449,7 @@ def test_column_lineage_not_truncated_when_under_cap(isolated_storage):
 def test_column_edge_index_cache_avoids_rescan_on_repeat_calls(isolated_storage, monkeypatch):
     """同一进程内连续两次 get_column_lineage 不应重新扫所有 run。"""
     from app.services import assets as assets_svc
+    from app.services import workflow_history
     _persist_lineage_run([
         {"target_table": "dwd.x", "target_column": "id",
          "source_tables": ["ods.x"], "source_columns": ["id"]},
@@ -456,13 +457,14 @@ def test_column_edge_index_cache_avoids_rescan_on_repeat_calls(isolated_storage,
     assets_svc.invalidate_column_edge_index_cache()
 
     call_count = {"n": 0}
-    real_get = assets_svc.get_workflow_run
+    real_get = workflow_history.get_workflow_run
 
     def counting_get(rid):
         call_count["n"] += 1
         return real_get(rid)
 
-    monkeypatch.setattr(assets_svc, "get_workflow_run", counting_get)
+    # payload cache 住在 workflow_history，patch 它本身的 get_workflow_run
+    monkeypatch.setattr(workflow_history, "get_workflow_run", counting_get)
     assets_svc.get_column_lineage("dwd.x", "id")
     first_round = call_count["n"]
     assert first_round >= 1, "首次必须触发扫描"
@@ -508,9 +510,10 @@ def test_column_edge_index_cache_explicit_invalidate(isolated_storage, monkeypat
 
 
 def test_run_payloads_cache_shared_across_aggregators(isolated_storage, monkeypatch):
-    """get_column_lineage 跟 get_table_columns 共用 _get_cached_run_payloads。
+    """get_column_lineage 跟 get_table_columns 共用 get_cached_run_payloads。
     第一次扫完后第二个聚合不应再读 JSON。"""
     from app.services import assets as assets_svc
+    from app.services import workflow_history
     _persist_lineage_run([
         {"target_table": "dwd.x", "target_column": "id",
          "source_tables": ["ods.x"], "source_columns": ["id"]},
@@ -518,13 +521,13 @@ def test_run_payloads_cache_shared_across_aggregators(isolated_storage, monkeypa
     assets_svc.invalidate_column_edge_index_cache()
 
     call_count = {"n": 0}
-    real_get = assets_svc.get_workflow_run
+    real_get = workflow_history.get_workflow_run
 
     def counting_get(rid):
         call_count["n"] += 1
         return real_get(rid)
 
-    monkeypatch.setattr(assets_svc, "get_workflow_run", counting_get)
+    monkeypatch.setattr(workflow_history, "get_workflow_run", counting_get)
 
     # 1st：column lineage 触发 payload 解析
     assets_svc.get_column_lineage("dwd.x", "id")
@@ -538,17 +541,18 @@ def test_run_payloads_cache_shared_across_aggregators(isolated_storage, monkeypa
 
 
 def test_run_payloads_cache_invalidates_on_explicit_clear(isolated_storage):
-    """invalidate_column_edge_index_cache 同时清空 payload 缓存（互相依赖）。"""
+    """invalidate_column_edge_index_cache 同时清空底层 payload 缓存（住在 workflow_history）。"""
     from app.services import assets as assets_svc
+    from app.services import workflow_history
     _persist_lineage_run([
         {"target_table": "dwd.x", "target_column": "id",
          "source_tables": ["ods.x"], "source_columns": ["id"]},
     ])
     assets_svc.invalidate_column_edge_index_cache()
     assets_svc.get_column_lineage("dwd.x", "id")
-    assert assets_svc._run_payloads_cache, "首次调用应填 payload 缓存"
+    assert workflow_history._run_payloads_cache, "首次调用应填 payload 缓存"
     assets_svc.invalidate_column_edge_index_cache()
-    assert not assets_svc._run_payloads_cache, "invalidate 必须把 payload 一起清"
+    assert not workflow_history._run_payloads_cache, "invalidate 必须把 payload 一起清"
 
 
 # ─── _scan_lineage_scripts_referencing：曾经返回空，bug 修复回归 ─────────────

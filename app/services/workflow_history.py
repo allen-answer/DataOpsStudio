@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,55 @@ from app.utils.paths import WORKFLOW_RUNS_DIR
 
 
 logger = logging.getLogger(__name__)
+
+
+# ─── 跨服务共享的 run payload 缓存 ────────────────────────────────────────────
+# 多个服务（assets.get_table_columns / assets._build_column_edge_index /
+# assets._scan_lineage_scripts_referencing / search._search_lineage_scripts）
+# 走同一组 list_workflow_runs(limit=N) + get_workflow_run(rid) 把 JSON 解析。
+# 各自扫一遍 = 无谓的重复磁盘 I/O + JSON parse。这层缓存解析后的 payloads
+# 给所有 caller 共享。TTL 300s + run-count 失效（粗粒度但足够）。
+_PAYLOAD_TTL = 300.0
+_run_payloads_cache: dict[int, dict[str, Any]] = {}
+_run_payloads_lock = threading.RLock()
+
+
+def get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
+    """返回最近 `run_limit` 个 workflow_run 的完整 payload 列表（newest first）。
+    多个聚合可共享 —— 一次 JSON parse 给多个服务用。
+    """
+    now = time.time()
+    with _run_payloads_lock:
+        entry = _run_payloads_cache.get(run_limit)
+        try:
+            current_run_count = len(list_workflow_runs(limit=run_limit))
+        except Exception:  # pragma: no cover
+            current_run_count = 0
+        if entry is not None and (
+            now - entry["built_at"] < _PAYLOAD_TTL
+            and entry["source_run_count"] == current_run_count
+        ):
+            return entry["payloads"]
+        payloads: list[dict[str, Any]] = []
+        for summary in list_workflow_runs(limit=run_limit):
+            rid = str(summary.get("run_id") or "")
+            if not rid:
+                continue
+            full = get_workflow_run(rid)
+            if full:
+                payloads.append(full)
+        _run_payloads_cache[run_limit] = {
+            "built_at": now,
+            "source_run_count": current_run_count,
+            "payloads": payloads,
+        }
+        return payloads
+
+
+def invalidate_run_payloads_cache() -> None:
+    """admin / 测试用：清空所有 run_limit 的 cache 槽。"""
+    with _run_payloads_lock:
+        _run_payloads_cache.clear()
 
 
 def persist_workflow_run(run: WorkflowRun) -> Path:

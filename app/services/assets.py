@@ -19,7 +19,12 @@ from typing import Any
 from app.services.history import list_result_history
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.search import _all_tokens_in, _extract_tables
-from app.services.workflow_history import get_workflow_run, list_workflow_runs
+from app.services.workflow_history import (
+    get_cached_run_payloads as _get_cached_run_payloads,
+    get_workflow_run,
+    invalidate_run_payloads_cache as _invalidate_run_payloads_cache,
+    list_workflow_runs,
+)
 
 
 def _split_schema(name: str) -> tuple[str, str]:
@@ -325,48 +330,6 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
     return out
 
 
-# ─── 工作流 run payload 共享缓存 ───────────────────────────────────────────
-# `get_table_columns` 和 `_build_column_edge_index` 都按同一组 run_limit 扫
-# 最近 N 个 workflow_run JSON。每个 run 的 lineage 输出可能上 MB，让两个
-# 聚合各扫一遍 = 同样磁盘 I/O 跑两次。这一层缓存解析后的 payloads（TTL+
-# run_count 双失效），所有聚合从 in-memory list 拿，再各自计算结果。
-#
-# 上层结果缓存（如 _column_edge_cache）仍保留 —— 单次聚合的输出比再次
-# 遍历 payloads 更便宜（常用 API 命中无需迭代）。
-_PAYLOAD_TTL = 300.0
-_run_payloads_cache: dict[int, dict[str, Any]] = {}
-_run_payloads_lock = threading.RLock()
-
-
-def _get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
-    """返回最近 run_limit 个 workflow_run 的完整 payload 列表（newest first）。
-    多 caller 共享 —— 一次 JSON parse 给多个聚合用。
-    """
-    now = time.time()
-    with _run_payloads_lock:
-        entry = _run_payloads_cache.get(run_limit)
-        current_run_count = _count_runs_for_invalidation(run_limit)
-        if entry is not None and (
-            now - entry["built_at"] < _PAYLOAD_TTL
-            and entry["source_run_count"] == current_run_count
-        ):
-            return entry["payloads"]
-        payloads: list[dict[str, Any]] = []
-        for summary in list_workflow_runs(limit=run_limit):
-            rid = str(summary.get("run_id") or "")
-            if not rid:
-                continue
-            full = get_workflow_run(rid)
-            if full:
-                payloads.append(full)
-        _run_payloads_cache[run_limit] = {
-            "built_at": now,
-            "source_run_count": current_run_count,
-            "payloads": payloads,
-        }
-        return payloads
-
-
 # ─── column edge index 缓存（上层） ─────────────────────────────────────────
 # 跟 lineage_index.py 一个套路：列出 (src_t, src_c) → (tgt_t, tgt_c) 边的
 # 反向 / 正向索引。复用 _get_cached_run_payloads 不重复扫文件。
@@ -416,8 +379,8 @@ def invalidate_column_edge_index_cache() -> None:
     """admin / 测试用：清空所有 run_limit 的 cache 槽（含底层 payload 缓存）。"""
     with _column_edge_lock:
         _column_edge_cache.clear()
-    with _run_payloads_lock:
-        _run_payloads_cache.clear()
+    # 共享 payload 缓存住在 workflow_history（其它服务也用），统一从那里清
+    _invalidate_run_payloads_cache()
 
 
 def _build_column_edge_index(run_limit: int) -> tuple[

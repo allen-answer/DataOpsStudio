@@ -234,3 +234,58 @@ def test_http_search_rejects_empty_query(client, isolated_storage):
     response = client.get("/api/search", params={"q": ""})
     # FastAPI Query(min_length=1) → 422
     assert response.status_code == 422
+
+
+# ─── lineage_script kind：bug 修复回归 ───────────────────────────────────────
+
+
+def _persist_batch_lineage_run_for_search(files, run_id="run-search"):
+    """造一个含 batch lineage 输出的 workflow_run 让 search 能命中。"""
+    from app.models import (
+        NodeRunStatus, WorkflowNodeRun, WorkflowNodeType, WorkflowRun, WorkflowRunStatus,
+    )
+    from app.services import workflow_history
+    run = WorkflowRun(
+        run_id=run_id, workflow_id="wf-search", workflow_name="search test",
+        status=WorkflowRunStatus.SUCCESS,
+        nodes=[WorkflowNodeRun(
+            node_id="lineage_n", type=WorkflowNodeType.LINEAGE,
+            status=NodeRunStatus.SUCCESS,
+            output={"files": files},
+        )],
+        started_at="2026-05-09T12:00:00",
+        finished_at="2026-05-09T12:00:01", elapsed_seconds=1.0,
+    )
+    workflow_history.persist_workflow_run(run)
+
+
+def test_search_hits_lineage_script_by_filename(isolated_storage):
+    """lineage_script 作为 5 类资产之一应被搜到 —— 旧版因为 list_workflow_runs
+    返回 summary 没 nodes，命中永远空。修复后 batch lineage 的 file_name 能命中。"""
+    from app.services.workflow_history import invalidate_run_payloads_cache
+    invalidate_run_payloads_cache()
+    _persist_batch_lineage_run_for_search([
+        {"file_name": "etl_orders_daily.sql",
+         "read_tables": ["ods.orders"], "write_tables": ["dwd.orders"]},
+    ])
+    result = search("orders_daily")
+    kinds = [h["kind"] for h in result["hits"]]
+    assert "lineage_script" in kinds, f"lineage_script 应命中: {kinds}"
+    hit = next(h for h in result["hits"] if h["kind"] == "lineage_script")
+    assert hit["name"] == "etl_orders_daily.sql"
+    assert hit["metadata"]["run_id"] == "run-search"
+    assert hit["metadata"]["workflow_id"] == "wf-search"
+
+
+def test_search_hits_lineage_script_by_table_reference(isolated_storage):
+    """lineage_script 文件名不含关键字但 read/write tables 含 → match_path=tables。"""
+    from app.services.workflow_history import invalidate_run_payloads_cache
+    invalidate_run_payloads_cache()
+    _persist_batch_lineage_run_for_search([
+        {"file_name": "etl_users.sql",
+         "read_tables": ["ods.users_archive"], "write_tables": ["dwd.users"]},
+    ])
+    result = search("users_archive")
+    hits = [h for h in result["hits"] if h["kind"] == "lineage_script"]
+    assert hits, "通过 read_tables 的命中也应出现"
+    assert hits[0]["match_path"] == "tables"

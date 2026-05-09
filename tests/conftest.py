@@ -97,10 +97,12 @@ def isolated_storage(tmp_path, monkeypatch):
     auth_svc.user_store.invalidate_cache()
     projects_api.project_store.invalidate_cache()
 
-    # 6. column lineage edge index 内存缓存 —— 跨测试 tmp_path 切换时残留旧索引
-    #    （run_count 可能巧合相同），显式 clear 避免污染
+    # 6. column lineage edge index + workflow_history payload 内存缓存 —— 跨测试
+    #    tmp_path 切换时残留旧索引（run_count 可能巧合相同），显式 clear 避免污染
     from app.services import assets as assets_svc
+    from app.services import workflow_history as wf_history
     assets_svc.invalidate_column_edge_index_cache()
+    wf_history.invalidate_run_payloads_cache()
 
     yield {
         "cfg": cfg,

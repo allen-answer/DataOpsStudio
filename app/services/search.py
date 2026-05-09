@@ -20,7 +20,10 @@ from typing import Any
 
 from app.services.history import list_result_history
 from app.services.repositories import datasource_store, task_store, workflow_store
-from app.services.workflow_history import list_workflow_runs
+from app.services.workflow_history import (
+    get_cached_run_payloads,
+    list_workflow_runs,
+)
 
 
 # ─── 表名抽取（轻量正则，不调 sqlglot） ──────────────────────────────────────
@@ -280,9 +283,13 @@ def _search_history(tokens: list[str], project_id: str) -> list[dict[str, Any]]:
 def _search_lineage_scripts(tokens: list[str], project_id: str) -> list[dict[str, Any]]:
     """搜最近 workflow runs 中 lineage 节点产出的 script —— 命中 file_name
     或 read/write tables。每条命中给出 run_id + workflow_id 让前端能跳转。
+
+    走 `get_cached_run_payloads`（workflow_history 里的共享层）拿到的是含 `nodes`
+    的全 payload；走旧的 `list_workflow_runs(limit=30)` 拿到的是 summary（无 nodes），
+    内循环跑零次，导致命中永远空 —— 这是潜伏 bug。
     """
     out: list[dict[str, Any]] = []
-    runs = list_workflow_runs(limit=30)
+    runs = get_cached_run_payloads(30)
     for r in runs:
         for node_run in (r.get("nodes") or []):
             output = node_run.get("output") or {}
@@ -309,16 +316,17 @@ def _search_lineage_scripts(tokens: list[str], project_id: str) -> list[dict[str
                     matched_tab = next((str(t) for t in tables if _all_tokens_in(str(t), tokens)), "")
                     match_path = "tables"
                     snippet = f"涉及表：{matched_tab}"
+                run_id = r.get("run_id") or ""
                 out.append({
                     "kind": "lineage_script",
-                    "id": f"{r.get('id') or ''}::{file_name}",
+                    "id": f"{run_id}::{file_name}",
                     "name": file_name,
                     "snippet": snippet,
                     "match_path": match_path,
                     "score": final,
                     "project_id": "",
                     "metadata": {
-                        "run_id": r.get("id"),
+                        "run_id": run_id,
                         "workflow_id": r.get("workflow_id"),
                         "node_id": node_run.get("node_id"),
                     },
