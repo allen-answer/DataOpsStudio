@@ -12,6 +12,8 @@ MVP 范围：仅 table kind；owner / SLA / PII 等 classification 字段放下�
 """
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from app.services.history import list_result_history
@@ -323,6 +325,58 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
     return out
 
 
+# ─── column edge index 缓存 ───────────────────────────────────────────────
+# 反复点字段血缘（同一个 AssetDetailView 上 5+ 字段、多跳切换）会重复扫所有 run。
+# 跟 services/lineage_index.py 一个套路：内存缓存 + TTL + run-count 失效。
+# key 是 run_limit（不同 caller 可能传不同值，互不污染）。
+_COLUMN_EDGE_TTL = 300.0
+_column_edge_cache: dict[int, dict[str, Any]] = {}
+_column_edge_lock = threading.RLock()
+
+
+def _get_cached_column_edges(run_limit: int) -> tuple[
+    dict[tuple[str, str], dict[tuple[str, str], int]],
+    dict[tuple[str, str], dict[tuple[str, str], int]],
+]:
+    """带缓存的 edge index 拿取。失效条件：
+    - TTL 过期（300s）
+    - workflow_run 数量变化（粗粒度，新增 / 删除都触发）
+    - 显式 invalidate_column_edge_index_cache()
+    """
+    now = time.time()
+    with _column_edge_lock:
+        entry = _column_edge_cache.get(run_limit)
+        current_run_count = _count_runs_for_invalidation(run_limit)
+        if entry is not None and (
+            now - entry["built_at"] < _COLUMN_EDGE_TTL
+            and entry["source_run_count"] == current_run_count
+        ):
+            return entry["up_edges"], entry["down_edges"]
+        up, down = _build_column_edge_index(run_limit)
+        _column_edge_cache[run_limit] = {
+            "built_at": now,
+            "source_run_count": current_run_count,
+            "up_edges": up,
+            "down_edges": down,
+        }
+        return up, down
+
+
+def _count_runs_for_invalidation(run_limit: int) -> int:
+    """边界粗算：取 list_workflow_runs(limit=run_limit) 的长度。新建或删 run 都会变。
+    比对索引/写入时间更稳（避免依赖文件系统 mtime 精度）。"""
+    try:
+        return len(list_workflow_runs(limit=run_limit))
+    except Exception:  # pragma: no cover
+        return 0
+
+
+def invalidate_column_edge_index_cache() -> None:
+    """admin / 测试用：清空所有 run_limit 的 cache 槽。"""
+    with _column_edge_lock:
+        _column_edge_cache.clear()
+
+
 def _build_column_edge_index(run_limit: int) -> tuple[
     dict[tuple[str, str], dict[tuple[str, str], int]],
     dict[tuple[str, str], dict[tuple[str, str], int]],
@@ -481,7 +535,7 @@ def get_column_lineage(
     target_t_base = target_t.split(".")[-1]
     target_c = column_name.strip().lower()
 
-    up_edges, down_edges = _build_column_edge_index(run_limit)
+    up_edges, down_edges = _get_cached_column_edges(run_limit)
 
     # 用户传的 table_name 可能是 schema.t 也可能裸 t —— 选实际命中索引的形式当 focal。
     # 优先全限定（避免裸名误匹配多张同名表），命中不到再用 base。

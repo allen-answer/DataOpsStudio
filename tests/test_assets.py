@@ -443,6 +443,70 @@ def test_column_lineage_not_truncated_when_under_cap(isolated_storage):
     assert out["downstream_truncated"] is False
 
 
+# ─── edge index 缓存 ────────────────────────────────────────────────────────
+
+
+def test_column_edge_index_cache_avoids_rescan_on_repeat_calls(isolated_storage, monkeypatch):
+    """同一进程内连续两次 get_column_lineage 不应重新扫所有 run。"""
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+
+    call_count = {"n": 0}
+    real_get = assets_svc.get_workflow_run
+
+    def counting_get(rid):
+        call_count["n"] += 1
+        return real_get(rid)
+
+    monkeypatch.setattr(assets_svc, "get_workflow_run", counting_get)
+    assets_svc.get_column_lineage("dwd.x", "id")
+    first_round = call_count["n"]
+    assert first_round >= 1, "首次必须触发扫描"
+    assets_svc.get_column_lineage("dwd.x", "id")
+    assert call_count["n"] == first_round, "第二次应走缓存，不再扫 run"
+
+
+def test_column_edge_index_cache_invalidates_on_new_run(isolated_storage, monkeypatch):
+    """新 workflow_run 落盘后 cache 应感知 run 数变化并失效。"""
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ], run_id="run-a")
+    assets_svc.invalidate_column_edge_index_cache()
+
+    # 预热缓存
+    out1 = assets_svc.get_column_lineage("dwd.x", "id")
+    assert len(out1["upstream"]) == 1
+
+    # 新增一个 run，引入新 upstream 边
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["raw.x"], "source_columns": ["id"]},
+    ], run_id="run-b")
+    out2 = assets_svc.get_column_lineage("dwd.x", "id")
+    upstream_tables = {u["table"] for u in out2["upstream"]}
+    assert {"ods.x", "raw.x"} <= upstream_tables, "新 run 加入的 upstream 必须出现"
+
+
+def test_column_edge_index_cache_explicit_invalidate(isolated_storage, monkeypatch):
+    """invalidate_column_edge_index_cache() 必然清空缓存。"""
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+    assets_svc.get_column_lineage("dwd.x", "id")
+    assert assets_svc._column_edge_cache, "首次调用后应有缓存条目"
+    assets_svc.invalidate_column_edge_index_cache()
+    assert not assets_svc._column_edge_cache, "invalidate 后必须清空"
+
+
 def test_column_lineage_depth_breaks_cycle(isolated_storage):
     """a → b → a 这种环不应导致死循环或重复访问。"""
     from app.services.assets import get_column_lineage
