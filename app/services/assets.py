@@ -87,10 +87,15 @@ def _scan_workflows_referencing(table_name: str, project_id: str) -> list[dict[s
 
 def _scan_lineage_scripts_referencing(table_name: str) -> list[dict[str, Any]]:
     """从最近 30 个 workflow_run 找 lineage 节点 output.files 里 read/write
-    tables 含 table_name 的脚本。"""
+    tables 含 table_name 的脚本。
+
+    用共享 payload 缓存（`_get_cached_run_payloads`）拿全 run，summary 不含 `nodes`
+    —— 旧版直接走 `list_workflow_runs` 拿到的是 summary，`r.get("nodes")` 永远空，
+    导致 references.lineage_scripts 一直返回空 list（bug）。
+    """
     target = table_name.lower()
     out: list[dict[str, Any]] = []
-    for r in list_workflow_runs(limit=30):
+    for r in _get_cached_run_payloads(30):
         for node_run in (r.get("nodes") or []):
             output = node_run.get("output") or {}
             for f in output.get("files") or []:
@@ -104,7 +109,7 @@ def _scan_lineage_scripts_referencing(table_name: str) -> list[dict[str, Any]]:
                         else ("source" if target in read_tabs else "target")
                     )
                     out.append({
-                        "run_id": r.get("id"),
+                        "run_id": r.get("run_id"),
                         "workflow_id": r.get("workflow_id"),
                         "node_id": node_run.get("node_id"),
                         "file_name": f.get("file_name") or f.get("name") or "",

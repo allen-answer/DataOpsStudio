@@ -551,6 +551,66 @@ def test_run_payloads_cache_invalidates_on_explicit_clear(isolated_storage):
     assert not assets_svc._run_payloads_cache, "invalidate 必须把 payload 一起清"
 
 
+# ─── _scan_lineage_scripts_referencing：曾经返回空，bug 修复回归 ─────────────
+
+
+def _persist_batch_lineage_run(files: list[dict], run_id: str = "run-batch") -> None:
+    """模拟 batch lineage 输出（多脚本扫描）：output.files = [{file_name, read_tables, write_tables}]"""
+    from app.models import (
+        NodeRunStatus, WorkflowNodeRun, WorkflowNodeType, WorkflowRun, WorkflowRunStatus,
+    )
+    from app.services import workflow_history
+    run = WorkflowRun(
+        run_id=run_id, workflow_id="wf-batch", workflow_name="batch lineage",
+        status=WorkflowRunStatus.SUCCESS,
+        nodes=[WorkflowNodeRun(
+            node_id="lineage_node", type=WorkflowNodeType.LINEAGE,
+            status=NodeRunStatus.SUCCESS,
+            output={"files": files},
+        )],
+        started_at="2026-05-09T12:00:00",
+        finished_at="2026-05-09T12:00:01", elapsed_seconds=1.0,
+    )
+    workflow_history.persist_workflow_run(run)
+
+
+def test_lineage_scripts_referenced_by_table_appear_in_asset(isolated_storage):
+    """旧 bug：list_workflow_runs 返回 summary 不含 nodes，
+    `r.get('nodes')` 永远空 → references.lineage_scripts 永远空。
+    修复后：扫共享 payload，能正确回填 lineage 脚本反向引用。"""
+    from app.services import assets as assets_svc
+    _persist_batch_lineage_run([
+        {"file_name": "etl_users.sql",
+         "read_tables": ["ods.users"], "write_tables": ["dwd.users"]},
+        {"file_name": "etl_orders.sql",
+         "read_tables": ["ods.orders"], "write_tables": ["dwd.orders"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+
+    asset = assets_svc.get_table_asset("dwd.users")
+    scripts = asset["references"]["lineage_scripts"]
+    assert len(scripts) == 1
+    s = scripts[0]
+    assert s["file_name"] == "etl_users.sql"
+    assert s["match_role"] == "target"
+    assert s["run_id"] == "run-batch"
+    assert s["workflow_id"] == "wf-batch"
+
+
+def test_lineage_scripts_match_role_when_table_is_both_read_and_write(isolated_storage):
+    """同一脚本既读又写一张表 → match_role=source/target。"""
+    from app.services import assets as assets_svc
+    _persist_batch_lineage_run([
+        {"file_name": "self_join.sql",
+         "read_tables": ["dwd.users"], "write_tables": ["dwd.users"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+
+    asset = assets_svc.get_table_asset("dwd.users")
+    scripts = asset["references"]["lineage_scripts"]
+    assert len(scripts) == 1 and scripts[0]["match_role"] == "source/target"
+
+
 def test_column_lineage_depth_breaks_cycle(isolated_storage):
     """a → b → a 这种环不应导致死循环或重复访问。"""
     from app.services.assets import get_column_lineage
