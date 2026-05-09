@@ -53,15 +53,22 @@ def get_column_lineage_api(
     column: str = Query(..., min_length=1, description="字段名"),
     project_id: str = Query("", description="项目空间过滤"),
     run_limit: int = Query(50, ge=1, le=200, description="扫描最近多少个 workflow_run"),
+    depth: int = Query(1, ge=1, le=5, description="BFS 跳数；>1 时返回 hop / from 字段"),
+    max_nodes: int = Query(200, ge=1, le=1000, description="单方向 BFS 节点上限"),
 ) -> dict[str, list[dict[str, Any]]]:
     """S1.B：字段血缘热点深化 —— 给定 (table, column)，返回上下游字段链。
 
     `name` 路径段是表名，`column` query 参数是字段名（避免再嵌一层 path-converter
-    含 `/` 时歧义）。
+    含 `/` 时歧义）。`depth=1`（默认）只返回直接邻居，向后兼容；`depth>=2` 触发 BFS
+    多跳追溯，每个 item 多带 `hop` / `from` 让前端渲染嵌套路径。
     """
     from app.services.assets import get_column_lineage
     try:
-        return get_column_lineage(name, column, project_id=project_id, run_limit=run_limit)
+        return get_column_lineage(
+            name, column,
+            project_id=project_id, run_limit=run_limit,
+            depth=depth, max_nodes=max_nodes,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

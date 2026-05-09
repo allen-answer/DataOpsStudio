@@ -33,8 +33,11 @@ const historyOpen = ref(false)
 
 // S1.B：字段血缘深化 —— 点字段名展开上下游字段链。同一时间只展开一行
 const expandedColumn = ref('')             // column name 或 ''
-const columnLineageMap = ref({})           // {colName: {upstream, downstream}}
+const columnLineageMap = ref({})           // {colName: {upstream, downstream}}（按 depth 分组）
 const columnLineageLoading = ref('')       // 当前正在拉的 col name
+// 多跳深度（默认 1，向后兼容）。每个 column 单独记 depth，让用户可以在不同字段上选
+// 不同跳数。结构：{colName: depthNumber}
+const columnLineageDepth = ref({})
 
 // S1.C：datasource introspection —— 拉真实字段
 const datasources = ref([])                // [{id, name, db_type, ...}]
@@ -117,17 +120,10 @@ async function loadColumns() {
   }
 }
 
-async function toggleColumnLineage(colName) {
-  if (expandedColumn.value === colName) {
-    expandedColumn.value = ''
-    return
-  }
-  expandedColumn.value = colName
-  // 已经拉过 → 不重复拉
-  if (columnLineageMap.value[colName]) return
+async function fetchColumnLineage(colName, depth) {
   columnLineageLoading.value = colName
   try {
-    const params = new URLSearchParams({ column: colName })
+    const params = new URLSearchParams({ column: colName, depth: String(depth) })
     const data = await apiGet(
       `/api/assets/column-lineage/${encodeURIComponent(tableName.value)}?${params.toString()}`,
     )
@@ -143,6 +139,34 @@ async function toggleColumnLineage(colName) {
   } finally {
     columnLineageLoading.value = ''
   }
+}
+
+async function toggleColumnLineage(colName) {
+  if (expandedColumn.value === colName) {
+    expandedColumn.value = ''
+    return
+  }
+  expandedColumn.value = colName
+  if (columnLineageMap.value[colName]) return
+  const depth = columnLineageDepth.value[colName] || 1
+  await fetchColumnLineage(colName, depth)
+}
+
+async function setColumnLineageDepth(colName, depth) {
+  columnLineageDepth.value = { ...columnLineageDepth.value, [colName]: depth }
+  // depth 改了 → 重拉。直接覆盖旧 map，不复用 cache（不同 depth 数据不一样）
+  await fetchColumnLineage(colName, depth)
+}
+
+// 多跳分组：按 hop 切，每组按 from 二级分组（hop=1 的 from=null 单独成一组）
+function groupByHop(items) {
+  const out = {}
+  for (const it of items || []) {
+    const hop = it.hop || 1
+    if (!out[hop]) out[hop] = []
+    out[hop].push(it)
+  }
+  return out
 }
 
 function gotoColumn(table, column) {
@@ -767,6 +791,23 @@ function setListValue(field, text) {
               <!-- 展开行：上下游字段链 -->
               <tr v-if="expandedColumn === col.name" class="bg-slate-50/40">
                 <td :colspan="introspectMeta ? 6 : 5" class="px-2 pb-2">
+                  <!-- depth picker -->
+                  <div class="mb-2 flex items-center gap-2 text-[11px]">
+                    <span class="muted">追溯深度：</span>
+                    <button
+                      v-for="d in [1, 2, 3]"
+                      :key="`depth_${d}`"
+                      class="rounded px-2 py-0.5"
+                      :class="(columnLineageDepth[col.name] || 1) === d
+                        ? 'bg-primary text-primary-fg'
+                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'"
+                      @click="setColumnLineageDepth(col.name, d)"
+                      :disabled="columnLineageLoading === col.name"
+                    >{{ d }} 跳</button>
+                    <span v-if="(columnLineageDepth[col.name] || 1) > 1" class="muted opacity-70">
+                      hop=1 是直接邻居；hop=2/3 沿血缘链上溯
+                    </span>
+                  </div>
                   <div v-if="columnLineageLoading === col.name" class="muted text-[11px]">
                     查询字段血缘…
                   </div>
@@ -776,17 +817,28 @@ function setListValue(field, text) {
                         ← 上游字段（{{ columnLineageMap[col.name]?.upstream?.length || 0 }}）
                       </p>
                       <div v-if="columnLineageMap[col.name]?.upstream?.length"
-                           class="flex flex-wrap gap-1">
-                        <button
-                          v-for="u in columnLineageMap[col.name].upstream"
-                          :key="`up_${u.table}_${u.column}`"
-                          class="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100"
-                          @click="gotoColumn(u.table, u.column)"
-                          :title="`跳到 ${u.table}.${u.column}（${u.count} 次）`"
+                           class="flex flex-col gap-1">
+                        <!-- 按 hop 分组渲染。depth=1 时只有 hop=1 一组 -->
+                        <div
+                          v-for="(items, hop) in groupByHop(columnLineageMap[col.name].upstream)"
+                          :key="`up_hop_${hop}`"
+                          class="flex flex-wrap items-center gap-1"
+                          :style="{ paddingLeft: `${(hop - 1) * 16}px` }"
                         >
-                          <span class="sql-font">{{ u.table }}.{{ u.column }}</span>
-                          <span class="ml-1 opacity-60">×{{ u.count }}</span>
-                        </button>
+                          <span v-if="(columnLineageDepth[col.name] || 1) > 1"
+                                class="muted mr-1 text-[10px]">第 {{ hop }} 跳</span>
+                          <button
+                            v-for="u in items"
+                            :key="`up_${hop}_${u.table}_${u.column}_${u.from || ''}`"
+                            class="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100"
+                            @click="gotoColumn(u.table, u.column)"
+                            :title="u.from ? `跳到 ${u.table}.${u.column}（${u.count} 次，来自 ${u.from}）` : `跳到 ${u.table}.${u.column}（${u.count} 次）`"
+                          >
+                            <span class="sql-font">{{ u.table }}.{{ u.column }}</span>
+                            <span class="ml-1 opacity-60">×{{ u.count }}</span>
+                            <span v-if="u.from" class="ml-1 text-[9px] opacity-50">← {{ u.from }}</span>
+                          </button>
+                        </div>
                       </div>
                       <p v-else class="muted text-[11px]">没有上游字段。</p>
                     </div>
@@ -796,17 +848,27 @@ function setListValue(field, text) {
                         下游字段 → （{{ columnLineageMap[col.name]?.downstream?.length || 0 }}）
                       </p>
                       <div v-if="columnLineageMap[col.name]?.downstream?.length"
-                           class="flex flex-wrap gap-1">
-                        <button
-                          v-for="d in columnLineageMap[col.name].downstream"
-                          :key="`dn_${d.table}_${d.column}`"
-                          class="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100"
-                          @click="gotoColumn(d.table, d.column)"
-                          :title="`跳到 ${d.table}.${d.column}（${d.count} 次）`"
+                           class="flex flex-col gap-1">
+                        <div
+                          v-for="(items, hop) in groupByHop(columnLineageMap[col.name].downstream)"
+                          :key="`dn_hop_${hop}`"
+                          class="flex flex-wrap items-center gap-1"
+                          :style="{ paddingLeft: `${(hop - 1) * 16}px` }"
                         >
-                          <span class="sql-font">{{ d.table }}.{{ d.column }}</span>
-                          <span class="ml-1 opacity-60">×{{ d.count }}</span>
-                        </button>
+                          <span v-if="(columnLineageDepth[col.name] || 1) > 1"
+                                class="muted mr-1 text-[10px]">第 {{ hop }} 跳</span>
+                          <button
+                            v-for="d in items"
+                            :key="`dn_${hop}_${d.table}_${d.column}_${d.from || ''}`"
+                            class="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100"
+                            @click="gotoColumn(d.table, d.column)"
+                            :title="d.from ? `跳到 ${d.table}.${d.column}（${d.count} 次，来自 ${d.from}）` : `跳到 ${d.table}.${d.column}（${d.count} 次）`"
+                          >
+                            <span class="sql-font">{{ d.table }}.{{ d.column }}</span>
+                            <span class="ml-1 opacity-60">×{{ d.count }}</span>
+                            <span v-if="d.from" class="ml-1 text-[9px] opacity-50">← {{ d.from }}</span>
+                          </button>
+                        </div>
                       </div>
                       <p v-else class="muted text-[11px]">没有下游字段。</p>
                     </div>

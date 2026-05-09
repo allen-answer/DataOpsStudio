@@ -323,54 +323,21 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
     return out
 
 
-def get_column_lineage(
-    table_name: str,
-    column_name: str,
-    *,
-    project_id: str = "",
-    run_limit: int = 50,
-) -> dict[str, list[dict[str, Any]]]:
-    """S1.B：字段血缘热点深化 —— 给定 (table, column)，返回上下游字段链。
+def _build_column_edge_index(run_limit: int) -> tuple[
+    dict[tuple[str, str], dict[tuple[str, str], int]],
+    dict[tuple[str, str], dict[tuple[str, str], int]],
+]:
+    """扫最近 run_limit 个 workflow_run 的 lineage insert_mappings，建：
+    - up_edges[(target_t, target_c)] = {(src_t, src_c): count}  —— 反向（upstream）
+    - down_edges[(src_t, src_c)] = {(target_t, target_c): count}  —— 正向（downstream）
 
-    返回 `{"upstream": [{table, column, count}], "downstream": [...]}`。
-    upstream = 这个字段从哪些 source 字段来（看 insert_mappings 中
-    target=(table.column) 的 source_columns）；downstream = 这个字段流向
-    哪些 target 字段（看 insert_mappings 中 source 含 table.column 的
-    target_column）。
-
-    数据源跟 get_table_columns 一样：最近 run_limit 个 workflow_run 的 lineage
-    insert_mappings。同 (src_t, src_c, dst_t, dst_c) 的边累加 count，不去重，
-    让前端可以排序"哪条字段链最频繁"。
+    一次扫描两边都建，多跳 BFS 直接走索引。
+    `(t, c)` 都 lower 化保证大小写不敏感的对比。
+    完全限定形式 `t.c`、单源 mapping 的 unqualified `c`（归到 source_tables[0]）
+    都进索引；多源 unqualified 拒绝，避免归属不确定。
     """
-    if not table_name or not table_name.strip():
-        raise ValueError("table_name is required")
-    if not column_name or not column_name.strip():
-        raise ValueError("column_name is required")
-    target_t = table_name.strip().lower()
-    target_t_base = target_t.split(".")[-1]
-    target_c = column_name.strip().lower()
-
-    upstream_counter: dict[tuple[str, str], int] = {}    # (src_table, src_col) → count
-    downstream_counter: dict[tuple[str, str], int] = {}  # (dst_table, dst_col) → count
-
-    def _matches_table(t: str) -> bool:
-        t = t.strip().lower()
-        return t == target_t or t == target_t_base
-
-    def _matches_source_col(sc: str, source_tables: list[str]) -> bool:
-        """source_column 是否指向 target.target_c。三种形式：
-        - 完全限定 'table.col' → 比较两段
-        - 单源 mapping 且 unqualified col → 比较 col
-        - 多源 + unqualified → 拒绝（无法确认归属，跟 get_table_columns 同规则）
-        """
-        sc_lower = sc.strip().lower()
-        if "." in sc_lower:
-            parts = sc_lower.rsplit(".", 1)
-            return _matches_table(parts[0]) and parts[1] == target_c
-        # unqualified
-        if len(source_tables) == 1 and _matches_table(source_tables[0]):
-            return sc_lower == target_c
-        return False
+    up: dict[tuple[str, str], dict[tuple[str, str], int]] = {}
+    down: dict[tuple[str, str], dict[tuple[str, str], int]] = {}
 
     try:
         for summary in list_workflow_runs(limit=run_limit):
@@ -391,48 +358,137 @@ def get_column_lineage(
                     for mapping in (packet.get("insert_mappings") or []):
                         if not isinstance(mapping, dict):
                             continue
-                        target_table = str(mapping.get("target_table") or "")
-                        target_column = str(mapping.get("target_column") or "").strip().lower()
+                        tgt_t = str(mapping.get("target_table") or "").strip().lower()
+                        tgt_c = str(mapping.get("target_column") or "").strip().lower()
+                        if not tgt_t or not tgt_c:
+                            continue
                         source_tables = [str(t) for t in (mapping.get("source_tables") or [])]
                         source_cols = [str(s) for s in (mapping.get("source_columns") or [])]
 
-                        # upstream：mapping 写到 (target_t, target_c)，则它的 source_columns 是 upstream
-                        if _matches_table(target_table) and target_column == target_c:
-                            for sc in source_cols:
-                                sc_lower = sc.strip().lower()
-                                if "." in sc_lower:
-                                    parts = sc_lower.rsplit(".", 1)
-                                    src_t, src_c = parts[0], parts[1]
-                                else:
-                                    # unqualified —— 仅单源 mapping 能归到 source_tables[0]
-                                    if len(source_tables) != 1:
-                                        continue
-                                    src_t, src_c = source_tables[0].lower(), sc_lower
-                                if not src_t or not src_c:
+                        for sc in source_cols:
+                            sc_lower = sc.strip().lower()
+                            if "." in sc_lower:
+                                parts = sc_lower.rsplit(".", 1)
+                                src_t, src_c = parts[0].strip(), parts[1].strip()
+                            else:
+                                # 多源 unqualified 拒绝（归属不定）
+                                if len(source_tables) != 1:
                                     continue
-                                key = (src_t, src_c)
-                                upstream_counter[key] = upstream_counter.get(key, 0) + 1
-
-                        # downstream：mapping 的某个 source_column 是当前 (target_t, target_c)
-                        # → 它的 target 是 downstream
-                        if any(_matches_source_col(sc, source_tables) for sc in source_cols):
-                            if target_table and target_column:
-                                key = (target_table.lower(), target_column)
-                                # 排除自指：target == 当前节点
-                                if not (_matches_table(target_table) and target_column == target_c):
-                                    downstream_counter[key] = downstream_counter.get(key, 0) + 1
+                                src_t, src_c = source_tables[0].strip().lower(), sc_lower
+                            if not src_t or not src_c:
+                                continue
+                            # 排除自指（target == source）—— 多跳 BFS 时会进死循环
+                            if (src_t, src_c) == (tgt_t, tgt_c):
+                                continue
+                            up.setdefault((tgt_t, tgt_c), {})
+                            up[(tgt_t, tgt_c)][(src_t, src_c)] = (
+                                up[(tgt_t, tgt_c)].get((src_t, src_c), 0) + 1
+                            )
+                            down.setdefault((src_t, src_c), {})
+                            down[(src_t, src_c)][(tgt_t, tgt_c)] = (
+                                down[(src_t, src_c)].get((tgt_t, tgt_c), 0) + 1
+                            )
     except Exception:  # pragma: no cover
-        return {"upstream": [], "downstream": []}
+        pass
+    return up, down
 
-    def _to_list(counter: dict[tuple[str, str], int]) -> list[dict[str, Any]]:
-        return sorted(
-            [{"table": t, "column": c, "count": n} for (t, c), n in counter.items()],
-            key=lambda x: x["count"], reverse=True,
-        )
 
+def _bfs_column_chain(
+    edges: dict[tuple[str, str], dict[tuple[str, str], int]],
+    focal: tuple[str, str],
+    depth: int,
+    max_nodes: int,
+    *,
+    annotate_hop: bool,
+) -> list[dict[str, Any]]:
+    """从 focal 出发按 BFS 走 depth 跳，每个边 (parent → child) 产一个 item。
+
+    `annotate_hop=False` 时只返回 `{table, column, count}` —— 旧 depth=1 caller 用，
+    保持 API 向后兼容。`annotate_hop=True` 时多带 `hop` 和 `from="<parent_t>.<parent_c>"`，
+    让前端按路径渲染嵌套（hop=1 的 from=None）。
+
+    cycle 通过 visited set 切断。同一节点经多条路径到达只取首次（按 count desc 排序后
+    的最频繁路径优先），避免树爆炸。
+    """
+    if depth <= 0:
+        return []
+    visited: set[tuple[str, str]] = {focal}
+    result: list[dict[str, Any]] = []
+    from collections import deque
+    queue: deque[tuple[tuple[str, str], int]] = deque([(focal, 0)])
+    while queue and len(result) < max_nodes:
+        node, hop = queue.popleft()
+        if hop >= depth:
+            continue
+        neighbors = edges.get(node, {})
+        for (n_t, n_c), count in sorted(neighbors.items(), key=lambda kv: kv[1], reverse=True):
+            if (n_t, n_c) in visited:
+                continue
+            visited.add((n_t, n_c))
+            item: dict[str, Any] = {"table": n_t, "column": n_c, "count": count}
+            if annotate_hop:
+                item["hop"] = hop + 1
+                item["from"] = f"{node[0]}.{node[1]}" if hop >= 1 else None
+            result.append(item)
+            queue.append(((n_t, n_c), hop + 1))
+            if len(result) >= max_nodes:
+                break
+    return result
+
+
+def get_column_lineage(
+    table_name: str,
+    column_name: str,
+    *,
+    project_id: str = "",
+    run_limit: int = 50,
+    depth: int = 1,
+    max_nodes: int = 200,
+) -> dict[str, list[dict[str, Any]]]:
+    """S1.B：字段血缘热点 —— 给定 (table, column)，返回上下游字段链。
+
+    `depth=1`（默认）保留旧行为：直接邻居 chip。返回 item 形如
+    `{table, column, count, hop=1, from=null}`。
+
+    `depth>=2` 触发 BFS 多跳追溯。每个 hop>=2 的 item 多带 `from="<parent_t>.<parent_c>"`
+    指明上游来自哪条 chip，让前端能按路径渲染嵌套。BFS 切断 cycle、按 max_nodes 截断
+    避免深度爆炸。同一节点经多路径到达只首次出现（沿 hop=1 的最频繁边优先）。
+
+    数据源跟 get_table_columns 一样：最近 run_limit 个 workflow_run 的 lineage
+    insert_mappings。完全限定 / 单源 unqualified 归属规则与 get_table_columns 一致；
+    多源 unqualified 拒绝。
+    """
+    if not table_name or not table_name.strip():
+        raise ValueError("table_name is required")
+    if not column_name or not column_name.strip():
+        raise ValueError("column_name is required")
+    if depth < 1:
+        depth = 1
+    if max_nodes < 1:
+        max_nodes = 1
+
+    target_t = table_name.strip().lower()
+    target_t_base = target_t.split(".")[-1]
+    target_c = column_name.strip().lower()
+
+    up_edges, down_edges = _build_column_edge_index(run_limit)
+
+    # 用户传的 table_name 可能是 schema.t 也可能裸 t —— 选实际命中索引的形式当 focal。
+    # 优先全限定（避免裸名误匹配多张同名表），命中不到再用 base。
+    focal: tuple[str, str]
+    if (target_t, target_c) in up_edges or (target_t, target_c) in down_edges:
+        focal = (target_t, target_c)
+    elif (target_t_base, target_c) in up_edges or (target_t_base, target_c) in down_edges:
+        focal = (target_t_base, target_c)
+    else:
+        focal = (target_t, target_c)
+
+    annotate = depth > 1
+    upstream = _bfs_column_chain(up_edges, focal, depth, max_nodes, annotate_hop=annotate)
+    downstream = _bfs_column_chain(down_edges, focal, depth, max_nodes, annotate_hop=annotate)
     return {
-        "upstream": _to_list(upstream_counter),
-        "downstream": _to_list(downstream_counter),
+        "upstream": upstream,
+        "downstream": downstream,
     }
 
 

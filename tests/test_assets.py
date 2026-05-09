@@ -358,3 +358,106 @@ def test_column_lineage_empty_inputs_raise(isolated_storage):
         get_column_lineage("", "id")
     with pytest.raises(ValueError):
         get_column_lineage("t", "")
+
+
+# ─── 多跳 BFS（depth >= 2） ─────────────────────────────────────────────────
+
+
+def test_column_lineage_depth2_walks_two_hops_upstream(isolated_storage):
+    """raw.users.id → ods.users.id → dwd.users.id 两跳链路。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        # hop 1：dwd ← ods
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+        # hop 2：ods ← raw
+        {"target_table": "ods.users", "target_column": "id",
+         "source_tables": ["raw.users"], "source_columns": ["id"]},
+    ])
+    out = get_column_lineage("dwd.users", "id", depth=2)
+    upstream = out["upstream"]
+    nodes = {(u["table"], u["column"], u["hop"]) for u in upstream}
+    assert ("ods.users", "id", 1) in nodes
+    assert ("raw.users", "id", 2) in nodes
+    # hop=2 的节点必须带 from 指明上一跳
+    raw = next(u for u in upstream if u["table"] == "raw.users")
+    assert raw["from"] == "ods.users.id"
+    # hop=1 的 from=None
+    ods = next(u for u in upstream if u["table"] == "ods.users")
+    assert ods["from"] is None
+
+
+def test_column_lineage_depth2_walks_two_hops_downstream(isolated_storage):
+    """ods.users.id → dwd.users.id → dws.user_summary.user_id 顺向两跳。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+        {"target_table": "dws.user_summary", "target_column": "user_id",
+         "source_tables": ["dwd.users"], "source_columns": ["dwd.users.id"]},
+    ])
+    out = get_column_lineage("ods.users", "id", depth=2)
+    downstream = out["downstream"]
+    nodes = {(d["table"], d["column"], d["hop"]) for d in downstream}
+    assert ("dwd.users", "id", 1) in nodes
+    assert ("dws.user_summary", "user_id", 2) in nodes
+
+
+def test_column_lineage_depth1_omits_hop_and_from_for_back_compat(isolated_storage):
+    """depth=1（默认）保持旧 shape，不带 hop / from 字段。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        {"target_table": "dwd.users", "target_column": "id",
+         "source_tables": ["ods.users"], "source_columns": ["id"]},
+    ])
+    out = get_column_lineage("dwd.users", "id", depth=1)
+    assert out["upstream"] == [{"table": "ods.users", "column": "id", "count": 1}]
+
+
+def test_column_lineage_depth_caps_at_max_nodes(isolated_storage):
+    """max_nodes 截断 BFS，避免响应爆炸。"""
+    from app.services.assets import get_column_lineage
+    # 造一个有 5 个直接 upstream 的字段
+    mappings = []
+    for i in range(5):
+        mappings.append({
+            "target_table": "dwd.x", "target_column": "id",
+            "source_tables": [f"src.t{i}"], "source_columns": ["id"],
+        })
+    _persist_lineage_run(mappings)
+    out = get_column_lineage("dwd.x", "id", depth=2, max_nodes=3)
+    assert len(out["upstream"]) == 3
+
+
+def test_column_lineage_depth_breaks_cycle(isolated_storage):
+    """a → b → a 这种环不应导致死循环或重复访问。"""
+    from app.services.assets import get_column_lineage
+    _persist_lineage_run([
+        # b 依赖 a
+        {"target_table": "b", "target_column": "x",
+         "source_tables": ["a"], "source_columns": ["x"]},
+        # a 依赖 b（造成环）
+        {"target_table": "a", "target_column": "x",
+         "source_tables": ["b"], "source_columns": ["x"]},
+    ])
+    out = get_column_lineage("a", "x", depth=5)
+    upstream_tables = [u["table"] for u in out["upstream"]]
+    # b 出现一次（hop=1），不应再出现 a（环切断）
+    assert upstream_tables.count("a") == 0
+    assert upstream_tables.count("b") == 1
+
+
+def test_column_lineage_depth_endpoint(client, isolated_storage):
+    """HTTP 端点接 ?depth=2 应触发 BFS 多跳。"""
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+        {"target_table": "ods.x", "target_column": "id",
+         "source_tables": ["raw.x"], "source_columns": ["id"]},
+    ])
+    r = client.get("/api/assets/column-lineage/dwd.x?column=id&depth=2")
+    assert r.status_code == 200
+    body = r.json()
+    hops = {(u["table"], u["hop"]) for u in body["upstream"]}
+    assert ("ods.x", 1) in hops
+    assert ("raw.x", 2) in hops

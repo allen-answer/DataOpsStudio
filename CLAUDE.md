@@ -217,7 +217,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **911 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **917 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -322,7 +322,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 **下一批 enhancement 候选**（仍未排期，长期 backlog 见下方"通用未做"）：
 
 - **Procedure refresh mode 语义模式深化** —— 识别"先 truncate 后 insert"等 procedure-only 模式（Phase 7 轨道 A 增量）
-- **字段血缘 tracing UI** —— 当前只展开一跳，多跳链路需要横向滚动 / 节点折叠交互
+- ✅ **字段血缘 tracing UI 多跳**（2026-05-09 落地）—— `services/assets.get_column_lineage()` 加 `depth` / `max_nodes` 参数，重构内部为「先建 edge index 再 BFS」。`depth=1`（默认）保留旧 shape；`depth>=2` 每个 item 多带 `hop` / `from`，cycle 切断 + max_nodes 截断。`/api/assets/column-lineage` 加 `depth` `max_nodes` query。前端 `AssetDetailView` 字段展开行加 1/2/3 跳 picker；多跳场景按 hop 缩进渲染 chip，每个 hop≥2 chip 显示 `← from parent` micro-label 让用户追溯路径。补 6 个测试（depth=2 上下游 / depth=1 向后兼容 / max_nodes 截断 / cycle 切断 / endpoint depth 参数）。回归 911 → 917
 
 **Phase 11 候选 · 数据对比 × 血缘联动**（待启动，2026-05-08 立项）—— 把 Compare 和 Lineage 两套独立能力拼成「沿血缘逐层对比 → 定位数据偏离层」的诊断工具：
 
