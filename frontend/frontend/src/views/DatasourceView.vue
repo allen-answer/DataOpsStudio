@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '../stores/project'
 import { useBootstrapStore } from '../stores/bootstrap'
@@ -20,7 +20,7 @@ const {
 const projectStore = useProjectStore()
 const { projects } = storeToRefs(projectStore)
 
-function projectName(id) {
+function projectName(id: string): string {
   if (!id) return '全局'
   const p = projects.value.find(x => x.id === id)
   return p ? p.name : `(已删除 ${id.slice(0, 6)})`

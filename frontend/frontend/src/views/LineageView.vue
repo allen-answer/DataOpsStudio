@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { defineAsyncComponent, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Sparkles } from 'lucide-vue-next'
@@ -23,7 +23,7 @@ const isStressMode = computed(() => !!lineage.result?.stress_fixture)
 onMounted(async () => {
   const stress = route.query.stress
   if (!stress) return
-  const size = parseInt(stress, 10)
+  const size = parseInt(String(stress), 10)
   if (Number.isNaN(size) || size < 10 || size > 10000) {
     lineage.error = `stress 参数必须在 [10, 10000] 区间，当前 ${stress}`
     return
@@ -32,8 +32,8 @@ onMounted(async () => {
     lineage.error = ''
     const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
     lineage.result = data
-  } catch (e) {
-    lineage.error = `加载 stress fixture 失败：${e.message || e}`
+  } catch (e: any) {
+    lineage.error = `加载 stress fixture 失败：${e?.message || e}`
   }
 })
 </script>

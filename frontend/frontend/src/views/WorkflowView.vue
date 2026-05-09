@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -10,6 +10,8 @@ import { useBootstrapStore } from '../stores/bootstrap'
 import { useWorkflowStore } from '../stores/workflow'
 import { useNoticeStore } from '../stores/notice'
 
+type SubPageId = 'list' | 'detail' | 'run' | 'templates'
+
 const { state } = useBootstrapStore()
 const workflowStore = useWorkflowStore()
 const { selectedWorkflowId, workflowResult } = storeToRefs(workflowStore)
@@ -17,13 +19,13 @@ const { selectWorkflow, loadWorkflowRunDetail, runWorkflowAsync } = workflowStor
 const { setNotice } = useNoticeStore()
 
 const route = useRoute()
-const subPage = ref('list')      // list / detail / run / templates
+const subPage = ref<SubPageId>('list')      // list / detail / run / templates
 
 // 深链支持：/workflows/:id → 详情；/workflow-runs/:runId → 运行详情。
 // 不接 route.params 的话，浏览器直接输 URL 进来永远停留在总览（之前的 bug）。
 async function syncFromRoute() {
-  const wfId = route.params.id
-  const runId = route.params.runId
+  const wfId = route.params.id as string | undefined
+  const runId = route.params.runId as string | undefined
   if (runId) {
     try {
       await loadWorkflowRunDetail(runId)
@@ -44,22 +46,22 @@ async function syncFromRoute() {
 onMounted(syncFromRoute)
 watch(() => [route.params.id, route.params.runId], syncFromRoute)
 
-const goDetail = (workflowId) => {
+const goDetail = (workflowId: string) => {
   selectWorkflow(workflowId)
   subPage.value = 'detail'
 }
-const goRun = async (runId) => {
+const goRun = async (runId: string) => {
   await loadWorkflowRunDetail(runId)
   subPage.value = 'run'
 }
 const goList = () => { subPage.value = 'list' }
-const goDetailFromRun = (workflowId) => {
+const goDetailFromRun = (workflowId: string) => {
   if (workflowId) selectWorkflow(workflowId)
   subPage.value = 'detail'
 }
 
 // 列表页"立即运行"：先选中再跳到详情页跑，保留可观测性
-const runFromList = (workflowId) => {
+const runFromList = (workflowId: string) => {
   selectWorkflow(workflowId)
   subPage.value = 'detail'
   runWorkflowAsync()
@@ -69,7 +71,7 @@ const runFromList = (workflowId) => {
 // - 点详情：没选中过任何作业流（仍是初始 'new' 态）+ 库里有作业流 → 自动选第一个，避免半初始化空白
 // - 点详情：库里没作业流 → 仍允许进入，进去后会引导新建（'new' 态）
 // - 点运行详情：没有 workflowResult（没看过任何 run）→ 提示先去详情选一个 run
-const goSubPage = (id) => {
+const goSubPage = (id: SubPageId) => {
   if (id === 'detail') {
     if (selectedWorkflowId.value === 'new' && state.workflows?.length) {
       selectWorkflow(state.workflows[0].id)

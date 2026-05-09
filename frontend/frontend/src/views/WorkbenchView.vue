@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ChevronLeft, ChevronRight, Play } from 'lucide-vue-next'
@@ -15,9 +15,10 @@ import { useTaskStore } from '../stores/task'
 // 4 步：source → rules → mapping → result
 // 每步可点击步骤条跳转，下一步按钮线性前进。
 
-const STEP_IDS = ['source', 'rules', 'mapping', 'result']
+type StepId = 'source' | 'rules' | 'mapping' | 'result'
+const STEP_IDS: StepId[] = ['source', 'rules', 'mapping', 'result']
 
-const currentStep = ref('source')
+const currentStep = ref<StepId>('source')
 
 const taskStore = useTaskStore()
 const { taskDraft } = taskStore  // reactive 直接拿
@@ -56,9 +57,9 @@ const canPrev = computed(() => currentIndex.value > 0)
 const canNext = computed(() => currentIndex.value < STEP_IDS.length - 1)
 
 // 各 step 的错误 issue 数 —— 给步骤条标红用
-const stepErrorCounts = computed(() => {
-  const counts = { source: 0, rules: 0, mapping: 0, result: 0 }
-  for (const issue of taskValidationIssues.value) {
+const stepErrorCounts = computed<Record<StepId, number>>(() => {
+  const counts: Record<StepId, number> = { source: 0, rules: 0, mapping: 0, result: 0 }
+  for (const issue of taskValidationIssues.value as Array<{ level: string; step: StepId }>) {
     if (issue.level !== 'error') continue
     counts[issue.step] = (counts[issue.step] || 0) + 1
   }
