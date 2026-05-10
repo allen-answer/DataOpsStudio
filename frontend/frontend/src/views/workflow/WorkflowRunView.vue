@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/workflow_meta'
 import WorkflowRunNodeDetail from '../../components/workflow/WorkflowRunNodeDetail.vue'
+import TraceCompareSummary from '../../components/lineage/TraceCompareSummary.vue'
 import { useWorkflowStore } from '../../stores/workflow'
 
 const emit = defineEmits(['back', 'open-detail'])
@@ -281,6 +282,9 @@ const runStatusDisplay = computed(() => {
         </div>
       </div>
     </div>
+
+    <!-- Phase 11 MVP #3: 字段血缘溯源链式结果（仅当 run 含 _trace_compare 节点时显示） -->
+    <TraceCompareSummary :run="run" @select-node="(id) => selectedNodeId = id" />
 
     <!-- gantt 时间线 -->
     <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
