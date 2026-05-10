@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/workflow_meta'
@@ -19,26 +19,26 @@ const {
 // 历史 run 复用变量重跑：剥掉内置变量，避免冻结时间。和 detail view 共享
 // 同样的 helper 语义。
 const REUSABLE_BUILTIN_KEYS = new Set(['today', 'now', 'year', 'month', 'day'])
-const reusableVars = (vars) => {
-  const out = {}
+const reusableVars = (vars: Record<string, unknown> | null | undefined): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(vars || {})) {
     if (!REUSABLE_BUILTIN_KEYS.has(k)) out[k] = v
   }
   return out
 }
 
-const rerunSameVars = () => {
+const rerunSameVars = (): void => {
   if (!run.value) return
   runWorkflowAsyncWith(run.value.workflow_id, reusableVars(run.value.variables))
 }
-const rerunDefaults = () => {
+const rerunDefaults = (): void => {
   if (!run.value) return
   runWorkflowAsyncWith(run.value.workflow_id, {})
 }
 
 // 局部重跑：从指定节点起跑。上游沿用本次 run 的 output（reused），自身和
 // 下游全部重跑。变量沿用本次（不传 variables → 后端复用上次 run.variables）。
-const rerunFromNode = (nodeId) => {
+const rerunFromNode = (nodeId: string): void => {
   if (!run.value || !nodeId) return
   rerunWorkflowFromNode(run.value.run_id, nodeId)
 }
@@ -59,13 +59,13 @@ const canCancel = computed(() => {
 })
 
 const run = computed(() => workflowResult.value)
-const selectedNodeId = ref('')
+const selectedNodeId = ref<string>('')
 
 // 真实参数类型来源：当前 workflow 里 type=params 节点的 config.parameters。
 // 之前从 mock workflow_meta.js 取，会把示例参数（biz_date / batch_id ...）
 // 也渲染成"真实运行变量"，造成混淆 —— 改成只用后端配置。
-const realParamSpecs = computed(() => {
-  const map = {}
+const realParamSpecs = computed<Record<string, any>>(() => {
+  const map: Record<string, any> = {}
   for (const node of currentWorkflow.value?.nodes || []) {
     if (node.type !== 'params') continue
     for (const p of node.config?.parameters || []) {
@@ -116,7 +116,7 @@ const ganttData = computed(() => {
   return { steps, totalSeconds: Math.max(total, 1) }
 })
 
-function parseTs(s) {
+function parseTs(s: string | undefined | null): number | null {
   if (!s) return null
   // "2026-05-02T10:00:00" or "2026-05-02 10:00:00"
   const normalized = s.includes('T') ? s : s.replace(' ', 'T')
@@ -124,7 +124,7 @@ function parseTs(s) {
   return isFinite(t) ? t : null
 }
 
-const stepBarStyle = (step) => ({
+const stepBarStyle = (step: { offsetSec: number; duration: number }) => ({
   left: `${(step.offsetSec / ganttData.value.totalSeconds) * 100}%`,
   width: `${Math.max(0.5, (step.duration / ganttData.value.totalSeconds) * 100)}%`,
 })

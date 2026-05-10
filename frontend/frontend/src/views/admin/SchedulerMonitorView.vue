@@ -1,72 +1,84 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Activity, Play, Square, Zap, RefreshCw, AlertCircle, Clock, Workflow as WorkflowIcon } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 
+interface SchedulerStatus {
+  running?: boolean
+  entries?: unknown[]
+  sensors?: unknown[]
+  [key: string]: unknown
+}
+
+interface TickResult {
+  submitted?: unknown[]
+  status?: SchedulerStatus
+}
+
 const noticeStore = useNoticeStore()
 
-const status = ref(null)
-const loading = ref(false)
-const submitting = ref(false)
-const autoRefresh = ref(true)
-let refreshTimer = null
+const status = ref<SchedulerStatus | null>(null)
+const loading = ref<boolean>(false)
+const submitting = ref<boolean>(false)
+const autoRefresh = ref<boolean>(true)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
-const entries = computed(() => status.value?.entries || [])
-const sensors = computed(() => status.value?.sensors || [])
-const isRunning = computed(() => status.value?.running === true)
+const entries = computed<unknown[]>(() => status.value?.entries || [])
+const sensors = computed<unknown[]>(() => status.value?.sensors || [])
+const isRunning = computed<boolean>(() => status.value?.running === true)
 
-async function reload() {
+async function reload(): Promise<void> {
   loading.value = true
   try {
-    status.value = await apiGet('/api/scheduler/status')
-  } catch (err) {
-    noticeStore.setNotice(`加载调度器状态失败：${err.message || err}`)
+    status.value = await apiGet<SchedulerStatus>('/api/scheduler/status')
+  } catch (err: any) {
+    noticeStore.setNotice(`加载调度器状态失败：${err?.message || err}`)
   } finally {
     loading.value = false
   }
 }
 
-async function startScheduler() {
+async function startScheduler(): Promise<void> {
   submitting.value = true
   try {
-    status.value = await apiJson('/api/scheduler/start', 'POST', {})
+    status.value = await apiJson<SchedulerStatus>('/api/scheduler/start', 'POST', {})
     noticeStore.setNotice('调度器已启动')
-  } catch (err) {
-    noticeStore.setNotice(`启动失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`启动失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-async function stopScheduler() {
+async function stopScheduler(): Promise<void> {
   if (!confirm('确认停止调度器？所有 cron / sensor 触发会暂停，已运行的 job 不受影响。')) return
   submitting.value = true
   try {
-    status.value = await apiJson('/api/scheduler/stop', 'POST', {})
+    status.value = await apiJson<SchedulerStatus>('/api/scheduler/stop', 'POST', {})
     noticeStore.setNotice('调度器已停止')
-  } catch (err) {
-    noticeStore.setNotice(`停止失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`停止失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-async function tickNow() {
+async function tickNow(): Promise<void> {
   submitting.value = true
   try {
-    const result = await apiJson('/api/scheduler/tick', 'POST', {})
+    const result = await apiJson<TickResult>('/api/scheduler/tick', 'POST', {})
     const submitted = (result.submitted || []).length
     noticeStore.setNotice(submitted ? `tick 完成，触发 ${submitted} 个 run` : 'tick 完成，无任务可触发')
     status.value = result.status || status.value
-  } catch (err) {
-    noticeStore.setNotice(`tick 失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`tick 失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-function formatTimestamp(ts) {
+function formatTimestamp(ts: string | undefined | null): string {
   if (!ts) return '-'
   return ts.replace('T', ' ').slice(0, 19)
 }

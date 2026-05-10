@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { defineAsyncComponent, ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -8,6 +8,9 @@ import LineageReportView from './LineageReportView.vue'
 import { apiGet } from '../api'
 import { useLineageStore } from '../stores/lineage'
 import { useBatchStore } from '../stores/batch'
+
+type ModeId = 'paste' | 'file' | 'multi' | 'zip'
+type Pipeline = 'single' | 'batch'
 
 // Phase 4：合并"单脚本血缘"和"多脚本分析"为统一血缘分析工作台。
 // 4 种输入模式：粘贴 SQL / 上传单文件 / 上传多文件 / 上传 ZIP
@@ -28,7 +31,15 @@ const { analyzeBatch } = batchStore
 
 const route = useRoute()
 
-const MODES = [
+interface ModeMeta {
+  id: ModeId
+  label: string
+  icon: unknown
+  pipeline: Pipeline
+  hint: string
+}
+
+const MODES: ModeMeta[] = [
   { id: 'paste',     label: '粘贴 SQL',     icon: Code2,   pipeline: 'single', hint: '直接粘贴 SQL 文本（推荐快速调试）' },
   { id: 'file',      label: '上传单文件',   icon: FileText,pipeline: 'single', hint: '单个 .sql / .txt 文件' },
   { id: 'multi',     label: '上传多文件',   icon: Files,   pipeline: 'batch',  hint: '多个 .sql / .txt（跨脚本血缘 + 影响传递）' },
@@ -36,12 +47,12 @@ const MODES = [
 ]
 
 // 默认 mode 由 route.path 决定：/lineage → paste；/batch-lineage → multi
-function defaultModeFromRoute(path) {
+function defaultModeFromRoute(path: string): ModeId {
   if (path === '/batch-lineage' || path.startsWith('/batch-lineage')) return 'multi'
   return 'paste'
 }
 
-const mode = ref(defaultModeFromRoute(route.path))
+const mode = ref<ModeId>(defaultModeFromRoute(route.path))
 watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
 onMounted(async () => {
   mode.value = defaultModeFromRoute(route.path)
@@ -51,7 +62,7 @@ onMounted(async () => {
   // 跑 G6 / Cytoscape 双引擎压测对比。落到 lineage state 即可，单脚本路径渲染。
   const stress = route.query.stress
   if (stress) {
-    const size = parseInt(stress, 10)
+    const size = parseInt(String(stress), 10)
     if (Number.isNaN(size) || size < 10 || size > 10000) {
       lineage.error = `stress 参数必须在 [10, 10000] 区间，当前 ${stress}`
       return
@@ -61,8 +72,8 @@ onMounted(async () => {
       lineage.error = ''
       const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
       lineage.result = data
-    } catch (e) {
-      lineage.error = `加载 stress fixture 失败：${e.message || e}`
+    } catch (e: any) {
+      lineage.error = `加载 stress fixture 失败：${e?.message || e}`
     }
   }
 })
@@ -106,7 +117,7 @@ watch([aiReady, mode], () => {
   }
 }, { immediate: true })
 
-function runAnalyze() {
+function runAnalyze(): void {
   if (isSinglePipeline.value) {
     analyzeLineage()
   } else {
@@ -118,19 +129,20 @@ function runAnalyze() {
 const batchExports = computed(() => batch.exports)
 
 // 单文件模式：用 lineage.sqlFile 但前端 SqlEditor 隐藏；后端 analyzeLineage 优先取 sqlFile
-function onSingleFileChange(e) {
-  const f = e.target.files[0]
-  lineage.sqlFile = f
-  // 触发 mode hint 显示文件名
+function onSingleFileChange(e: Event): void {
+  const target = e.target as HTMLInputElement | null
+  const f = target?.files?.[0]
+  if (f) lineage.sqlFile = f
 }
 
-function onMultiFilesChange(e) {
-  batch.files = Array.from(e.target.files)
+function onMultiFilesChange(e: Event): void {
+  const target = e.target as HTMLInputElement | null
+  batch.files = target?.files ? Array.from(target.files) : []
 }
 
-function onZipChange(e) {
-  // ZIP 仍走 batch.files；只是 accept 限制
-  const f = e.target.files[0]
+function onZipChange(e: Event): void {
+  const target = e.target as HTMLInputElement | null
+  const f = target?.files?.[0]
   batch.files = f ? [f] : []
 }
 </script>

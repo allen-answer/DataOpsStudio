@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   Bot,
@@ -17,13 +17,32 @@ import {
 import { apiGet, apiJson, invalidateAIEnabledCache } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 
+interface AIConfigPayload {
+  provider?: string
+  model?: string
+  base_url?: string
+  timeout_seconds?: number
+  include_raw?: boolean
+  enable_inference?: boolean
+  enable_auto_translation?: boolean
+  api_key_set?: boolean
+  [key: string]: unknown
+}
+
+interface AITestResult {
+  ok: boolean
+  status?: string
+  error?: string
+  [key: string]: unknown
+}
+
 const noticeStore = useNoticeStore()
 
-const loading = ref(false)
-const saving = ref(false)
-const testing = ref(false)
-const config = ref(null)
-const testResult = ref(null)
+const loading = ref<boolean>(false)
+const saving = ref<boolean>(false)
+const testing = ref<boolean>(false)
+const config = ref<AIConfigPayload | null>(null)
+const testResult = ref<AITestResult | null>(null)
 
 const draft = reactive({
   provider: 'off',
@@ -78,7 +97,7 @@ const canSave = computed(() => {
   return true
 })
 
-function hydrate(nextConfig) {
+function hydrate(nextConfig: AIConfigPayload): void {
   config.value = nextConfig
   draft.provider = nextConfig.provider || 'off'
   draft.model = nextConfig.model || ''
@@ -91,19 +110,19 @@ function hydrate(nextConfig) {
   draft.clear_api_key = false
 }
 
-async function reload() {
+async function reload(): Promise<void> {
   loading.value = true
   try {
-    hydrate(await apiGet('/api/lineage/ai/config'))
-  } catch (err) {
-    noticeStore.setNotice(`加载 AI 配置失败：${err.message || err}`)
+    hydrate(await apiGet<AIConfigPayload>('/api/lineage/ai/config'))
+  } catch (err: any) {
+    noticeStore.setNotice(`加载 AI 配置失败：${err?.message || err}`)
   } finally {
     loading.value = false
   }
 }
 
-function payload({ includeKey = true } = {}) {
-  const body = {
+function payload({ includeKey = true }: { includeKey?: boolean } = {}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
     provider: draft.provider,
     model: draft.model.trim(),
     base_url: draft.base_url.trim(),
@@ -117,38 +136,38 @@ function payload({ includeKey = true } = {}) {
   return body
 }
 
-async function saveConfig() {
+async function saveConfig(): Promise<void> {
   if (!canSave.value) {
     noticeStore.setNotice('请补齐 provider / model / API Key 配置')
     return
   }
   saving.value = true
   try {
-    hydrate(await apiJson('/api/lineage/ai/config', 'PUT', payload()))
+    hydrate(await apiJson<AIConfigPayload>('/api/lineage/ai/config', 'PUT', payload()))
     invalidateAIEnabledCache()  // provider 改了 → api.js 错误翻译 hook 重新探测
     noticeStore.setNotice('AI 配置已保存，API Key 已加密落盘')
-  } catch (err) {
-    noticeStore.setNotice(`保存 AI 配置失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`保存 AI 配置失败：${err?.message || err}`)
   } finally {
     saving.value = false
   }
 }
 
-async function testConnection() {
+async function testConnection(): Promise<void> {
   testing.value = true
   testResult.value = null
   try {
-    testResult.value = await apiJson('/api/lineage/ai/test', 'POST', payload())
+    testResult.value = await apiJson<AITestResult>('/api/lineage/ai/test', 'POST', payload())
     noticeStore.setNotice(testResult.value.ok ? 'AI 连接测试成功' : `AI 连接测试失败：${testResult.value.error || '-'}`)
-  } catch (err) {
-    testResult.value = { ok: false, status: 'error', error: err.message || String(err) }
-    noticeStore.setNotice(`AI 连接测试失败：${err.message || err}`)
+  } catch (err: any) {
+    testResult.value = { ok: false, status: 'error', error: err?.message || String(err) }
+    noticeStore.setNotice(`AI 连接测试失败：${err?.message || err}`)
   } finally {
     testing.value = false
   }
 }
 
-function toggleClearApiKey() {
+function toggleClearApiKey(): void {
   if (!config.value?.api_key_set) return
   if (draft.clear_api_key) {
     draft.clear_api_key = false
