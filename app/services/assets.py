@@ -337,6 +337,9 @@ def get_table_columns(name: str, *, project_id: str = "", run_limit: int = 50) -
 # 跟 lineage_index.py 一个套路：列出 (src_t, src_c) → (tgt_t, tgt_c) 边的
 # 反向 / 正向索引。复用 _get_cached_run_payloads 不重复扫文件。
 _COLUMN_EDGE_TTL = 300.0
+# 同 workflow_history._run_payloads_cache：keyed by run_limit (1..200 from API +
+# 50 from internal callers)；用 8 个槽 FIFO 防止用户连续打不同 run_limit 撑爆缓存。
+_COLUMN_EDGE_CACHE_MAX_SLOTS = 8
 _column_edge_cache: dict[int, dict[str, Any]] = {}
 _column_edge_lock = threading.RLock()
 
@@ -360,12 +363,18 @@ def _get_cached_column_edges(run_limit: int) -> tuple[
         ):
             return entry["up_edges"], entry["down_edges"]
         up, down = _build_column_edge_index(run_limit)
+        _column_edge_cache.pop(run_limit, None)
         _column_edge_cache[run_limit] = {
             "built_at": now,
             "source_run_count": current_run_count,
             "up_edges": up,
             "down_edges": down,
         }
+        if len(_column_edge_cache) > _COLUMN_EDGE_CACHE_MAX_SLOTS:
+            for stale_key in list(_column_edge_cache.keys())[
+                : len(_column_edge_cache) - _COLUMN_EDGE_CACHE_MAX_SLOTS
+            ]:
+                _column_edge_cache.pop(stale_key, None)
         return up, down
 
 

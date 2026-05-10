@@ -207,6 +207,57 @@ def test_list_does_not_read_all_jsons_when_limit_set(tmp_path, monkeypatch):
     assert read_count["n"] <= 110, f"read 太多 JSON：{read_count['n']}（应 ≤ 110）"
 
 
+def test_run_payloads_cache_caps_slots_via_fifo(tmp_path, monkeypatch):
+    """Caller hits get_cached_run_payloads with many distinct run_limit values
+    (e.g. ?run_limit=N from the API). Without a slot cap each value would
+    park its own list of full payloads in memory.
+    """
+    from app.services import workflow_history
+
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+    workflow_history.invalidate_run_payloads_cache()
+    monkeypatch.setattr(workflow_history, "_PAYLOAD_CACHE_MAX_SLOTS", 4)
+
+    # Seed at least one run so list_workflow_runs returns non-empty.
+    workflow_history.persist_workflow_run(_make_run("run-seed"))
+
+    for run_limit in range(1, 9):  # 8 distinct keys, cap at 4
+        workflow_history.get_cached_run_payloads(run_limit)
+
+    keys = list(workflow_history._run_payloads_cache.keys())
+    assert len(keys) == 4
+    # FIFO eviction: earliest 1..4 dropped, 5..8 retained.
+    assert keys == [5, 6, 7, 8]
+    workflow_history.invalidate_run_payloads_cache()
+
+
+def test_run_payloads_cache_recent_key_lands_at_tail(tmp_path, monkeypatch):
+    """Re-fetching an existing run_limit must move it to the tail so it isn't
+    evicted ahead of strictly-older entries when the cache is full.
+    """
+    from app.services import workflow_history
+
+    monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", tmp_path)
+    workflow_history.invalidate_run_payloads_cache()
+    monkeypatch.setattr(workflow_history, "_PAYLOAD_CACHE_MAX_SLOTS", 3)
+    monkeypatch.setattr(workflow_history, "_PAYLOAD_TTL", 0.0)  # force re-fetch path
+
+    workflow_history.persist_workflow_run(_make_run("run-seed"))
+
+    workflow_history.get_cached_run_payloads(10)
+    workflow_history.get_cached_run_payloads(20)
+    workflow_history.get_cached_run_payloads(30)
+    # Touch 10 → moves to tail.
+    workflow_history.get_cached_run_payloads(10)
+    # Add 4th distinct → evict head, which is now 20.
+    workflow_history.get_cached_run_payloads(40)
+
+    keys = list(workflow_history._run_payloads_cache.keys())
+    assert 10 in keys, "recently-touched key should survive"
+    assert 20 not in keys, "stale-since-touch key should evict"
+    workflow_history.invalidate_run_payloads_cache()
+
+
 def test_list_respects_started_at_order_when_mtime_diverges(tmp_path, monkeypatch):
     """mtime 跟 started_at 不一致时，最终顺序按 started_at（语义正确）。
 

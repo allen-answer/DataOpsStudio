@@ -509,6 +509,27 @@ def test_column_edge_index_cache_explicit_invalidate(isolated_storage, monkeypat
     assert not assets_svc._column_edge_cache, "invalidate 后必须清空"
 
 
+def test_column_edge_cache_caps_slots_via_fifo(isolated_storage, monkeypatch):
+    """API exposes ?run_limit= bounded 1..200; without a slot cap a caller
+    walking distinct values would park 200 separate edge indexes in memory.
+    """
+    from app.services import assets as assets_svc
+    _persist_lineage_run([
+        {"target_table": "dwd.x", "target_column": "id",
+         "source_tables": ["ods.x"], "source_columns": ["id"]},
+    ])
+    assets_svc.invalidate_column_edge_index_cache()
+    monkeypatch.setattr(assets_svc, "_COLUMN_EDGE_CACHE_MAX_SLOTS", 3)
+
+    for run_limit in range(1, 7):
+        assets_svc._get_cached_column_edges(run_limit)
+
+    keys = list(assets_svc._column_edge_cache.keys())
+    assert len(keys) == 3
+    assert keys == [4, 5, 6]
+    assets_svc.invalidate_column_edge_index_cache()
+
+
 def test_run_payloads_cache_shared_across_aggregators(isolated_storage, monkeypatch):
     """get_column_lineage 跟 get_table_columns 共用 get_cached_run_payloads。
     第一次扫完后第二个聚合不应再读 JSON。"""

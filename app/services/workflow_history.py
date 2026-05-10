@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # 各自扫一遍 = 无谓的重复磁盘 I/O + JSON parse。这层缓存解析后的 payloads
 # 给所有 caller 共享。TTL 300s + run-count 失效（粗粒度但足够）。
 _PAYLOAD_TTL = 300.0
+# Keyed by run_limit (1..200 from API + 30 from internal callers). A user
+# walking the API with distinct run_limit values could otherwise spawn ~200
+# cache slots each holding hundreds of full run payloads. In practice only a
+# handful of distinct run_limits ever appear (defaults 30 / 50 / specific
+# overrides), so a small FIFO cap is safe.
+_PAYLOAD_CACHE_MAX_SLOTS = 8
 _run_payloads_cache: dict[int, dict[str, Any]] = {}
 _run_payloads_lock = threading.RLock()
 
@@ -58,11 +64,19 @@ def get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
             full = get_workflow_run(rid)
             if full:
                 payloads.append(full)
+        # Refresh insertion order: pop the existing entry (if any) so the new
+        # write lands at the tail and won't be evicted ahead of older keys.
+        _run_payloads_cache.pop(run_limit, None)
         _run_payloads_cache[run_limit] = {
             "built_at": now,
             "source_run_count": current_run_count,
             "payloads": payloads,
         }
+        if len(_run_payloads_cache) > _PAYLOAD_CACHE_MAX_SLOTS:
+            for stale_key in list(_run_payloads_cache.keys())[
+                : len(_run_payloads_cache) - _PAYLOAD_CACHE_MAX_SLOTS
+            ]:
+                _run_payloads_cache.pop(stale_key, None)
         return payloads
 
 
