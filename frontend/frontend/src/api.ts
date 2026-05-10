@@ -130,6 +130,13 @@ async function _maybeTranslateError(
   const lastSeen = _AI_TRANSLATE_RECENT.get(dedupeKey)
   if (lastSeen && now - lastSeen < 5000) return
   _AI_TRANSLATE_RECENT.set(dedupeKey, now)
+  // GC：清掉超过 dedupe 窗口的历史 entry，避免长会话里 Map 无限增长
+  // （每个独特 5xx 错误都留一条直到 SPA 关闭）
+  if (_AI_TRANSLATE_RECENT.size > 64) {
+    for (const [key, ts] of _AI_TRANSLATE_RECENT) {
+      if (now - ts > 10000) _AI_TRANSLATE_RECENT.delete(key)
+    }
+  }
   // Phase 9 Day 6：默认关。admin 在 AIConfig 开启 enable_auto_translation
   // 才走这条自动翻译路径，避免每个 5xx 都烧 token。
   const aiState = await _isAIEnabled()
