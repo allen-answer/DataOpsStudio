@@ -7,9 +7,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle, Tag, Plus, Trash2, Pencil, X, Columns3, ArrowDownToLine, ArrowUpFromLine } from 'lucide-vue-next'
+import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as HistoryIcon, AlertCircle, Tag, Plus, Trash2, Pencil, X, Columns3, ArrowDownToLine, ArrowUpFromLine, Sparkles } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../api'
 import { useAuthStore } from '../stores/auth'
+import TraceCompareModal from '../components/lineage/TraceCompareModal.vue'
 
 interface AspectTypeSpec {
   type: string
@@ -283,6 +284,20 @@ const mergedColumns = computed(() => {
   }
   return out
 })
+
+// Phase 11 MVP #2：trace-compare 弹窗
+// 选中的字段名作为弹窗 key —— 一次只能开一个
+const traceCompareColumn = ref<string>('')
+function openTraceCompare(colName: string): void {
+  traceCompareColumn.value = colName
+}
+function closeTraceCompare(): void {
+  traceCompareColumn.value = ''
+}
+function onTraceCompareWorkflowCreated(payload: { id: string; name: string }): void {
+  // 弹窗自己 emit('close') 了；这里只跳到新作业流详情页
+  router.push(`/workflows/${payload.id}`)
+}
 
 async function loadHistory(): Promise<void> {
   if (!tableName.value) return
@@ -786,6 +801,14 @@ function setListValue(field: string, text: string): void {
                     class="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500"
                     :title="$t('pages.assetDetail.dormantTooltip')"
                   >{{ $t('pages.assetDetail.dormantBadge') }}</span>
+                  <button
+                    v-if="isEditor && col.lineage_known !== false"
+                    class="ml-1.5 inline-flex items-center gap-0.5 rounded bg-purple-50 px-1 py-0.5 text-[9px] font-semibold text-purple-700 hover:bg-purple-100"
+                    title="沿字段血缘逐跳生成 compare 节点（Phase 11 MVP）"
+                    @click.stop="openTraceCompare(col.name)"
+                  >
+                    <Sparkles class="h-2.5 w-2.5" />溯源
+                  </button>
                 </td>
                 <td v-if="introspectMeta" class="sql-font py-1.5 pr-3 text-[11px] text-slate-600">
                   {{ col.data_type || '—' }}
@@ -937,5 +960,14 @@ function setListValue(field: string, text: string): void {
       datasource introspection（拉真实 information_schema 列表，含没在 lineage
       里出现过的字段）。</span>
     </div>
+
+    <!-- Phase 11 MVP #2: trace-compare 弹窗 -->
+    <TraceCompareModal
+      v-if="traceCompareColumn"
+      :table-name="tableName"
+      :column-name="traceCompareColumn"
+      @close="closeTraceCompare"
+      @workflow-created="onTraceCompareWorkflowCreated"
+    />
   </section>
 </template>
