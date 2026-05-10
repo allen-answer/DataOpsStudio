@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Phase 10 #4：表资产详情页 MVP + Phase 10 enhancement: custom aspects。
 // 路由 /assets/table/:name —— 拿表名反向查找谁在引用：tasks / workflows /
 // lineage_scripts / history。aspects（owner / pii / sla / sensitive / tag /
@@ -11,51 +11,84 @@ import { ChevronLeft, Database, GitCompareArrows, Workflow, FileCode, History as
 import { apiGet, apiJson } from '../api'
 import { useAuthStore } from '../stores/auth'
 
+interface AspectTypeSpec {
+  type: string
+  label?: string
+  description?: string
+  color?: string
+  schema?: Array<{ name: string; type: string; required?: boolean; options?: string[] }>
+}
+
+interface AspectEntry {
+  type: string
+  value?: Record<string, any>
+  updated_by?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+interface ColumnEntry {
+  name: string
+  read_count?: number
+  write_count?: number
+  transforms?: string[]
+  last_seen_run_id?: string
+  data_type?: string
+  source_status?: string
+  [key: string]: unknown
+}
+
+interface IntrospectMeta {
+  datasource_name: string
+  db_type: string
+  [key: string]: unknown
+}
+
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const { isEditor } = storeToRefs(authStore)
 
-const loading = ref(false)
-const error = ref('')
-const asset = ref(null)
+const loading = ref<boolean>(false)
+const error = ref<string>('')
+const asset = ref<any>(null)
 
 // aspect schema 定义（来自后端 yaml）—— 决定编辑器渲染哪些字段
-const aspectTypes = ref([])  // [{type, label, description, schema, color}, ...]
+const aspectTypes = ref<AspectTypeSpec[]>([])
 
 // 字段列表（来自最近 workflow_run 的 lineage insert_mappings）
-const columns = ref([])      // [{name, read_count, write_count, transforms, ...}]
-const columnsLoading = ref(false)
+const columns = ref<ColumnEntry[]>([])
+const columnsLoading = ref<boolean>(false)
 
 // S1.A：变更历史（aspect 改动 timeline）
-const history = ref([])
-const historyOpen = ref(false)
+const history = ref<any[]>([])
+const historyOpen = ref<boolean>(false)
 
 // S1.B：字段血缘深化 —— 点字段名展开上下游字段链。同一时间只展开一行
-const expandedColumn = ref('')             // column name 或 ''
-const columnLineageMap = ref({})           // {colName: {upstream, downstream}}（按 depth 分组）
-const columnLineageLoading = ref('')       // 当前正在拉的 col name
+const expandedColumn = ref<string>('')             // column name 或 ''
+const columnLineageMap = ref<Record<string, any>>({})           // {colName: {upstream, downstream}}（按 depth 分组）
+const columnLineageLoading = ref<string>('')       // 当前正在拉的 col name
 // 多跳深度（默认 1，向后兼容）。每个 column 单独记 depth，让用户可以在不同字段上选
 // 不同跳数。结构：{colName: depthNumber}
-const columnLineageDepth = ref({})
+const columnLineageDepth = ref<Record<string, number>>({})
 
 // S1.C：datasource introspection —— 拉真实字段
-const datasources = ref([])                // [{id, name, db_type, ...}]
-const introspectDsId = ref('')             // 当前选中的 datasource_id
-const introspectColumns = ref([])          // 拉到的真实字段列表
-const introspectLoading = ref(false)
-const introspectError = ref('')
-const introspectMeta = ref(null)           // {datasource_name, db_type, ...}
+const datasources = ref<Array<{ id: string; name: string; db_type: string }>>([])
+const introspectDsId = ref<string>('')             // 当前选中的 datasource_id
+const introspectColumns = ref<ColumnEntry[]>([])          // 拉到的真实字段列表
+const introspectLoading = ref<boolean>(false)
+const introspectError = ref<string>('')
+const introspectMeta = ref<IntrospectMeta | null>(null)
 
-const tableName = computed(() => route.params.name || '')
+const tableName = computed<string>(() => (route.params.name as string) || '')
 
 // 编辑器状态：null = 关闭；object = 当前正在编辑的 aspect（含 mode = 'add' / 'edit'）
-const editing = ref(null)
-const saving = ref(false)
-const saveError = ref('')
+const editing = ref<any>(null)
+const saving = ref<boolean>(false)
+const saveError = ref<string>('')
 
 // aspect type → tailwind 颜色映射（example yml 里的 color hint）
-const ASPECT_COLOR_MAP = {
+const ASPECT_COLOR_MAP: Record<string, string> = {
   blue: 'bg-blue-100 text-blue-700',
   red: 'bg-red-100 text-red-700',
   amber: 'bg-amber-100 text-amber-700',
@@ -63,17 +96,17 @@ const ASPECT_COLOR_MAP = {
   slate: 'bg-slate-100 text-slate-700',
   purple: 'bg-purple-100 text-purple-700',
 }
-function aspectColor(type) {
+function aspectColor(type: string): string {
   const spec = aspectTypes.value.find((t) => t.type === type)
   return ASPECT_COLOR_MAP[spec?.color || 'slate'] || ASPECT_COLOR_MAP.slate
 }
-function aspectLabel(type) {
+function aspectLabel(type: string): string {
   return aspectTypes.value.find((t) => t.type === type)?.label || type
 }
 
 // value 简短预览（pill 旁的灰字）
-function previewValue(aspect) {
-  const v = aspect?.value || {}
+function previewValue(aspect: AspectEntry | null | undefined): string {
+  const v: Record<string, any> = aspect?.value || {}
   // 优先级：先取 enum 类字段（level/tier）、再取 username、再取 list 第一个
   if (v.level) return v.level
   if (v.tier) return v.tier
@@ -85,14 +118,14 @@ function previewValue(aspect) {
   return ''
 }
 
-async function load() {
+async function load(): Promise<void> {
   if (!tableName.value) return
   loading.value = true
   error.value = ''
   try {
     const [assetData, types] = await Promise.all([
       apiGet(`/api/assets/table/${encodeURIComponent(tableName.value)}`),
-      apiGet('/api/assets/aspects/types').catch(() => []),
+      apiGet<AspectTypeSpec[]>('/api/assets/aspects/types').catch(() => [] as AspectTypeSpec[]),
     ])
     asset.value = assetData
     aspectTypes.value = Array.isArray(types) ? types : []
@@ -100,19 +133,19 @@ async function load() {
     loadColumns()
     loadHistory()
     loadDatasourcesList()
-  } catch (e) {
-    error.value = `加载失败：${e.message || e}`
+  } catch (e: any) {
+    error.value = `加载失败：${e?.message || e}`
     asset.value = null
   } finally {
     loading.value = false
   }
 }
 
-async function loadColumns() {
+async function loadColumns(): Promise<void> {
   if (!tableName.value) return
   columnsLoading.value = true
   try {
-    columns.value = await apiGet(`/api/assets/columns/${encodeURIComponent(tableName.value)}`)
+    columns.value = await apiGet<ColumnEntry[]>(`/api/assets/columns/${encodeURIComponent(tableName.value)}`)
   } catch {
     columns.value = []
   } finally {
@@ -120,11 +153,11 @@ async function loadColumns() {
   }
 }
 
-async function fetchColumnLineage(colName, depth) {
+async function fetchColumnLineage(colName: string, depth: number): Promise<void> {
   columnLineageLoading.value = colName
   try {
     const params = new URLSearchParams({ column: colName, depth: String(depth) })
-    const data = await apiGet(
+    const data = await apiGet<any>(
       `/api/assets/column-lineage/${encodeURIComponent(tableName.value)}?${params.toString()}`,
     )
     columnLineageMap.value = {
@@ -141,7 +174,7 @@ async function fetchColumnLineage(colName, depth) {
   }
 }
 
-async function toggleColumnLineage(colName) {
+async function toggleColumnLineage(colName: string): Promise<void> {
   if (expandedColumn.value === colName) {
     expandedColumn.value = ''
     return
@@ -152,16 +185,18 @@ async function toggleColumnLineage(colName) {
   await fetchColumnLineage(colName, depth)
 }
 
-async function setColumnLineageDepth(colName, depth) {
+async function setColumnLineageDepth(colName: string, depth: number): Promise<void> {
   columnLineageDepth.value = { ...columnLineageDepth.value, [colName]: depth }
   // depth 改了 → 重拉。直接覆盖旧 map，不复用 cache（不同 depth 数据不一样）
   await fetchColumnLineage(colName, depth)
 }
 
+interface ChainItem { table: string; column: string; count: number; hop?: number; from?: string | null }
+
 // 多跳分组：按 hop 切，每组按 from 二级分组（hop=1 的 from=null 单独成一组）
 function groupByHop(items) {
-  const out = {}
-  for (const it of items || []) {
+  const out: Record<number, ChainItem[]> = {}
+  for (const it of (items || []) as ChainItem[]) {
     const hop = it.hop || 1
     if (!out[hop]) out[hop] = []
     out[hop].push(it)
@@ -169,22 +204,22 @@ function groupByHop(items) {
   return out
 }
 
-function gotoColumn(table, column) {
+function gotoColumn(table: string, column: string): void {
   // 跳到目标表 + 自动展开该字段。reset 旧状态让 watch 触发 load
   router.push(`/assets/table/${encodeURIComponent(table)}`)
   // 子表单展开放在跳转后；这里设个延迟让 load 完毕后再 toggle
   setTimeout(() => { toggleColumnLineage(column) }, 600)
 }
 
-async function loadDatasourcesList() {
+async function loadDatasourcesList(): Promise<void> {
   try {
-    datasources.value = await apiGet('/api/assets/datasources') || []
+    datasources.value = await apiGet<typeof datasources.value>('/api/assets/datasources') || []
   } catch {
     datasources.value = []
   }
 }
 
-async function runIntrospect() {
+async function runIntrospect(): Promise<void> {
   if (!introspectDsId.value || !tableName.value) return
   introspectLoading.value = true
   introspectError.value = ''
@@ -192,7 +227,7 @@ async function runIntrospect() {
   introspectColumns.value = []
   try {
     const params = new URLSearchParams({ datasource_id: introspectDsId.value })
-    const data = await apiGet(
+    const data = await apiGet<any>(
       `/api/assets/introspect/${encodeURIComponent(tableName.value)}?${params.toString()}`,
     )
     introspectColumns.value = data.columns || []
@@ -201,8 +236,8 @@ async function runIntrospect() {
       db_type: data.db_type,
       column_count: data.column_count,
     }
-  } catch (e) {
-    introspectError.value = e.message || String(e)
+  } catch (e: any) {
+    introspectError.value = e?.message || String(e)
   } finally {
     introspectLoading.value = false
   }
@@ -249,7 +284,7 @@ const mergedColumns = computed(() => {
   return out
 })
 
-async function loadHistory() {
+async function loadHistory(): Promise<void> {
   if (!tableName.value) return
   try {
     const params = new URLSearchParams({
@@ -257,7 +292,7 @@ async function loadHistory() {
       asset_name: tableName.value,
       limit: '50',
     })
-    history.value = await apiGet(`/api/assets/aspects/history?${params.toString()}`) || []
+    history.value = await apiGet<any[]>(`/api/assets/aspects/history?${params.toString()}`) || []
   } catch {
     history.value = []
   }
@@ -266,26 +301,26 @@ async function loadHistory() {
 onMounted(load)
 watch(() => route.params.name, load)
 
-function gotoTask(taskId) {
+function gotoTask(taskId: string): void {
   router.push({ path: '/data-compare', query: { task: taskId } })
 }
-function gotoWorkflow(id) {
+function gotoWorkflow(id: string): void {
   router.push(`/workflows/${id}`)
 }
-function gotoWorkflowRun(runId) {
+function gotoWorkflowRun(runId: string): void {
   router.push(`/workflow-runs/${runId}`)
 }
 
 // ─── aspect 编辑 ────────────────────────────────────────────────────────────
 
-function openAdd() {
+function openAdd(): void {
   // 默认选第一个 type；用户可在表单里改
   const firstType = aspectTypes.value[0]?.type || ''
   editing.value = { mode: 'add', aspect_type: firstType, value: {} }
   saveError.value = ''
 }
 
-function openEdit(aspect) {
+function openEdit(aspect: any): void {
   // 复制一份避免改原对象（用户取消时回滚）
   editing.value = {
     mode: 'edit',
@@ -295,21 +330,21 @@ function openEdit(aspect) {
   saveError.value = ''
 }
 
-function cancelEdit() {
+function cancelEdit(): void {
   editing.value = null
   saveError.value = ''
 }
 
-const editingTypeSpec = computed(() =>
+const editingTypeSpec = computed<AspectTypeSpec | null>(() =>
   aspectTypes.value.find((t) => t.type === editing.value?.aspect_type) || null
 )
 
-function onTypeChange() {
+function onTypeChange(): void {
   // 切换 type 时清空 value（不同 type 字段不同，留旧值会很乱）
   if (editing.value) editing.value.value = {}
 }
 
-async function save() {
+async function save(): Promise<void> {
   if (!editing.value || !editingTypeSpec.value) return
   saving.value = true
   saveError.value = ''
@@ -323,14 +358,14 @@ async function save() {
     })
     editing.value = null
     await load()
-  } catch (e) {
-    saveError.value = e.message || String(e)
+  } catch (e: any) {
+    saveError.value = e?.message || String(e)
   } finally {
     saving.value = false
   }
 }
 
-async function removeAspect(aspect) {
+async function removeAspect(aspect: any): Promise<void> {
   if (!confirm(`确认删除 aspect「${aspectLabel(aspect.aspect_type)}」？`)) return
   try {
     const params = new URLSearchParams({
@@ -341,19 +376,19 @@ async function removeAspect(aspect) {
     })
     await apiJson(`/api/assets/aspects?${params.toString()}`, 'DELETE')
     await load()
-  } catch (e) {
-    alert(`删除失败：${e.message || e}`)
+  } catch (e: any) {
+    alert(`删除失败：${e?.message || e}`)
   }
 }
 
 // 编辑器里 list 字段 helper：用 comma 分隔字符串，保存时拆 array
-function listValueAsText(field) {
+function listValueAsText(field: string): string {
   const v = editing.value?.value?.[field]
   return Array.isArray(v) ? v.join(', ') : (v || '')
 }
-function setListValue(field, text) {
+function setListValue(field: string, text: string): void {
   if (!editing.value) return
-  editing.value.value[field] = text.split(',').map((s) => s.trim()).filter(Boolean)
+  editing.value.value[field] = text.split(',').map((s: string) => s.trim()).filter(Boolean)
 }
 </script>
 

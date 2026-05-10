@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Phase 10 enhancement #2：Aspect 反查 / classification governance dashboard。
 // admin 用 —— 选 aspect_type 看哪些资产标了它，再按 value 子字段过滤
 // （pii.level=high / sla.tier=t0 / owner.username=alice）。
@@ -12,29 +12,53 @@ import { apiGet } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 import { useProjectStore } from '../../stores/project'
 
+interface AspectTypeSpec {
+  type: string
+  label?: string
+  description?: string
+  color?: string
+  schema?: unknown
+}
+
+interface AspectRecord {
+  asset_kind: string
+  asset_name: string
+  value?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+interface AspectHistoryRecord {
+  asset_kind: string
+  asset_name: string
+  aspect_type: string
+  action: string
+  changed_by?: string
+  [key: string]: unknown
+}
+
 const router = useRouter()
 const noticeStore = useNoticeStore()
 const projectStore = useProjectStore()
 
 // tab 切换：search（按 type 反查资产）/ history（变更日志）
-const activeTab = ref('search')
+const activeTab = ref<'search' | 'history'>('search')
 
-const types = ref([])             // [{type,label,description,schema,color}, ...]
-const selectedType = ref('')
-const assetKind = ref('table')    // 目前后端只 owner table，但留扩展位
-const valueFilter = ref({})        // 按 value 子字段过滤；ref 是 plain dict
-const limit = ref(200)
-const loading = ref(false)
-const error = ref('')
-const records = ref([])           // /api/assets/aspects/search 返回
+const types = ref<AspectTypeSpec[]>([])
+const selectedType = ref<string>('')
+const assetKind = ref<string>('table')    // 目前后端只 owner table，但留扩展位
+const valueFilter = ref<Record<string, string>>({})        // 按 value 子字段过滤
+const limit = ref<number>(200)
+const loading = ref<boolean>(false)
+const error = ref<string>('')
+const records = ref<AspectRecord[]>([])           // /api/assets/aspects/search 返回
 
 // S1.A：变更日志 tab 状态
-const historyFilter = ref({ aspect_type: '', changed_by: '' })
-const historyRecords = ref([])
-const historyLoading = ref(false)
+const historyFilter = ref<{ aspect_type: string; changed_by: string }>({ aspect_type: '', changed_by: '' })
+const historyRecords = ref<AspectHistoryRecord[]>([])
+const historyLoading = ref<boolean>(false)
 
 // aspect type → tailwind 颜色（跟 AssetDetailView 同一份映射）
-const ASPECT_COLOR_MAP = {
+const ASPECT_COLOR_MAP: Record<string, string> = {
   blue: 'bg-blue-100 text-blue-700',
   red: 'bg-red-100 text-red-700',
   amber: 'bg-amber-100 text-amber-700',
@@ -43,17 +67,17 @@ const ASPECT_COLOR_MAP = {
   purple: 'bg-purple-100 text-purple-700',
 }
 
-const selectedSpec = computed(() =>
+const selectedSpec = computed<AspectTypeSpec | null>(() =>
   types.value.find((t) => t.type === selectedType.value) || null
 )
 
-function colorFor(type) {
+function colorFor(type: string): string {
   const spec = types.value.find((t) => t.type === type)
   return ASPECT_COLOR_MAP[spec?.color || 'slate'] || ASPECT_COLOR_MAP.slate
 }
 
 // 客户端二级过滤：用 valueFilter 子字段筛 records
-const filteredRecords = computed(() => {
+const filteredRecords = computed<AspectRecord[]>(() => {
   if (!records.value.length) return []
   const filters = Object.entries(valueFilter.value).filter(([, v]) => v !== '' && v != null)
   if (!filters.length) return records.value
@@ -70,21 +94,21 @@ const filteredRecords = computed(() => {
   })
 })
 
-async function loadTypes() {
+async function loadTypes(): Promise<void> {
   try {
-    const data = await apiGet('/api/assets/aspects/types')
+    const data = await apiGet<AspectTypeSpec[]>('/api/assets/aspects/types')
     types.value = Array.isArray(data) ? data : []
     // 默认选 pii（最有意义的 governance 入口）
     if (!selectedType.value && types.value.length) {
       const pii = types.value.find((t) => t.type === 'pii')
       selectedType.value = pii ? pii.type : types.value[0].type
     }
-  } catch (e) {
-    error.value = `加载 aspect types 失败：${e.message || e}`
+  } catch (e: any) {
+    error.value = `加载 aspect types 失败：${e?.message || e}`
   }
 }
 
-async function reload() {
+async function reload(): Promise<void> {
   if (!selectedType.value) {
     records.value = []
     return
@@ -98,28 +122,28 @@ async function reload() {
       limit: String(limit.value),
     })
     if (projectStore.currentProjectId) params.set('project_id', projectStore.currentProjectId)
-    records.value = await apiGet(`/api/assets/aspects/search?${params.toString()}`)
-  } catch (e) {
-    error.value = `加载失败：${e.message || e}`
-    noticeStore.setNotice(`Aspect 反查失败：${e.message || e}`)
+    records.value = await apiGet<AspectRecord[]>(`/api/assets/aspects/search?${params.toString()}`)
+  } catch (e: any) {
+    error.value = `加载失败：${e?.message || e}`
+    noticeStore.setNotice(`Aspect 反查失败：${e?.message || e}`)
     records.value = []
   } finally {
     loading.value = false
   }
 }
 
-function onTypeChange() {
+function onTypeChange(): void {
   // 切 type 重置子字段过滤（不同 type 字段不同，留旧值会无意义）
   valueFilter.value = {}
   reload()
 }
 
-function gotoAsset(name) {
+function gotoAsset(name: string): void {
   router.push(`/assets/table/${encodeURIComponent(name)}`)
 }
 
 // 简短 value 预览（pill 旁的灰字）—— 跟 AssetDetailView 同一逻辑简化版
-function previewValue(v) {
+function previewValue(v: Record<string, any> | null | undefined): string {
   if (!v) return ''
   if (v.level) return `level=${v.level}`
   if (v.tier) return `tier=${v.tier}`
@@ -131,15 +155,15 @@ function previewValue(v) {
   return JSON.stringify(v).slice(0, 60)
 }
 
-async function loadHistory() {
+async function loadHistory(): Promise<void> {
   historyLoading.value = true
   try {
     const params = new URLSearchParams({ limit: '200' })
     if (historyFilter.value.aspect_type) params.set('aspect_type', historyFilter.value.aspect_type)
     if (historyFilter.value.changed_by) params.set('changed_by', historyFilter.value.changed_by)
-    historyRecords.value = await apiGet(`/api/assets/aspects/history?${params.toString()}`) || []
-  } catch (e) {
-    noticeStore.setNotice(`变更日志加载失败：${e.message || e}`)
+    historyRecords.value = await apiGet<AspectHistoryRecord[]>(`/api/assets/aspects/history?${params.toString()}`) || []
+  } catch (e: any) {
+    noticeStore.setNotice(`变更日志加载失败：${e?.message || e}`)
     historyRecords.value = []
   } finally {
     historyLoading.value = false
@@ -150,7 +174,7 @@ watch(activeTab, (val) => {
   if (val === 'history' && !historyRecords.value.length) loadHistory()
 })
 
-function onAssetClick(rec) {
+function onAssetClick(rec: AspectRecord): void {
   if (rec.asset_kind === 'table') gotoAsset(rec.asset_name)
 }
 

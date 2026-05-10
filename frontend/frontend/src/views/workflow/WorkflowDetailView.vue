@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { healthMeta, workflowHealth, synthesizeEvents, resolveAllParameters } from '../../mock/workflow_meta'
@@ -39,8 +39,10 @@ const {
 // 已抽到 components/workflow/WorkflowHistoryPanel.vue，保留 selectedNodeId 等
 // 用在 DAG canvas / 节点详情的 ref 在下面。
 
-const activeTab = ref('history')   // history / events / lineage / config
-const selectedNodeId = ref('')
+type TabId = 'history' | 'events' | 'lineage' | 'config'
+
+const activeTab = ref<TabId>('history')   // history / events / lineage / config
+const selectedNodeId = ref<string>('')
 
 // 新建态：自动落到「节点配置」tab，引导用户开始编辑
 watch(selectedWorkflowId, (id) => {
@@ -49,8 +51,8 @@ watch(selectedWorkflowId, (id) => {
 
 // 运行参数：从作业流里所有 type=params 节点的 config.parameters 收集。
 // 没有 params 节点 → 空列表，UI 显示"还没有参数定义"占位。
-const realParameters = computed(() => {
-  const out = []
+const realParameters = computed<any[]>(() => {
+  const out: any[] = []
   for (const node of workflowDraft.nodes || []) {
     if (node.type !== 'params') continue
     for (const p of node.parameters || []) {
@@ -90,7 +92,8 @@ const workflowAsyncLabel = computed(() => {
   }[status] || status
 })
 
-const otherNodeIds = (currentId) => workflowDraft.nodes.map((n) => n.id).filter((id) => id && id !== currentId)
+const otherNodeIds = (currentId: string): string[] =>
+  workflowDraft.nodes.map((n: any) => n.id).filter((id: string) => id && id !== currentId)
 const selectedConfigNode = computed(() =>
   workflowDraft.nodes.find((node) => node.id && node.id === selectedNodeId.value) || null
 )
@@ -128,7 +131,8 @@ const tabs = [
 
 // 合成事件流（来自最近一次运行）
 const recentEvents = computed(() => synthesizeEvents(latestRun.value))
-const eventTypeMeta = {
+interface EventTypeMeta { glyph: string; text: string; label: string }
+const eventTypeMeta: Record<string, EventTypeMeta> = {
   RUN_START:    { glyph: '▶', text: 'text-blue-600',    label: '运行开始' },
   RUN_SUCCESS:  { glyph: '✓', text: 'text-emerald-600', label: '运行成功' },
   RUN_FAILURE:  { glyph: '✕', text: 'text-rose-600',    label: '运行失败' },
@@ -137,7 +141,8 @@ const eventTypeMeta = {
   STEP_FAILURE: { glyph: '✕', text: 'text-rose-600',    label: '步骤失败' },
   STEP_SKIPPED: { glyph: '⊘', text: 'text-slate-500',   label: '步骤跳过' },
 }
-const levelClass = (level) => ({ INFO: 'text-slate-700', WARN: 'text-amber-700', ERROR: 'text-rose-700' }[level] || 'text-slate-700')
+const levelClass = (level: string): string =>
+  ({ INFO: 'text-slate-700', WARN: 'text-amber-700', ERROR: 'text-rose-700' } as Record<string, string>)[level] || 'text-slate-700'
 
 watch(selectedWorkflowId, () => { selectedNodeId.value = '' })
 watch(
