@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { healthMeta, workflowHealth } from '../../mock/workflow_meta'
@@ -13,9 +13,9 @@ const { loadAllWorkflowRuns } = workflowStore
 
 onMounted(() => { loadAllWorkflowRuns() })
 
-const ownerFilter = ref('all')
-const healthFilter = ref('all')
-const searchTerm = ref('')
+const ownerFilter = ref<string>('all')
+const healthFilter = ref<string>('all')
+const searchTerm = ref<string>('')
 
 // 现在元数据（owner / tags / schedule_cron）来自后端 Workflow 模型，
 // 不再用 mock 模板插值。健康度和 24 小时运行次数仍然由运行历史推导。
@@ -49,8 +49,8 @@ const enriched = computed(() => state.workflows.map((wf) => {
 }))
 
 // 真实下拉来源：所有不重复的 owner / tag。
-const ownerOptions = computed(() => {
-  const set = new Set()
+const ownerOptions = computed<string[]>(() => {
+  const set = new Set<string>()
   for (const wf of enriched.value) if (wf.owner && wf.owner !== '—') set.add(wf.owner)
   return [...set].sort()
 })
@@ -80,13 +80,14 @@ const stats = computed(() => {
   }
 })
 
-const successRateClass = (rate) => {
+const successRateClass = (rate: number | null): string => {
   if (rate === null) return 'text-slate-400'
   if (rate >= 0.95) return 'text-emerald-600'
   if (rate >= 0.85) return 'text-amber-600'
   return 'text-rose-600'
 }
-const successRateText = (rate) => rate === null ? '—' : `${Math.round(rate * 100)}%`
+const successRateText = (rate: number | null): string =>
+  rate === null ? '—' : `${Math.round(rate * 100)}%`
 </script>
 
 <template>

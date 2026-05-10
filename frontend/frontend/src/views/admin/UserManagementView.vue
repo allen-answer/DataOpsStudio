@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Plus, Trash2, RefreshCw, Save, X } from 'lucide-vue-next'
@@ -6,57 +6,66 @@ import { apiGet, apiJson } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useNoticeStore } from '../../stores/notice'
 
+type Role = 'viewer' | 'editor' | 'admin'
+
+interface UserItem {
+  id: string
+  username: string
+  role: Role
+  display_name?: string
+}
+
 const authStore = useAuthStore()
 const noticeStore = useNoticeStore()
 const { user: currentUser } = storeToRefs(authStore)
 
-const users = ref([])
-const loading = ref(false)
-const submitting = ref(false)
-const editingId = ref('')
+const users = ref<UserItem[]>([])
+const loading = ref<boolean>(false)
+const submitting = ref<boolean>(false)
+const editingId = ref<string>('')
 
 const draft = reactive({
   username: '',
   password: '',
-  role: 'viewer',
+  role: 'viewer' as Role,
   display_name: '',
 })
 
 const editDraft = reactive({
   password: '',
-  role: 'viewer',
+  role: 'viewer' as Role,
   display_name: '',
 })
 
-const ROLES = [
+const ROLES: Array<{ value: Role; label: string }> = [
   { value: 'viewer', label: '只读 viewer' },
   { value: 'editor', label: '编辑 editor' },
   { value: 'admin',  label: '管理员 admin' },
 ]
 
-const sortedUsers = computed(() =>
+const sortedUsers = computed<UserItem[]>(() =>
   [...users.value].sort((a, b) => a.username.localeCompare(b.username, 'zh-CN'))
 )
 
-async function reload() {
+async function reload(): Promise<void> {
   loading.value = true
   try {
-    users.value = await apiGet('/api/users')
-  } catch (err) {
-    noticeStore.setNotice(`加载用户失败：${err.message || err}`)
+    users.value = await apiGet<UserItem[]>('/api/users')
+  } catch (err: any) {
+    noticeStore.setNotice(`加载用户失败：${err?.message || err}`)
   } finally {
     loading.value = false
   }
 }
 
-function resetDraft() {
+function resetDraft(): void {
   draft.username = ''
   draft.password = ''
   draft.role = 'viewer'
   draft.display_name = ''
 }
 
-async function createUser() {
+async function createUser(): Promise<void> {
   if (!draft.username.trim() || !draft.password.trim()) {
     noticeStore.setNotice('用户名和密码必填')
     return
@@ -72,25 +81,25 @@ async function createUser() {
     noticeStore.setNotice(`用户 ${draft.username} 已创建`)
     resetDraft()
     await reload()
-  } catch (err) {
-    noticeStore.setNotice(`创建失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`创建失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-function startEdit(user) {
+function startEdit(user: UserItem): void {
   editingId.value = user.id
   editDraft.password = ''
   editDraft.role = user.role
   editDraft.display_name = user.display_name || ''
 }
 
-function cancelEdit() {
+function cancelEdit(): void {
   editingId.value = ''
 }
 
-async function saveEdit(user) {
+async function saveEdit(user: UserItem): Promise<void> {
   submitting.value = true
   const payload = {
     password: editDraft.password,
@@ -102,14 +111,14 @@ async function saveEdit(user) {
     noticeStore.setNotice(`用户 ${user.username} 已更新`)
     editingId.value = ''
     await reload()
-  } catch (err) {
-    noticeStore.setNotice(`更新失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`更新失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-async function deleteUser(user) {
+async function deleteUser(user: UserItem): Promise<void> {
   if (user.id === currentUser.value?.id) {
     noticeStore.setNotice('不能删除当前登录账号')
     return
@@ -119,8 +128,8 @@ async function deleteUser(user) {
     await apiJson(`/api/users/${user.id}`, 'DELETE')
     noticeStore.setNotice(`用户 ${user.username} 已删除`)
     await reload()
-  } catch (err) {
-    noticeStore.setNotice(`删除失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`删除失败：${err?.message || err}`)
   }
 }
 

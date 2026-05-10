@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Plus, Trash2, RefreshCw, FolderOpen, Users, X } from 'lucide-vue-next'
@@ -6,39 +6,54 @@ import { apiGet } from '../../api'
 import { useProjectStore } from '../../stores/project'
 import { useNoticeStore } from '../../stores/notice'
 
+interface UserItem {
+  id: string
+  username: string
+  display_name?: string
+}
+
+interface ProjectItem {
+  id: string
+  name: string
+  description?: string
+  members?: string[]
+}
+
 const projectStore = useProjectStore()
 const noticeStore = useNoticeStore()
 const { projects, currentProjectId } = storeToRefs(projectStore)
 
-const submitting = ref(false)
+const submitting = ref<boolean>(false)
 const draft = reactive({ name: '', description: '' })
 
 // 成员管理 panel：当前展开哪个项目 + 编辑中的 members
-const expandedId = ref('')
-const memberDraft = reactive({ name: '', description: '', members: [] })
-const allUsers = ref([])  // /api/users (admin only)
+const expandedId = ref<string>('')
+const memberDraft = reactive<{ name: string; description: string; members: string[] }>({
+  name: '', description: '', members: [],
+})
+const allUsers = ref<UserItem[]>([])  // /api/users (admin only)
 
-const userById = computed(() => {
-  const map = {}
+const userById = computed<Record<string, UserItem>>(() => {
+  const map: Record<string, UserItem> = {}
   allUsers.value.forEach(u => { map[u.id] = u })
   return map
 })
 
-const candidateUsers = computed(() =>
+const candidateUsers = computed<UserItem[]>(() =>
   allUsers.value.filter(u => !memberDraft.members.includes(u.id))
 )
 
-async function reload() {
+async function reload(): Promise<void> {
   await projectStore.reload()
   // admin only —— /api/users 也只 admin 可见，与本页一致
   try {
-    allUsers.value = await apiGet('/api/users')
+    allUsers.value = await apiGet<UserItem[]>('/api/users')
   } catch {
     allUsers.value = []
   }
 }
 
-async function createProject() {
+async function createProject(): Promise<void> {
   if (!draft.name.trim()) {
     noticeStore.setNotice('项目名称必填')
     return
@@ -49,29 +64,29 @@ async function createProject() {
     noticeStore.setNotice(`项目 ${draft.name} 已创建`)
     draft.name = ''
     draft.description = ''
-  } catch (err) {
-    noticeStore.setNotice(`创建失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`创建失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-async function deleteProject(p) {
+async function deleteProject(p: ProjectItem): Promise<void> {
   if (!confirm(`确认删除项目 ${p.name}？关联的资源不会被删除，但会变为"无项目"状态。`)) return
   try {
     await projectStore.deleteProject(p.id)
     noticeStore.setNotice(`项目 ${p.name} 已删除`)
-  } catch (err) {
-    noticeStore.setNotice(`删除失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`删除失败：${err?.message || err}`)
   }
 }
 
-function switchTo(p) {
+function switchTo(p: ProjectItem): void {
   projectStore.setProject(p.id)
   noticeStore.setNotice(`已切换到项目 ${p.name}`)
 }
 
-function expandMembers(p) {
+function expandMembers(p: ProjectItem): void {
   if (expandedId.value === p.id) {
     expandedId.value = ''
     return
@@ -82,13 +97,13 @@ function expandMembers(p) {
   memberDraft.members = [...(p.members || [])]
 }
 
-function addMember(userId) {
+function addMember(userId: string): void {
   if (!userId) return
   if (memberDraft.members.includes(userId)) return
   memberDraft.members.push(userId)
 }
 
-function removeMember(userId, ownerId) {
+function removeMember(userId: string, ownerId: string): void {
   if (userId === ownerId) {
     noticeStore.setNotice('不能移除项目 owner（owner 永远是成员）')
     return
@@ -96,7 +111,7 @@ function removeMember(userId, ownerId) {
   memberDraft.members = memberDraft.members.filter(id => id !== userId)
 }
 
-async function saveMembers(p) {
+async function saveMembers(p: ProjectItem): Promise<void> {
   submitting.value = true
   try {
     await projectStore.updateProject(p.id, {
@@ -106,14 +121,14 @@ async function saveMembers(p) {
     })
     noticeStore.setNotice(`项目 ${p.name} 成员已更新`)
     expandedId.value = ''
-  } catch (err) {
-    noticeStore.setNotice(`更新失败：${err.message || err}`)
+  } catch (err: any) {
+    noticeStore.setNotice(`更新失败：${err?.message || err}`)
   } finally {
     submitting.value = false
   }
 }
 
-function userLabel(userId) {
+function userLabel(userId: string): string {
   const u = userById.value[userId]
   if (!u) return `(已删除 ${userId.slice(0, 6)})`
   return u.display_name ? `${u.display_name} (${u.username})` : u.username

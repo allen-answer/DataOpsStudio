@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
 import {
   LayoutDashboard, Inbox, Upload, Workflow,
@@ -49,15 +49,21 @@ const TABS = [
   { id: 'ai_inferred', labelKey: 'lineageReport.tabAIInferred', icon: Sparkles },
 ]
 
-const activeTab = ref('summary')
-const columnView = ref('table')
-const focusedColumnNodeId = ref('')
+type TabId =
+  | 'summary' | 'inputs' | 'outputs' | 'process' | 'table' | 'column'
+  | 'semantic' | 'impact' | 'risks' | 'ai' | 'ai_inferred'
+
+const activeTab = ref<TabId>('summary')
+const columnView = ref<'table' | 'graph'>('table')
+const focusedColumnNodeId = ref<string>('')
 
 // 总览卡片"点风险点 5"会 emit('navigate', {tab:'risks', preset:{levelFilter:'high'}})
 // —— 这里把 tab 切过去，preset 透给目标 panel（一次性，view 后续 watch tab 会清掉）
-const tabPresets = ref({})
+const tabPresets = ref<Record<string, unknown>>({})
 
-function navigateTo(payload) {
+interface NavigatePayload { tab: TabId; preset?: unknown }
+
+function navigateTo(payload: NavigatePayload | null | undefined): void {
   if (!payload || !payload.tab) return
   activeTab.value = payload.tab
   if (payload.preset) {
@@ -65,14 +71,14 @@ function navigateTo(payload) {
   }
 }
 
-function focusColumn(payload) {
+function focusColumn(payload: { nodeId?: string } | null | undefined): void {
   focusedColumnNodeId.value = payload?.nodeId || ''
   columnView.value = 'graph'
   activeTab.value = 'column'
 }
 
 // 用户手动切 tab 时清掉对应 preset，避免预设干扰用户重新筛选
-function onManualTabSwitch(tab) {
+function onManualTabSwitch(tab: TabId): void {
   activeTab.value = tab
   if (tabPresets.value[tab]) {
     const next = { ...tabPresets.value }
