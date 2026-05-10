@@ -20,6 +20,11 @@ const expandedHistoryRun = ref('')          // 当前展开的 run_id（每次�
 const historyDetailCache = ref({})          // run_id → 完整 run 详情
 const historyDetailLoading = ref({})        // run_id → bool
 
+// 长 debug 会话里用户可能逐个展开几十上百条历史 run，每条都是完整 payload
+// （含 nodes / variables / artifacts），unbounded 缓存会一直长。绑 32 条 FIFO 上限：
+// JS object 保证 string key 插入顺序，超额时按头部 key 淘汰最早的。
+const HISTORY_DETAIL_CACHE_MAX = 32
+
 const toggleHistoryExpand = async (runId) => {
   if (expandedHistoryRun.value === runId) {
     expandedHistoryRun.value = ''
@@ -34,6 +39,13 @@ const toggleHistoryExpand = async (runId) => {
     historyDetailCache.value[runId] = null
   } finally {
     historyDetailLoading.value[runId] = false
+  }
+  const keys = Object.keys(historyDetailCache.value)
+  if (keys.length > HISTORY_DETAIL_CACHE_MAX) {
+    for (let i = 0; i < keys.length - HISTORY_DETAIL_CACHE_MAX; i++) {
+      delete historyDetailCache.value[keys[i]]
+      delete historyDetailLoading.value[keys[i]]
+    }
   }
 }
 
