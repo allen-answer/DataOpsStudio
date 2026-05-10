@@ -13,6 +13,12 @@ class SchemaSource(Protocol):
 
 
 _CACHE_TTL_SECONDS = 300
+# Cache key includes (datasource_id, schema, table_filter, dialect, include_tables tuple).
+# `include_tables` is derived from each lineage analysis's parsed SQL, so distinct
+# scripts produce distinct keys. Long-running app + many scripts → unbounded growth.
+# Cap entries with lazy GC: when over budget, drop expired first, then evict oldest
+# in insertion order.
+_CACHE_MAX_ENTRIES = 256
 _CACHE: dict[tuple[str, str, str, str, tuple[str, ...]], tuple[float, dict[str, list[str]]]] = {}
 
 
@@ -50,7 +56,19 @@ def fetch_schema_metadata(
     schema = _rows_to_schema(rows)
     if use_cache:
         _CACHE[cache_key] = (time.time(), schema)
+        if len(_CACHE) > _CACHE_MAX_ENTRIES:
+            _evict_cache()
     return schema
+
+
+def _evict_cache() -> None:
+    now = time.time()
+    expired = [k for k, (ts, _) in _CACHE.items() if now - ts > _CACHE_TTL_SECONDS]
+    for k in expired:
+        _CACHE.pop(k, None)
+    if len(_CACHE) > _CACHE_MAX_ENTRIES:
+        for k in list(_CACHE.keys())[: len(_CACHE) - _CACHE_MAX_ENTRIES]:
+            _CACHE.pop(k, None)
 
 
 def clear_schema_cache() -> None:
