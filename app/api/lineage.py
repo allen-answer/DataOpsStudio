@@ -66,6 +66,33 @@ def lineage_stress_fixture_api(size: int = 1000):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/api/lineage/trace-compare")
+def lineage_trace_compare_api(
+    payload: dict = Body(...),
+    user: User = Depends(require_role("editor")),
+):
+    """Phase 11 MVP：根据 focal `(table, column)` 的字段血缘链，生成一组
+    compare 节点配置（每条 upstream → downstream 边一个节点），caller 拿到
+    workflow_draft 可直接 POST /api/workflows 建为正式作业流。
+    """
+    from app.services.trace_compare import trace_compare
+    try:
+        return trace_compare(
+            table=str(payload.get("table") or ""),
+            column=str(payload.get("column") or ""),
+            key_column=str(payload.get("key_column") or ""),
+            base_task_id=str(payload.get("base_task_id") or ""),
+            sample_keys=list(payload.get("sample_keys") or []),
+            datasource_map=dict(payload.get("datasource_map") or {}),
+            per_table_keys=dict(payload.get("per_table_keys") or {}),
+            depth=int(payload.get("depth") or 3),
+            project_id=str(payload.get("project_id") or ""),
+            run_limit=int(payload.get("run_limit") or 50),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
 def lineage_api(payload: dict[str, str] = Body(...)):
     try:
