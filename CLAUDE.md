@@ -217,7 +217,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **942 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **988 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 启动后已落：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests，详见下方 Phase 11）。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -324,14 +324,19 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - ✅ **Procedure refresh mode 语义模式深化**（2026-05-09 落地）—— 修了「procedure 体内 TRUNCATE → INSERT 没识别成 truncate_insert」的 bug：顶层 `parse_lineage_statements` 在 procedure 解析失败回退时用 `extract_analyzable_segments` 拆 `;`，但拆出来的 statements 顺序跟源 SQL 不一致，导致 `_has_followed_by` 判断 TRUNCATE 在 INSERT 之后。修法：`aggregation.py` 加 `collect_procedure_operations()` 直接走 `procedure_segments`（已按 line_start 排序）独立产 ops，每 op 带 `procedure_name`；analyzer 把顶层 ops（去掉 procedure-内重复）+ proc ops 合并喂入 `aggregate_target_summary`。dedup 用「sqlglot parse → 再序列化」做 canonical 比较，避免 `ods.orders o` vs `ods.orders AS o` 字符串差异错配。`_has_followed_by_within_scope` 替代 `_has_followed_by`，让先后顺序在同一 procedure 内成立才算（避免 proc1 truncate / proc2 insert 跨过程巧合）。`TargetSummary` 加 `procedure_origins: list[str]` 字段让 UI 能展示「此表被 procX / pkg.refresh_daily 重刷」。`semantic._build_targets` 透传 `procedure_origins` 到 `semantic_lineage.targets[*]`，前端 `SemanticLineagePanel` 表格新增「由谁写入」列：有 origins 时按 chip 显示过程名（`<anonymous>` 渲染为「匿名块」），空时显示「顶层」。补 7 个测试覆盖 procedure-only TRUNCATE+INSERT / DELETE+INSERT / 匿名块 / dedup 不双重计数 / 纯顶层无 origins / semantic_lineage.targets 透传。回归 917 → 924
 - ✅ **字段血缘 tracing UI 多跳**（2026-05-09 落地）—— `services/assets.get_column_lineage()` 加 `depth` / `max_nodes` 参数，重构内部为「先建 edge index 再 BFS」。`depth=1`（默认）保留旧 shape；`depth>=2` 每个 item 多带 `hop` / `from`，cycle 切断 + max_nodes 截断。`/api/assets/column-lineage` 加 `depth` `max_nodes` query。前端 `AssetDetailView` 字段展开行加 1/2/3 跳 picker；多跳场景按 hop 缩进渲染 chip，每个 hop≥2 chip 显示 `← from parent` micro-label 让用户追溯路径。补 6 个测试（depth=2 上下游 / depth=1 向后兼容 / max_nodes 截断 / cycle 切断 / endpoint depth 参数）。回归 911 → 917。**后续小补**：response 多 `upstream_truncated` / `downstream_truncated` / `max_nodes` 字段；前端在该方向用 amber banner「⚠ 已达上限 N 节点，可能漏链路」提示用户结果不全。**性能优化**：column edge index 加 TTL+run_count 缓存（跟 `lineage_index.py` 一个套路）—— 反复点字段血缘（同一 AssetDetailView 上多字段、多跳切换）只首次扫所有 run，后续走 cache。`invalidate_column_edge_index_cache()` 在 `isolated_storage` fixture 调一下避免跨测试 tmp_path 切换污染。补 3 个缓存测试
 
-**Phase 11 候选 · 数据对比 × 血缘联动**（待启动，2026-05-08 立项）—— 把 Compare 和 Lineage 两套独立能力拼成「沿血缘逐层对比 → 定位数据偏离层」的诊断工具：
+**Phase 11 候选 · 数据对比 × 血缘联动**（2026-05-08 立项 / 2026-05-10 后端 MVP 落地）—— 把 Compare 和 Lineage 两套独立能力拼成「沿血缘逐层对比 → 定位数据偏离层」的诊断工具：
 
 - **动机**：用户报「dws 报表数 ≠ ods 源」时，目前要人手逐层建 compare task + 串 workflow，痛点高。已有 `services/assets.get_column_lineage()` 字段链 + `CompareTask` 多源对比 + `workflow_engine` DAG 三件套都成熟，差一个编排器
 - **MVP 路径**（最小可演示切片，先不啃聚合）：
-  1. 后端加 `POST /api/lineage/trace-compare` body `{table, column, sample_keys, datasource_map}` —— 按 column lineage 反推 N 跳，对每一跳 emit compare 节点（直传 / 改名 / 类型转换走行级 1:1 diff，聚合 / 过滤跳标 `strategy=agg_check` 走行数 / sum / null 率口径检查待人工确认）
-  2. 前端 `AssetDetailView` 字段表格行加「沿血缘溯源」按钮 → 跳到自动生成的 workflow draft，用户调整 PK / datasource 后一键跑
-  3. 跑完结果可视化：在血缘图（`LineageGraphPanel`）每条边上色（红 = 该层数据偏离 / 绿 = 一致 / 灰 = 未对比），用户一眼看到漂移源头
+  1. ✅ **后端 `POST /api/lineage/trace-compare`**（commit `c800f0b`）—— body `{table, column, key_column, base_task_id, sample_keys, datasource_map, per_table_keys, depth, project_id, run_limit}`。`services/trace_compare.py` 走 `get_column_lineage(depth=N)` 拉链，把每条 (upstream → downstream) 边变成一个 compare 节点：填 `task_id` (caller 提供 shell-task) / `source_sql_override` / `target_sql_override` / `key_columns_override`，复用 compare 节点已有的 override 通道。`sample_keys` 走 `IN (...)` + `ORDER BY key`（流式 compare 要求两端同序），`datasource_map` 缺一表→该 hop 标 `unmapped_tables` + 顶层 `warnings`，`per_table_keys` 按表覆盖 PK，标识符走白名单正则拦 SQL 注入，depth clamp [1,10]。返回 `{focal, chain, workflow_draft, warnings, stats}`，caller 拿 draft 可直接 POST `/api/workflows`。**只做 `direct` 策略**（assume 上下游列值一致），聚合 / 过滤 / 类型转换的口径检查留给 AI 兜底或下一切片。13 个新测试覆盖单跳 / 多跳 / sample_keys 字面量 / unmapped 警告 / per_table_keys / 标识符校验 / depth 边界 / 401/400/200 endpoint
+  2. 前端 `AssetDetailView` 字段表格行加「沿血缘溯源」按钮 → 跳到自动生成的 workflow draft，用户调整 PK / datasource 后一键跑（待做）
+  3. 跑完结果可视化：在血缘图（`LineageGraphPanel`）每条边上色（红 = 该层数据偏离 / 绿 = 一致 / 灰 = 未对比），用户一眼看到漂移源头（待做）
 - **Tradeoff 核心**：transform 类型的非 1:1 性 —— 聚合（GROUP BY / SUM）和过滤（WHERE）不能行级 diff，要么按 join key 重算 + 区间对比、要么退化口径检查。这部分**适合 AI 兜底**（让 LLM 看 transform SQL 决定每跳对比策略，比纯规则更合适，且复用已有 enrichment provider 抽象）
+- **MVP ADR 摘录**：
+  - 编排器**不持久化** workflow —— 返回 draft 字典，让 caller 决定保存或临时跑。这样后端只管「lineage 链 → compare 节点」纯转换，UI 集成时再决定 UX。
+  - compare 节点用 **shell-task 模式**（caller 提供一个 `base_task_id`，所有节点都覆盖它的 SQL/keys）—— 跟现有 `compare.py` line 27-44 的 override 路径已支持，不动 compare 节点 schema。
+  - 各 hop **默认无 `depends_on`** —— 它们是逻辑上独立的两端 compare，让 engine 并发跑更快出结果；UI 后续可选择性加链让用户分步看。
+  - 标识符校验放服务层而非端点层 —— 即使前端走 lineage 反查给的表名也防一手；`base_task_id` 不校验（让后续 jobs 层的 task 存在性检查接管）。
 - **参考 hooks**：`services/assets.get_column_lineage()` / `app/lineage/columns.py` insert_mappings / `app/services/workflow_engine.py` DAG 编排 / `app/services/runner.run_task` 单跳对比 / `app/ai/providers/` LLM 抽象
 
 **Phase 11 候选 · 数据库方言模块化**（spike-driven 重构，2026-05-08 立项 / 2026-05-09 MVP spike 落地）—— 把当前散在 ~10 处的 `if db_type == ...` 收口到 `Dialect` 类，给后续接 OceanBase / PG / TiDB + 加方言相关能力（pagination / quote / 错误码翻译）打底：
