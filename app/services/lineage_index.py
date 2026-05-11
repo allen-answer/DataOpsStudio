@@ -28,8 +28,8 @@ from typing import Any, Iterable, Literal
 
 from app.services.lineage_graph_query import bfs_subgraph
 from app.services.workflow_history import (
+    fingerprint_workflow_runs_dir,
     get_cached_run_payloads,
-    list_workflow_runs,
 )
 
 
@@ -55,6 +55,11 @@ class LineageIndex:
         self._run_limit = run_limit
         self._lock = threading.RLock()
         self._built_at: float = 0.0
+        # 失效信号：workflow_runs/ 目录指纹（file_count, max_mtime）。换掉旧版
+        # `len(list_workflow_runs(limit=N))`，后者在 run 数 ≥ run_limit 时
+        # 新加 run 把老的 displace 出去 count 不变，索引永不重建。
+        self._source_fingerprint: tuple[int, float] = (0, 0.0)
+        # 仅供 stats 接口报告 —— rebuild 时回填，不参与失效判定
         self._source_run_count: int = 0
         # 节点元数据：name → {schemas, primary_role, refresh_modes, last_seen_run_id, ...}
         self._table_meta: dict[str, dict[str, Any]] = {}
@@ -90,10 +95,10 @@ class LineageIndex:
         if (time.time() - self._built_at) >= self._ttl:
             return True
         try:
-            count = len(list_workflow_runs(limit=self._run_limit))
+            fp = fingerprint_workflow_runs_dir()
         except Exception:
             return False  # cannot determine → 信任当前缓存
-        return count != self._source_run_count
+        return fp != self._source_fingerprint
 
     def _rebuild_locked(self) -> None:
         """实际重建 —— 必须持锁调用。"""
@@ -106,13 +111,13 @@ class LineageIndex:
         except Exception as exc:  # pragma: no cover
             logger.warning("lineage index: get_cached_run_payloads failed: %s", exc)
             runs = []
-        # source_run_count 跟 _needs_rebuild() 里的 count 用同一指标
-        # （list_workflow_runs 长度），避免「JSON corrupted 让两个 count 永远不等
-        # → constant rebuild」。
+        # 失效信号：目录指纹（fs metadata，无 JSON parse）。在 rebuild 期间快照
+        # 一次，避免读完 payload 后期间又有新 run 落盘 → 写入的指纹比实际新。
         try:
-            run_count_for_invalidation = len(list_workflow_runs(limit=self._run_limit))
+            fingerprint_at_rebuild = fingerprint_workflow_runs_dir()
         except Exception:  # pragma: no cover
-            run_count_for_invalidation = len(runs)
+            fingerprint_at_rebuild = self._source_fingerprint
+        source_run_count = len(runs)
 
         edges: list[dict[str, Any]] = []
         edge_seen: set[tuple[str, str, str]] = set()  # (src, tgt, edge_type) 去重
@@ -219,7 +224,8 @@ class LineageIndex:
         self._all_edges = edges
         self._all_table_roles = all_roles
         self._table_meta = meta
-        self._source_run_count = run_count_for_invalidation
+        self._source_fingerprint = fingerprint_at_rebuild
+        self._source_run_count = source_run_count
         self._built_at = time.time()
         elapsed = time.perf_counter() - started
         logger.info(

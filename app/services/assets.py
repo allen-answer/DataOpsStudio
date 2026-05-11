@@ -20,6 +20,7 @@ from app.services.history import list_result_history
 from app.services.repositories import datasource_store, task_store, workflow_store
 from app.services.search import _all_tokens_in, _extract_tables
 from app.services.workflow_history import (
+    fingerprint_workflow_runs_dir as _fingerprint_workflow_runs_dir,
     get_cached_run_payloads as _get_cached_run_payloads,
     get_workflow_run,
     invalidate_run_payloads_cache as _invalidate_run_payloads_cache,
@@ -350,23 +351,23 @@ def _get_cached_column_edges(run_limit: int) -> tuple[
 ]:
     """带缓存的 edge index 拿取。失效条件：
     - TTL 过期（300s）
-    - workflow_run 数量变化（粗粒度，新增 / 删除都触发）
+    - workflow_runs/ 目录指纹变化（新增 / 删除 / 改写都触发）
     - 显式 invalidate_column_edge_index_cache()
     """
     now = time.time()
     with _column_edge_lock:
         entry = _column_edge_cache.get(run_limit)
-        current_run_count = _count_runs_for_invalidation(run_limit)
+        fingerprint = _fingerprint_workflow_runs_dir()
         if entry is not None and (
             now - entry["built_at"] < _COLUMN_EDGE_TTL
-            and entry["source_run_count"] == current_run_count
+            and entry["source_fingerprint"] == fingerprint
         ):
             return entry["up_edges"], entry["down_edges"]
         up, down = _build_column_edge_index(run_limit)
         _column_edge_cache.pop(run_limit, None)
         _column_edge_cache[run_limit] = {
             "built_at": now,
-            "source_run_count": current_run_count,
+            "source_fingerprint": fingerprint,
             "up_edges": up,
             "down_edges": down,
         }
@@ -376,15 +377,6 @@ def _get_cached_column_edges(run_limit: int) -> tuple[
             ]:
                 _column_edge_cache.pop(stale_key, None)
         return up, down
-
-
-def _count_runs_for_invalidation(run_limit: int) -> int:
-    """边界粗算：取 list_workflow_runs(limit=run_limit) 的长度。新建或删 run 都会变。
-    比对索引/写入时间更稳（避免依赖文件系统 mtime 精度）。"""
-    try:
-        return len(list_workflow_runs(limit=run_limit))
-    except Exception:  # pragma: no cover
-        return 0
 
 
 def invalidate_column_edge_index_cache() -> None:

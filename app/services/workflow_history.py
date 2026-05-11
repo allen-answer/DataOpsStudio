@@ -40,6 +40,29 @@ _run_payloads_cache: dict[int, dict[str, Any]] = {}
 _run_payloads_lock = threading.RLock()
 
 
+def fingerprint_workflow_runs_dir() -> tuple[int, float]:
+    """(file_count, max_mtime) 指纹，仅走 fs metadata，无 JSON parse。
+
+    用作 cache invalidation key。换掉旧版 `len(list_workflow_runs(limit=N))` 的两个坑：
+    1. 旧版用 capped count，run 数 ≥ limit 时新加 run 把老的 displace 出去，count 不变
+       → cache 永不失效，新写的 lineage 数据用户看不见
+    2. 旧版要读 2× limit + 10 个 JSON 才能计数，仅为算个失效信号代价过高
+    """
+    if not WORKFLOW_RUNS_DIR.exists():
+        return (0, 0.0)
+    count = 0
+    max_mtime = 0.0
+    for p in WORKFLOW_RUNS_DIR.glob("*.json"):
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        count += 1
+        if mtime > max_mtime:
+            max_mtime = mtime
+    return (count, max_mtime)
+
+
 def get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
     """返回最近 `run_limit` 个 workflow_run 的完整 payload 列表（newest first）。
     多个聚合可共享 —— 一次 JSON parse 给多个服务用。
@@ -47,13 +70,10 @@ def get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
     now = time.time()
     with _run_payloads_lock:
         entry = _run_payloads_cache.get(run_limit)
-        try:
-            current_run_count = len(list_workflow_runs(limit=run_limit))
-        except Exception:  # pragma: no cover
-            current_run_count = 0
+        fingerprint = fingerprint_workflow_runs_dir()
         if entry is not None and (
             now - entry["built_at"] < _PAYLOAD_TTL
-            and entry["source_run_count"] == current_run_count
+            and entry["source_fingerprint"] == fingerprint
         ):
             return entry["payloads"]
         payloads: list[dict[str, Any]] = []
@@ -69,7 +89,7 @@ def get_cached_run_payloads(run_limit: int) -> list[dict[str, Any]]:
         _run_payloads_cache.pop(run_limit, None)
         _run_payloads_cache[run_limit] = {
             "built_at": now,
-            "source_run_count": current_run_count,
+            "source_fingerprint": fingerprint,
             "payloads": payloads,
         }
         if len(_run_payloads_cache) > _PAYLOAD_CACHE_MAX_SLOTS:
@@ -89,11 +109,17 @@ def invalidate_run_payloads_cache() -> None:
 def persist_workflow_run(run: WorkflowRun) -> Path:
     """Write `run` to results/workflow_runs/<run_id>.json. Returns the path.
     Failures are logged but not raised — persistence is best-effort and
-    must not break the run itself."""
+    must not break the run itself.
+
+    成功落盘后立刻失效 payload cache。否则 fingerprint 虽然变了，但 TTL 内
+    上游 caller（assets / search）拿到的还是旧 payload —— 必须等 TTL 过期或
+    显式 invalidate 才看到新 run。这是「跑完 trace-compare 后字段表不刷新」的根因。
+    """
     try:
         WORKFLOW_RUNS_DIR.mkdir(parents=True, exist_ok=True)
         path = WORKFLOW_RUNS_DIR / f"{run.run_id}.json"
         path.write_text(json.dumps(run.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
+        invalidate_run_payloads_cache()
         return path
     except Exception:
         logger.exception("failed to persist workflow run %s", run.run_id)
@@ -189,6 +215,7 @@ def delete_workflow_run(run_id: str) -> None:
         and artifacts_dir.is_dir()
     ):
         shutil.rmtree(artifacts_dir, ignore_errors=True)
+    invalidate_run_payloads_cache()
 
 
 def _count_node_statuses(node_runs: list[dict[str, Any]]) -> dict[str, int]:
