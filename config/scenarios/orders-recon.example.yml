@@ -1,0 +1,101 @@
+# Scenario：订单对账（两源差异）—— Phase 12 测试沙盒首个 example。
+#
+# 一份 scenario 同时驱动三个 feature：
+#   1. compare_task —— ods.orders vs dwd.orders_clean 对比，预期 35 行差异
+#   2. lineage_script —— INSERT SELECT 喂 lineage analyzer，可视化数据流
+#   3. slow_query —— 故意写烂的报表 SQL，未来 slow-sql 优化模块拿来分析
+#
+# 复跑：seed=42 固定，generator 出同一份数据；AI provider 用默认（lineage_ai.json）。
+
+id: orders-recon-mvp
+name: 订单对账（两源差异）
+description: ods.orders → dwd.orders_clean，模拟 ETL 漏算 / 多算 / 字段类型偏移
+tags: [compare, recon, mysql, demo]
+dialect: mysql
+seed: 42
+
+ai:
+  provider: ${default}
+  temperature: 0
+  fill: [column_values, table_descriptions]
+
+domain:
+  vertical: ecommerce
+  hint: "B2C 电商，订单含 SKU / 优惠券 / 多种支付状态"
+
+tables:
+  - name: ods.orders
+    role: source
+    rows: 1000
+    columns:
+      - {name: order_id, type: VARCHAR(32), pk: true, gen: uuid_short, nullable: false}
+      - name: user_id
+        type: BIGINT
+        gen: random_int
+        range: [1, 200]
+        distribution: zipf
+        zipf_alpha: 1.5
+      - {name: amount, type: "DECIMAL(10,2)", gen: realistic}
+      - {name: created_at, type: DATETIME, gen: timestamp, range: ["2026-04-01", "2026-05-10"]}
+      - name: status
+        type: VARCHAR(16)
+        gen: enum
+        values: [pending, paid, shipped, delivered, refunded]
+        distribution: [0.05, 0.2, 0.15, 0.5, 0.1]
+    indexes:
+      - {columns: [order_id], unique: true}
+
+  - name: dwd.orders_clean
+    role: target
+    rows: 1000
+    derives_from: ods.orders
+    column_overrides:
+      - {from: created_at, rename: order_date, transform: "DATE($)"}
+    indexes:
+      - {columns: [order_id], unique: true}
+      # 故意不建 —— slow_query workload 的索引缺失故事
+      - {columns: [order_date], skip: true, reason: "demo: 慢查询用例，让 EXPLAIN 显示 full scan"}
+
+anomalies:
+  - {kind: missing_rows, table: dwd.orders_clean, fraction: 0.02}
+  - {kind: extra_rows, table: dwd.orders_clean, count: 5}
+  - {kind: value_drift, table: dwd.orders_clean, column: amount, fraction: 0.01, perturbation: "±1%"}
+  - {kind: null_drift, table: dwd.orders_clean, column: user_id, fraction: 0.005}
+
+workloads:
+  - kind: compare_task
+    name: orders-recon-daily
+    source: ods.orders
+    target: dwd.orders_clean
+    keys: [order_id]
+    expected:
+      only_source: 20
+      only_target: 5
+      diff: 10
+      same: 965
+
+  - kind: lineage_script
+    name: orders-clean-etl
+    sql: |
+      INSERT INTO dwd.orders_clean (order_id, user_id, amount, order_date, status)
+      SELECT order_id, user_id, amount, DATE(created_at), status
+      FROM ods.orders
+      WHERE created_at > '{{cutoff_date}}';
+
+  - kind: slow_query
+    name: orders-recon-summary
+    sql: |
+      SELECT u.id, SUM(o.amount) AS total
+      FROM ods.orders o
+      LEFT JOIN ods.users u ON o.user_id = u.id
+      WHERE o.created_at > NOW() - INTERVAL 30 DAY
+      GROUP BY u.id
+      HAVING SUM(o.amount) > (SELECT AVG(amount) FROM ods.orders);
+    intentional_issues:
+      - "uncorrelated subquery in HAVING re-evaluates per group"
+      - "missing index on created_at"
+      - "LEFT JOIN unjustified — should be INNER"
+    expected_optimizations:
+      - "create index idx_orders_created_at on ods.orders(created_at)"
+      - "rewrite subquery as derived table + JOIN"
+      - "convert LEFT JOIN to INNER JOIN"

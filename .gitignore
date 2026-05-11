@@ -62,6 +62,9 @@ config/projects.json
 # Lineage 业务分组规则，每个 clone 自己 cp example 改造；example 仍跟踪。
 config/lineage_group_rules.yml
 config/lineage_group_rules.json
+# Scenario sandbox templates —— 每个 clone 自己改 / 加，example 入库
+config/scenarios/*.yml
+!config/scenarios/*.example.yml
 frontend.zip
 *.tmp
 *.bak
