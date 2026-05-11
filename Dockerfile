@@ -18,6 +18,12 @@ RUN cd frontend/frontend && npm run build
 
 FROM python:3.12-slim AS python-builder
 WORKDIR /app
+# 用 aliyun mirror（腾讯云内 mirror 在并发下载下偶发连接重置 → pip 解析空 versions
+# 列表 → "No matching distribution" 假阳性）。--retries / --timeout 兜底瞬时抖动。
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
 COPY requirements.txt .
 RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels
 
