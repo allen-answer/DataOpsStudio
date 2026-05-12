@@ -20,6 +20,7 @@ from app.api import (
     lineage_graph,
     projects,
     runs,
+    scenarios,
     scheduler,
     search,
     system,
@@ -50,3 +51,4 @@ router.include_router(config_io.router)
 router.include_router(ai_utils.router)
 router.include_router(search.router)
 router.include_router(assets.router)
+router.include_router(scenarios.router)

@@ -75,15 +75,15 @@ def build_materialize_plan(
     warnings: list[str] = []
     all_tables = {t.name: t for t in scenario.tables}
     for table_def in scenario.tables:
-        eff_columns = _effective_columns(table_def, all_tables)
+        eff_columns = effective_columns(table_def, all_tables)
         if not eff_columns:
             warnings.append(f"table {table_def.name} has no columns; skipped")
             continue
-        schema, base = _split_name(table_def.name)
+        schema, base = split_name(table_def.name)
         if schema and schema not in schemas_set:
             schemas_set.add(schema)
             schemas_seen.append(schema)
-        qfull = _quote_full(schema, base)
+        qfull = quote_qualified(table_def.name)
         col_names = [c.name for c in eff_columns]
         rows = data.get(table_def.name, [])
         # 按 effective column 顺序拿值（缺列 → None；多余字段忽略）
@@ -100,7 +100,7 @@ def build_materialize_plan(
             insert_sql=_build_insert(qfull, col_names),
             rows=param_rows,
         ))
-    schema_sqls = [f"CREATE DATABASE IF NOT EXISTS {_q(s)}" for s in schemas_seen]
+    schema_sqls = [f"CREATE DATABASE IF NOT EXISTS {quote_identifier(s)}" for s in schemas_seen]
     return MaterializePlan(
         dialect="mysql", schemas=schema_sqls, tables=tables, warnings=warnings,
     )
@@ -161,26 +161,29 @@ class CursorExecutor:
         self._cur.executemany(sql, params_list)
 
 
-# ─── helpers ────────────────────────────────────────────────────────────────
+# ─── helpers（public：recorder 也用） ────────────────────────────────────────
 
 
-def _split_name(name: str) -> tuple[str | None, str]:
+def split_name(name: str) -> tuple[str | None, str]:
+    """`schema.base` → (schema, base)；`base` → (None, base)。"""
     if "." in name:
         schema, base = name.split(".", 1)
         return schema, base
     return None, name
 
 
-def _q(ident: str) -> str:
+def quote_identifier(ident: str) -> str:
     """MySQL identifier quoting —— 反引号包裹，反引号自身 double 转义。"""
     return "`" + ident.replace("`", "``") + "`"
 
 
-def _quote_full(schema: str | None, base: str) -> str:
-    return f"{_q(schema)}.{_q(base)}" if schema else _q(base)
+def quote_qualified(name: str) -> str:
+    """`ods.orders` → `` `ods`.`orders` ``；裸名 `orders` → `` `orders` ``。"""
+    schema, base = split_name(name)
+    return f"{quote_identifier(schema)}.{quote_identifier(base)}" if schema else quote_identifier(base)
 
 
-def _effective_columns(
+def effective_columns(
     table: TableDef, all_tables: dict[str, TableDef]
 ) -> list[ColumnDef]:
     """考虑 derives_from + column_overrides，返回最终列列表（已应用 rename）。
@@ -204,12 +207,12 @@ def _build_create_table(qfull: str, columns: list[ColumnDef]) -> str:
     parts: list[str] = []
     pks: list[str] = []
     for c in columns:
-        bit = f"{_q(c.name)} {c.type}"
+        bit = f"{quote_identifier(c.name)} {c.type}"
         if not c.nullable:
             bit += " NOT NULL"
         parts.append(bit)
         if c.pk:
-            pks.append(_q(c.name))
+            pks.append(quote_identifier(c.name))
     if pks:
         parts.append(f"PRIMARY KEY ({', '.join(pks)})")
     return f"CREATE TABLE {qfull} (\n  " + ",\n  ".join(parts) + "\n)"
@@ -220,15 +223,15 @@ def _build_indexes(qfull: str, base: str, indexes: list[IndexDef]) -> list[str]:
     for i, idx in enumerate(indexes):
         if idx.skip:
             continue
-        idx_name = _q(f"idx_{base}_{i}")
+        idx_name = quote_identifier(f"idx_{base}_{i}")
         unique = "UNIQUE " if idx.unique else ""
-        cols = ", ".join(_q(c) for c in idx.columns)
+        cols = ", ".join(quote_identifier(c) for c in idx.columns)
         out.append(f"CREATE {unique}INDEX {idx_name} ON {qfull} ({cols})")
     return out
 
 
 def _build_insert(qfull: str, col_names: list[str]) -> str:
-    cols = ", ".join(_q(c) for c in col_names)
+    cols = ", ".join(quote_identifier(c) for c in col_names)
     placeholders = ", ".join(["%s"] * len(col_names))
     return f"INSERT INTO {qfull} ({cols}) VALUES ({placeholders})"
 
