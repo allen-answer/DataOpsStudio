@@ -228,7 +228,7 @@ def test_record_scenario_propagates_warnings(isolated_storage):
 def test_example_yml_records_one_compare_task(isolated_storage):
     s = load_scenario(EXAMPLE_PATH)
     res = record_scenario(s, datasource_id="demo-mysql", project_id="demo")
-    # example 里有 1 个 compare_task workload（lineage_script + slow_query 跳过）
+    # example 里有 1 个 compare_task workload（slow_query 跳过；lineage_script 走切片 12）
     assert len(res["tasks"]) == 1
     t = res["tasks"][0]
     assert t.project_id == "demo"
@@ -238,3 +238,88 @@ def test_example_yml_records_one_compare_task(isolated_storage):
     assert "`ods`.`orders`" in t.source_sql
     assert "`dwd`.`orders_clean`" in t.target_sql
     assert t.sql_mode == SqlMode.DOUBLE
+
+
+# ─── lineage_script workload（切片 12） ─────────────────────────────────────
+
+
+def test_lineage_script_workload_produces_history_entry(isolated_storage):
+    s = _basic_scenario([{
+        "kind": "lineage_script", "name": "orders-etl",
+        "sql": "INSERT INTO dwd.t SELECT id, x FROM ods.t WHERE x > 0;",
+    }])
+    res = record_scenario(s, datasource_id="ds-1")
+    assert len(res["lineage_runs"]) == 1
+    run = res["lineage_runs"][0]
+    assert run["ok"] is True
+    assert run["workload_name"] == "orders-etl"
+    assert run["run_id"].startswith("lineage_script_")
+
+    # history JSON 真的落到 results/
+    json_path = isolated_storage["results"] / f"{run['run_id']}.json"
+    assert json_path.exists()
+    import json as _json
+    data = _json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["type"] == "lineage"
+    assert data["task_name"] == "test · orders-etl"
+    assert data["sql"].startswith("INSERT INTO dwd.t")
+    assert "table_edges" in data  # classifier 靠它落 type=lineage
+
+
+def test_lineage_script_missing_sql_warns(isolated_storage):
+    s = _basic_scenario([{
+        "kind": "lineage_script", "name": "empty",
+        # 缺 sql
+    }])
+    res = record_scenario(s, datasource_id="ds-1")
+    assert len(res["lineage_runs"]) == 1
+    assert res["lineage_runs"][0]["ok"] is False
+    assert "missing sql" in res["lineage_runs"][0]["error"]
+
+
+def test_lineage_script_analyzer_error_captured(isolated_storage, monkeypatch):
+    """analyzer 抛错应进 lineage_runs[*].error，不中断 record_scenario。"""
+    from app.lineage import analyzer as analyzer_mod
+
+    def boom(*a, **kw):
+        raise RuntimeError("sqlglot exploded")
+
+    monkeypatch.setattr(analyzer_mod, "analyze_sql_lineage", boom)
+
+    s = _basic_scenario([
+        {"kind": "compare_task", "name": "w1", "source": "ods.t",
+         "target": "dwd.t", "keys": ["id"]},
+        {"kind": "lineage_script", "name": "broken-sql",
+         "sql": "INSERT INTO dwd.t SELECT * FROM ods.t;"},
+    ])
+    res = record_scenario(s, datasource_id="ds-1")
+    # compare task 仍然成功创建
+    assert len(res["tasks"]) == 1
+    # lineage_run 标失败
+    assert res["lineage_runs"][0]["ok"] is False
+    assert "sqlglot exploded" in res["lineage_runs"][0]["error"]
+
+
+def test_lineage_runs_empty_when_no_lineage_workload(isolated_storage):
+    """没 lineage_script workload 时 lineage_runs=[]，不调 analyzer。"""
+    s = _basic_scenario([
+        {"kind": "compare_task", "name": "w", "source": "ods.t",
+         "target": "dwd.t", "keys": ["id"]},
+    ])
+    res = record_scenario(s, datasource_id="ds-1")
+    assert res["lineage_runs"] == []
+
+
+def test_lineage_script_multiple_workloads_all_recorded(isolated_storage):
+    s = _basic_scenario([
+        {"kind": "lineage_script", "name": "etl-a",
+         "sql": "INSERT INTO dwd.a SELECT * FROM ods.a;"},
+        {"kind": "lineage_script", "name": "etl-b",
+         "sql": "INSERT INTO dwd.b SELECT * FROM ods.b;"},
+    ])
+    res = record_scenario(s, datasource_id="ds-1")
+    assert len(res["lineage_runs"]) == 2
+    assert all(r["ok"] for r in res["lineage_runs"])
+    # 两个独立 run_id（确保 generator 给 unique id）
+    ids = {r["run_id"] for r in res["lineage_runs"]}
+    assert len(ids) == 2

@@ -101,7 +101,7 @@ def run_all(
         report.error = f"generate or materialize: {exc}"
         return report
 
-    # ─── 4. record（生成 compare tasks） ───────────────────────────────────
+    # ─── 4. record（compare tasks + lineage scripts） ──────────────────────
     record_res = record_scenario(scenario, datasource_id, project_id=project_id)
     report.record = {
         "tasks": [
@@ -109,6 +109,7 @@ def run_all(
             for t in record_res["tasks"]
         ],
         "warnings": record_res["warnings"],
+        "lineage_runs": record_res.get("lineage_runs", []),
     }
 
     # ─── 5. 同步跑每个 compare task ────────────────────────────────────────

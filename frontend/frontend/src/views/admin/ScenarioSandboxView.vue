@@ -30,6 +30,7 @@ import {
   Sparkles,
   ShieldCheck,
   Rocket,
+  GitBranch,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -207,9 +208,17 @@ interface RecordWarning {
   reason: string
 }
 
+interface LineageRun {
+  workload_name: string
+  ok: boolean
+  run_id: string
+  error?: string
+}
+
 interface RecordResult {
   tasks: RecordTask[]
   warnings: RecordWarning[]
+  lineage_runs?: LineageRun[]
 }
 
 interface VerifyItem {
@@ -245,7 +254,11 @@ interface RunAllResult {
   error: string
   ai_fill: AiFillReport | null
   materialize: MaterializeResult | null
-  record: { tasks: { id: string; name: string; project_id?: string }[]; warnings: RecordWarning[] }
+  record: {
+    tasks: { id: string; name: string; project_id?: string }[]
+    warnings: RecordWarning[]
+    lineage_runs?: LineageRun[]
+  }
   runs: RunAllRunRecord[]
   verify: VerifyResult | null
 }
@@ -380,15 +393,16 @@ async function runAll(): Promise<void> {
     runAllResult.value = result
     // 同步到各分步面板
     materializeResult.value = result.materialize
-    if (result.record?.tasks?.length) {
+    if (result.record?.tasks?.length || result.record?.lineage_runs?.length) {
       recordResult.value = {
-        tasks: result.record.tasks.map(t => ({
+        tasks: (result.record.tasks || []).map(t => ({
           id: t.id, name: t.name,
           source_id: '', target_id: '',
           source_sql: '', target_sql: '',
           key_columns: [], project_id: t.project_id || '',
         })),
         warnings: result.record.warnings,
+        lineage_runs: result.record.lineage_runs,
       }
     }
     verifyResult.value = result.verify
@@ -470,6 +484,11 @@ async function runRecord(): Promise<void> {
 
 function gotoTask(taskId: string): void {
   router.push({ path: '/data-compare', query: { task_id: taskId } })
+}
+
+function gotoHistory(): void {
+  // lineage_script workloads 落进 history 后用户从这里查看 / 跳详情
+  router.push({ path: '/history', query: { type: 'lineage' } })
 }
 
 // ─── slow-sql 分析（按 workload index 维护，避免多 slow_query 行串台） ───────
@@ -1217,7 +1236,7 @@ onMounted(async () => {
             <div class="flex items-center gap-2 text-primary font-bold text-sm">
               <ListChecks class="h-5 w-5" /> 已创建 {{ recordResult.tasks.length }} 个对比任务
             </div>
-            <ul class="mt-3 space-y-1 text-sm">
+            <ul v-if="recordResult.tasks.length" class="mt-3 space-y-1 text-sm">
               <li
                 v-for="t in recordResult.tasks"
                 :key="t.id"
@@ -1229,6 +1248,38 @@ onMounted(async () => {
                 </button>
               </li>
             </ul>
+            <div v-if="recordResult.lineage_runs?.length" class="mt-3">
+              <div class="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1">
+                <GitBranch class="h-4 w-4 text-primary" />
+                血缘脚本入库（{{ recordResult.lineage_runs.length }}）
+              </div>
+              <ul class="space-y-1 text-sm">
+                <li
+                  v-for="(r, i) in recordResult.lineage_runs"
+                  :key="i"
+                  class="flex items-center justify-between bg-white rounded p-2"
+                >
+                  <div class="flex items-center gap-2 flex-1 min-w-0">
+                    <span
+                      class="pill text-[10px]"
+                      :class="r.ok ? 'bg-status-success-bg text-status-success' : 'bg-status-error-bg text-status-error'"
+                    >{{ r.ok ? '✓ 已分析' : '✗ 失败' }}</span>
+                    <span class="sql-font text-slate-800 truncate">{{ r.workload_name }}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <code v-if="r.run_id" class="sql-font text-xs text-slate-400">{{ r.run_id.slice(-8) }}</code>
+                    <button
+                      v-if="r.ok"
+                      class="text-xs text-primary hover:underline whitespace-nowrap"
+                      @click="gotoHistory"
+                    >
+                      查看历史 →
+                    </button>
+                    <span v-else class="text-xs text-status-error">{{ r.error }}</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
             <div v-if="recordResult.warnings?.length" class="mt-3 text-xs text-status-warning">
               <div class="font-medium mb-1">⚠ 部分 workload 被跳过：</div>
               <ul class="ml-2 space-y-0.5">
