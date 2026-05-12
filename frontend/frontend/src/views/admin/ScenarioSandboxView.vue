@@ -28,6 +28,7 @@ import {
   ChevronDown,
   ChevronRight,
   Sparkles,
+  ShieldCheck,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -210,6 +211,25 @@ interface RecordResult {
   warnings: RecordWarning[]
 }
 
+interface VerifyItem {
+  workload_name: string
+  status: 'pass' | 'fail' | 'no_expected' | 'no_task' | 'no_run'
+  task_id: string
+  task_name: string
+  run_id: string
+  started_at: string
+  expected: Record<string, number>
+  actual: Record<string, number>
+  deltas: Record<string, number>
+  match: boolean
+}
+
+interface VerifyResult {
+  scenario_id: string
+  summary: { pass: number; fail: number; skipped: number }
+  results: VerifyItem[]
+}
+
 const router = useRouter()
 const noticeStore = useNoticeStore()
 const bootstrapStore = useBootstrapStore()
@@ -229,8 +249,10 @@ const projectId = ref<string>('')
 
 const materializing = ref<boolean>(false)
 const recording = ref<boolean>(false)
+const verifying = ref<boolean>(false)
 const materializeResult = ref<MaterializeResult | null>(null)
 const recordResult = ref<RecordResult | null>(null)
+const verifyResult = ref<VerifyResult | null>(null)
 const lastError = ref<string>('')
 
 const datasources = computed(() => bootState.value?.datasources || [])
@@ -306,6 +328,46 @@ async function runMaterialize(): Promise<void> {
     noticeStore.setNotice(`Materialize 失败：${lastError.value}`)
   } finally {
     materializing.value = false
+  }
+}
+
+async function runVerify(): Promise<void> {
+  if (!selectedId.value) return
+  verifying.value = true
+  verifyResult.value = null
+  try {
+    verifyResult.value = await apiJson<VerifyResult>(
+      `/api/scenarios/${selectedId.value}/verify` + (projectId.value ? `?project_id=${encodeURIComponent(projectId.value)}` : ''),
+      'GET',
+    )
+    const s = verifyResult.value.summary
+    noticeStore.setNotice(`回归校验：${s.pass} pass · ${s.fail} fail · ${s.skipped} skipped`)
+  } catch (e) {
+    noticeStore.setNotice(`Verify 失败：${noticeStore.toErrorMessage(e)}`)
+  } finally {
+    verifying.value = false
+  }
+}
+
+function statusBadgeClass(status: string): string {
+  switch (status) {
+    case 'pass': return 'bg-status-success-bg text-status-success'
+    case 'fail': return 'bg-status-error-bg text-status-error'
+    case 'no_task':
+    case 'no_run':
+    case 'no_expected': return 'bg-status-warning-bg text-status-warning'
+    default: return 'bg-slate-100 text-slate-600'
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'pass': return '✓ 通过'
+    case 'fail': return '✗ 不一致'
+    case 'no_expected': return '未声明 expected'
+    case 'no_task': return '未 record'
+    case 'no_run': return '未跑过'
+    default: return status
   }
 }
 
@@ -600,6 +662,15 @@ onMounted(async () => {
                 <ListChecks class="h-4 w-4" />
                 {{ recording ? '建任务中…' : '建对比任务' }}
               </button>
+              <button
+                class="btn btn-outline"
+                :disabled="verifying"
+                @click="runVerify"
+                title="对比 yml expected vs actual run summary，把 scenario 当回归 fixture 用"
+              >
+                <ShieldCheck class="h-4 w-4" />
+                {{ verifying ? '校验中…' : '回归校验' }}
+              </button>
             </div>
           </div>
 
@@ -681,6 +752,94 @@ onMounted(async () => {
                 <li v-if="!detail.workloads.length" class="text-sm text-slate-400">无工作负载</li>
               </ul>
             </div>
+          </div>
+
+          <!-- verify 回归校验结果 -->
+          <div v-if="verifyResult" class="card border-slate-200 p-4">
+            <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+              <div class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ShieldCheck class="h-4 w-4 text-primary" />
+                回归校验
+              </div>
+              <div class="flex gap-2 text-xs">
+                <span class="pill bg-status-success-bg text-status-success">
+                  {{ verifyResult.summary.pass }} pass
+                </span>
+                <span class="pill bg-status-error-bg text-status-error">
+                  {{ verifyResult.summary.fail }} fail
+                </span>
+                <span class="pill bg-status-warning-bg text-status-warning">
+                  {{ verifyResult.summary.skipped }} skipped
+                </span>
+              </div>
+            </div>
+            <ul class="space-y-3">
+              <li
+                v-for="(r, i) in verifyResult.results"
+                :key="i"
+                class="rounded-lg border border-slate-200 p-3"
+              >
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <div class="flex items-center gap-2">
+                    <span class="pill text-xs" :class="statusBadgeClass(r.status)">
+                      {{ statusLabel(r.status) }}
+                    </span>
+                    <span class="font-medium text-slate-800 sql-font">{{ r.workload_name }}</span>
+                  </div>
+                  <button
+                    v-if="r.task_id"
+                    class="text-xs text-primary hover:underline"
+                    @click="gotoTask(r.task_id)"
+                  >打开任务 →</button>
+                </div>
+                <div
+                  v-if="r.status === 'pass' || r.status === 'fail'"
+                  class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"
+                >
+                  <div
+                    v-for="key in Object.keys(r.expected)"
+                    :key="key"
+                    class="rounded p-2 bg-slate-50"
+                  >
+                    <div class="text-slate-500 sql-font">{{ key }}</div>
+                    <div class="mt-0.5 text-slate-700">
+                      expected {{ r.expected[key] }} →
+                      <span
+                        :class="r.deltas[key] === 0 ? 'text-status-success font-medium' : 'text-status-error font-medium'"
+                      >
+                        actual {{ r.actual[key] || 0 }}
+                        <span v-if="r.deltas[key] !== 0" class="sql-font">
+                          ({{ r.deltas[key] > 0 ? '+' : '' }}{{ r.deltas[key] }})
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  v-else-if="r.status === 'no_run' && r.task_id"
+                  class="mt-2 text-xs text-slate-500"
+                >
+                  task <span class="sql-font">{{ r.task_name }}</span> 尚未跑过；
+                  <button
+                    class="text-primary hover:underline"
+                    @click="gotoTask(r.task_id)"
+                  >去工作台运行 →</button>
+                </div>
+                <div
+                  v-else-if="r.status === 'no_task'"
+                  class="mt-2 text-xs text-slate-500"
+                >
+                  scenario 还没 record 对应的 CompareTask。点上方「建对比任务」补一次。
+                </div>
+                <div
+                  v-else-if="r.status === 'no_expected'"
+                  class="mt-2 text-xs text-slate-500"
+                >
+                  yml workload 没写 <code class="sql-font">expected:</code> 块；
+                  补上后即可纳入回归。
+                </div>
+              </li>
+            </ul>
           </div>
 
           <!-- slow_query 分析结果：期望 vs 实际并排 -->
