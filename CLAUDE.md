@@ -84,7 +84,7 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 
 ### 后端
 
-`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器（聚合 17 个领域子模块：`system / auth / projects / datasources / tasks / runs / scheduler / workflows / workflow_runs / history / lineage / lineage_graph / uploads / config_io / ai_utils / search / assets`）。新增 endpoint 加到对应子模块；不属于任何领域时新建子模块再 include 进 `routes.py`。
+`main.py` 初始化 FastAPI，挂载 `/static`，并注册来自 `app/api/routes.py` 的唯一路由器（聚合 19 个领域子模块：`system / auth / projects / datasources / tasks / runs / scheduler / workflows / workflow_runs / history / lineage / lineage_graph / uploads / config_io / ai_utils / search / assets / scenarios / slow_sql`）。新增 endpoint 加到对应子模块；不属于任何领域时新建子模块再 include 进 `routes.py`。
 
 **横切 middleware**（main.py 按 LIFO 安装顺序：先安装的最后跑）：
 1. `RequestIdMiddleware`（`app/api/_error_handler.py`）—— 纯 ASGI middleware，从 `X-Request-Id` header 接 / uuid 自动生成，写入 `request_id_ctx` ContextVar，response 必带回 header
@@ -204,6 +204,27 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 **临时表** — CTAS 含 `TEMPORARY` / `TEMP` / `GLOBAL TEMPORARY` 时 mapping 加 `is_temp=true`，`dml_type=CREATE_TEMP_TABLE_AS`。批量分析在"外部源表"和"最终产物"全局警告里把临时表过滤掉。
 
+### AI 测试沙盒（Phase 12，`app/scenarios/`）
+
+把 yml 描述的虚拟业务场景一键生成真数据 + 真对比任务 + 真血缘脚本，把对比 / 血缘 / 慢 SQL 三大模块的回归测试 / 演示数据 / 真实案例都收口到一个 admin 视图。8 个职责模块：
+
+- `models.py` —— Pydantic DSL 收口（Scenario / TableDef / ColumnDef / IndexDef / ColumnOverride / AnomalyDef / WorkloadDef + AISettings / DomainDef）；`extra='forbid'` 拦 yml 笔误，anomaly / workload 子项 `extra='allow'` 因 kind-specific 字段太多列 Literal 反失控
+- `loader.py` —— `load_scenario(path) → Scenario` + `list_scenarios()` 扫 `config/scenarios/*.yml`（坏文件单独列错因 + 没用户文件时回退 example 让新部署能看 demo）
+- `generator.py` —— 7 个 column generator（uuid_short / random_int+zipf / realistic / timestamp / enum+weights / constant / sequence+prefix）+ 6 个 anomaly kind（missing_rows / extra_rows / value_drift±X% / null_drift / duplicate_pk / type_mismatch），seed 决定性；realistic 优先用 ai.fill 写进 col.values 的业务样本池，否则按类型嗅探 fallback
+- `ai_filler.py` —— LLM 给 realistic 列业务样本池（20~30 值 dedup + cap）+ 表中文描述，走 lineage_ai provider；max_calls cap 50 防 token 烧爆，单字段失败不影响其它，provider=off → ok=False + 占位字段
+- `dialects/` —— materialize 方言抽象：base.MaterializeDialect ABC + mysql / oracle（DM 复用 Oracle 实例）。MySQL 反引号 + `%s`；Oracle 双引号 + `:1, :2, ...` + DROP 包 PL/SQL 异常块吞 ORA-00942 + schema_create_sql=None（schema=user 不擅自建）
+- `materializer.py` —— `build_materialize_plan` 纯函数产 DDL + INSERT 计划；`apply_plan` 接收最小 `SqlExecutor` 协议（pymysql cursor / mock 都能包，caller 自管事务边界）；通过 dialects 派发让方言变换不动主流程
+- `runtime.py` —— datasource_id → pool.borrow + cursor → apply_plan + commit，IO 边界单独一层，方便单测 monkeypatch
+- `recorder.py` —— compare_task workload → CompareTaskCreate 走 task_store.create（SELECT 显式列名 + ORDER BY pk + sql_mode=DOUBLE，dialect-aware quote）；lineage_script workload → `analyze_sql_lineage` + 写 results/{run_id}.json 让 HistoryView / LineageReportView 直接展示
+- `verifier.py` —— actual vs yml expected 回归校验，5 状态（pass / fail / no_expected / no_task / no_run）；按命名约定 `<scenario_id> · <workload_name>` 从 task_store 反查 task，走 `list_result_history` 拿最近 run summary
+- `orchestrator.py` —— `run_all(scenario, datasource_id, *, ai_fill)` 6 步串成一次调用（fill → generate → materialize → record → run tasks → verify），CI 友好（POST 一次 endpoint 看 `.ok` 字段判定）
+
+慢 SQL 分析另立 `app/services/slow_sql.py`：`analyze_sql` 跑 EXPLAIN + 4 条 MySQL plan 规则推断（full_table_scan / filesort / using_temporary / high_row_scan）；`enrich_via_ai` 把规则结果 + plan 喂给 LLM 复核 + 补漏 + 给 DDL + 对比 yml `expected_optimizations` 算 coverage_pct（≥80 绿 / 40-80 黄 / <40 红）。`POST /api/slow-sql/analyze` + `/enrich` 两端点。
+
+API endpoint 全集（`app/api/scenarios.py` + `slow_sql.py`）：`GET /api/scenarios` / `GET /api/scenarios/{id}` / `POST /api/scenarios/{id}/materialize`（含 `ai_fill: bool`）/ `POST /api/scenarios/{id}/record` / `GET /api/scenarios/{id}/verify` / `POST /api/scenarios/{id}/ai-fill` / `POST /api/scenarios/{id}/run-all` / `POST /api/slow-sql/analyze` / `POST /api/slow-sql/enrich`。前端单视图 `views/admin/ScenarioSandboxView.vue` 覆盖全套交互（~31 kB chunk / 9 kB gzip），sidebar Beaker 图标 + `/admin/sandbox` adminOnly + lazy load 路由。
+
+详见下方[Phase 12 章节](#phase-12--ai-测试沙盒2026-05-12--05-1313-commits--202-tests)。
+
 ## 关键设计决策
 
 - **流式对比模式**（`limits.stream_compare = true`）：不将全部行加载到内存，通过有序迭代器流式归并。要求两边的 SQL 已按主键排序。
@@ -217,7 +238,7 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **988 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 启动后已落：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests，详见下方 Phase 11）。下个 sprint 候选见[还可以做](#还可以做未排期) 章节。
+当前测试基线 **1160 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证 + 34 个 frontend vitest）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 落地：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests）。**Phase 12 「AI 测试沙盒」13 个 commit / +202 tests 全部交付**：scenario DSL + generator + materializer + recorder + admin UI + slow-sql 规则分析 + AI 复核 + AI filler + regression verifier + 一键链 orchestrator + lineage_script workload + Oracle/DM 方言扩展，详见下方 Phase 12 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -349,6 +370,53 @@ Vue 3 SPA。状态管理走 **Pinia 渐进引入**：10 个 store —— `notice
 - **下一个候选**：`pool._ping_mysql` 只 1 个分支，按「≥2 分支才抽」原则先不动 / `factory._extract_driver_error_detail` 已经 dialect-agnostic 的 best-effort 探测不需要搬 / `compare/runner.py` 的对比 SQL 生成（如果后续要支持 OFFSET/FETCH 分页或 LIMIT 跨方言，再加 `Dialect.pagination_clause`）。**当前 spike 阶段性收尾** —— 散在 dbclients 的 ~10 个 db_type switch 已收口到 4 处（factory.py 没了，全在 `dialects/<db>.py`），接新 DB 只动 `dialects/<db>.py` + `drivers.DRIVER_MODULES` 两处
 - **Tradeoff 核心**：抽象层数 vs 接入新 DB 成本。原则是**只在已有 ≥2 个分支的能力上抽**（present pain），future-pain 不抽（YAGNI）；避免变成"补 1 个 driver 映射 + 1 行 sqlglot dialect → 实现 12 个空方法"的过度抽象
 - **不要做的**：DB 全栈适配器（连接 + SQL 解析 + lineage + UI 都按 DB 拆 = 把 10 个 switch 换成 6 个空方法）；`utils/sql_guard.py` 现在 dialect-agnostic 工作得很好，不强行接入
+
+### Phase 12 · AI 测试沙盒（2026-05-12 ~ 05-13，13 commits / +202 tests）
+
+把 DataOpsStudio 从「真实库面板工具」扩展成「自带测试沙盒的 AI 数据治理平台」。yml 描述一个 scenario（表 schema + 偏差注入 + 工作负载消费），系统能自动 ① LLM 给业务化数据 ② 落到 demo MySQL/Oracle ③ 建对比任务 ④ 跑 EXPLAIN 分析慢 SQL ⑤ AI 复核覆盖率 ⑥ 验证实际 diff 跟预期一致。让对比 + 血缘 + slow-sql 三大模块的回归测试 / 演示数据 / 真实案例一站式生成。
+
+整体架构：`app/scenarios/` 包独立编排，admin 视图 `/admin/sandbox` 端到端可视化。`app/services/slow_sql.py` 单独建慢 SQL 分析层（依赖 dbclients 跑 EXPLAIN）。前端 `ScenarioSandboxView.vue` 单视图（~31 kB chunk）覆盖 ai_fill / materialize / record / verify / run-all / slow-sql analyze + AI enrich 全套交互。
+
+**切片 1-4：scenario DSL + 数据落地 + 对比任务生成**（commits `f6e865e` / `185752b` / `77e5b0a` / `140fd74`）—— `app/scenarios/models.py` Pydantic 定义：Scenario / TableDef / ColumnDef / IndexDef / ColumnOverride / AnomalyDef / WorkloadDef + AISettings / DomainDef，`extra='forbid'` 拦 yml 笔误；anomaly / workload 子项 `extra='allow'` 因 kind-specific 字段太多列 Literal 反失控。7 个 column generator（uuid_short / random_int+zipf / realistic / timestamp / enum+weights / constant / sequence+prefix）+ 6 个 anomaly kind（missing_rows / extra_rows / value_drift±X% / null_drift / duplicate_pk / type_mismatch），seed 决定性复跑同结果。`materializer.py` 纯函数 `build_materialize_plan` 产 DDL + INSERT 计划，`apply_plan` 接收最小 `SqlExecutor` 协议（pymysql cursor / mock 都能包），caller 自管事务边界。`recorder.py` 把 compare_task workload 翻译成 `CompareTaskCreate` 走 task_store.create，SELECT 显式列名 + ORDER BY pk + sql_mode=DOUBLE（source/target 同一 datasource）。`runtime.py` datasource_id → pool.borrow + cursor → apply_plan + commit，IO 边界单独一层。API 4 端点：`GET /api/scenarios` / `GET /api/scenarios/{id}` / `POST /api/scenarios/{id}/materialize` / `POST /api/scenarios/{id}/record`。第一个 example.yml `orders-recon-mvp` 含 2 表 / 4 anomaly / 3 workload（compare_task + lineage_script + slow_query）。`config/scenarios/*.yml` gitignore，`*.example.yml` 跟踪。
+
+**切片 5：admin 沙盒视图**（commit `79d6429`）—— `frontend/src/views/admin/ScenarioSandboxView.vue` + `/admin/sandbox` 路由（adminOnly + lazy load）+ sidebar Beaker 图标 + i18n adminNav.sandbox（zh/en 双语）。两栏布局：左 scenario 列表卡片（坏文件单独 warning 区，不让一份坏 yml 把列表打没），右选中后渲染 tables / anomalies / workloads 三栏概览 + datasource picker（仅过滤 MySQL）+ 「生成数据并落库」+「建对比任务」两个 action button。结果以绿色 / 紫色卡片粘在面板下方：materialize 显示每表 rows_generated vs rows_inserted + indexes_created；record 显示 task 列表，每行「打开任务 →」跳 `/data-compare?task_id=`。
+
+**切片 6-8：slow-sql 规则分析 + UI + AI 复核**（commits `1c8d981` / `43e8e26` / `1563529`）—— `app/services/slow_sql.py` 走 `validate_readonly_sql` 拦 DML/DDL，自己 prepend `EXPLAIN`，按 4 条 MySQL plan 规则触发 issue + suggestion：`type=ALL` → full_table_scan / `Extra` 含 filesort → filesort / `Extra` 含 `Using temporary` → using_temporary / `rows>10000 && type in (all,index)` → high_row_scan。`build_suggestions` 按 issue code 派生建议，同表同类 dedup 避免噪音。`POST /api/slow-sql/analyze` 返回 `{dialect, explain_sql, plan, issues, suggestions}`。前端 sandbox 视图 slow_query workload 行加紫色 🔬「分析」按钮，结果以独立 card 左右两栏展开：左 yml `intentional_issues` + `expected_optimizations`（设计意图），右后端规则推断 + 原始 plan 表格。AI enrichment：`enrich_via_ai(sql, plan, issues, suggestions, expected_optimizations)` 走 lineage_ai provider 抽象（off / mock / openai / anthropic / ollama），system prompt 4 件套（复核规则 issues / 补漏 / 给 DDL/SQL 改写 / 对比 expected 算 coverage_pct），防御性处理：LLM 返非 dict / null / 单 dict 都过滤；coverage_pct 缺失按 matched/expected 反算；非法 pct（>100, <0, "abc"）clamp [0,100]；plan > 4000 chars 切半防 token 爆；provider=off 时返 ok=False + 占位字段（200 降级，避免误以为接口坏了）。`POST /api/slow-sql/enrich` 端点；前端「✨ AI 复核」紫色按钮跑完后顶部 pill「覆盖 67%」≥80 绿 / 40-80 黄 / <40 红，verdict 三态彩色 pill（confirmed / false_positive / insufficient_info），AI 补充建议 confidence pill + 折叠 SQL 代码块。
+
+**切片 9：AI filler**（commit `3a02ec2`）—— `scenario.ai.fill = [column_values, table_descriptions]` 真正发力。`fill_scenario(scenario) → (filled, FillReport)` 纯函数：含 `column_values` 时对 `gen=realistic` 且 `values` 空的列调 LLM 拿 20~30 个真实业务样本（payload: table_name + col_name + col_type + domain.vertical + domain.hint），写进 col.values；含 `table_descriptions` 时对缺 description 的表补一句中文。`max_calls` 默认 50 防大 scenario 烧 token；单字段调用失败不影响其它（errors per-field 累积）；dedup values + 截 30；description 截 60 chars 防 LLM 长漂；provider=off / ai.fill 空 → 返回原 scenario + skipped_reason。generator `_realistic_value` 加 fast path：`col.values` 非空时直接 `rng.choice(values)`，否则走原类型嗅探 fallback —— **没 AI 时一切照旧**的不变量。`POST /api/scenarios/{id}/ai-fill` 独立预览；`materialize` 端点加 `ai_fill: bool` 参数后整条 fill→generate→insert 走通，summary 多 `ai_fill` 子字段报告 LLM 用量。前端 materialize 卡新增 ✨「AI 填血肉」复选框 + 成功卡片紫框子卡显示「N 个 LLM 调用 · 填了 X 列样本池 + Y 表描述」+ list filled_columns。
+
+**切片 10：regression verifier**（commit `2ad2711`）—— scenario yml 的 `expected: {only_source, only_target, diff, same}` 块从摆设升级成 ground truth，admin 跑完对比任务后调 `GET /api/scenarios/{id}/verify` 自动对比 actual summary vs expected，5 个状态：`pass / fail / no_expected / no_task / no_run`。命名约定按 recorder 规则（`<scenario_id> · <workload_name>`）从 task_store 反查 task，再走 `list_result_history` 拿最近一次 run summary，精确匹配（所有 expected 字段值 == actual → pass）。`actual` 漏字段当 0 算不抛，delta = actual - expected 反映完整差距；`project_id` 非空时按项目过滤。前端 「🛡 回归校验」按钮（独立于 datasource，校验是纯读），结果以三色 pill（pass 绿 / fail 红 / skipped 黄）+ 4 列字段对比卡，delta=0 绿、≠0 红 + "(±N)" 后缀。no_run 显示「task 未跑过」+ 跳工作台链接；no_task 提示「点建对比任务」；no_expected 提示「补 yml expected 块」。
+
+**切片 11：one-shot orchestrator**（commit `4754efc`）—— sandbox 5 个独立按钮合成一个「🚀 一键全套」单按钮 / 单 endpoint。`app/scenarios/orchestrator.py` `run_all(scenario, datasource_id, *, project_id, drop_first, batch_size, ai_fill)` 6 步串：ai_fill (optional) → generate + materialize → record → runner.run_task per task → verify_scenario。短路语义：materialize 失败 → 短路；ai_fill 失败 → 记错但 pipeline 继续（用原 scenario 走下游）；每 task run 独立 ok 字段。整体 ok 规则：任一 run.ok=False 或 verify.summary.fail>0 → False。`POST /api/scenarios/{id}/run-all` 一次拿组合 report，CI 友好（`curl ... | jq '.ok'` 一行判定）。前端紫色 primary 按钮 + 跑完顶部 banner（绿 / 红 border-2）一句话「全套通过 / 有失败步骤」+ 5 项精简计数（AI 填 N 调用 / 落库 X 表 / 建任务 Y / 运行 M/N ok / 校验 P pass · F fail · S skipped），同步 materialize / record / verify 三块到各自分步面板，失败 run 列表展开 + error message。
+
+**切片 12：lineage_script workload → analyzer + history JSON**（commit `3a42ca7`）—— example.yml 第二条 workload 接通。`_record_lineage_scripts` 迭代 `kind=lineage_script` workload，每条调 `analyze_sql_lineage(sql, dialect)`（lazy import 避免 sqlglot 启动开销），写一份 history JSON 到 `results/{run_id}.json`，run_id 格式 `lineage_script_<YYYYMMDDHHMMSS>_<8hex>`，含 type / sql / dialect / 完整 analyzer 输出（table_edges 必含，让 `_classify_result` 落 type=lineage）。`record_scenario` 返回多 `lineage_runs` 字段（向后兼容）；单条 lineage_script 失败（缺 sql / analyzer 抛错）不影响其它 + 不阻塞 compare_task 创建。orchestrator report.record 同步带 lineage_runs。前端 record 卡展开多一节「血缘脚本入库（N）」，每行 ✓/✗ pill + workload_name + run_id 后 8 位 + 「查看历史 →」按钮跳 `/history?type=lineage`。example.yml 3 类 workload 全部接通：compare_task → CompareTask（切片 4）/ slow_query → admin 即时分析（切片 6+8）/ lineage_script → analyzer + history（切片 12）。
+
+**切片 13：materialize dialect abstraction（Oracle / DM 扩展）**（commit `4876301`）—— materializer 从「mysql-only NotImplementedError」升级成方言可插拔。`app/scenarios/dialects/` 包：`base.MaterializeDialect` ABC（4 个必覆盖抽象：quote_identifier / schema_create_sql / drop_table_sql / placeholder + 3 个默认实现：quote_qualified / create_table_sql / create_index_sql / insert_sql）；`mysql.MysqlMaterializeDialect`（` 标识符 / CREATE DATABASE IF NOT EXISTS / DROP IF EXISTS / %s 占位符）；`oracle.OracleMaterializeDialect`（" 标识符 / `schema_create_sql→None` 因 Oracle schema=user 不擅自建 / DROP 包 PL/SQL 异常块吞 ORA-00942 / `:1, :2, ...` 编号占位符接 cx_Oracle / oracledb / dmPython）。`__init__.get_dialect(name)` 大小写不敏感 + DM→Oracle 实例复用（DM 跟 Oracle 在 DDL / PL/SQL / 数据字典都兼容）。materializer.py 移除 mysql 硬编码 helpers，build_materialize_plan 用 `get_dialect(scenario.dialect)` 派发；`_build_indexes` 改吃 dialect 参数走 `create_index_sql`。recorder build_compare_tasks 也接 dialect —— Oracle scenario 生成的 SELECT 自动用 " 引用（之前会用 mysql 反引号让 Oracle 报错）。**唯一未支持的是 slow-sql Oracle EXPLAIN PLAN 解析**（Oracle 走 `DBMS_XPLAN.DISPLAY`，输出格式跟 MySQL 列式 plan 完全不同），留下个切片。
+
+**Phase 12 ADR 摘录**：
+- DSL 三层独立扩展（tables / anomalies / workloads）—— 加新 anomaly kind 只动 Literal 闭集 + 注册一个 generator 函数，不动 Scenario 模型
+- 结构 deterministic / 内容 AI fill —— template 控 schema shape，LLM 只在 ai.fill 白名单字段里填业务血肉
+- materialize 用「最小 SqlExecutor 协议」而非具体 cursor 类型 —— mock / pymysql / oracle 都能包，build_plan 完全无 IO
+- run-all 短路语义：materialize 失败必短路（后续都没数据），ai_fill 失败不短路（用原 scenario 继续），run_task 失败不短路（其它 run 仍跑）
+- AI 三处都遵守「provider 关 → 200 降级 + ok=False」不变量，从不抛 4xx 让普通用户误判接口坏了
+- scenario.expected 用精确匹配（不上来加 tolerance）—— actual ≠ expected 必 fail，避免「±5%」让真 bug 漏网；将来加 tolerance 走显式字段
+- dialect 抽象只放真正分叉的能力（标识符 quote / schema 是否可建 / 占位符 / DROP 安全语义）；DDL 形态在基类给默认实现，多数方言不用 override
+
+**Phase 12 端到端用法**（admin 视角，30 秒）：
+1. `/admin/sandbox` 选 scenario + datasource（MySQL / Oracle / DM）+ 勾 ✨ AI 填血肉
+2. 点 🚀 一键全套 → 绿色 banner「全套通过」+ 5 项计数（AI 填 N 调用 · 落库 2 表 · 建任务 1 · 运行 1/1 ok · 校验 1 pass）
+3. slow_query workload 行单独 🔬 分析 + ✨ AI 复核 → 顶部「覆盖 67%」徽章 + 三栏对比（设计期望 / 规则实测 / AI 复核）
+4. record 卡里点「打开任务 →」/「查看历史 →」一键跳工作台 / HistoryView
+
+**CI 友好的 API 调用**：
+```bash
+curl -X POST /api/scenarios/orders-recon-mvp/run-all \
+  -d '{"datasource_id":"demo-mysql","ai_fill":true}' \
+  | jq '.ok'
+# true / false 一行判定，配合 GitHub Actions / Jenkins 当 nightly 回归 fixture
+```
+
+**Phase 12 剩余 enhancement（未排期）**：slow-sql Oracle EXPLAIN PLAN 解析（DBMS_XPLAN 输出格式）/ AI filler v2 改给分布参数（lognormal / zipf alpha）而非样本池 / lineage_script SQL 模板变量 `{{cutoff_date}}` 替换（当前作字面值）/ scenario.expected 加 tolerance（`±5% 算 pass`）/ CI 集成示例 GitHub Actions workflow yml 模板。
 
 **通用未做**：
 
