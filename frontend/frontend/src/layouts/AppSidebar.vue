@@ -13,6 +13,7 @@ import {
   Bot,
   Activity,
   Tag,
+  Beaker,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -40,6 +41,7 @@ const ADMIN_NAV_ITEMS = [
   { id: 'projects',   labelKey: 'adminNav.projects',   icon: FolderOpen, path: '/admin/projects',   matchPaths: ['/admin/projects'] },
   { id: 'scheduler',  labelKey: 'adminNav.scheduler',  icon: Activity,   path: '/admin/scheduler',  matchPaths: ['/admin/scheduler'] },
   { id: 'governance', labelKey: 'adminNav.governance', icon: Tag,        path: '/admin/governance', matchPaths: ['/admin/governance'] },
+  { id: 'sandbox',    labelKey: 'adminNav.sandbox',    icon: Beaker,     path: '/admin/sandbox',    matchPaths: ['/admin/sandbox'] },
 ]
 
 const route = useRoute()

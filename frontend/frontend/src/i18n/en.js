@@ -15,6 +15,7 @@ export default {
     projects: 'Projects',
     scheduler: 'Scheduler',
     governance: 'Governance',
+    sandbox: 'Test Sandbox',
   },
   login: {
     title: 'Sign in to DataOps Studio',

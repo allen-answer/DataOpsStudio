@@ -1,0 +1,541 @@
+<script setup lang="ts">
+// Phase 12 切片 5：测试沙盒 admin 视图。
+//
+// 列 config/scenarios/ 下的 yml → 选一份 → 选 datasource → 一键 materialize
+// （生成数据 + DDL/INSERT 到 demo MySQL）+ 一键 record（workloads → CompareTask）。
+//
+// 后端：
+// - GET  /api/scenarios                 列表（含 error 字段标坏文件）
+// - GET  /api/scenarios/{id}            详情（tables / anomalies / workloads）
+// - POST /api/scenarios/{id}/materialize 生成数据 + 落库
+// - POST /api/scenarios/{id}/record     workloads → CompareTask
+//
+// UI 决策：单视图分两栏（左列表 / 右详情），不再开 tab —— scenario 数量预期 <20，
+// 不值得加一层导航。运行结果显示在详情面板下方，紫色 / 绿色 / 红色三态。
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
+import {
+  Beaker,
+  RefreshCw,
+  Play,
+  ListChecks,
+  AlertCircle,
+  CheckCircle2,
+  FileWarning,
+  Database,
+} from 'lucide-vue-next'
+import { apiGet, apiJson } from '../../api'
+import { useNoticeStore } from '../../stores/notice'
+import { useBootstrapStore } from '../../stores/bootstrap'
+
+interface ScenarioListItem {
+  id?: string
+  name?: string
+  path?: string
+  tags?: string[]
+  dialect?: string
+  error?: string
+}
+
+interface ScenarioListResponse {
+  items: ScenarioListItem[]
+}
+
+interface ColumnDef {
+  name: string
+  type: string
+  pk?: boolean
+  gen: string
+}
+
+interface ColumnOverride {
+  from: string
+  rename?: string | null
+  transform?: string | null
+}
+
+interface IndexDef {
+  columns: string[]
+  unique?: boolean
+  skip?: boolean
+  reason?: string
+}
+
+interface TableDef {
+  name: string
+  role: string
+  rows: number
+  columns: ColumnDef[]
+  indexes: IndexDef[]
+  derives_from?: string | null
+  column_overrides?: ColumnOverride[]
+  description?: string
+}
+
+interface AnomalyDef {
+  kind: string
+  table: string
+  column?: string | null
+  fraction?: number | null
+  count?: number | null
+  [k: string]: unknown
+}
+
+interface WorkloadDef {
+  kind: string
+  name?: string
+  [k: string]: unknown
+}
+
+interface ScenarioDetail {
+  id: string
+  name: string
+  description?: string
+  tags?: string[]
+  dialect: string
+  seed: number
+  tables: TableDef[]
+  anomalies: AnomalyDef[]
+  workloads: WorkloadDef[]
+}
+
+interface ScenarioDetailResponse {
+  scenario: ScenarioDetail
+  path: string
+}
+
+interface MaterializeTableResult {
+  name: string
+  schema?: string | null
+  rows_inserted: number
+  indexes_created?: number
+}
+
+interface MaterializeResult {
+  dialect: string
+  schemas_created: string[]
+  tables: MaterializeTableResult[]
+  warnings: string[]
+  rows_generated?: Record<string, number>
+}
+
+interface RecordTask {
+  id: string
+  name: string
+  source_id: string
+  target_id: string
+  source_sql: string
+  target_sql: string
+  key_columns: string[]
+  project_id?: string
+}
+
+interface RecordWarning {
+  workload_name: string
+  reason: string
+}
+
+interface RecordResult {
+  tasks: RecordTask[]
+  warnings: RecordWarning[]
+}
+
+const router = useRouter()
+const noticeStore = useNoticeStore()
+const bootstrapStore = useBootstrapStore()
+const { state: bootState } = storeToRefs(bootstrapStore)
+
+const items = ref<ScenarioListItem[]>([])
+const loadingList = ref<boolean>(false)
+const selectedId = ref<string>('')
+const detail = ref<ScenarioDetail | null>(null)
+const detailPath = ref<string>('')
+const loadingDetail = ref<boolean>(false)
+
+const datasourceId = ref<string>('')
+const dropFirst = ref<boolean>(true)
+const projectId = ref<string>('')
+
+const materializing = ref<boolean>(false)
+const recording = ref<boolean>(false)
+const materializeResult = ref<MaterializeResult | null>(null)
+const recordResult = ref<RecordResult | null>(null)
+const lastError = ref<string>('')
+
+const datasources = computed(() => bootState.value?.datasources || [])
+
+// 只显示能用的 datasource —— 当前 materializer 只支持 mysql
+const mysqlDatasources = computed(() =>
+  datasources.value.filter((ds: any) => String(ds.db_type || '').toLowerCase().includes('mysql'))
+)
+
+const validScenarios = computed(() =>
+  items.value.filter((it) => !it.error)
+)
+const brokenScenarios = computed(() =>
+  items.value.filter((it) => !!it.error)
+)
+
+const isSelected = (id?: string) => !!id && id === selectedId.value
+
+async function loadList(): Promise<void> {
+  loadingList.value = true
+  lastError.value = ''
+  try {
+    const data = await apiGet<ScenarioListResponse>('/api/scenarios')
+    items.value = data.items || []
+  } catch (e) {
+    lastError.value = noticeStore.toErrorMessage(e)
+  } finally {
+    loadingList.value = false
+  }
+}
+
+async function selectScenario(id: string): Promise<void> {
+  if (!id || id === selectedId.value) return
+  selectedId.value = id
+  detail.value = null
+  detailPath.value = ''
+  materializeResult.value = null
+  recordResult.value = null
+  loadingDetail.value = true
+  try {
+    const data = await apiGet<ScenarioDetailResponse>(`/api/scenarios/${id}`)
+    detail.value = data.scenario
+    detailPath.value = data.path
+  } catch (e) {
+    noticeStore.setNotice(`加载 scenario 失败：${noticeStore.toErrorMessage(e)}`)
+  } finally {
+    loadingDetail.value = false
+  }
+}
+
+async function runMaterialize(): Promise<void> {
+  if (!selectedId.value || !datasourceId.value) {
+    noticeStore.setNotice('请先选 scenario 和 datasource')
+    return
+  }
+  materializing.value = true
+  materializeResult.value = null
+  lastError.value = ''
+  try {
+    materializeResult.value = await apiJson<MaterializeResult>(
+      `/api/scenarios/${selectedId.value}/materialize`,
+      'POST',
+      { datasource_id: datasourceId.value, drop_first: dropFirst.value, batch_size: 500 },
+    )
+    noticeStore.setNotice('✨ 数据已落库')
+  } catch (e) {
+    lastError.value = noticeStore.toErrorMessage(e)
+    noticeStore.setNotice(`Materialize 失败：${lastError.value}`)
+  } finally {
+    materializing.value = false
+  }
+}
+
+async function runRecord(): Promise<void> {
+  if (!selectedId.value || !datasourceId.value) {
+    noticeStore.setNotice('请先选 scenario 和 datasource')
+    return
+  }
+  recording.value = true
+  recordResult.value = null
+  lastError.value = ''
+  try {
+    recordResult.value = await apiJson<RecordResult>(
+      `/api/scenarios/${selectedId.value}/record`,
+      'POST',
+      { datasource_id: datasourceId.value, project_id: projectId.value },
+    )
+    noticeStore.setNotice(`✨ 已创建 ${recordResult.value.tasks.length} 个对比任务`)
+  } catch (e) {
+    lastError.value = noticeStore.toErrorMessage(e)
+    noticeStore.setNotice(`Record 失败：${lastError.value}`)
+  } finally {
+    recording.value = false
+  }
+}
+
+function gotoTask(taskId: string): void {
+  router.push({ path: '/data-compare', query: { task_id: taskId } })
+}
+
+function anomalyLabel(a: AnomalyDef): string {
+  const parts: string[] = []
+  if (a.column) parts.push(a.column)
+  if (a.fraction != null) parts.push(`${(a.fraction * 100).toFixed(1)}%`)
+  else if (a.count != null) parts.push(`${a.count} 条`)
+  return parts.join(' · ')
+}
+
+function totalRows(d: ScenarioDetail): number {
+  return d.tables.reduce((sum, t) => sum + (t.rows || 0), 0)
+}
+
+onMounted(async () => {
+  await loadList()
+  // 默认选第一个有效 scenario
+  if (validScenarios.value.length && !selectedId.value) {
+    const firstId = validScenarios.value[0].id
+    if (firstId) await selectScenario(firstId)
+  }
+  // 默认选第一个 MySQL datasource
+  if (mysqlDatasources.value.length && !datasourceId.value) {
+    datasourceId.value = (mysqlDatasources.value[0] as any).id
+  }
+})
+</script>
+
+<template>
+  <section class="space-y-6">
+    <div class="flex items-end justify-between">
+      <div>
+        <h2 class="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <Beaker class="h-7 w-7 text-primary" />
+          测试沙盒
+        </h2>
+        <p class="mt-1 text-sm text-slate-500">
+          用 scenario 模板一键生成测试数据 + 对比任务。Phase 12 · MVP（仅 MySQL）。
+        </p>
+      </div>
+      <button class="btn btn-outline" :disabled="loadingList" @click="loadList">
+        <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loadingList }" />
+        刷新列表
+      </button>
+    </div>
+
+    <div v-if="lastError" class="card border-status-error bg-status-error-bg p-4 flex items-start gap-3">
+      <AlertCircle class="h-5 w-5 text-status-error flex-shrink-0 mt-0.5" />
+      <div class="text-sm text-status-error">{{ lastError }}</div>
+    </div>
+
+    <div v-if="brokenScenarios.length" class="card border-status-warning bg-status-warning-bg p-4">
+      <div class="text-sm font-medium text-status-warning flex items-center gap-2">
+        <FileWarning class="h-4 w-4" /> 有 {{ brokenScenarios.length }} 份 scenario yml 解析失败
+      </div>
+      <ul class="mt-2 space-y-1 text-xs text-status-warning">
+        <li v-for="b in brokenScenarios" :key="b.path">
+          <code class="sql-font">{{ b.path }}</code> — {{ b.error }}
+        </li>
+      </ul>
+    </div>
+
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
+      <!-- 左：scenario 列表 -->
+      <aside class="space-y-3">
+        <div class="text-xs uppercase tracking-wider text-slate-500 font-bold">
+          可用模板（{{ validScenarios.length }}）
+        </div>
+        <div v-if="loadingList" class="muted text-sm">加载中…</div>
+        <div v-else-if="!validScenarios.length" class="card p-4 text-sm text-slate-500">
+          <p>config/scenarios/ 下无可用 yml。</p>
+          <p class="mt-2 text-xs">把 example 复制成 `*.yml` 即可上架（参考 orders-recon.example.yml）。</p>
+        </div>
+        <button
+          v-for="it in validScenarios"
+          :key="it.path"
+          class="w-full text-left card p-4 transition-all hover:border-primary hover:shadow-md"
+          :class="isSelected(it.id) ? 'border-primary shadow-md ring-2 ring-primary/20' : ''"
+          @click="selectScenario(it.id || '')"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="font-medium text-slate-800">{{ it.name || it.id }}</div>
+            <span v-if="it.dialect" class="pill bg-slate-100 text-slate-600">{{ it.dialect }}</span>
+          </div>
+          <div class="mt-1 text-xs text-slate-500 sql-font">{{ it.id }}</div>
+          <div v-if="it.tags?.length" class="mt-2 flex flex-wrap gap-1">
+            <span v-for="t in it.tags" :key="t" class="pill bg-primary-light text-primary">{{ t }}</span>
+          </div>
+        </button>
+      </aside>
+
+      <!-- 右：detail + action -->
+      <div class="space-y-6">
+        <div v-if="loadingDetail" class="card p-6 muted text-center">加载详情中…</div>
+        <div v-else-if="!detail" class="card p-12 text-center text-slate-500">
+          <Beaker class="h-12 w-12 mx-auto text-slate-300" />
+          <p class="mt-3 text-sm">选一份 scenario 模板开始</p>
+        </div>
+
+        <template v-else>
+          <!-- 头部 + 操作 -->
+          <div class="card p-6">
+            <div class="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 class="text-xl font-bold text-slate-800">{{ detail.name }}</h3>
+                <p class="mt-1 text-sm text-slate-500">{{ detail.description }}</p>
+                <div class="mt-2 text-xs text-slate-400 sql-font">
+                  {{ detailPath }} · seed={{ detail.seed }} · {{ totalRows(detail) }} 行预计生成
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="t in (detail.tags || [])" :key="t" class="pill bg-slate-100 text-slate-600">
+                  {{ t }}
+                </span>
+              </div>
+            </div>
+
+            <!-- 选 datasource + 选项 -->
+            <div class="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3 items-end border-t border-slate-200 pt-4">
+              <div>
+                <label class="block text-xs uppercase tracking-wider text-slate-500 font-bold mb-1">
+                  <Database class="h-3 w-3 inline" /> 目标 datasource（MySQL）
+                </label>
+                <select v-model="datasourceId" class="w-full">
+                  <option value="" disabled>—— 选一个 ——</option>
+                  <option
+                    v-for="ds in mysqlDatasources"
+                    :key="(ds as any).id"
+                    :value="(ds as any).id"
+                  >
+                    {{ (ds as any).name }} · {{ (ds as any).host }}:{{ (ds as any).port }}
+                  </option>
+                </select>
+                <p v-if="!mysqlDatasources.length" class="mt-1 text-xs text-status-warning">
+                  无可用 MySQL datasource —— 先去「数据源」页加一个。
+                </p>
+              </div>
+              <label class="flex items-center gap-2 text-sm pb-1.5">
+                <input type="checkbox" v-model="dropFirst" />
+                <span>DROP 已存在</span>
+              </label>
+              <div>
+                <label class="block text-xs uppercase tracking-wider text-slate-500 font-bold mb-1">
+                  项目空间（可选）
+                </label>
+                <input v-model="projectId" placeholder="留空 = 默认" class="w-32" />
+              </div>
+            </div>
+
+            <div class="mt-4 flex flex-wrap gap-3">
+              <button
+                class="btn btn-primary"
+                :disabled="!datasourceId || materializing"
+                @click="runMaterialize"
+              >
+                <Play class="h-4 w-4" :class="{ 'animate-pulse': materializing }" />
+                {{ materializing ? '生成中…' : '生成数据并落库' }}
+              </button>
+              <button
+                class="btn btn-outline"
+                :disabled="!datasourceId || recording"
+                @click="runRecord"
+              >
+                <ListChecks class="h-4 w-4" />
+                {{ recording ? '建任务中…' : '建对比任务' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 三栏 schema breakdown -->
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="card p-4">
+              <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">
+                表（{{ detail.tables.length }}）
+              </div>
+              <ul class="space-y-2">
+                <li v-for="t in detail.tables" :key="t.name" class="text-sm">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium sql-font text-slate-800">{{ t.name }}</span>
+                    <span class="pill bg-tag-source-bg text-tag-source">{{ t.role }}</span>
+                  </div>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    {{ t.rows }} 行
+                    <span v-if="t.derives_from"> · 派生自 {{ t.derives_from }}</span>
+                    <span v-if="t.columns?.length"> · {{ t.columns.length }} 列</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+
+            <div class="card p-4">
+              <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">
+                偏差（{{ detail.anomalies.length }}）
+              </div>
+              <ul class="space-y-2">
+                <li v-for="(a, idx) in detail.anomalies" :key="idx" class="text-sm">
+                  <div class="flex items-center gap-2">
+                    <span class="pill bg-status-warning-bg text-status-warning">{{ a.kind }}</span>
+                    <span class="sql-font text-slate-600">{{ a.table }}</span>
+                  </div>
+                  <div class="text-xs text-slate-500 mt-0.5">{{ anomalyLabel(a) }}</div>
+                </li>
+                <li v-if="!detail.anomalies.length" class="text-sm text-slate-400">无偏差注入</li>
+              </ul>
+            </div>
+
+            <div class="card p-4">
+              <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">
+                工作负载（{{ detail.workloads.length }}）
+              </div>
+              <ul class="space-y-2">
+                <li v-for="(w, idx) in detail.workloads" :key="idx" class="text-sm">
+                  <div class="flex items-center gap-2">
+                    <span class="pill bg-primary-light text-primary">{{ w.kind }}</span>
+                    <span class="text-slate-800">{{ w.name || '—' }}</span>
+                  </div>
+                </li>
+                <li v-if="!detail.workloads.length" class="text-sm text-slate-400">无工作负载</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- materialize result -->
+          <div v-if="materializeResult" class="card border-status-success bg-status-success-bg p-4">
+            <div class="flex items-center gap-2 text-status-success font-bold text-sm">
+              <CheckCircle2 class="h-5 w-5" /> 数据已落库
+            </div>
+            <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+              <div
+                v-for="(rows, name) in (materializeResult.rows_generated || {})"
+                :key="name"
+                class="bg-white rounded p-2"
+              >
+                <div class="sql-font text-slate-800">{{ name }}</div>
+                <div class="text-slate-500 mt-0.5">生成 {{ rows }} 行</div>
+                <div
+                  v-for="t in materializeResult.tables.filter((x: MaterializeTableResult) => x.name === name)"
+                  :key="t.name"
+                  class="text-slate-500"
+                >
+                  落库 {{ t.rows_inserted }} 行 · {{ t.indexes_created || 0 }} 索引
+                </div>
+              </div>
+            </div>
+            <div v-if="materializeResult.warnings?.length" class="mt-2 text-xs text-status-warning">
+              warnings: {{ materializeResult.warnings.join(' / ') }}
+            </div>
+          </div>
+
+          <!-- record result -->
+          <div v-if="recordResult" class="card border-primary p-4">
+            <div class="flex items-center gap-2 text-primary font-bold text-sm">
+              <ListChecks class="h-5 w-5" /> 已创建 {{ recordResult.tasks.length }} 个对比任务
+            </div>
+            <ul class="mt-3 space-y-1 text-sm">
+              <li
+                v-for="t in recordResult.tasks"
+                :key="t.id"
+                class="flex items-center justify-between bg-white rounded p-2"
+              >
+                <span class="sql-font text-slate-800">{{ t.name }}</span>
+                <button class="text-xs text-primary hover:underline" @click="gotoTask(t.id)">
+                  打开任务 →
+                </button>
+              </li>
+            </ul>
+            <div v-if="recordResult.warnings?.length" class="mt-3 text-xs text-status-warning">
+              <div class="font-medium mb-1">⚠ 部分 workload 被跳过：</div>
+              <ul class="ml-2 space-y-0.5">
+                <li v-for="(w, idx) in recordResult.warnings" :key="idx">
+                  <code class="sql-font">{{ w.workload_name }}</code> — {{ w.reason }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+</template>

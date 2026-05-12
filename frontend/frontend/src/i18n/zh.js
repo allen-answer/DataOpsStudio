@@ -16,6 +16,7 @@ export default {
     projects: '项目管理',
     scheduler: '调度器监控',
     governance: '分类治理',
+    sandbox: '测试沙盒',
   },
   login: {
     title: '登录 DataOps Studio',
