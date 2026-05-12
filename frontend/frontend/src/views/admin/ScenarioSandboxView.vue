@@ -24,6 +24,9 @@ import {
   CheckCircle2,
   FileWarning,
   Database,
+  Microscope,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -85,7 +88,32 @@ interface AnomalyDef {
 interface WorkloadDef {
   kind: string
   name?: string
+  sql?: string
+  intentional_issues?: string[]
+  expected_optimizations?: string[]
   [k: string]: unknown
+}
+
+interface SlowSqlIssue {
+  severity: string
+  code: string
+  message: string
+  table?: string
+  detail?: string
+}
+
+interface SlowSqlSuggestion {
+  code: string
+  message: string
+  sql?: string
+}
+
+interface SlowSqlResult {
+  dialect: string
+  explain_sql: string
+  plan: Record<string, unknown>[]
+  issues: SlowSqlIssue[]
+  suggestions: SlowSqlSuggestion[]
 }
 
 interface ScenarioDetail {
@@ -259,6 +287,44 @@ async function runRecord(): Promise<void> {
 
 function gotoTask(taskId: string): void {
   router.push({ path: '/data-compare', query: { task_id: taskId } })
+}
+
+// ─── slow-sql 分析（按 workload index 维护，避免多 slow_query 行串台） ───────
+const slowSqlResults = ref<Record<number, SlowSqlResult>>({})
+const slowSqlAnalyzing = ref<Record<number, boolean>>({})
+const slowSqlExpanded = ref<Record<number, boolean>>({})
+const slowSqlErrors = ref<Record<number, string>>({})
+
+async function runSlowSqlAnalysis(idx: number, workload: WorkloadDef): Promise<void> {
+  if (!workload.sql || !datasourceId.value) {
+    noticeStore.setNotice('需要先选 datasource，且 workload 有 sql 字段')
+    return
+  }
+  slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: true }
+  slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: '' }
+  try {
+    const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
+      sql: workload.sql,
+      datasource_id: datasourceId.value,
+    })
+    slowSqlResults.value = { ...slowSqlResults.value, [idx]: result }
+    slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
+  } catch (e) {
+    slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+    slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
+  } finally {
+    slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: false }
+  }
+}
+
+function toggleSlowSqlExpansion(idx: number): void {
+  slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: !slowSqlExpanded.value[idx] }
+}
+
+function planColumns(plan: Record<string, unknown>[]): string[] {
+  // 取第一行的列名顺序；MySQL EXPLAIN 行结构稳定
+  if (!plan.length) return []
+  return Object.keys(plan[0])
 }
 
 function anomalyLabel(a: AnomalyDef): string {
@@ -471,15 +537,146 @@ onMounted(async () => {
               </div>
               <ul class="space-y-2">
                 <li v-for="(w, idx) in detail.workloads" :key="idx" class="text-sm">
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-2 flex-wrap">
                     <span class="pill bg-primary-light text-primary">{{ w.kind }}</span>
                     <span class="text-slate-800">{{ w.name || '—' }}</span>
+                    <button
+                      v-if="w.kind === 'slow_query' && w.sql"
+                      class="ml-auto text-xs text-primary hover:underline flex items-center gap-0.5 disabled:text-slate-400"
+                      :disabled="!datasourceId || slowSqlAnalyzing[idx]"
+                      @click="runSlowSqlAnalysis(idx, w)"
+                    >
+                      <Microscope class="h-3.5 w-3.5" :class="{ 'animate-pulse': slowSqlAnalyzing[idx] }" />
+                      {{ slowSqlAnalyzing[idx] ? '分析中…' : '分析' }}
+                    </button>
+                    <button
+                      v-else-if="w.kind === 'slow_query' && slowSqlResults[idx]"
+                      class="ml-auto text-xs text-slate-500 flex items-center gap-0.5"
+                      @click="toggleSlowSqlExpansion(idx)"
+                    >
+                      <component :is="slowSqlExpanded[idx] ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
+                      {{ slowSqlExpanded[idx] ? '收起' : '展开' }}
+                    </button>
                   </div>
                 </li>
                 <li v-if="!detail.workloads.length" class="text-sm text-slate-400">无工作负载</li>
               </ul>
             </div>
           </div>
+
+          <!-- slow_query 分析结果：期望 vs 实际并排 -->
+          <template v-for="(w, idx) in detail.workloads" :key="`slow-${idx}`">
+            <div
+              v-if="w.kind === 'slow_query' && (slowSqlResults[idx] || slowSqlErrors[idx]) && slowSqlExpanded[idx]"
+              class="card p-4 space-y-4"
+            >
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Microscope class="h-4 w-4 text-primary" />
+                  慢 SQL 分析 · <span class="sql-font">{{ w.name }}</span>
+                </div>
+                <button
+                  class="text-xs text-slate-500 hover:text-slate-700"
+                  @click="toggleSlowSqlExpansion(idx)"
+                >
+                  收起
+                </button>
+              </div>
+
+              <!-- 错误态 -->
+              <div
+                v-if="slowSqlErrors[idx]"
+                class="rounded-lg border border-status-error bg-status-error-bg p-3 text-sm text-status-error flex items-start gap-2"
+              >
+                <AlertCircle class="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <span>{{ slowSqlErrors[idx] }}</span>
+              </div>
+
+              <!-- 成功态：左 expected / 右 actual -->
+              <div v-if="slowSqlResults[idx]" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">
+                    🎯 期望发现（来自 yml）
+                  </div>
+                  <div v-if="w.intentional_issues?.length">
+                    <div class="text-xs font-medium text-slate-600 mb-1">设计的问题：</div>
+                    <ul class="space-y-1 text-xs text-slate-700">
+                      <li v-for="(it, i) in w.intentional_issues" :key="`ii-${i}`">• {{ it }}</li>
+                    </ul>
+                  </div>
+                  <div v-if="w.expected_optimizations?.length" class="mt-3">
+                    <div class="text-xs font-medium text-slate-600 mb-1">期望优化：</div>
+                    <ul class="space-y-1 text-xs text-slate-700">
+                      <li v-for="(it, i) in w.expected_optimizations" :key="`eo-${i}`">• {{ it }}</li>
+                    </ul>
+                  </div>
+                  <div v-if="!w.intentional_issues?.length && !w.expected_optimizations?.length"
+                    class="text-xs text-slate-400">
+                    workload 未声明 intentional_issues / expected_optimizations
+                  </div>
+                </div>
+
+                <div class="rounded-lg border border-primary bg-primary-light/30 p-3">
+                  <div class="text-xs uppercase tracking-wider text-primary font-bold mb-2">
+                    🔬 EXPLAIN 实测
+                  </div>
+                  <div v-if="slowSqlResults[idx].issues.length">
+                    <div class="text-xs font-medium text-slate-700 mb-1">实测发现问题：</div>
+                    <ul class="space-y-1 text-xs text-slate-700">
+                      <li v-for="(it, i) in slowSqlResults[idx].issues" :key="`is-${i}`">
+                        <span class="pill bg-status-warning-bg text-status-warning text-[10px]">{{ it.code }}</span>
+                        {{ it.message }}
+                      </li>
+                    </ul>
+                  </div>
+                  <div v-else class="text-xs text-slate-500">✓ 规则层未发现问题</div>
+                  <div v-if="slowSqlResults[idx].suggestions.length" class="mt-3">
+                    <div class="text-xs font-medium text-slate-700 mb-1">优化建议：</div>
+                    <ul class="space-y-1 text-xs text-slate-700">
+                      <li v-for="(s, i) in slowSqlResults[idx].suggestions" :key="`sg-${i}`">
+                        ✨ {{ s.message }}
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <!-- EXPLAIN plan 原始行 -->
+              <div v-if="slowSqlResults[idx]?.plan?.length" class="rounded-lg border border-slate-200 bg-white overflow-x-auto">
+                <div class="px-3 py-2 text-xs font-bold text-slate-600 border-b border-slate-200">
+                  EXPLAIN 输出（{{ slowSqlResults[idx].plan.length }} 行）
+                </div>
+                <table class="w-full text-xs sql-font">
+                  <thead>
+                    <tr class="bg-slate-50">
+                      <th
+                        v-for="col in planColumns(slowSqlResults[idx].plan)"
+                        :key="col"
+                        class="text-left px-2 py-1.5 font-medium text-slate-600 border-b border-slate-200"
+                      >
+                        {{ col }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(row, ri) in slowSqlResults[idx].plan"
+                      :key="ri"
+                      class="border-b border-slate-100 hover:bg-slate-50"
+                    >
+                      <td
+                        v-for="col in planColumns(slowSqlResults[idx].plan)"
+                        :key="col"
+                        class="px-2 py-1.5 text-slate-700"
+                      >
+                        {{ row[col] == null ? '·' : String(row[col]) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
 
           <!-- materialize result -->
           <div v-if="materializeResult" class="card border-status-success bg-status-success-bg p-4">
