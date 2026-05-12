@@ -23,6 +23,7 @@ from app.api import (
     scenarios,
     scheduler,
     search,
+    slow_sql,
     system,
     tasks,
     uploads,
@@ -52,3 +53,4 @@ router.include_router(ai_utils.router)
 router.include_router(search.router)
 router.include_router(assets.router)
 router.include_router(scenarios.router)
+router.include_router(slow_sql.router)
