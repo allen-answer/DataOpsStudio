@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
+from app.scenarios.ai_filler import fill_scenario
 from app.scenarios.generator import generate_scenario
 from app.scenarios.loader import list_scenarios, load_scenario
 from app.scenarios.recorder import record_scenario
@@ -30,6 +31,8 @@ class MaterializeRequest(BaseModel):
     datasource_id: str = Field(..., min_length=1)
     drop_first: bool = True
     batch_size: int = Field(default=500, ge=1, le=10_000)
+    # 切片 9：开启 → 先走 ai_filler 给 realistic 列填业务样本池再 generate
+    ai_fill: bool = False
 
 
 class RecordRequest(BaseModel):
@@ -63,6 +66,17 @@ def materialize_scenario_api(
 ) -> dict[str, Any]:
     """generate + DDL + INSERT 到 datasource。返回 apply_plan 的 summary。"""
     scenario = _load_or_404(scenario_id)
+    ai_fill_report: dict[str, Any] | None = None
+    if payload.ai_fill:
+        scenario, report = fill_scenario(scenario)
+        ai_fill_report = {
+            "ok": report.ok,
+            "calls": report.calls,
+            "filled_columns": report.filled_columns,
+            "filled_descriptions": report.filled_descriptions,
+            "errors": report.errors,
+            "skipped_reason": report.skipped_reason,
+        }
     data = generate_scenario(scenario)
     try:
         summary = materialize_to_datasource(
@@ -75,7 +89,27 @@ def materialize_scenario_api(
     except ScenarioRuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     summary["rows_generated"] = {name: len(rows) for name, rows in data.items()}
+    if ai_fill_report is not None:
+        summary["ai_fill"] = ai_fill_report
     return summary
+
+
+@router.post("/api/scenarios/{scenario_id}/ai-fill")
+def ai_fill_scenario_api(scenario_id: str) -> dict[str, Any]:
+    """独立预览：跑 ai_filler 返回填好的 scenario + 报告（不持久化）。"""
+    scenario = _load_or_404(scenario_id)
+    filled, report = fill_scenario(scenario)
+    return {
+        "scenario": filled.model_dump(by_alias=True),
+        "report": {
+            "ok": report.ok,
+            "calls": report.calls,
+            "filled_columns": report.filled_columns,
+            "filled_descriptions": report.filled_descriptions,
+            "errors": report.errors,
+            "skipped_reason": report.skipped_reason,
+        },
+    }
 
 
 @router.post("/api/scenarios/{scenario_id}/record")

@@ -157,7 +157,11 @@ def _parse_dt(v: Any) -> datetime:
 
 
 def _realistic_value(col: ColumnDef, rng: random.Random) -> Any:
-    """Faker fallback —— 没 Faker 时按类型给个简单合理值。下个切片接 Faker。"""
+    """AI-filled values 优先（切片 9 ai_filler 把业务样本池写进 col.values）；
+    否则按类型 fallback —— DECIMAL → 价格 / INT → 计数 / DATETIME → 90 天内 / 其它 → 短字符串。
+    """
+    if col.values:
+        return rng.choice(col.values)
     t = (col.type or "").upper()
     if any(k in t for k in ("DECIMAL", "NUMERIC", "FLOAT", "DOUBLE")):
         return round(rng.uniform(10.0, 5000.0), 2)

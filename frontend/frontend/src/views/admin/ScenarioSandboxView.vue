@@ -171,12 +171,22 @@ interface MaterializeTableResult {
   indexes_created?: number
 }
 
+interface AiFillReport {
+  ok: boolean
+  calls: number
+  filled_columns: string[]
+  filled_descriptions: string[]
+  errors: string[]
+  skipped_reason: string
+}
+
 interface MaterializeResult {
   dialect: string
   schemas_created: string[]
   tables: MaterializeTableResult[]
   warnings: string[]
   rows_generated?: Record<string, number>
+  ai_fill?: AiFillReport
 }
 
 interface RecordTask {
@@ -214,6 +224,7 @@ const loadingDetail = ref<boolean>(false)
 
 const datasourceId = ref<string>('')
 const dropFirst = ref<boolean>(true)
+const aiFill = ref<boolean>(false)
 const projectId = ref<string>('')
 
 const materializing = ref<boolean>(false)
@@ -282,7 +293,12 @@ async function runMaterialize(): Promise<void> {
     materializeResult.value = await apiJson<MaterializeResult>(
       `/api/scenarios/${selectedId.value}/materialize`,
       'POST',
-      { datasource_id: datasourceId.value, drop_first: dropFirst.value, batch_size: 500 },
+      {
+        datasource_id: datasourceId.value,
+        drop_first: dropFirst.value,
+        batch_size: 500,
+        ai_fill: aiFill.value,
+      },
     )
     noticeStore.setNotice('✨ 数据已落库')
   } catch (e) {
@@ -551,6 +567,13 @@ onMounted(async () => {
               <label class="flex items-center gap-2 text-sm pb-1.5">
                 <input type="checkbox" v-model="dropFirst" />
                 <span>DROP 已存在</span>
+              </label>
+              <label class="flex items-center gap-2 text-sm pb-1.5" title="先走 LLM 把 realistic 列填业务化样本池，再生成数据">
+                <input type="checkbox" v-model="aiFill" />
+                <span class="flex items-center gap-1">
+                  <Sparkles class="h-3.5 w-3.5 text-primary" />
+                  AI 填血肉
+                </span>
               </label>
               <div>
                 <label class="block text-xs uppercase tracking-wider text-slate-500 font-bold mb-1">
@@ -854,6 +877,31 @@ onMounted(async () => {
           <div v-if="materializeResult" class="card border-status-success bg-status-success-bg p-4">
             <div class="flex items-center gap-2 text-status-success font-bold text-sm">
               <CheckCircle2 class="h-5 w-5" /> 数据已落库
+            </div>
+            <div
+              v-if="materializeResult.ai_fill"
+              class="mt-2 rounded bg-white p-2 text-xs flex items-start gap-2"
+              :class="materializeResult.ai_fill.ok ? 'border border-primary' : 'border border-slate-200'"
+            >
+              <Sparkles class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" :class="materializeResult.ai_fill.ok ? 'text-primary' : 'text-slate-400'" />
+              <div class="flex-1">
+                <div class="font-medium" :class="materializeResult.ai_fill.ok ? 'text-primary' : 'text-slate-500'">
+                  AI 填血肉
+                  <template v-if="materializeResult.ai_fill.ok">
+                    · {{ materializeResult.ai_fill.calls }} 个 LLM 调用 ·
+                    填了 {{ materializeResult.ai_fill.filled_columns.length }} 列样本池 +
+                    {{ materializeResult.ai_fill.filled_descriptions.length }} 表描述
+                  </template>
+                  <template v-else>· 跳过：{{ materializeResult.ai_fill.skipped_reason }}</template>
+                </div>
+                <div v-if="materializeResult.ai_fill.errors.length" class="mt-1 text-status-warning">
+                  ⚠ {{ materializeResult.ai_fill.errors.length }} 项失败：
+                  <span class="sql-font">{{ materializeResult.ai_fill.errors.join(' / ') }}</span>
+                </div>
+                <div v-if="materializeResult.ai_fill.filled_columns.length" class="mt-1 text-slate-500">
+                  <span class="sql-font">{{ materializeResult.ai_fill.filled_columns.join(', ') }}</span>
+                </div>
+              </div>
             </div>
             <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
               <div
