@@ -1,27 +1,19 @@
-"""Scenario materializer —— 把 generator 的 dict 落到真实 DB（Phase 12 切片 3）。
+"""Scenario materializer —— 把 generator 的 dict 落到真实 DB。
 
-切片范围：
-- 只支持 dialect=mysql（oracle/dm 留下切片）
-- `build_materialize_plan(scenario, data)` 纯函数产 DDL + INSERT 计划
-- `apply_plan(plan, executor)` 最小 `SqlExecutor` 协议跑计划 —— pymysql/oracle
-  cursor 都能包，mock 也能包
-- schema.table 名拆解：CREATE DATABASE IF NOT EXISTS `schema` + CREATE TABLE
-  `schema`.`table`
-- drop_first 默认 True：DROP TABLE IF EXISTS 再 CREATE（每次重做干净数据）
+`build_materialize_plan(scenario, data)` 纯函数产 DDL + INSERT 计划。
+`apply_plan(plan, executor)` 最小 `SqlExecutor` 协议跑计划 —— pymysql/oracle
+cursor 都能包，mock 也能包。
 
-调用方式（caller 拿着真连接）：
-    plan = build_materialize_plan(scenario, data)
-    apply_plan(plan, CursorExecutor(conn.cursor()))
-    conn.commit()
-
-下切片：`/api/scenarios/{id}/materialize` 端点拿 datasource_id 查连接池，
-UI 一键 generate→materialize→落库。
+方言分派：scenario.dialect → app.scenarios.dialects.get_dialect 选实现，
+负责 identifier quote / placeholder / CREATE DATABASE 语义 / DROP 安全语义
+等方言相关产物。MySQL / Oracle / DM 已支持（DM 复用 Oracle）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
+from app.scenarios.dialects import MaterializeDialect, get_dialect
 from app.scenarios.generator import TableData
 from app.scenarios.models import ColumnDef, IndexDef, Scenario, TableDef
 
@@ -65,10 +57,7 @@ def build_materialize_plan(
     *,
     drop_first: bool = True,
 ) -> MaterializePlan:
-    if scenario.dialect != "mysql":
-        raise NotImplementedError(
-            f"materializer 当前只支持 mysql，{scenario.dialect} 留下个切片"
-        )
+    dialect = get_dialect(scenario.dialect)
     schemas_seen: list[str] = []
     schemas_set: set[str] = set()
     tables: list[TablePlan] = []
@@ -83,7 +72,7 @@ def build_materialize_plan(
         if schema and schema not in schemas_set:
             schemas_set.add(schema)
             schemas_seen.append(schema)
-        qfull = quote_qualified(table_def.name)
+        qfull = dialect.quote_qualified(table_def.name)
         col_names = [c.name for c in eff_columns]
         rows = data.get(table_def.name, [])
         # 按 effective column 顺序拿值（缺列 → None；多余字段忽略）
@@ -94,15 +83,19 @@ def build_materialize_plan(
             base_name=base,
             quoted_full=qfull,
             columns=eff_columns,
-            drop_sql=f"DROP TABLE IF EXISTS {qfull}" if drop_first else None,
-            create_sql=_build_create_table(qfull, eff_columns),
-            index_sqls=_build_indexes(qfull, base, table_def.indexes),
-            insert_sql=_build_insert(qfull, col_names),
+            drop_sql=dialect.drop_table_sql(qfull) if drop_first else None,
+            create_sql=dialect.create_table_sql(qfull, eff_columns),
+            index_sqls=_build_indexes(dialect, qfull, base, table_def.indexes),
+            insert_sql=dialect.insert_sql(qfull, col_names),
             rows=param_rows,
         ))
-    schema_sqls = [f"CREATE DATABASE IF NOT EXISTS {quote_identifier(s)}" for s in schemas_seen]
+    schema_sqls: list[str] = []
+    for s in schemas_seen:
+        sql = dialect.schema_create_sql(s)
+        if sql is not None:
+            schema_sqls.append(sql)
     return MaterializePlan(
-        dialect="mysql", schemas=schema_sqls, tables=tables, warnings=warnings,
+        dialect=dialect.name, schemas=schema_sqls, tables=tables, warnings=warnings,
     )
 
 
@@ -203,37 +196,25 @@ def effective_columns(
     return out
 
 
-def _build_create_table(qfull: str, columns: list[ColumnDef]) -> str:
-    parts: list[str] = []
-    pks: list[str] = []
-    for c in columns:
-        bit = f"{quote_identifier(c.name)} {c.type}"
-        if not c.nullable:
-            bit += " NOT NULL"
-        parts.append(bit)
-        if c.pk:
-            pks.append(quote_identifier(c.name))
-    if pks:
-        parts.append(f"PRIMARY KEY ({', '.join(pks)})")
-    return f"CREATE TABLE {qfull} (\n  " + ",\n  ".join(parts) + "\n)"
+def _build_indexes(
+    dialect: MaterializeDialect,
+    qfull: str,
+    base: str,
+    indexes: list[IndexDef],
+) -> list[str]:
+    """生成本表的 CREATE INDEX 列表（skip=True 的过滤掉）。
 
-
-def _build_indexes(qfull: str, base: str, indexes: list[IndexDef]) -> list[str]:
+    索引名按 `idx_<base>_<i>` 命名 + 走方言 quote；多列索引按 yml columns 顺序。
+    """
     out: list[str] = []
     for i, idx in enumerate(indexes):
         if idx.skip:
             continue
-        idx_name = quote_identifier(f"idx_{base}_{i}")
-        unique = "UNIQUE " if idx.unique else ""
-        cols = ", ".join(quote_identifier(c) for c in idx.columns)
-        out.append(f"CREATE {unique}INDEX {idx_name} ON {qfull} ({cols})")
+        idx_name = dialect.quote_identifier(f"idx_{base}_{i}")
+        out.append(dialect.create_index_sql(
+            idx_name, qfull, idx.columns, unique=idx.unique,
+        ))
     return out
-
-
-def _build_insert(qfull: str, col_names: list[str]) -> str:
-    cols = ", ".join(quote_identifier(c) for c in col_names)
-    placeholders = ", ".join(["%s"] * len(col_names))
-    return f"INSERT INTO {qfull} ({cols}) VALUES ({placeholders})"
 
 
 def _chunked(items: list, size: int):

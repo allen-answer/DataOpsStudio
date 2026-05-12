@@ -22,7 +22,8 @@ from typing import Any
 from app.models import CompareTask, CompareTaskCreate
 from app.models.common import SourceKind, SqlMode
 from app.models.compare import CompareRules
-from app.scenarios.materializer import effective_columns, quote_identifier, quote_qualified
+from app.scenarios.dialects import get_dialect
+from app.scenarios.materializer import effective_columns
 from app.scenarios.models import Scenario, TableDef, WorkloadDef
 from app.services.repositories import task_store
 
@@ -56,6 +57,7 @@ def build_compare_tasks(
     """
     if not datasource_id.strip():
         raise ValueError("datasource_id is required")
+    dialect = get_dialect(scenario.dialect)
     all_tables = {t.name: t for t in scenario.tables}
     payloads: list[CompareTaskCreate] = []
     warnings: list[RecordWarning] = []
@@ -80,8 +82,8 @@ def build_compare_tasks(
             warnings.append(RecordWarning(wl.name or "<anonymous>", f"target table '{target}' not in scenario"))
             continue
 
-        source_sql = _build_select(all_tables[source], source, keys, all_tables)
-        target_sql = _build_select(all_tables[target], target, keys, all_tables)
+        source_sql = _build_select(dialect, all_tables[source], source, keys, all_tables)
+        target_sql = _build_select(dialect, all_tables[target], target, keys, all_tables)
 
         display_name = wl.name or f"{source} vs {target}"
         payload = CompareTaskCreate(
@@ -235,6 +237,7 @@ def _envelope_lineage_history(
 
 
 def _build_select(
+    dialect: Any,
     table: TableDef,
     table_name: str,
     keys: list[str],
@@ -242,7 +245,9 @@ def _build_select(
 ) -> str:
     """生成 `SELECT col1, col2 FROM <quoted_table> ORDER BY <quoted_pk>`。"""
     cols = effective_columns(table, all_tables)
-    col_list = ", ".join(quote_identifier(c.name) for c in cols) if cols else "*"
-    qname = quote_qualified(table_name)
-    order_by = ", ".join(quote_identifier(k) for k in keys)
+    col_list = (
+        ", ".join(dialect.quote_identifier(c.name) for c in cols) if cols else "*"
+    )
+    qname = dialect.quote_qualified(table_name)
+    order_by = ", ".join(dialect.quote_identifier(k) for k in keys)
     return f"SELECT {col_list} FROM {qname} ORDER BY {order_by}"

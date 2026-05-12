@@ -304,13 +304,21 @@ def test_derives_from_column_rename_applied_in_ddl():
 # ─── dialect guard ──────────────────────────────────────────────────────────
 
 
-def test_unknown_dialect_raises():
+def test_oracle_dialect_now_supported():
+    """切片 13：Oracle / DM dialect 支持 —— 不再抛 NotImplementedError。"""
     s = _scenario(dialect="oracle", tables=[{
         "name": "t", "role": "source", "rows": 0,
         "columns": [{"name": "id", "type": "INT", "gen": "sequence"}],
     }])
-    with pytest.raises(NotImplementedError, match="oracle"):
-        build_materialize_plan(s, {})
+    plan = build_materialize_plan(s, {})
+    assert plan.dialect == "oracle"
+
+
+def test_get_dialect_rejects_unknown_name():
+    """get_dialect 直接调用、传未注册方言名应抛 NotImplementedError。"""
+    from app.scenarios.dialects import get_dialect
+    with pytest.raises(NotImplementedError, match="postgres"):
+        get_dialect("postgres")
 
 
 # ─── apply_plan execution order + batching ─────────────────────────────────
