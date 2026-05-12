@@ -1,20 +1,17 @@
-"""Slow SQL analyze endpoint（Phase 12 切片 6）。
+"""Slow SQL analyze endpoint（Phase 12 切片 6 + 8）。
 
-POST /api/slow-sql/analyze body={sql, datasource_id, max_plan_rows?}
-返回 {dialect, explain_sql, plan, issues, suggestions}。
-
-Phase 12 切片 6 MVP：只规则推断，无 LLM。未来加 enrichment 把 plan +
-heuristic issues 喂给 provider 生成更准的优化方案 + 对比 scenario
-workloads[slow_query].expected_optimizations 做评分。
+- POST /api/slow-sql/analyze    EXPLAIN + 规则推断（切片 6）
+- POST /api/slow-sql/enrich     plan + rule issues → LLM 复核 + 补漏 + 覆盖率（切片 8）
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.slow_sql import SlowSqlError, analyze_sql
+from app.services.slow_sql import SlowSqlError, analyze_sql, enrich_via_ai
 
 
 router = APIRouter()
@@ -24,6 +21,14 @@ class SlowSqlRequest(BaseModel):
     sql: str = Field(..., min_length=1)
     datasource_id: str = Field(..., min_length=1)
     max_plan_rows: int = Field(default=100, ge=1, le=1000)
+
+
+class SlowSqlEnrichRequest(BaseModel):
+    sql: str = Field(..., min_length=1)
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    expected_optimizations: list[str] = Field(default_factory=list)
 
 
 @router.post("/api/slow-sql/analyze")
@@ -39,3 +44,20 @@ def analyze(payload: SlowSqlRequest = Body(...)) -> dict[str, Any]:
     except ValueError as exc:
         # sql_guard.validate_readonly_sql 抛 ValueError
         raise HTTPException(status_code=400, detail=f"sql validation failed: {exc}") from exc
+
+
+@router.post("/api/slow-sql/enrich")
+def enrich(payload: SlowSqlEnrichRequest = Body(...)) -> dict[str, Any]:
+    """AI 增强：LLM 复核规则 issues + 补漏 + 给出 DDL + 对比 expected 覆盖率。
+
+    provider 关闭时返回 200 + ok=False + error 文案（不抛 4xx，避免普通用户
+    在没配 AI 时误以为接口坏了）。
+    """
+    result = enrich_via_ai(
+        sql=payload.sql,
+        plan=payload.plan,
+        issues=payload.issues,
+        suggestions=payload.suggestions,
+        expected_optimizations=payload.expected_optimizations,
+    )
+    return asdict(result)

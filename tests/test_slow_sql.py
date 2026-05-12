@@ -285,3 +285,228 @@ def test_endpoint_400_on_bad_sql(client, mysql_datasource):
 def test_endpoint_422_on_missing_field(client):
     r = client.post("/api/slow-sql/analyze", json={"sql": ""})
     assert r.status_code in (400, 422)
+
+
+# ─── enrich_via_ai：单测（mock _call_ai） ────────────────────────────────────
+
+
+@pytest.fixture
+def ai_provider_off(isolated_storage, monkeypatch):
+    """默认 provider=off，让 enrich 走降级分支。"""
+    from app.services import lineage_ai as svc
+    from app.services.lineage_ai import LineageAIConfig
+
+    monkeypatch.setattr(svc, "_config", lambda: LineageAIConfig(provider="off"))
+    return None
+
+
+@pytest.fixture
+def ai_provider_on(isolated_storage, monkeypatch):
+    """注一个 fake openai provider + mock _call_ai 的返回。"""
+    from app.services import lineage_ai as svc
+    from app.services.lineage_ai import LineageAIConfig
+
+    monkeypatch.setattr(svc, "_config", lambda: LineageAIConfig(
+        provider="openai", model="gpt-fake", api_key="sk-test", base_url="https://x/v1",
+    ))
+
+
+def test_enrich_via_ai_provider_off_returns_disabled(ai_provider_off):
+    from app.services.slow_sql import enrich_via_ai
+
+    res = enrich_via_ai(
+        sql="SELECT 1",
+        plan=[],
+        issues=[],
+        suggestions=[],
+        expected_optimizations=["create index idx_x on t(c)"],
+    )
+    assert res.ok is False
+    assert "未启用" in res.error
+    # expected_optimizations 不为空时 missing 默认填全集
+    assert res.expected_coverage["missing"] == ["create index idx_x on t(c)"]
+
+
+def test_enrich_via_ai_happy_path(ai_provider_on, monkeypatch):
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    captured = {}
+
+    def fake_call(provider_name, config, system_prompt, user_payload):
+        captured["provider"] = provider_name
+        captured["payload_keys"] = sorted(user_payload.keys())
+        return {
+            "summary": "全表扫描导致主要开销",
+            "issue_review": [
+                {"code": "full_table_scan", "verdict": "confirmed", "rationale": "rows≈8000 且无 key"},
+            ],
+            "extra_suggestions": [
+                {"message": "LEFT JOIN 改 INNER JOIN", "sql": "", "confidence": "medium"},
+                {"message": "为 ods.orders.created_at 加索引",
+                 "sql": "CREATE INDEX idx_orders_created_at ON ods.orders(created_at)",
+                 "confidence": "high"},
+            ],
+            "expected_coverage": {
+                "matched": ["create index idx_orders_created_at on ods.orders(created_at)"],
+                "missing": ["rewrite subquery as derived table + JOIN"],
+                "coverage_pct": 33.3,
+            },
+        }
+
+    monkeypatch.setattr(ai_utils, "_call_ai", fake_call)
+    # service 里 lazy import，monkeypatch ai_utils 模块属性后 import 会拿到 patched
+
+    res = enrich_via_ai(
+        sql="SELECT * FROM ods.orders",
+        plan=[{"table": "orders", "type": "ALL", "rows": 8000}],
+        issues=[{"code": "full_table_scan", "table": "orders"}],
+        suggestions=[{"code": "add_index", "message": "..."}],
+        expected_optimizations=[
+            "create index idx_orders_created_at on ods.orders(created_at)",
+            "rewrite subquery as derived table + JOIN",
+            "convert LEFT JOIN to INNER JOIN",
+        ],
+    )
+    assert res.ok is True
+    assert "全表扫描" in res.summary
+    assert len(res.issue_review) == 1
+    assert res.issue_review[0]["verdict"] == "confirmed"
+    assert len(res.extra_suggestions) == 2
+    assert res.expected_coverage["coverage_pct"] == 33.3
+    assert "rewrite subquery" in res.expected_coverage["missing"][0]
+    # provider name + payload keys 都正确路由进去
+    assert captured["provider"] == "openai"
+    assert set(captured["payload_keys"]) >= {"sql", "plan", "rule_issues", "rule_suggestions",
+                                              "expected_optimizations"}
+
+
+def test_enrich_via_ai_filters_non_dict_items(ai_provider_on, monkeypatch):
+    """LLM 偶尔返字符串列表 / null，应过滤成空 list 不抛。"""
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    monkeypatch.setattr(ai_utils, "_call_ai", lambda *a, **kw: {
+        "summary": "ok",
+        "issue_review": ["bad", {"code": "x", "verdict": "confirmed"}],
+        "extra_suggestions": None,  # null
+        "expected_coverage": {},
+    })
+
+    res = enrich_via_ai(sql="SELECT 1", plan=[], issues=[], suggestions=[])
+    assert res.ok is True
+    assert len(res.issue_review) == 1  # 字符串被过滤
+    assert res.extra_suggestions == []  # null 转空 list
+
+
+def test_enrich_via_ai_call_error_wrapped(ai_provider_on, monkeypatch):
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(ai_utils, "_call_ai", boom)
+
+    res = enrich_via_ai(sql="SELECT 1", plan=[], issues=[], suggestions=[])
+    assert res.ok is False
+    assert "network down" in res.error
+    assert res.elapsed_seconds >= 0  # mocked 抛错耗时 < 1ms 可能 round 到 0
+
+
+def test_enrich_via_ai_coverage_backfilled_from_matched(ai_provider_on, monkeypatch):
+    """LLM 漏 coverage_pct 但给了 matched + 有 expected，按比例反算。"""
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    monkeypatch.setattr(ai_utils, "_call_ai", lambda *a, **kw: {
+        "summary": "",
+        "issue_review": [],
+        "extra_suggestions": [],
+        "expected_coverage": {"matched": ["a", "b"], "missing": ["c", "d"]},  # 漏 pct
+    })
+
+    res = enrich_via_ai(
+        sql="SELECT 1", plan=[], issues=[], suggestions=[],
+        expected_optimizations=["a", "b", "c", "d"],
+    )
+    assert res.expected_coverage["coverage_pct"] == 50.0  # 2/4
+
+
+def test_enrich_via_ai_coverage_pct_clamped(ai_provider_on, monkeypatch):
+    """LLM 给非法 pct（150 / -5 / "abc"），统一 clamp 到 [0, 100]。"""
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    for raw_pct, expected in [(150, 100.0), (-5, 0.0), ("abc", 0.0), (None, 0.0)]:
+        monkeypatch.setattr(ai_utils, "_call_ai", lambda *a, **kw: {
+            "summary": "", "issue_review": [], "extra_suggestions": [],
+            "expected_coverage": {"matched": [], "missing": [], "coverage_pct": raw_pct},
+        })
+        res = enrich_via_ai(sql="SELECT 1", plan=[], issues=[], suggestions=[])
+        assert res.expected_coverage["coverage_pct"] == expected, f"raw={raw_pct}"
+
+
+def test_enrich_via_ai_plan_truncated_when_huge(ai_provider_on, monkeypatch):
+    """大 plan 切半防 token 爆。"""
+    from app.api import ai_utils
+    from app.services.slow_sql import enrich_via_ai
+
+    captured = {}
+
+    def fake(provider_name, config, system_prompt, user_payload):
+        captured["plan_len"] = len(user_payload["plan"])
+        captured["truncated"] = user_payload.get("plan_truncated", False)
+        return {"summary": "", "issue_review": [], "extra_suggestions": [], "expected_coverage": {}}
+
+    monkeypatch.setattr(ai_utils, "_call_ai", fake)
+    # 50 行每条 ~150 字符 → 总 ~7500 chars > 4000 默认上限
+    big_plan = [{"table": f"t{i}", "extra_info": "x" * 100} for i in range(50)]
+    enrich_via_ai(sql="SELECT 1", plan=big_plan, issues=[], suggestions=[])
+    assert captured["truncated"] is True
+    assert captured["plan_len"] < 50
+
+
+# ─── /api/slow-sql/enrich endpoint ──────────────────────────────────────────
+
+
+def test_enrich_endpoint_provider_off_returns_200_ok_false(client, ai_provider_off):
+    r = client.post(
+        "/api/slow-sql/enrich",
+        json={"sql": "SELECT 1", "plan": [], "issues": [], "suggestions": []},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "未启用" in body["error"]
+
+
+def test_enrich_endpoint_happy_path(client, ai_provider_on, monkeypatch):
+    from app.api import ai_utils
+    monkeypatch.setattr(ai_utils, "_call_ai", lambda *a, **kw: {
+        "summary": "fake summary",
+        "issue_review": [{"code": "full_table_scan", "verdict": "confirmed", "rationale": "..."}],
+        "extra_suggestions": [{"message": "加索引", "sql": "CREATE INDEX ...", "confidence": "high"}],
+        "expected_coverage": {"matched": ["x"], "missing": [], "coverage_pct": 100.0},
+    })
+
+    r = client.post(
+        "/api/slow-sql/enrich",
+        json={
+            "sql": "SELECT 1",
+            "plan": [{"table": "t", "type": "ALL", "rows": 5000}],
+            "issues": [{"code": "full_table_scan", "table": "t"}],
+            "suggestions": [],
+            "expected_optimizations": ["x"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["summary"] == "fake summary"
+    assert body["expected_coverage"]["coverage_pct"] == 100.0
+
+
+def test_enrich_endpoint_422_on_missing_sql(client):
+    r = client.post("/api/slow-sql/enrich", json={"plan": [], "issues": []})
+    assert r.status_code in (400, 422)

@@ -27,6 +27,7 @@ import {
   Microscope,
   ChevronDown,
   ChevronRight,
+  Sparkles,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -114,6 +115,36 @@ interface SlowSqlResult {
   plan: Record<string, unknown>[]
   issues: SlowSqlIssue[]
   suggestions: SlowSqlSuggestion[]
+}
+
+interface SlowSqlEnrichReview {
+  code: string
+  verdict: string
+  rationale: string
+}
+
+interface SlowSqlEnrichExtra {
+  message: string
+  sql?: string
+  confidence?: string
+}
+
+interface SlowSqlEnrichCoverage {
+  matched: string[]
+  missing: string[]
+  coverage_pct: number
+}
+
+interface SlowSqlEnrichResult {
+  ok: boolean
+  summary: string
+  issue_review: SlowSqlEnrichReview[]
+  extra_suggestions: SlowSqlEnrichExtra[]
+  expected_coverage: SlowSqlEnrichCoverage
+  provider: string
+  model: string
+  elapsed_seconds: number
+  error?: string
 }
 
 interface ScenarioDetail {
@@ -325,6 +356,61 @@ function planColumns(plan: Record<string, unknown>[]): string[] {
   // 取第一行的列名顺序；MySQL EXPLAIN 行结构稳定
   if (!plan.length) return []
   return Object.keys(plan[0])
+}
+
+// AI enrichment 按 workload idx 独立维护
+const enrichResults = ref<Record<number, SlowSqlEnrichResult>>({})
+const enrichLoading = ref<Record<number, boolean>>({})
+
+async function runAiEnrich(idx: number, workload: WorkloadDef): Promise<void> {
+  const analysisResult = slowSqlResults.value[idx]
+  if (!analysisResult || !workload.sql) {
+    noticeStore.setNotice('请先运行规则分析')
+    return
+  }
+  enrichLoading.value = { ...enrichLoading.value, [idx]: true }
+  try {
+    const result = await apiJson<SlowSqlEnrichResult>('/api/slow-sql/enrich', 'POST', {
+      sql: workload.sql,
+      plan: analysisResult.plan,
+      issues: analysisResult.issues,
+      suggestions: analysisResult.suggestions,
+      expected_optimizations: workload.expected_optimizations || [],
+    })
+    enrichResults.value = { ...enrichResults.value, [idx]: result }
+    if (!result.ok) {
+      noticeStore.setNotice(result.error || 'AI 复核未启用')
+    } else {
+      const pct = result.expected_coverage.coverage_pct
+      noticeStore.setNotice(
+        result.expected_coverage.missing.length
+          ? `✨ AI 复核完成，覆盖率 ${pct}%`
+          : `✨ AI 复核完成`
+      )
+    }
+  } catch (e) {
+    noticeStore.setNotice(`AI 复核失败：${noticeStore.toErrorMessage(e)}`)
+  } finally {
+    enrichLoading.value = { ...enrichLoading.value, [idx]: false }
+  }
+}
+
+function verdictBadgeClass(verdict: string): string {
+  switch (verdict) {
+    case 'confirmed': return 'bg-status-success-bg text-status-success'
+    case 'false_positive': return 'bg-status-error-bg text-status-error'
+    case 'insufficient_info': return 'bg-status-warning-bg text-status-warning'
+    default: return 'bg-slate-100 text-slate-600'
+  }
+}
+
+function confidenceBadgeClass(c?: string): string {
+  switch (c) {
+    case 'high': return 'bg-status-success-bg text-status-success'
+    case 'medium': return 'bg-status-warning-bg text-status-warning'
+    case 'low': return 'bg-slate-100 text-slate-600'
+    default: return 'bg-slate-100 text-slate-600'
+  }
 }
 
 function anomalyLabel(a: AnomalyDef): string {
@@ -540,15 +626,25 @@ onMounted(async () => {
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="pill bg-primary-light text-primary">{{ w.kind }}</span>
                     <span class="text-slate-800">{{ w.name || '—' }}</span>
-                    <button
-                      v-if="w.kind === 'slow_query' && w.sql"
-                      class="ml-auto text-xs text-primary hover:underline flex items-center gap-0.5 disabled:text-slate-400"
-                      :disabled="!datasourceId || slowSqlAnalyzing[idx]"
-                      @click="runSlowSqlAnalysis(idx, w)"
-                    >
-                      <Microscope class="h-3.5 w-3.5" :class="{ 'animate-pulse': slowSqlAnalyzing[idx] }" />
-                      {{ slowSqlAnalyzing[idx] ? '分析中…' : '分析' }}
-                    </button>
+                    <div v-if="w.kind === 'slow_query' && w.sql" class="ml-auto flex items-center gap-2">
+                      <button
+                        class="text-xs text-primary hover:underline flex items-center gap-0.5 disabled:text-slate-400"
+                        :disabled="!datasourceId || slowSqlAnalyzing[idx]"
+                        @click="runSlowSqlAnalysis(idx, w)"
+                      >
+                        <Microscope class="h-3.5 w-3.5" :class="{ 'animate-pulse': slowSqlAnalyzing[idx] }" />
+                        {{ slowSqlAnalyzing[idx] ? '分析中…' : '分析' }}
+                      </button>
+                      <button
+                        v-if="slowSqlResults[idx]"
+                        class="text-xs text-primary hover:underline flex items-center gap-0.5 disabled:text-slate-400"
+                        :disabled="enrichLoading[idx]"
+                        @click="runAiEnrich(idx, w)"
+                      >
+                        <Sparkles class="h-3.5 w-3.5" :class="{ 'animate-pulse': enrichLoading[idx] }" />
+                        {{ enrichLoading[idx] ? 'AI 复核中…' : 'AI 复核' }}
+                      </button>
+                    </div>
                     <button
                       v-else-if="w.kind === 'slow_query' && slowSqlResults[idx]"
                       class="ml-auto text-xs text-slate-500 flex items-center gap-0.5"
@@ -639,6 +735,82 @@ onMounted(async () => {
                     </ul>
                   </div>
                 </div>
+              </div>
+
+              <!-- AI enrichment 结果（如果已跑） -->
+              <div v-if="enrichResults[idx]" class="rounded-lg border-2 border-primary p-3 space-y-3 bg-white">
+                <div class="flex items-center justify-between">
+                  <div class="text-sm font-bold text-primary flex items-center gap-1.5">
+                    <Sparkles class="h-4 w-4" />
+                    AI 复核 · <span class="sql-font text-xs text-slate-500">{{ enrichResults[idx].provider }}/{{ enrichResults[idx].model }}</span>
+                  </div>
+                  <span
+                    v-if="enrichResults[idx].ok && enrichResults[idx].expected_coverage.coverage_pct > 0"
+                    class="pill"
+                    :class="enrichResults[idx].expected_coverage.coverage_pct >= 80 ? 'bg-status-success-bg text-status-success' : enrichResults[idx].expected_coverage.coverage_pct >= 40 ? 'bg-status-warning-bg text-status-warning' : 'bg-status-error-bg text-status-error'"
+                  >
+                    覆盖 {{ enrichResults[idx].expected_coverage.coverage_pct }}%
+                  </span>
+                </div>
+
+                <!-- 未启用 -->
+                <div
+                  v-if="!enrichResults[idx].ok"
+                  class="text-xs text-slate-500 italic"
+                >
+                  {{ enrichResults[idx].error || 'AI provider 未启用，请在 admin → AI 配置中开启' }}
+                </div>
+
+                <!-- 已启用 -->
+                <template v-else>
+                  <div v-if="enrichResults[idx].summary" class="text-sm text-slate-700">
+                    {{ enrichResults[idx].summary }}
+                  </div>
+
+                  <div v-if="enrichResults[idx].issue_review.length" class="space-y-1">
+                    <div class="text-xs font-bold text-slate-600">规则 issue 复核：</div>
+                    <ul class="space-y-1 text-xs">
+                      <li v-for="(rev, i) in enrichResults[idx].issue_review" :key="`rev-${i}`" class="flex items-start gap-2">
+                        <span class="pill text-[10px]" :class="verdictBadgeClass(rev.verdict)">{{ rev.verdict }}</span>
+                        <span class="text-slate-700"><span class="sql-font text-slate-500">{{ rev.code }}</span> — {{ rev.rationale }}</span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div v-if="enrichResults[idx].extra_suggestions.length" class="space-y-1">
+                    <div class="text-xs font-bold text-slate-600">AI 补充建议：</div>
+                    <ul class="space-y-2 text-xs">
+                      <li v-for="(ex, i) in enrichResults[idx].extra_suggestions" :key="`extra-${i}`">
+                        <div class="flex items-start gap-2">
+                          <span class="pill text-[10px]" :class="confidenceBadgeClass(ex.confidence)">{{ ex.confidence || '—' }}</span>
+                          <span class="text-slate-700">{{ ex.message }}</span>
+                        </div>
+                        <pre
+                          v-if="ex.sql"
+                          class="mt-1 ml-12 px-2 py-1 bg-slate-50 border border-slate-200 rounded text-[11px] sql-font text-slate-700 whitespace-pre-wrap"
+                        >{{ ex.sql }}</pre>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div
+                    v-if="enrichResults[idx].expected_coverage.matched.length || enrichResults[idx].expected_coverage.missing.length"
+                    class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs"
+                  >
+                    <div v-if="enrichResults[idx].expected_coverage.matched.length">
+                      <div class="font-bold text-status-success mb-0.5">✓ 命中期望（{{ enrichResults[idx].expected_coverage.matched.length }}）</div>
+                      <ul class="space-y-0.5 text-slate-700">
+                        <li v-for="(m, i) in enrichResults[idx].expected_coverage.matched" :key="`m-${i}`">• {{ m }}</li>
+                      </ul>
+                    </div>
+                    <div v-if="enrichResults[idx].expected_coverage.missing.length">
+                      <div class="font-bold text-status-error mb-0.5">✗ 仍有遗漏（{{ enrichResults[idx].expected_coverage.missing.length }}）</div>
+                      <ul class="space-y-0.5 text-slate-700">
+                        <li v-for="(m, i) in enrichResults[idx].expected_coverage.missing" :key="`mi-${i}`">• {{ m }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                </template>
               </div>
 
               <!-- EXPLAIN plan 原始行 -->
