@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Sparkles,
   ShieldCheck,
+  Rocket,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -230,6 +231,25 @@ interface VerifyResult {
   results: VerifyItem[]
 }
 
+interface RunAllRunRecord {
+  task_id: string
+  task_name: string
+  ok: boolean
+  summary?: Record<string, number>
+  error?: string
+}
+
+interface RunAllResult {
+  scenario_id: string
+  ok: boolean
+  error: string
+  ai_fill: AiFillReport | null
+  materialize: MaterializeResult | null
+  record: { tasks: { id: string; name: string; project_id?: string }[]; warnings: RecordWarning[] }
+  runs: RunAllRunRecord[]
+  verify: VerifyResult | null
+}
+
 const router = useRouter()
 const noticeStore = useNoticeStore()
 const bootstrapStore = useBootstrapStore()
@@ -250,9 +270,11 @@ const projectId = ref<string>('')
 const materializing = ref<boolean>(false)
 const recording = ref<boolean>(false)
 const verifying = ref<boolean>(false)
+const runningAll = ref<boolean>(false)
 const materializeResult = ref<MaterializeResult | null>(null)
 const recordResult = ref<RecordResult | null>(null)
 const verifyResult = ref<VerifyResult | null>(null)
+const runAllResult = ref<RunAllResult | null>(null)
 const lastError = ref<string>('')
 
 const datasources = computed(() => bootState.value?.datasources || [])
@@ -328,6 +350,58 @@ async function runMaterialize(): Promise<void> {
     noticeStore.setNotice(`Materialize 失败：${lastError.value}`)
   } finally {
     materializing.value = false
+  }
+}
+
+async function runAll(): Promise<void> {
+  if (!selectedId.value || !datasourceId.value) {
+    noticeStore.setNotice('请先选 scenario 和 datasource')
+    return
+  }
+  runningAll.value = true
+  runAllResult.value = null
+  // 一键链跑完后把单步结果也同步到面板（让用户看到分步状态）
+  materializeResult.value = null
+  recordResult.value = null
+  verifyResult.value = null
+  lastError.value = ''
+  try {
+    const result = await apiJson<RunAllResult>(
+      `/api/scenarios/${selectedId.value}/run-all`,
+      'POST',
+      {
+        datasource_id: datasourceId.value,
+        drop_first: dropFirst.value,
+        batch_size: 500,
+        ai_fill: aiFill.value,
+        project_id: projectId.value,
+      },
+    )
+    runAllResult.value = result
+    // 同步到各分步面板
+    materializeResult.value = result.materialize
+    if (result.record?.tasks?.length) {
+      recordResult.value = {
+        tasks: result.record.tasks.map(t => ({
+          id: t.id, name: t.name,
+          source_id: '', target_id: '',
+          source_sql: '', target_sql: '',
+          key_columns: [], project_id: t.project_id || '',
+        })),
+        warnings: result.record.warnings,
+      }
+    }
+    verifyResult.value = result.verify
+    if (result.ok) {
+      noticeStore.setNotice('🚀 一键链全套完成 · 全部 pass')
+    } else {
+      noticeStore.setNotice(`一键链完成但有问题：${result.error || '查看下方 verify 结果'}`)
+    }
+  } catch (e) {
+    lastError.value = noticeStore.toErrorMessage(e)
+    noticeStore.setNotice(`一键链失败：${lastError.value}`)
+  } finally {
+    runningAll.value = false
   }
 }
 
@@ -648,11 +722,20 @@ onMounted(async () => {
             <div class="mt-4 flex flex-wrap gap-3">
               <button
                 class="btn btn-primary"
+                :disabled="!datasourceId || runningAll"
+                @click="runAll"
+                title="fill → generate → materialize → record → run tasks → verify 一气呵成"
+              >
+                <Rocket class="h-4 w-4" :class="{ 'animate-pulse': runningAll }" />
+                {{ runningAll ? '一键链跑中…' : '🚀 一键全套' }}
+              </button>
+              <button
+                class="btn btn-outline"
                 :disabled="!datasourceId || materializing"
                 @click="runMaterialize"
               >
                 <Play class="h-4 w-4" :class="{ 'animate-pulse': materializing }" />
-                {{ materializing ? '生成中…' : '生成数据并落库' }}
+                {{ materializing ? '生成中…' : '仅生成数据' }}
               </button>
               <button
                 class="btn btn-outline"
@@ -750,6 +833,51 @@ onMounted(async () => {
                   </div>
                 </li>
                 <li v-if="!detail.workloads.length" class="text-sm text-slate-400">无工作负载</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 一键链 banner（仅 run-all 跑过时显示） -->
+          <div
+            v-if="runAllResult"
+            class="card p-4 border-2"
+            :class="runAllResult.ok ? 'border-status-success bg-status-success-bg' : 'border-status-error bg-status-error-bg'"
+          >
+            <div class="flex items-center gap-2 text-sm font-bold">
+              <Rocket class="h-5 w-5" :class="runAllResult.ok ? 'text-status-success' : 'text-status-error'" />
+              <span :class="runAllResult.ok ? 'text-status-success' : 'text-status-error'">
+                {{ runAllResult.ok ? '一键链全套通过' : '一键链有失败步骤' }}
+              </span>
+            </div>
+            <div class="mt-2 text-xs text-slate-700 flex flex-wrap gap-x-4 gap-y-1">
+              <span v-if="runAllResult.ai_fill">
+                AI 填充：{{ runAllResult.ai_fill.ok ? `${runAllResult.ai_fill.calls} 调用` : '跳过' }}
+              </span>
+              <span v-if="runAllResult.materialize">
+                落库：{{ runAllResult.materialize.tables?.length || 0 }} 表
+              </span>
+              <span v-if="runAllResult.record">
+                建任务：{{ runAllResult.record.tasks?.length || 0 }} 个
+              </span>
+              <span>
+                运行：{{ runAllResult.runs.filter(r => r.ok).length }} / {{ runAllResult.runs.length }} ok
+              </span>
+              <span v-if="runAllResult.verify">
+                校验：{{ runAllResult.verify.summary.pass }} pass · {{ runAllResult.verify.summary.fail }} fail · {{ runAllResult.verify.summary.skipped }} skipped
+              </span>
+            </div>
+            <div v-if="runAllResult.error" class="mt-2 text-xs text-status-error">
+              错误：{{ runAllResult.error }}
+            </div>
+            <div v-if="runAllResult.runs.some(r => !r.ok)" class="mt-2 text-xs">
+              <div class="font-medium text-status-error mb-1">失败的 run：</div>
+              <ul class="ml-2 space-y-0.5 text-slate-700">
+                <li
+                  v-for="r in runAllResult.runs.filter(x => !x.ok)"
+                  :key="r.task_id"
+                >
+                  <span class="sql-font">{{ r.task_name }}</span> — {{ r.error }}
+                </li>
               </ul>
             </div>
           </div>

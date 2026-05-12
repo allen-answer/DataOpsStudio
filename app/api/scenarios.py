@@ -21,6 +21,7 @@ from dataclasses import asdict
 from app.scenarios.ai_filler import fill_scenario
 from app.scenarios.generator import generate_scenario
 from app.scenarios.loader import list_scenarios, load_scenario
+from app.scenarios.orchestrator import run_all as run_all_pipeline
 from app.scenarios.recorder import record_scenario
 from app.scenarios.runtime import ScenarioRuntimeError, materialize_to_datasource
 from app.scenarios.verifier import verify_scenario
@@ -41,6 +42,14 @@ class MaterializeRequest(BaseModel):
 class RecordRequest(BaseModel):
     datasource_id: str = Field(..., min_length=1)
     project_id: str = ""
+
+
+class RunAllRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    project_id: str = ""
+    drop_first: bool = True
+    batch_size: int = Field(default=500, ge=1, le=10_000)
+    ai_fill: bool = False
 
 
 @router.get("/api/scenarios")
@@ -95,6 +104,37 @@ def materialize_scenario_api(
     if ai_fill_report is not None:
         summary["ai_fill"] = ai_fill_report
     return summary
+
+
+@router.post("/api/scenarios/{scenario_id}/run-all")
+def run_all_scenario_api(
+    scenario_id: str,
+    payload: RunAllRequest = Body(...),
+) -> dict[str, Any]:
+    """一键链：fill → generate → materialize → record → run tasks → verify。
+
+    报告里 ok=true 表示 6 步都成；任一 compare run 失败 / verify 有 fail
+    → ok=false（admin / CI 一眼判断）。
+    """
+    scenario = _load_or_404(scenario_id)
+    report = run_all_pipeline(
+        scenario,
+        payload.datasource_id,
+        project_id=payload.project_id,
+        drop_first=payload.drop_first,
+        batch_size=payload.batch_size,
+        ai_fill=payload.ai_fill,
+    )
+    return {
+        "scenario_id": report.scenario_id,
+        "ok": report.ok,
+        "error": report.error,
+        "ai_fill": report.ai_fill,
+        "materialize": report.materialize,
+        "record": report.record,
+        "runs": [asdict(r) for r in report.runs],
+        "verify": report.verify,
+    }
 
 
 @router.get("/api/scenarios/{scenario_id}/verify")
