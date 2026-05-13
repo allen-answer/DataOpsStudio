@@ -886,7 +886,7 @@ onMounted(async () => {
                   <Variable class="h-3.5 w-3.5" />
                   模板变量
                   <span class="ml-1 text-[10px] font-normal normal-case tracking-normal text-slate-400">
-                    workload.sql 里 <code class="sql-font">{{ '{{name}}' }}</code> 占位符会渲染成此处值
+                    workload.sql 里 <code class="sql-font">&#123;&#123;name&#125;&#125;</code> 占位符会渲染成此处值
                   </span>
                 </div>
                 <ul class="space-y-1 text-xs">
