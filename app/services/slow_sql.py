@@ -1,13 +1,23 @@
-"""Slow SQL analysis —— EXPLAIN + 规则推断 issues + 优化建议（Phase 12 切片 6）。
+"""Slow SQL analysis —— EXPLAIN + 规则推断 issues + 优化建议（Phase 12 切片 6 + 16）。
 
-MVP 范围：
-- 仅 MySQL（其他方言 plan 列名不一致，留下个切片）
-- 接 SELECT/WITH 用户 SQL（过 sql_guard 拦 DML/DDL），自己 prepend `EXPLAIN`
-- 解析 EXPLAIN plan rows，按 4 条规则触发 issue + suggestion：
-  * type=ALL → 全表扫描，建议加索引
-  * Extra 含 filesort → ORDER BY 没用上索引
-  * Extra 含 Using temporary → GROUP BY / DISTINCT 触发临时表
-  * rows > 10000 且 type 是 all/index → 高扫描行数没走 key
+支持的 dialect：
+- mysql        EXPLAIN <sql>，解析 type / Extra / rows
+- oracle / dm  EXPLAIN PLAN FOR <sql> → SELECT FROM PLAN_TABLE，解析
+               operation / options / object_name / cardinality / cost
+
+MySQL 4 条规则（切片 6）：
+- type=ALL                    → 全表扫描，建议加索引
+- Extra 含 filesort           → ORDER BY 没用上索引
+- Extra 含 Using temporary    → GROUP BY / DISTINCT 触发临时表
+- rows > 10000 且 type=all/idx → 高扫描行数没走 key
+
+Oracle 5 条规则（切片 16）：
+- TABLE ACCESS / FULL                                 → 全表扫描
+- SORT / ORDER BY                                     → 未走索引排序
+- SORT / GROUP BY|UNIQUE                              → GROUP/DISTINCT 走临时排序
+- NESTED LOOPS + cardinality > 10000                  → 大数据集 NL（应改 HASH JOIN）
+- cost > 1000 任意非 SELECT STATEMENT 步骤            → 高 cost 提示统计信息 / hint
+- cardinality > 100000 + TABLE ACCESS FULL            → 高扫描（与 full_table_scan 同 row 触发）
 
 Phase 12 切片 8：`enrich_via_ai` 把上面规则推断的 issues + plan + 原始 SQL
 喂给 LLM provider，让它：
@@ -52,6 +62,9 @@ class Suggestion:
     sql: str = ""  # 可选：建议的 CREATE INDEX 等 DDL
 
 
+SUPPORTED_DIALECTS = {"mysql", "oracle", "dm"}
+
+
 def analyze_sql(
     datasource_id: str,
     sql: str,
@@ -66,10 +79,17 @@ def analyze_sql(
     if source is None:
         raise SlowSqlError(f"datasource not found: {datasource_id}")
     dialect = source.db_type.value.lower()
-    if dialect != "mysql":
+    if dialect not in SUPPORTED_DIALECTS:
         raise SlowSqlError(
-            f"slow-sql analyze currently supports MySQL only; got {source.db_type.value}"
+            f"slow-sql analyze 暂支持 mysql / oracle / dm；got {source.db_type.value}"
         )
+    if dialect == "mysql":
+        return _analyze_mysql(source, sql, max_plan_rows)
+    # oracle / dm 共用一套 plan_table 协议
+    return _analyze_oracle(source, sql, max_plan_rows)
+
+
+def _analyze_mysql(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
     explain_sql = f"EXPLAIN {sql.rstrip().rstrip(';').strip()}"
     try:
         rows = fetch_rows(source, explain_sql, max_rows=max_plan_rows)
@@ -84,6 +104,72 @@ def analyze_sql(
         "issues": [asdict(i) for i in issues],
         "suggestions": [asdict(s) for s in suggestions],
     }
+
+
+def _analyze_oracle(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
+    inner = sql.rstrip().rstrip(";").strip()
+    explain_sql = f"EXPLAIN PLAN FOR {inner}"
+    try:
+        rows = _fetch_oracle_plan(source, inner, max_plan_rows)
+    except Exception as exc:
+        raise SlowSqlError(f"EXPLAIN failed: {exc}") from exc
+    issues = detect_oracle_issues(rows)
+    suggestions = build_oracle_suggestions(issues)
+    return {
+        # 注：DM 时这里仍标 oracle —— UI 显示 dialect 时如需区分，看 source.db_type
+        "dialect": "oracle",
+        "explain_sql": explain_sql,
+        "plan": rows,
+        "issues": [asdict(i) for i in issues],
+        "suggestions": [asdict(s) for s in suggestions],
+    }
+
+
+def _fetch_oracle_plan(source: Any, sql: str, max_rows: int) -> list[dict[str, Any]]:
+    """跑 EXPLAIN PLAN + SELECT FROM PLAN_TABLE。两步合并到一个连接里，commit
+    后释放回池。statement_id 用 uuid 防多用户并发污染。
+
+    Why 不用 DBMS_XPLAN.DISPLAY 文本输出：那玩意是 hierarchical 文本，列宽
+    不一，解析正则脆；直接读 PLAN_TABLE 结构化字段稳定得多。
+    """
+    import uuid
+
+    from app.dbclients import pool as _pool
+    from app.dbclients.drivers import first_available_module
+    from app.dbclients.factory import _connect
+
+    module_name = first_available_module(source.db_type)
+    if not module_name:
+        raise SlowSqlError(f"{source.db_type.value} driver is not installed")
+
+    stmt_id = f"dataops_{uuid.uuid4().hex[:8]}"
+    cap = max(1, max_rows)
+    with _pool.borrow(source, lambda: _connect(source, module_name)) as conn:
+        cur = conn.cursor()
+        try:
+            # 防御性清理：上一次同 stmt_id 残留（uuid 几乎不冲突，保险起见）
+            try:
+                cur.execute(f"DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = '{stmt_id}'")
+            except Exception:
+                pass  # PLAN_TABLE 不存在等错误不致命，继续往下
+            cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{stmt_id}' FOR {sql}")
+            cur.execute(
+                "SELECT id, operation, options, object_name, cardinality, cost, bytes, "
+                "depth, parent_id FROM PLAN_TABLE "
+                f"WHERE STATEMENT_ID = '{stmt_id}' ORDER BY id"
+            )
+            cols = [d[0].lower() for d in cur.description]
+            raw_rows = cur.fetchmany(cap)
+            try:
+                conn.commit()
+            except Exception:
+                pass
+            return [dict(zip(cols, r)) for r in raw_rows]
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
 
 
 # ─── pure rules（端到端 DB 测试外可独立跑） ──────────────────────────────────
@@ -181,11 +267,154 @@ def build_suggestions(issues: list[Issue]) -> list[Suggestion]:
     return out
 
 
+# ─── Oracle rules（切片 16） ────────────────────────────────────────────────
+
+
+def detect_oracle_issues(plan_rows: list[dict[str, Any]]) -> list[Issue]:
+    """对每条 PLAN_TABLE row 匹配 6 条 Oracle 规则。同 row 多 issue 不去重。
+
+    PLAN_TABLE 字段（lower-cased）：id, operation, options, object_name,
+    cardinality, cost, bytes, depth, parent_id
+    """
+    issues: list[Issue] = []
+    for row in plan_rows:
+        op = _norm_oracle_text(row.get("operation"))
+        opt = _norm_oracle_text(row.get("options"))
+        table = str(row.get("object_name") or "")
+        card = _to_int(row.get("cardinality"))
+        cost = _to_int(row.get("cost"))
+
+        is_full_scan = op == "TABLE ACCESS" and opt == "FULL"
+        if is_full_scan:
+            issues.append(Issue(
+                severity="warning",
+                code="full_table_scan",
+                message=f"{table or '<unknown>'} 走全表扫描（TABLE ACCESS FULL）",
+                table=table,
+                detail=f"cardinality≈{card}; cost={cost}",
+            ))
+        if op == "SORT" and "ORDER" in opt:
+            issues.append(Issue(
+                severity="warning",
+                code="sort_order_by",
+                message=f"{table or '<unknown>'} ORDER BY 触发 SORT（未走索引）",
+                table=table,
+                detail=f"options={opt}",
+            ))
+        if op == "SORT" and ("GROUP" in opt or "UNIQUE" in opt):
+            issues.append(Issue(
+                severity="warning",
+                code="sort_group_by",
+                message=f"GROUP BY / DISTINCT 触发 SORT（{opt}）",
+                table=table,
+                detail=f"options={opt}",
+            ))
+        if op == "NESTED LOOPS" and card > 10000:
+            issues.append(Issue(
+                severity="warning",
+                code="nested_loops_high_card",
+                message=f"NESTED LOOPS 在大数据集上效率低（cardinality≈{card}）",
+                table=table,
+                detail="可考虑改 HASH JOIN",
+            ))
+        if cost > 1000 and op not in ("SELECT STATEMENT", ""):
+            issues.append(Issue(
+                severity="info",
+                code="high_cost",
+                message=f"{op} {opt} 步骤 cost={cost} 偏高",
+                table=table,
+                detail=f"op={op} {opt}",
+            ))
+        if is_full_scan and card > 100000:
+            issues.append(Issue(
+                severity="warning",
+                code="high_row_scan",
+                message=f"{table or '<unknown>'} 扫描行数偏高（{card}）",
+                table=table,
+                detail=f"op={op} {opt}",
+            ))
+    return issues
+
+
+def build_oracle_suggestions(issues: list[Issue]) -> list[Suggestion]:
+    """Oracle 建议派生，同类按 table（或全局）去重。"""
+    out: list[Suggestion] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue.code == "full_table_scan":
+            tag = f"add_index:{issue.table}"
+            if tag in seen:
+                continue
+            seen.add(tag)
+            out.append(Suggestion(
+                code="add_index",
+                message=f"考虑在 {issue.table or '该表'} 的 WHERE / JOIN 列上加索引消除 TABLE ACCESS FULL",
+            ))
+        elif issue.code == "sort_order_by":
+            tag = f"order_index:{issue.table}"
+            if tag in seen:
+                continue
+            seen.add(tag)
+            out.append(Suggestion(
+                code="order_by_index",
+                message=f"为 {issue.table or '该表'} 的 ORDER BY 列建索引可避免 SORT 步骤",
+            ))
+        elif issue.code == "sort_group_by":
+            if "group_index" in seen:
+                continue
+            seen.add("group_index")
+            out.append(Suggestion(
+                code="group_by_index",
+                message="GROUP BY / DISTINCT 列上建索引可消除 SORT GROUP BY / UNIQUE",
+            ))
+        elif issue.code == "nested_loops_high_card":
+            if "force_hash_join" in seen:
+                continue
+            seen.add("force_hash_join")
+            out.append(Suggestion(
+                code="force_hash_join",
+                message="在大数据集上 HASH JOIN 通常优于 NESTED LOOPS；可加 /*+ USE_HASH */ hint 或 ANALYZE 表",
+            ))
+        elif issue.code == "high_cost":
+            if "review_cost" in seen:
+                continue
+            seen.add("review_cost")
+            out.append(Suggestion(
+                code="review_cost",
+                message="Plan 中有高 cost 步骤（cost>1000），检查 ANALYZE 统计信息是否过时、考虑 hint 强制访问路径",
+            ))
+        elif issue.code == "high_row_scan":
+            tag = f"narrow_scan:{issue.table}"
+            if tag in seen:
+                continue
+            seen.add(tag)
+            out.append(Suggestion(
+                code="narrow_scan",
+                message=f"{issue.table or '该表'} 扫描行数过大，考虑加 WHERE 过滤 / 复合索引 / 分区",
+            ))
+    return out
+
+
+def _norm_oracle_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 # ─── AI enrichment（Phase 12 切片 8） ────────────────────────────────────────
 
 
 SLOW_SQL_ENRICH_PROMPT = (
-    "你是 MySQL 慢 SQL 优化助手。用户已经跑过 EXPLAIN 拿到 plan，并用规则推断了一组\n"
+    "你是关系型数据库慢 SQL 优化助手。用户的 dialect 字段会指明是 mysql / oracle / dm，\n"
+    "请按对应方言的执行计划语义解读。Oracle / DM 的 PLAN_TABLE 字段是 operation /\n"
+    "options / object_name / cardinality / cost；MySQL 的 EXPLAIN 字段是 type /\n"
+    "Extra / rows / table。\n\n"
+    "用户已经跑过 EXPLAIN 拿到 plan，并用规则推断了一组\n"
     "issues + suggestions（rule_issues / rule_suggestions 字段）。你需要在此基础上：\n"
     "1. 复核每条 rule_issue：confirmed（真问题）/ false_positive（误报）/ insufficient_info\n"
     "2. 补漏：规则没抓到的问题（如 LEFT JOIN 多余 / 子查询本可改 JOIN / 谓词不可索引化）\n"
@@ -224,6 +453,7 @@ def enrich_via_ai(
     suggestions: list[dict[str, Any]],
     expected_optimizations: list[str] | None = None,
     max_plan_chars: int = 4000,
+    dialect: str = "mysql",
 ) -> EnrichResult:
     """把 rule-driven 输出 + plan 喂给 LLM，拿回复核 + 补漏 + 覆盖率。
 
@@ -252,6 +482,7 @@ def enrich_via_ai(
         return base_result
 
     user_payload: dict[str, Any] = {
+        "dialect": (dialect or "mysql").lower(),
         "sql": sql[:2000],
         "plan": plan[:50],  # 大 plan 截断防超 token
         "rule_issues": issues,

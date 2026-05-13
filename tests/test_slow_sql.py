@@ -217,16 +217,17 @@ def test_analyze_sql_404_on_unknown_datasource(isolated_storage):
         analyze_sql("no-such", "SELECT 1")
 
 
-def test_analyze_sql_rejects_non_mysql(isolated_storage, monkeypatch):
+def test_analyze_sql_rejects_unsupported_dialect(isolated_storage, monkeypatch):
+    """切片 16 起 oracle / dm 支持；DB2 / 未来其他方言仍拒。"""
     from app.models.datasource import DataSourceCreate
     from app.services.repositories import datasource_store
 
-    oracle_ds = datasource_store.create(DataSourceCreate(
-        name="oracle-1", db_type=DatabaseType.ORACLE,
-        host="localhost", port=1521, database="ORCL", username="u", password="p",
+    db2_ds = datasource_store.create(DataSourceCreate(
+        name="db2-1", db_type=DatabaseType.DB2,
+        host="localhost", port=50000, database="SAMPLE", username="u", password="p",
     ))
-    with pytest.raises(SlowSqlError, match="MySQL only"):
-        analyze_sql(oracle_ds.id, "SELECT 1")
+    with pytest.raises(SlowSqlError, match="mysql / oracle / dm"):
+        analyze_sql(db2_ds.id, "SELECT 1")
 
 
 def test_analyze_sql_wraps_driver_error(isolated_storage, mysql_datasource, monkeypatch):

@@ -570,6 +570,7 @@ async function runAiEnrich(idx: number, workload: WorkloadDef): Promise<void> {
       issues: analysisResult.issues,
       suggestions: analysisResult.suggestions,
       expected_optimizations: workload.expected_optimizations || [],
+      dialect: analysisResult.dialect || 'mysql',
     })
     enrichResults.value = { ...enrichResults.value, [idx]: result }
     if (!result.ok) {

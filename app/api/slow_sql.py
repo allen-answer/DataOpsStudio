@@ -29,6 +29,7 @@ class SlowSqlEnrichRequest(BaseModel):
     issues: list[dict[str, Any]] = Field(default_factory=list)
     suggestions: list[dict[str, Any]] = Field(default_factory=list)
     expected_optimizations: list[str] = Field(default_factory=list)
+    dialect: str = Field(default="mysql")
 
 
 @router.post("/api/slow-sql/analyze")
@@ -59,5 +60,6 @@ def enrich(payload: SlowSqlEnrichRequest = Body(...)) -> dict[str, Any]:
         issues=payload.issues,
         suggestions=payload.suggestions,
         expected_optimizations=payload.expected_optimizations,
+        dialect=payload.dialect,
     )
     return asdict(result)
