@@ -73,6 +73,12 @@ workloads:
       only_target: 5
       diff: 10
       same: 965
+    # 切片 14：tolerance 容差（可选）
+    #   tolerance: 2                          # 标量 —— 所有字段允许 ±2
+    #   tolerance: {only_source: 2, diff: 1}  # 字典 —— 按字段独立
+    #   tolerance_pct: 5                      # 按 expected 值 ±5%
+    # 默认精确匹配；fraction × 总行数小数取整时（如 0.005 × 985 = 4.925→4）
+    # 加 tolerance: 1 让 verifier 不因取整误差报假阳性。
 
   - kind: lineage_script
     name: orders-clean-etl

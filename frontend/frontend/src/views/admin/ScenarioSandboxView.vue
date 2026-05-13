@@ -231,6 +231,7 @@ interface VerifyItem {
   expected: Record<string, number>
   actual: Record<string, number>
   deltas: Record<string, number>
+  tolerance: Record<string, number>
   match: boolean
 }
 
@@ -948,11 +949,18 @@ onMounted(async () => {
                     :key="key"
                     class="rounded p-2 bg-slate-50"
                   >
-                    <div class="text-slate-500 sql-font">{{ key }}</div>
+                    <div class="flex items-center justify-between">
+                      <span class="text-slate-500 sql-font">{{ key }}</span>
+                      <span
+                        v-if="(r.tolerance?.[key] || 0) > 0"
+                        class="px-1 rounded bg-slate-200 text-slate-600 sql-font text-[10px]"
+                        title="允许容差"
+                      >±{{ r.tolerance[key] }}</span>
+                    </div>
                     <div class="mt-0.5 text-slate-700">
                       expected {{ r.expected[key] }} →
                       <span
-                        :class="r.deltas[key] === 0 ? 'text-status-success font-medium' : 'text-status-error font-medium'"
+                        :class="Math.abs(r.deltas[key]) <= (r.tolerance?.[key] || 0) ? 'text-status-success font-medium' : 'text-status-error font-medium'"
                       >
                         actual {{ r.actual[key] || 0 }}
                         <span v-if="r.deltas[key] !== 0" class="sql-font">

@@ -175,6 +175,145 @@ def test_actual_missing_field_treated_as_zero_delta(isolated_storage):
     assert r.deltas["same"] == -965
 
 
+# ─── 切片 14：tolerance 容差 ────────────────────────────────────────────────
+
+
+def test_scalar_tolerance_allows_pass_within_band(isolated_storage):
+    """tolerance: 2 标量 —— 全字段允许 ±2 偏移。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        # diff 偏离 +1, only_source 偏离 -2 都在 ±2 内
+        summary={"only_source": 18, "only_target": 5, "diff": 11, "same": 965},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+        "tolerance": 2,
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "pass"
+    assert r.tolerance == {"only_source": 2, "only_target": 2, "diff": 2, "same": 2}
+    assert r.deltas == {"only_source": -2, "only_target": 0, "diff": 1, "same": 0}
+
+
+def test_scalar_tolerance_fail_when_one_field_exceeds(isolated_storage):
+    """单字段超出容差就 fail。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        # only_source 偏 -3 超 ±2 → fail（即使其它字段都在容差内）
+        summary={"only_source": 17, "only_target": 5, "diff": 10, "same": 965},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+        "tolerance": 2,
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "fail"
+    assert r.deltas["only_source"] == -3
+
+
+def test_per_field_tolerance_dict(isolated_storage):
+    """tolerance 字典形式 —— 字段独立容差。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        # only_source 偏 -5（容差 5 内 → ok）, diff 偏 +1（容差 1 内 → ok），
+        # only_target / same 没设容差 = 0，但 actual 跟 expected 一致也 ok
+        summary={"only_source": 15, "only_target": 5, "diff": 11, "same": 965},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+        "tolerance": {"only_source": 5, "diff": 1},
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "pass"
+    # 未设的字段容差为 0（精确匹配）
+    assert r.tolerance == {"only_source": 5, "diff": 1}
+
+
+def test_pct_tolerance_resolves_per_field(isolated_storage):
+    """tolerance_pct: 5 —— 按 expected 值的 5% 算每字段容差行数。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        # expected.same=1000 → 5% = 50 → actual=970 偏 30 在容差内
+        # expected.only_source=20 → 5% = 1 → actual=21 偏 1 在容差内
+        summary={"only_source": 21, "only_target": 5, "diff": 10, "same": 970},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 1000},
+        "tolerance_pct": 5,
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "pass"
+    assert r.tolerance["same"] == 50  # 1000 * 5% = 50
+    assert r.tolerance["only_source"] == 1  # 20 * 5% = 1
+
+
+def test_abs_and_pct_tolerance_takes_max(isolated_storage):
+    """tolerance + tolerance_pct 同存 —— 取宽松上限（max）。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        # expected.only_source=20: abs=3, pct 5% = 1 → max=3 → actual 偏 -3 ok
+        summary={"only_source": 17, "only_target": 5, "diff": 10, "same": 965},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+        "tolerance": 3,
+        "tolerance_pct": 5,
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "pass"
+    assert r.tolerance["only_source"] == 3  # max(3, 20*5%=1)
+
+
+def test_no_tolerance_still_exact_match(isolated_storage):
+    """没传 tolerance —— 保持精确匹配 (back-compat)。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        summary={"only_source": 21, "only_target": 5, "diff": 10, "same": 965},  # 偏 1
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "fail"
+    assert r.tolerance == {}
+
+
+def test_negative_tolerance_clamped_to_zero(isolated_storage):
+    """负值容差防呆 —— 钳到 0（等价于精确匹配）。"""
+    task_id = _create_compare_task("test-sc · w1")
+    _make_history_run(
+        isolated_storage["results"], run_id="run-1", task_id=task_id,
+        summary={"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+    )
+    s = _basic_scenario([{
+        "kind": "compare_task", "name": "w1",
+        "source": "t", "target": "t", "keys": ["id"],
+        "expected": {"only_source": 20, "only_target": 5, "diff": 10, "same": 965},
+        "tolerance": -5,
+    }])
+    r = verify_scenario(s).results[0]
+    assert r.status == "pass"
+    assert all(v == 0 for v in r.tolerance.values())
+
+
 # ─── 多 workload + 混合状态 ────────────────────────────────────────────────
 
 
