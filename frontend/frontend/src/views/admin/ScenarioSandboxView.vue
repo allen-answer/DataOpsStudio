@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Rocket,
   GitBranch,
+  Variable,
 } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
@@ -160,6 +161,7 @@ interface ScenarioDetail {
   tables: TableDef[]
   anomalies: AnomalyDef[]
   workloads: WorkloadDef[]
+  variables?: Record<string, string | number | boolean>
 }
 
 interface ScenarioDetailResponse {
@@ -492,6 +494,24 @@ function gotoHistory(): void {
   router.push({ path: '/history', query: { type: 'lineage' } })
 }
 
+// ─── 切片 15：SQL 模板变量替换（前端镜像 app/scenarios/templating.py） ──────
+const TEMPLATE_VAR_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g
+
+function renderSql(sql: string | undefined): { text: string; missing: string[] } {
+  if (!sql) return { text: '', missing: [] }
+  const vars = selected.value?.variables || {}
+  const missing = new Set<string>()
+  const text = sql.replace(TEMPLATE_VAR_RE, (full, name) => {
+    if (Object.prototype.hasOwnProperty.call(vars, name)) {
+      const v = vars[name]
+      return v === null || v === undefined ? '' : String(v)
+    }
+    missing.add(name)
+    return full
+  })
+  return { text, missing: Array.from(missing).sort() }
+}
+
 // ─── slow-sql 分析（按 workload index 维护，避免多 slow_query 行串台） ───────
 const slowSqlResults = ref<Record<number, SlowSqlResult>>({})
 const slowSqlAnalyzing = ref<Record<number, boolean>>({})
@@ -506,8 +526,9 @@ async function runSlowSqlAnalysis(idx: number, workload: WorkloadDef): Promise<v
   slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: true }
   slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: '' }
   try {
+    const { text: renderedSql } = renderSql(workload.sql)
     const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
-      sql: workload.sql,
+      sql: renderedSql,
       datasource_id: datasourceId.value,
     })
     slowSqlResults.value = { ...slowSqlResults.value, [idx]: result }
@@ -542,8 +563,9 @@ async function runAiEnrich(idx: number, workload: WorkloadDef): Promise<void> {
   }
   enrichLoading.value = { ...enrichLoading.value, [idx]: true }
   try {
+    const { text: renderedSql } = renderSql(workload.sql)
     const result = await apiJson<SlowSqlEnrichResult>('/api/slow-sql/enrich', 'POST', {
-      sql: workload.sql,
+      sql: renderedSql,
       plan: analysisResult.plan,
       issues: analysisResult.issues,
       suggestions: analysisResult.suggestions,
@@ -854,6 +876,31 @@ onMounted(async () => {
                 </li>
                 <li v-if="!detail.workloads.length" class="text-sm text-slate-400">无工作负载</li>
               </ul>
+
+              <!-- 切片 15：模板变量（仅当 yml 声明了 variables: 块时显示） -->
+              <div
+                v-if="detail.variables && Object.keys(detail.variables).length"
+                class="mt-4 pt-3 border-t border-line"
+              >
+                <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2 flex items-center gap-1.5">
+                  <Variable class="h-3.5 w-3.5" />
+                  模板变量
+                  <span class="ml-1 text-[10px] font-normal normal-case tracking-normal text-slate-400">
+                    workload.sql 里 <code class="sql-font">{{ '{{name}}' }}</code> 占位符会渲染成此处值
+                  </span>
+                </div>
+                <ul class="space-y-1 text-xs">
+                  <li
+                    v-for="(value, name) in detail.variables"
+                    :key="name"
+                    class="flex items-center gap-2 sql-font"
+                  >
+                    <span class="text-primary font-medium">{{ name }}</span>
+                    <span class="text-slate-400">→</span>
+                    <span class="text-slate-700">{{ value }}</span>
+                  </li>
+                </ul>
+              </div>
             </div>
           </div>
 

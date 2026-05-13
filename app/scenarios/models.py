@@ -159,3 +159,6 @@ class Scenario(BaseModel):
     tables: list[TableDef]
     anomalies: list[AnomalyDef] = Field(default_factory=list)
     workloads: list[WorkloadDef] = Field(default_factory=list)
+    # 切片 15：模板变量。workload.sql 里 `{{name}}` 占位符 → variables[name] 替换。
+    # 仅支持标量值（str/int/float/bool），数据类型保持原样写入 SQL。
+    variables: dict[str, str | int | float | bool] = Field(default_factory=dict)

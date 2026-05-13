@@ -105,3 +105,8 @@ workloads:
       - "create index idx_orders_created_at on ods.orders(created_at)"
       - "rewrite subquery as derived table + JOIN"
       - "convert LEFT JOIN to INNER JOIN"
+
+# 切片 15：模板变量。workload.sql 里 `{{name}}` 占位符会被替换成此处值。
+# 上面 lineage_script 的 `{{cutoff_date}}` → '2026-05-01'（不加变量则保留原样）。
+variables:
+  cutoff_date: "2026-05-01"

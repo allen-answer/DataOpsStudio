@@ -152,16 +152,20 @@ def _record_lineage_scripts(scenario: Scenario) -> list[dict[str, Any]]:
     from app.lineage.analyzer import analyze_sql_lineage
     from app.utils.paths import RESULTS_DIR
 
+    from app.scenarios.templating import render_template
+
     for wl in lineage_workloads:
         extra = wl.model_extra or {}
-        sql = (extra.get("sql") or "").strip()
+        raw_sql = (extra.get("sql") or "").strip()
         wl_name = (wl.name or "").strip() or "<anonymous>"
-        if not sql:
+        if not raw_sql:
             out.append({
                 "workload_name": wl_name, "ok": False, "run_id": "",
                 "error": "lineage_script workload missing sql",
             })
             continue
+        rendered = render_template(raw_sql, scenario.variables)
+        sql = rendered.text
         run_id = _generate_lineage_run_id()
         try:
             started = time.perf_counter()
@@ -179,9 +183,14 @@ def _record_lineage_scripts(scenario: Scenario) -> list[dict[str, Any]]:
                 json.dumps(payload, ensure_ascii=False, default=str),
                 encoding="utf-8",
             )
-            out.append({
+            entry: dict[str, Any] = {
                 "workload_name": wl_name, "ok": True, "run_id": run_id,
-            })
+            }
+            if rendered.substituted:
+                entry["variables_substituted"] = rendered.substituted
+            if rendered.missing:
+                entry["variables_missing"] = rendered.missing
+            out.append(entry)
         except Exception as exc:
             logger.warning("recorder lineage_script failed wl=%s: %s", wl_name, exc)
             out.append({
