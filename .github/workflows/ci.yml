@@ -31,6 +31,12 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
+      # scenario 静态体检 —— 纯 Python、不连 DB / 不调 LLM。catch yml 笔误、
+      # generator 运行期才炸的 bug（未知 dist kind / 坏 range）、anomaly /
+      # derives_from 交叉引用错配、模板变量漏定义。CI 友好：退出码 1 即红。
+      - name: Lint scenarios
+        run: python scripts/scenario_lint.py --strict
+
   frontend-build:
     name: Frontend (vite build)
     runs-on: ubuntu-latest

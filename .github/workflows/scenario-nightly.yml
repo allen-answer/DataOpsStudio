@@ -1,0 +1,109 @@
+# Scenario 沙盒 —— DB-backed 夜间回归（Phase 12 切片 18 模板）。
+#
+# 这是一份「可直接跑、按需改」的模板：把 config/scenarios/ 下每个 scenario 走
+# 一遍一键链（fill → generate → materialize → record → run → verify），用
+# run-all 返回的 `.ok` 判定。任一 scenario fail → job 红。
+#
+# 触发：默认仅 workflow_dispatch（手动）。确认 demo-db 在你的环境起得来后，
+# 取消下面 schedule 注释即可变每晚自动跑。
+#
+# 跟 ci.yml 的 `scenario-lint` step 的分工：
+#   - scenario-lint  纯静态、不连库、每次 push/PR 都跑（快、必跑）
+#   - 本 workflow    真落库 + 真对比 + 真校验（慢、按需 / 夜间）
+
+name: Scenario Nightly Regression
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 18 * * *"   # 每天 UTC 18:00 ≈ 北京时间次日 02:00
+
+jobs:
+  scenario-regression:
+    name: run-all → verify (against demo MySQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # app + demo MySQL（compose profile demo-db）。镜像本地多阶段 build，
+      # 前端在 node:20-alpine 阶段构建打入 —— 不受 runner 环境影响。
+      - name: Bring up app + demo MySQL
+        run: docker compose --profile demo-db up -d --build
+
+      # healthcheck 端点是公开的 /api/drivers（同 docker-compose.yml 的 healthcheck）
+      - name: Wait for app healthy
+        run: |
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:8010/api/drivers > /dev/null; then
+              echo "app healthy after ${i} tries"; exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::app did not become healthy"; docker compose logs app; exit 1
+
+      # 默认账号 admin / admin —— 首启 JsonStore 自动建。生产环境请改密码。
+      - name: Login (admin / admin)
+        id: login
+        run: |
+          TOKEN=$(curl -sf -X POST http://localhost:8010/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"admin"}' | jq -r '.access_token')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::login failed"; exit 1
+          fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      # 注册指向 compose 内 demo MySQL 的 datasource。
+      # host=mysql8 / port=3306 是 compose 网络内地址（见 docker-compose.yml）。
+      - name: Register demo datasource
+        id: ds
+        run: |
+          DS_ID=$(curl -sf -X POST http://localhost:8010/api/datasources \
+            -H "Authorization: Bearer ${{ steps.login.outputs.token }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "name": "ci-demo-mysql",
+              "db_type": "mysql",
+              "host": "mysql8",
+              "port": 3306,
+              "database": "dataops",
+              "username": "root",
+              "password": "root123"
+            }' | jq -r '.id')
+          if [ -z "$DS_ID" ] || [ "$DS_ID" = "null" ]; then
+            echo "::error::datasource create failed"; exit 1
+          fi
+          echo "id=$DS_ID" >> "$GITHUB_OUTPUT"
+
+      # 逐个 scenario 跑一键链，jq '.ok' 判定。任一 false → FAIL=1。
+      - name: Run all scenarios → verify
+        run: |
+          set -u
+          FAIL=0
+          IDS=$(curl -sf http://localhost:8010/api/scenarios | jq -r '.items[].id')
+          if [ -z "$IDS" ]; then
+            echo "::warning::no scenarios found —— config/scenarios/ 为空"
+          fi
+          for SID in $IDS; do
+            echo "::group::scenario ${SID}"
+            RESP=$(curl -sf -X POST "http://localhost:8010/api/scenarios/${SID}/run-all" \
+              -H "Authorization: Bearer ${{ steps.login.outputs.token }}" \
+              -H 'Content-Type: application/json' \
+              -d "{\"datasource_id\":\"${{ steps.ds.outputs.id }}\"}")
+            OK=$(echo "$RESP" | jq -r '.ok')
+            echo "$RESP" | jq '{ok, error, verify: .verify.summary}'
+            if [ "$OK" != "true" ]; then
+              echo "::error::scenario ${SID} run-all ok=${OK}"
+              FAIL=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAIL
+
+      - name: Dump app logs on failure
+        if: failure()
+        run: docker compose logs app
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile demo-db down -v
