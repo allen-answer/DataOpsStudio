@@ -73,6 +73,7 @@ def run_all(
                 "ok": fill_report.ok,
                 "calls": fill_report.calls,
                 "filled_columns": fill_report.filled_columns,
+                "filled_distributions": fill_report.filled_distributions,
                 "filled_descriptions": fill_report.filled_descriptions,
                 "errors": fill_report.errors,
                 "skipped_reason": fill_report.skipped_reason,
@@ -80,7 +81,8 @@ def run_all(
         except Exception as exc:
             logger.warning("run_all ai_fill failed: %s", exc)
             report.ai_fill = {"ok": False, "errors": [str(exc)],
-                              "filled_columns": [], "filled_descriptions": [],
+                              "filled_columns": [], "filled_distributions": [],
+                              "filled_descriptions": [],
                               "calls": 0, "skipped_reason": ""}
             # 继续走，data 用原 scenario 生成
 

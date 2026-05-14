@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.scenarios.generator import DISTRIBUTION_KINDS
 from app.scenarios.models import ColumnDef, Scenario, TableDef
 
 
@@ -48,6 +49,23 @@ VALUES_PROMPT = (
 )
 
 
+DISTRIBUTION_PROMPT = (
+    "你是测试数据领域专家。用户在做业务数据对比测试，需要给某张表的某个\n"
+    "「数值列」一个真实的概率分布参数 —— 让生成的数据有真实长尾 / 集中趋势，\n"
+    "而不是均匀随机。\n\n"
+    "硬性规则：\n"
+    "- 仅返回 JSON，不要 markdown / 不要解释\n"
+    "- 形如 `{\"kind\": \"lognormal\", \"mu\": 4.5, \"sigma\": 0.7, \"min\": 1, \"max\": 50000}`\n"
+    "- kind 只能是 lognormal / normal / uniform / exponential 之一：\n"
+    "  · 金额 / 客单价 / 时长 这类右偏长尾 → lognormal（mu/sigma 是「对数」空间参数）\n"
+    "  · 年龄 / 评分 这类对称集中 → normal（mean/std）\n"
+    "  · 无明显规律 → uniform（min/max）\n"
+    "  · 间隔 / 等待时间 → exponential（lambda）\n"
+    "- 必须给 min / max 当业务合理边界（generator 会 clamp 掉极端值）\n"
+    "- 参数要让多数样本落在 column.name 对应的合理业务量级里"
+)
+
+
 DESCRIPTION_PROMPT = (
     "你是数据工程师。用户给你一张表的 schema（表名 + 列 + domain 业务上下文），\n"
     "请给一句中文描述（≤30 字），说明这张表在业务里的作用。\n\n"
@@ -63,6 +81,7 @@ class FillReport:
     ok: bool = True
     calls: int = 0
     filled_columns: list[str] = field(default_factory=list)  # "table.col"
+    filled_distributions: list[str] = field(default_factory=list)  # "table.col"（切片 17）
     filled_descriptions: list[str] = field(default_factory=list)  # "table"
     errors: list[str] = field(default_factory=list)
     skipped_reason: str = ""  # provider=off / 没 ai.fill 等
@@ -113,6 +132,28 @@ def fill_scenario(
                         report.filled_columns.append(f"{table.name}.{col.name}")
                 except Exception as exc:
                     logger.warning("ai_filler values failed table=%s col=%s: %s",
+                                   table.name, col.name, exc)
+                    report.errors.append(f"{table.name}.{col.name}: {exc}")
+
+        # ── column_distributions: 给 realistic 数值列填分布参数（切片 17）──────
+        if "column_distributions" in fill_scope:
+            for col in _columns_to_fill(table, all_tables):
+                if report.calls >= max_calls:
+                    report.errors.append(f"hit max_calls cap ({max_calls}); stopping")
+                    break
+                if col.dist_params or col.values:
+                    continue  # 已有分布 / 样本池就不再问（dist_params 优先级最高）
+                if not _is_numeric_type(col.type):
+                    continue  # 分布参数只对数值列有意义
+                report.calls += 1
+                try:
+                    params = _call_for_distribution(
+                        table, col, filled, config, provider_name, _call_ai)
+                    if params:
+                        col.dist_params = params
+                        report.filled_distributions.append(f"{table.name}.{col.name}")
+                except Exception as exc:
+                    logger.warning("ai_filler distribution failed table=%s col=%s: %s",
                                    table.name, col.name, exc)
                     report.errors.append(f"{table.name}.{col.name}: {exc}")
 
@@ -186,6 +227,54 @@ def _call_for_values(
         if len(out) >= 30:
             break
     return out
+
+
+_NUMERIC_TYPE_HINTS = (
+    "INT", "BIGINT", "SMALLINT", "TINYINT",
+    "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL",
+)
+# LLM 分布响应里允许透传的数值参数键（其它键丢弃，避免脏字段进 dist_params）
+_DIST_PARAM_KEYS = ("mu", "sigma", "mean", "std", "min", "max", "lambda", "rate")
+
+
+def _is_numeric_type(col_type: str) -> bool:
+    t = (col_type or "").upper()
+    return any(h in t for h in _NUMERIC_TYPE_HINTS)
+
+
+def _call_for_distribution(
+    table: TableDef,
+    col: ColumnDef,
+    scenario: Scenario,
+    config: Any,
+    provider_name: str,
+    _call_ai: Any,
+) -> dict | None:
+    """问 LLM 要一个分布参数 dict，校验 kind 合法 + 只保留已知数值参数键。"""
+    payload = {
+        "table_name": table.name,
+        "table_role": table.role,
+        "column_name": col.name,
+        "column_type": col.type,
+        "column_description": col.description,
+        "domain_vertical": scenario.domain.vertical,
+        "domain_hint": scenario.domain.hint,
+        "expected_rows": table.rows,
+    }
+    raw = _call_ai(provider_name, config, DISTRIBUTION_PROMPT, payload)
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind", "")).strip().lower()
+    if kind not in DISTRIBUTION_KINDS:
+        return None
+    params: dict[str, Any] = {"kind": kind}
+    for k in _DIST_PARAM_KEYS:
+        v = raw.get(k)
+        if isinstance(v, bool):  # bool 是 int 子类，排除
+            continue
+        if isinstance(v, (int, float)):
+            params[k] = v
+    return params
 
 
 def _call_for_description(

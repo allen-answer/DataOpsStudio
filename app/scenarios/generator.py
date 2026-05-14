@@ -12,6 +12,7 @@ seed != 0 时复跑同结果。seed=0 时不固定 RNG。
 from __future__ import annotations
 
 import random
+import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -156,10 +157,18 @@ def _parse_dt(v: Any) -> datetime:
     raise ValueError(f"cannot parse datetime: {s!r}")
 
 
+# 切片 17：realistic 数值列支持的分布族
+DISTRIBUTION_KINDS = {"lognormal", "normal", "uniform", "exponential"}
+
+
 def _realistic_value(col: ColumnDef, rng: random.Random) -> Any:
-    """AI-filled values 优先（切片 9 ai_filler 把业务样本池写进 col.values）；
-    否则按类型 fallback —— DECIMAL → 价格 / INT → 计数 / DATETIME → 90 天内 / 其它 → 短字符串。
+    """优先级（切片 17）：
+    1. `dist_params` —— 数值列按分布族采样（lognormal 长尾 / normal / uniform / exponential）
+    2. `values` —— AI 填的业务样本池（切片 9），均匀抽样
+    3. 按类型 fallback —— DECIMAL → 价格 / INT → 计数 / DATETIME → 90 天内 / 其它 → 短字符串
     """
+    if col.dist_params:
+        return _sample_distribution(col.dist_params, col.type, rng)
     if col.values:
         return rng.choice(col.values)
     t = (col.type or "").upper()
@@ -170,6 +179,66 @@ def _realistic_value(col: ColumnDef, rng: random.Random) -> Any:
     if any(k in t for k in ("DATETIME", "TIMESTAMP", "DATE")):
         return datetime(2026, 1, 1) + timedelta(days=rng.randint(0, 365))
     return "".join(rng.choices("abcdefghijklmnopqrstuvwxyz", k=8))
+
+
+def _sample_distribution(params: dict, col_type: str, rng: random.Random) -> Any:
+    """按 `dist_params` 采样一个数值，再按列类型取整 / 取精度。
+
+    支持 kind：lognormal（mu/sigma）/ normal（mean+std，兼容 mu/sigma 别名）/
+    uniform（min/max）/ exponential（lambda，兼容 rate 别名）。
+    min/max 对非 uniform 分布起 clamp 作用（截断长尾的极端值）。
+    未知 kind → ValueError（让 yml 笔误立刻暴露，跟 unknown generator 一致）。
+    """
+    kind = str(params.get("kind", "")).strip().lower()
+    if kind == "lognormal":
+        mu = _as_float(params.get("mu"), 0.0)
+        sigma = _as_float(params.get("sigma"), 1.0)
+        val = rng.lognormvariate(mu, max(sigma, 1e-9))
+    elif kind == "normal":
+        mean = _as_float(params.get("mean", params.get("mu")), 0.0)
+        std = _as_float(params.get("std", params.get("sigma")), 1.0)
+        val = rng.normalvariate(mean, max(std, 0.0))
+    elif kind == "uniform":
+        lo = _as_float(params.get("min"), 0.0)
+        hi = _as_float(params.get("max"), 1.0)
+        val = rng.uniform(min(lo, hi), max(lo, hi))
+    elif kind == "exponential":
+        lam = _as_float(params.get("lambda", params.get("rate")), 1.0)
+        val = rng.expovariate(lam) if lam > 0 else 0.0
+    else:
+        raise ValueError(f"unknown distribution kind: {kind!r}")
+
+    # min/max clamp（uniform 已用 min/max 当区间，不再二次 clamp）
+    if kind != "uniform":
+        lo_raw = params.get("min")
+        hi_raw = params.get("max")
+        if lo_raw is not None:
+            val = max(val, _as_float(lo_raw, val))
+        if hi_raw is not None:
+            val = min(val, _as_float(hi_raw, val))
+    return _round_for_type(val, col_type)
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _round_for_type(value: float, col_type: str) -> Any:
+    """按列类型把采样浮点收敛：INT 族 → int；DECIMAL(p,s) → s 位小数；
+    FLOAT/DOUBLE → 4 位；其它（无类型）→ 原样浮点。"""
+    t = (col_type or "").upper()
+    if any(k in t for k in ("BIGINT", "INT", "SMALLINT", "TINYINT")):
+        return int(round(value))
+    if any(k in t for k in ("DECIMAL", "NUMERIC")):
+        m = re.search(r"\(\s*\d+\s*,\s*(\d+)\s*\)", t)
+        scale = int(m.group(1)) if m else 2
+        return round(float(value), scale)
+    if any(k in t for k in ("FLOAT", "DOUBLE", "REAL")):
+        return round(float(value), 4)
+    return value
 
 
 def _apply_transform(transform: str | None, value: Any) -> Any:

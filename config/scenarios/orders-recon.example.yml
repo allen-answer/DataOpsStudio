@@ -17,7 +17,10 @@ seed: 42
 ai:
   provider: ${default}
   temperature: 0
-  fill: [column_values, table_descriptions]
+  # column_values     —— realistic 列填业务样本池
+  # column_distributions —— realistic 数值列填分布参数（切片 17，长尾分布优先于样本池）
+  # table_descriptions —— 缺描述的表填一句中文
+  fill: [column_values, column_distributions, table_descriptions]
 
 domain:
   vertical: ecommerce
@@ -35,6 +38,9 @@ tables:
         range: [1, 200]
         distribution: zipf
         zipf_alpha: 1.5
+      # gen: realistic —— AI 关时按类型 fallback 均匀分布；AI 开时 ai.fill 的
+      # column_distributions 会填 dist_params，让金额呈真实右偏长尾。也可手写：
+      #   dist_params: {kind: lognormal, mu: 4.5, sigma: 0.7, min: 10, max: 50000}
       - {name: amount, type: "DECIMAL(10,2)", gen: realistic}
       - {name: created_at, type: DATETIME, gen: timestamp, range: ["2026-04-01", "2026-05-10"]}
       - name: status

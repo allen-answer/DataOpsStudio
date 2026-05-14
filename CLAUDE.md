@@ -238,7 +238,7 @@ API endpoint 全集（`app/api/scenarios.py` + `slow_sql.py`）：`GET /api/scen
 
 整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
 
-当前测试基线 **1160 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证 + 34 个 frontend vitest）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 落地：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests）。**Phase 12 「AI 测试沙盒」13 个 commit / +202 tests 全部交付**：scenario DSL + generator + materializer + recorder + admin UI + slow-sql 规则分析 + AI 复核 + AI filler + regression verifier + 一键链 orchestrator + lineage_script workload + Oracle/DM 方言扩展，详见下方 Phase 12 章节。
+当前测试基线 **1229 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证 + 34 个 frontend vitest）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 落地：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests）。**Phase 12 「AI 测试沙盒」17 个 commit 全部交付**：scenario DSL + generator + materializer + recorder + admin UI + slow-sql 规则分析 + AI 复核 + AI filler + regression verifier + 一键链 orchestrator + lineage_script workload + Oracle/DM 方言扩展 + verifier tolerance + SQL 模板变量 + slow-sql Oracle EXPLAIN PLAN + AI filler v2 分布参数，详见下方 Phase 12 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -371,7 +371,7 @@ API endpoint 全集（`app/api/scenarios.py` + `slow_sql.py`）：`GET /api/scen
 - **Tradeoff 核心**：抽象层数 vs 接入新 DB 成本。原则是**只在已有 ≥2 个分支的能力上抽**（present pain），future-pain 不抽（YAGNI）；避免变成"补 1 个 driver 映射 + 1 行 sqlglot dialect → 实现 12 个空方法"的过度抽象
 - **不要做的**：DB 全栈适配器（连接 + SQL 解析 + lineage + UI 都按 DB 拆 = 把 10 个 switch 换成 6 个空方法）；`utils/sql_guard.py` 现在 dialect-agnostic 工作得很好，不强行接入
 
-### Phase 12 · AI 测试沙盒（2026-05-12 ~ 05-13，13 commits / +202 tests）
+### Phase 12 · AI 测试沙盒（2026-05-12 ~ 05-14，17 commits）
 
 把 DataOpsStudio 从「真实库面板工具」扩展成「自带测试沙盒的 AI 数据治理平台」。yml 描述一个 scenario（表 schema + 偏差注入 + 工作负载消费），系统能自动 ① LLM 给业务化数据 ② 落到 demo MySQL/Oracle ③ 建对比任务 ④ 跑 EXPLAIN 分析慢 SQL ⑤ AI 复核覆盖率 ⑥ 验证实际 diff 跟预期一致。让对比 + 血缘 + slow-sql 三大模块的回归测试 / 演示数据 / 真实案例一站式生成。
 
@@ -416,7 +416,14 @@ curl -X POST /api/scenarios/orders-recon-mvp/run-all \
 # true / false 一行判定，配合 GitHub Actions / Jenkins 当 nightly 回归 fixture
 ```
 
-**Phase 12 剩余 enhancement（未排期）**：slow-sql Oracle EXPLAIN PLAN 解析（DBMS_XPLAN 输出格式）/ AI filler v2 改给分布参数（lognormal / zipf alpha）而非样本池 / lineage_script SQL 模板变量 `{{cutoff_date}}` 替换（当前作字面值）/ scenario.expected 加 tolerance（`±5% 算 pass`）/ CI 集成示例 GitHub Actions workflow yml 模板。
+**切片 14-17（2026-05-13 ~ 05-14，4 commits）—— Phase 12 收尾 enhancement**：
+
+- **切片 14：verifier tolerance**（commit `6481921`）—— scenario `expected` 块从精确匹配升级成可容差。`WorkloadVerifyResult.tolerance: dict[str, int]`；匹配逻辑从 `act != exp` 改成 `abs(delta) > tol`。workload 子项透传 `tolerance`（标量 → 所有字段 / 字典 → 按字段）+ `tolerance_pct`（按 expected 值百分比），`_resolve_tolerance` 把绝对值 + 百分比按字段取 max 合并，负值 clamp 0。修的痛点：anomaly `fraction × 行数` 取整误差（`0.005 × 985 = 4.925→4`）让 verifier 报假阳性。+7 tests
+- **切片 15：SQL 模板变量**（commit `435ea60` + `e1dcad9`）—— `app/scenarios/templating.py` 新模块：`render_template(sql, variables)` 把 workload.sql 里 `{{name}}` 占位符替换成 `Scenario.variables[name]`，缺失变量原样保留 + 收 `missing` 列表。`Scenario.variables: dict[str, str|int|float|bool]` 新字段。`recorder._record_lineage_scripts` 渲染后再喂 analyzer，history entry 多 `variables_substituted` / `variables_missing`。仅匹配标识符形态（不跟 Jinja 混）。前端 `renderSql()` 镜像同正则；模板变量面板用 HTML entity 显示字面 `{{name}}`（Vue mustache parser 会把 `{{ '{{name}}' }}` 当未闭合字符串报错）。+13 tests
+- **切片 16：slow-sql Oracle / DM EXPLAIN PLAN**（commit `487554d`）—— `analyze_sql` 按 datasource 类型派发：MySQL 走单条 `EXPLAIN`，Oracle/DM 走 `EXPLAIN PLAN SET STATEMENT_ID FOR ... → SELECT FROM PLAN_TABLE` 两步（DM 复用 Oracle 路径，PLAN_TABLE 协议一致）。`detect_oracle_issues` 6 条规则（full_table_scan / sort_order_by / sort_group_by / nested_loops_high_card / high_cost / high_row_scan）+ `build_oracle_suggestions` 6 类建议。`enrich_via_ai` 加 `dialect` 参数透传给 LLM prompt（提示 Oracle PLAN_TABLE 字段 vs MySQL EXPLAIN 字段差异）。`SlowSqlEnrichRequest` / `/enrich` endpoint 接 `dialect`。+23 tests
+- **切片 17：AI filler v2 分布参数**（commit 本次）—— `realistic` 列从「均匀抽样样本池」升级成「真实概率分布」。`ColumnDef.dist_params: dict | None` 新字段，generator `_realistic_value` 优先级改 `dist_params > values > 类型 fallback`。`_sample_distribution` 支持 4 分布族：lognormal（金额 / 时长右偏长尾）/ normal（年龄 / 评分对称）/ uniform / exponential（间隔），min/max 对非 uniform 起 clamp；`_round_for_type` 按列类型收敛（INT → int / `DECIMAL(p,s)` → s 位 / FLOAT → 4 位）。ai_filler 加 `column_distributions` fill scope + `DISTRIBUTION_PROMPT`，对 realistic 数值列问 LLM 要分布参数（校验 kind 闭集 + 只保留已知数值键），写进 `col.dist_params`；非数值 realistic 列跳过。`FillReport.filled_distributions` + 三处 report dict（materialize / ai-fill / run-all endpoint）+ 前端 ai_fill 卡展示。同 seed 同分布输出。+26 tests
+
+**Phase 12 全部交付，无剩余 enhancement。** 长期 backlog：AI filler v3 接 Faker locale / lineage_script 模板变量做条件分支 / CI 集成示例 GitHub Actions workflow yml 模板。
 
 **通用未做**：
 

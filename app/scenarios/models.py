@@ -47,7 +47,7 @@ WorkloadKind = Literal[
     "slow_query",
     "workflow_run",
 ]
-FillScope = Literal["column_values", "table_descriptions"]
+FillScope = Literal["column_values", "table_descriptions", "column_distributions"]
 
 
 class ColumnDef(BaseModel):
@@ -65,6 +65,10 @@ class ColumnDef(BaseModel):
     # 单字段权重列表（如 enum 各值频率），或全局 distribution 名
     distribution: str | list[float] | None = None
     zipf_alpha: float | None = None
+    # 切片 17：gen=realistic 的数值列分布参数（AI filler v2 / 手写均可）。
+    # `{kind: lognormal|normal|uniform|exponential, ...params, min?, max?}`。
+    # 优先级高于 values 样本池 —— 让金额 / 计数等列有真实长尾分布而非均匀抽样。
+    dist_params: dict | None = None
     description: str = ""
 
 

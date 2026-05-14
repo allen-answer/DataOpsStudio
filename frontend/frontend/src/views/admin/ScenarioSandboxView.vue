@@ -180,6 +180,7 @@ interface AiFillReport {
   ok: boolean
   calls: number
   filled_columns: string[]
+  filled_distributions: string[]
   filled_descriptions: string[]
   errors: string[]
   skipped_reason: string
@@ -499,7 +500,7 @@ const TEMPLATE_VAR_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g
 
 function renderSql(sql: string | undefined): { text: string; missing: string[] } {
   if (!sql) return { text: '', missing: [] }
-  const vars = selected.value?.variables || {}
+  const vars = detail.value?.variables || {}
   const missing = new Set<string>()
   const text = sql.replace(TEMPLATE_VAR_RE, (full, name) => {
     if (Object.prototype.hasOwnProperty.call(vars, name)) {
@@ -1252,6 +1253,7 @@ onMounted(async () => {
                   <template v-if="materializeResult.ai_fill.ok">
                     · {{ materializeResult.ai_fill.calls }} 个 LLM 调用 ·
                     填了 {{ materializeResult.ai_fill.filled_columns.length }} 列样本池 +
+                    {{ (materializeResult.ai_fill.filled_distributions || []).length }} 列分布 +
                     {{ materializeResult.ai_fill.filled_descriptions.length }} 表描述
                   </template>
                   <template v-else>· 跳过：{{ materializeResult.ai_fill.skipped_reason }}</template>
@@ -1261,7 +1263,10 @@ onMounted(async () => {
                   <span class="sql-font">{{ materializeResult.ai_fill.errors.join(' / ') }}</span>
                 </div>
                 <div v-if="materializeResult.ai_fill.filled_columns.length" class="mt-1 text-slate-500">
-                  <span class="sql-font">{{ materializeResult.ai_fill.filled_columns.join(', ') }}</span>
+                  样本池：<span class="sql-font">{{ materializeResult.ai_fill.filled_columns.join(', ') }}</span>
+                </div>
+                <div v-if="(materializeResult.ai_fill.filled_distributions || []).length" class="mt-1 text-slate-500">
+                  分布参数：<span class="sql-font">{{ materializeResult.ai_fill.filled_distributions.join(', ') }}</span>
                 </div>
               </div>
             </div>
