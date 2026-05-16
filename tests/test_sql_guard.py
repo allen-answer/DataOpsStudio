@@ -317,6 +317,30 @@ def test_rejects_select_with_inline_insert():
 
 
 # ---------------------------------------------------------------------------
+# 拒绝：WITH CTE body 里塞 DML —— 防"first_word=with 后偷渡 DML"
+# ---------------------------------------------------------------------------
+
+def test_rejects_with_cte_body_insert():
+    with pytest.raises(ValueError):
+        validate_readonly_sql("WITH x AS (INSERT INTO t VALUES (1)) SELECT * FROM x")
+
+
+def test_rejects_with_cte_body_update():
+    with pytest.raises(ValueError):
+        validate_readonly_sql("WITH x AS (UPDATE t SET a = 1 RETURNING a) SELECT * FROM x")
+
+
+def test_rejects_with_cte_body_delete():
+    with pytest.raises(ValueError):
+        validate_readonly_sql("WITH x AS (DELETE FROM t RETURNING id) SELECT * FROM x")
+
+
+def test_rejects_with_cte_body_drop():
+    with pytest.raises(ValueError):
+        validate_readonly_sql("WITH x AS (DROP TABLE t) SELECT * FROM x")
+
+
+# ---------------------------------------------------------------------------
 # 拒绝：注释 / 编码绕过
 # ---------------------------------------------------------------------------
 

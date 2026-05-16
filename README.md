@@ -40,7 +40,7 @@ cd frontend/frontend && npm install && npm run dev
 
 - **多数据库**：MySQL / DM 达梦 / Oracle / DB2 / OceanBase（MySQL+Oracle 兼容），按需启用驱动
 - **数据对比**：SQL × SQL / Excel × SQL / CSV × Parquet 等任意组合；字段映射、数值容差、字符串归一化、忽略列
-- **流式对比**：按主键有序结果集边读边归并，大结果集不撑内存
+- **流式对比**：按主键有序结果集边读边归并，降低对比阶段内存占用；大结果写出按 [`docs/COMPARE_RESULT_STORAGE.md`](docs/COMPARE_RESULT_STORAGE.md) 规划演进
 - **SQL 血缘**：基于 sqlglot 静态解析；CTE、UNION、子查询、存储过程深度解析、动态 SQL 识别
 - **多脚本 ETL**：批量上传 `.sql` / `.txt` / `.zip` 汇总表级数据流、跨脚本依赖、风险提示
 - **作业流**：DAG 拓扑 + `${var}` 变量插值 + `when:` 条件 + 局部重跑 + 异步执行 + 取消

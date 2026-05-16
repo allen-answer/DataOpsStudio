@@ -8,19 +8,42 @@
 
 ## 0. 准备
 
-```bash
-# 已有部署（Docker）
-docker compose ps                    # app 容器 healthy
-curl -fsS http://localhost:8010/api/drivers | head -c 200
+所有 `curl` 示例都基于一个统一的环境变量，按你的部署方式 export 一次：
 
-# 本地开发
+```bash
+# 已有部署（Docker）或本地 uvicorn（同端口）
+export BASE_URL=http://localhost:8010
+```
+
+### 起后端
+
+```bash
+# 方式 A：Docker
+docker compose ps                    # 期望看到 app 容器 healthy
+curl -fsS "$BASE_URL/api/drivers" | head -c 200
+
+# 方式 B：本地 uvicorn
 uvicorn main:app --host 0.0.0.0 --port 8010 --reload
 ```
 
-如需登录态：
+### 起前端（dev 模式 / 改前端代码时必跑）
 
 ```bash
-TOKEN=$(curl -fsS -X POST http://localhost:8010/api/auth/login \
+cd frontend/frontend
+npm install       # 首次或依赖变更
+npm run dev       # vite dev server，默认监听 5173
+```
+
+- Vite 把 `/api/*`、`/results/*` 等代理到 `vite.config.js` 里配置的后端地址（默认 `http://app:8000`，本地 uvicorn 起在 8010 时要把代理目标改成 `http://localhost:8010`）
+- 开发访问地址：**http://localhost:5173**（vite）
+- 生产 / Docker 构建产物访问地址：**http://localhost:8010**（FastAPI `/static/spa/`）
+
+冒烟阶段如果只验后端，不需要起前端 dev。
+
+### 登录态
+
+```bash
+TOKEN=$(curl -fsS -X POST "$BASE_URL/api/auth/login" \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin"}' | jq -r .access_token)
 echo "${TOKEN:0:20}..."   # 非空即可
@@ -37,8 +60,8 @@ echo "${TOKEN:0:20}..."   # 非空即可
 | 1.1 | 容器健康 | `docker compose ps` | `Up ... (healthy)` |
 | 1.2 | 首屏 | 浏览器打开 `/` | 进登录页（未登录）/ 进首屏（已登录） |
 | 1.3 | 静态资源 | 浏览器开 DevTools Network | `assets/*.js` / `*.css` 200，不 404 |
-| 1.4 | API 健康 | `curl -fsS /api/drivers` | 返回各驱动 `available` 状态 |
-| 1.5 | Metrics | `curl -fsS /metrics \| head` | Prometheus 文本，含 `http_requests_total` |
+| 1.4 | API 健康 | `curl -fsS "$BASE_URL/api/drivers"` | 返回各驱动 `available` 状态 |
+| 1.5 | Metrics | `curl -fsS "$BASE_URL/metrics" \| head` | Prometheus 文本，含 `http_requests_total` |
 | 1.6 | OpenAPI | 浏览器开 `/docs` | Swagger UI 正常加载 |
 
 ---
@@ -59,9 +82,12 @@ echo "${TOKEN:0:20}..."   # 非空即可
 | # | 检查项 | 操作 | 期望 |
 |---|--------|------|------|
 | 3.1 | 列表 | 打开「数据源」页 | 现有数据源全列出 |
-| 3.2 | 新建 MySQL | 填 demo MySQL（host=mysql8 / port=3306）+ 测试连接 | 「连接成功」 |
+| 3.2 | 新建 MySQL（Docker 内 app）| 填 demo MySQL：**host=`mysql8`、port=`3306`**（容器内网） | 「连接成功」 |
+| 3.2′ | 新建 MySQL（本地 uvicorn 访问 compose 起的 demo MySQL）| 填 demo MySQL：**host=`localhost`、port=`3307`**（暴露给宿主机的端口） | 「连接成功」 |
 | 3.3 | 错配置 | 故意改错 port + 测试 | 友好错误（不要 stacktrace） |
 | 3.4 | 驱动缺失 | 选 DB2（未装驱动）+ 测试 | 提示「DB2 driver is not installed」 |
+
+> demo MySQL 容器名 `mysql8`，容器内监听 3306，`docker-compose.yml` 把它映射到宿主机的 3307。app 在容器里时跟它走 Docker 网络（用容器名 + 3306）；app 跑在本地 uvicorn 时只能走宿主机映射（用 localhost + 3307）。
 
 ---
 
@@ -133,7 +159,7 @@ done
 
 | # | 检查项 | 操作 | 期望 |
 |---|--------|------|------|
-| 8.1 | 导出 | `curl -fsS /config/export -o /tmp/cfg.json` | 文件非空，含 datasources / tasks |
+| 8.1 | 导出 | `curl -fsS "$BASE_URL/config/export" -o /tmp/cfg.json` | 文件非空，含 datasources / tasks |
 | 8.2 | 密码脱敏 | `grep -o 'password' /tmp/cfg.json \|\| echo OK` | API 默认不导出口令 |
 | 8.3 | 导入 | UI 上传 `/tmp/cfg.json` | 数据源 / 任务恢复 |
 
@@ -152,7 +178,7 @@ for EP in \
   "/api/history" \
   "/metrics" \
   "/docs"; do
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8010$EP")
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL$EP")
   echo "$CODE  $EP"
 done
 ```

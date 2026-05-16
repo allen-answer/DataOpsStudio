@@ -32,7 +32,7 @@ stream_compare 模式只解决了**对比阶段**的内存，没解决**结果�
 
 1. **runner 内存上限** ≈ O(chunk_size)，跟结果总量无关
 2. **单 run 结果总量** 支持到 10⁷（千万级）行 / 桶
-3. **二次读分页** 支持随机访问任意 offset + limit
+3. **二次读分页** 第一阶段支持按 offset + limit 读，**不保证大 offset 下的真正随机访问性能**（按 row group 顺序扫描跳过）；后续再用 row group statistics index 优化
 4. **Excel 导出** 可选 / 可异步 / 可只导差异 + 抽样
 5. **磁盘占用** 比当前 JSON 小 5×~10×（列存 + 压缩）
 
@@ -43,7 +43,8 @@ stream_compare 模式只解决了**对比阶段**的内存，没解决**结果�
 - **结果存储跟 compare engine 解耦**：engine 只产 row stream（generator），不知道下游怎么落盘；落盘走独立的 `ResultWriter` 抽象。
 - **不动 engine API**：`compare_rows` 跟 `compare_sorted_row_iterators` 现签名保持，新增 `compare_rows_streaming(... writer)` 入口给大场景用。
 - **桶分文件**：`only_source / only_target / diff / same` 四个桶各自落独立文件；UI 默认 lazy 加载 + skip `same` 桶。
-- **格式分级**：小结果（≤ 50K 行）维持 JSON 不动；大结果走 Parquet。
+- **统一目录格式 + writer**：正式 run 一律走目录形态 + ParquetResultWriter，**不依赖事先估算行数**（估错就分裂格式，徒增 detect 复杂度）；inline preview 等纯内存场景仍走 `compare_rows` 返回 dict。
+- **same 桶默认只记 count + sample**：`only_source / only_target / diff` 全量落盘，`same` 默认只在 `meta.json` 记 `count` + 头 N 行 `sample`，**不落整桶 parquet**；任务配置 `RunLimits.persist_same_bucket=true` 才全量落盘。
 - **元数据单独存**：`results/<run_id>/meta.json` 只放 summary + 文件清单，UI 拉这个就能渲染 HistoryView 头部，不用拉行数据。
 - **Excel 导出按需**：默认不导，UI 显式点「导出 Excel」才异步生成；只导差异 + 抽样 same（默认 sample 1000 行）。
 - **向后兼容**：旧 `results/<run_id>.json` 单文件格式仍能读，新 run 走目录格式 `results/<run_id>/`。读侧检测 `os.path.isdir` 派发。
@@ -63,16 +64,16 @@ results/
 ```
 results/
   <run_id>/
-    meta.json             # summary + 文件清单 + schema + run params
-    only_source.parquet   # 仅源端有的行
-    only_target.parquet   # 仅目标端有的行
-    diff.parquet          # 两端都有但字段有差的行（含 changes 列）
-    same.parquet          # 两端完全一致的行（可选；默认仍写，但 UI 默认不拉）
-    sample.json           # 每桶头 100 行抽样，给 UI 首屏秒开
+    meta.json             # summary + 文件清单 + schema + run params + same.sample
+    only_source.parquet   # 仅源端有的行（全量）
+    only_target.parquet   # 仅目标端有的行（全量）
+    diff.parquet          # 两端都有但字段有差的行（全量，含 changes 列）
+    same.parquet          # 仅当 RunLimits.persist_same_bucket=true 时存在
+    sample.json           # only_source / only_target / diff 每桶头 N 行抽样
     export.xlsx           # 按需生成的 Excel（不存在 = 未导出）
 ```
 
-`meta.json` 形态：
+`meta.json` 形态（默认 same 桶不落盘）：
 ```json
 {
   "run_id": "...",
@@ -89,10 +90,10 @@ results/
     "same": 1233832
   },
   "buckets": [
-    {"name": "only_source", "path": "only_source.parquet", "rows": 12,      "bytes": 4096},
-    {"name": "only_target", "path": "only_target.parquet", "rows": 45,      "bytes": 6144},
-    {"name": "diff",        "path": "diff.parquet",        "rows": 678,     "bytes": 102400},
-    {"name": "same",        "path": "same.parquet",        "rows": 1233832, "bytes": 84000000}
+    {"name": "only_source", "path": "only_source.parquet", "rows": 12,      "bytes": 4096,    "mode": "full"},
+    {"name": "only_target", "path": "only_target.parquet", "rows": 45,      "bytes": 6144,    "mode": "full"},
+    {"name": "diff",        "path": "diff.parquet",        "rows": 678,     "bytes": 102400,  "mode": "full"},
+    {"name": "same",        "path": null,                  "rows": 1233832, "bytes": 0,       "mode": "count_only", "sample": [/* 头 N 行 */]}
   ],
   "schema": {
     "key_columns": ["id"],
@@ -103,6 +104,11 @@ results/
   "engine_version": "..."
 }
 ```
+
+`bucket.mode` 三态：
+- `"full"` —— 整桶落 parquet，可分页读
+- `"count_only"` —— 只记 count + `sample` 字段（默认 same 桶；UI 看 count 就够）
+- `"sample_only"` —— 只记 count + sample，无 parquet（保留给后续大 only_source / only_target 走抽样的场景，本设计阶段不启用）
 
 ---
 
@@ -120,9 +126,10 @@ pyarrow 已经在 `requirements.txt` 里（`ParquetReader` 用），新加格式
 
 ### Parquet 写入策略
 - **batch flush**：engine 产 row 走 generator，writer 每 `batch_size=10_000` 行 flush 一次到 row group，控制内存。
+- **same 桶特殊路径**：writer 收到 same 桶的 row 时只 `count += 1` + 头 N 行存到 `sample` buffer，**不开 parquet writer**；`RunLimits.persist_same_bucket=true` 才走跟其它三桶相同的全量写入路径。
 - **schema 推断**：第一 batch 时 pyarrow 自动推；后续 batch 走相同 schema。`diff` 桶的 `changes` 字段是 nested struct，pyarrow 原生支持。
 - **压缩**：默认 `snappy`（速度 + 压缩比平衡）；大结果 (`> 100MB`) 走 `zstd`。
-- **stats**：写时启用 column statistics，读时分页可按 row group 跳过。
+- **stats**：写时启用 column statistics，读时分页可按 row group 跳过（后续优化的基础）。
 
 ---
 
@@ -135,19 +142,30 @@ class ResultWriter(Protocol):
     def write_bucket_row(self, bucket: str, row: dict[str, Any]) -> None: ...
     def finalize(self) -> ResultManifest: ...
 
-class JsonResultWriter:
-    """旧路径，整 dict 一次性落盘。结果 <=50K 行用，跟现行行为完全一致。"""
-
 class ParquetResultWriter:
-    """新路径，按桶 + batch flush 到 4 个 parquet。"""
-    def __init__(self, run_dir: Path, batch_size: int = 10_000): ...
+    """正式 run 唯一 writer。按桶 + batch flush 到 parquet；
+    same 桶按 persist_same_bucket 标志走 full / count_only 两条路径。
+    """
+    def __init__(
+        self,
+        run_dir: Path,
+        *,
+        batch_size: int = 10_000,
+        persist_same_bucket: bool = False,
+        sample_rows: int = 100,
+    ): ...
 ```
 
-`runner.run_task` 根据 `RunLimits.max_rows` 选 writer：
+`runner.run_task` **不预估行数**，所有正式 run 统一走 ParquetResultWriter + 目录格式：
 
 ```python
-writer = ParquetResultWriter(run_dir) if estimated_total_rows > 50_000 else JsonResultWriter(run_dir)
+writer = ParquetResultWriter(
+    run_dir,
+    persist_same_bucket=task.limits.persist_same_bucket,
+)
 ```
+
+> 不再按行数切 writer，原因：(1) 估错就走错格式，detect 两套路径复杂；(2) parquet 写小结果开销可忽略（一个 row group flush 一次）；(3) 统一目录格式让 `load_run_result` 只认目录形态。inline preview 等纯内存场景仍走 `compare_rows` 返回 dict，不进 writer 路径。
 
 engine 接 writer 而不直接 return 4 个 list：
 
@@ -204,7 +222,9 @@ def read_bucket(run_dir: Path, bucket: str, offset: int, limit: int) -> list[dic
     return out
 ```
 
-> ⚠️ 这个简单实现按 row group 顺序扫描；row group 内部不能跳过，所以 offset 很大时仍然要扫前面的 row group。优化方向是按 row group **统计跳过**（pyarrow `read_row_group(i)`），按 row group 行数累计判断是否要读。当前 batch_size 10000 + 默认 chunk 50000 看下来够用，不预先优化。
+> ⚠️ **第一阶段不承诺真随机访问**：上面这个实现按 row group 顺序扫描，offset 很大时仍要读+丢前面的 row group 数据。当前 batch_size 10000、默认 chunk 50000 下分页可用，但 offset 大到几十万行时延迟开始线性增长。
+>
+> 后续优化方向：(1) 用 `ParquetFile.metadata.row_group(i).num_rows` 累计 skip 整 row group，不解码就跳过；(2) 写入时按 key_column 排序 + 用 statistics 做 row group level predicate pushdown。本设计阶段不实施，等真实 1000 万级行场景的 profile 数据再决定。
 
 ---
 
@@ -237,8 +257,8 @@ def load_run_result(run_id: str):
 ```
 
 ### 写侧 gate
-- 默认 **新 run 都走新格式**（小结果用 JsonResultWriter 但落到目录里 `results/<run_id>/meta.json`，方便统一 detect）
-- 环境变量 `DATAOPS_RESULT_FORMAT=legacy` 回退老格式（应急逃生）
+- **新 run 一律走目录格式 + ParquetResultWriter**，不按行数分裂。
+- 环境变量 `DATAOPS_RESULT_FORMAT=legacy` 回退到旧单文件 JSON 格式（应急逃生，比如发现 parquet 写出有兼容性问题时关掉新路径而不必回滚镜像）。
 
 ### 历史数据
 **不主动迁移**。老 `.json` 文件保留原样，新 run 走新目录，时间长了老 run 自然过期被清。

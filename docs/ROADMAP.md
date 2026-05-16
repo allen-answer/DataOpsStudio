@@ -55,6 +55,18 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 
 ---
 
+## 本轮例外：scenario column_distributions
+
+工程收敛轮启动**之前**已经落地的 commit `f0782b4`（AI filler v2 — realistic 列 dist_params 分布参数）和 `b31f6dd`（CI scenario lint + 夜间回归 workflow 模板）实际上扩展了 Scenario / AI 能力。本轮**承认这是已成事实，纳入冻结基线**，但**之后不再继续扩**：
+
+- ✅ 保留：`column_distributions` / `dist_params` / lognormal / normal / uniform / exponential 4 分布族 / AI filler v2 prompt
+- ✅ 保留：`scripts/scenario_lint.py` + `.github/workflows/scenario-nightly.yml`（测试治理性质）
+- ❌ 之后不做：v3 接 Faker locale / lineage_script 条件分支 / 新分布族 / 新 anomaly kind / 新 AI 复核场景
+
+如果之后真的需要扩 Scenario / AI，**走单独的 RFC**，不再放任「上一轮的延续」自然展开。
+
+---
+
 ## 本轮明确不做（important: 不主动碰）
 
 > 这些功能要么已经做过一轮（在 `CLAUDE.md` 历史 phase 里）但当前不再扩，要么超出"核心定位"。**所有新需求落到这一列必须先升级讨论**，不要一边做工程收敛一边偷偷加。
@@ -67,7 +79,7 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 | **OpenLineage / DataHub / Marquez emitter** | 三 target type 已对接，本轮**不加新外部系统集成、不做事件 schema 升级** | `services/openlineage_emitter.py` 冻结 |
 | **企业微信 / 邮箱 / webhook 通知** | 三 channel 已交付，本轮**不加新 channel、不做模板系统** | `services/notifier.py` 冻结 |
 | **浏览器自动化 / Playwright** | e2e 测试可以照常用，但**不引入产品级的浏览器自动化能力**（如截屏报告、UI 操作录制） | `tests/e2e/` 冻结，不在产品里增 endpoint |
-| **AI 测试沙盒（scenario）扩展** | DSL + materializer + verifier + orchestrator 全交付，本轮**不加新 anomaly kind、不接 Faker locale、不做 lineage_script 模板变量条件分支** | Phase 12 冻结 |
+| **AI 测试沙盒（scenario）扩展** | DSL + materializer + verifier + orchestrator + column_distributions 全交付（见上面「本轮例外」），本轮**不加新 anomaly kind、不接 Faker locale、不做 lineage_script 模板变量条件分支、不加新分布族** | Phase 12 + column_distributions 冻结 |
 | **图引擎转正 Cytoscape** | G6 默认 + Cytoscape 实验通道共存，**不强迫切换**；等真实客户大图压测有 empirical 数据再判 | Phase 10 #5 ADR 已记 |
 
 新需求落进这一列，**先到 issue 讨论 → 进入下一轮 Roadmap**，不直接 PR。
