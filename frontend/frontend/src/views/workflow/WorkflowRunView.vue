@@ -5,6 +5,12 @@ import { nodeStatusMeta, synthesizeEvents, parameterTypeMeta } from '../../mock/
 import WorkflowRunNodeDetail from '../../components/workflow/WorkflowRunNodeDetail.vue'
 import TraceCompareSummary from '../../components/lineage/TraceCompareSummary.vue'
 import { useWorkflowStore } from '../../stores/workflow'
+import type { ApiWorkflowNodeRun } from '../../types/api'
+
+// 模板里访问的几个动态附加字段（store 在 reemit / async result 时挂上去）+
+// 后端 WorkflowRunStatus enum 不含 'cancelled'，这里加上让 status 比较通过
+interface OpenLineageItem { ok?: boolean; event_type?: string; target?: string; error?: string }
+interface GanttStep { node: ApiWorkflowNodeRun; offsetSec: number; duration: number }
 
 const emit = defineEmits(['back', 'open-detail'])
 const workflowStore = useWorkflowStore()
@@ -69,7 +75,8 @@ const realParamSpecs = computed<Record<string, any>>(() => {
   const map: Record<string, any> = {}
   for (const node of currentWorkflow.value?.nodes || []) {
     if (node.type !== 'params') continue
-    for (const p of node.config?.parameters || []) {
+    const params = (node.config as { parameters?: Array<Record<string, any>> } | undefined)?.parameters
+    for (const p of params || []) {
       if (p?.name) map[p.name] = p
     }
   }
@@ -99,13 +106,14 @@ if (!selectedNodeId.value && initialNodeId.value) selectedNodeId.value = initial
 const selectedNode = computed(() => run.value?.nodes?.find((n) => n.node_id === selectedNodeId.value))
 
 // Gantt 计算：相对开始时间转秒数 offset。
-const ganttData = computed(() => {
+const ganttData = computed<{ steps: GanttStep[]; totalSeconds: number }>(() => {
   if (!run.value || !run.value.nodes) return { steps: [], totalSeconds: 1 }
   const startTs = parseTs(run.value.started_at)
-  const steps = []
+  const steps: GanttStep[] = []
   let total = run.value.elapsed_seconds || 1
   for (const n of run.value.nodes) {
-    const offsetSec = n.started_at && startTs ? (parseTs(n.started_at) - startTs) / 1000 : 0
+    const nodeTs = parseTs(n.started_at)
+    const offsetSec = nodeTs !== null && startTs !== null ? (nodeTs - startTs) / 1000 : 0
     const duration = n.elapsed_seconds || 0
     if (offsetSec + duration > total) total = offsetSec + duration
     steps.push({
@@ -132,7 +140,10 @@ const stepBarStyle = (step: { offsetSec: number; duration: number }) => ({
 
 // 事件流合成
 const events = computed(() => synthesizeEvents(run.value))
-const openLineageResults = computed(() => run.value?.integrations?.openlineage || [])
+const openLineageResults = computed<OpenLineageItem[]>(() => {
+  const integrations = (run.value as { integrations?: { openlineage?: OpenLineageItem[] } } | null)?.integrations
+  return integrations?.openlineage || []
+})
 const openLineageOkCount = computed(() => openLineageResults.value.filter((item) => item.ok).length)
 
 // 选中节点的事件 —— 传给 WorkflowRunNodeDetail 渲染
@@ -143,7 +154,8 @@ const selectedNodeEvents = computed(() => events.value.filter((ev) => ev.step ==
 // 跳过"——便于一眼知道是不是有节点被条件路由跳过。
 const runStatusDisplay = computed(() => {
   if (!run.value) return null
-  const status = run.value.status
+  // schema 枚举只含 running/success/failed，但后端实际也会回 cancelled —— 用 string 比较绕开 enum 收窄
+  const status: string = run.value.status
   const skipped = (run.value.nodes || []).filter((n) => n.status === 'skipped').length
   if (status === 'success' && skipped > 0) {
     return {

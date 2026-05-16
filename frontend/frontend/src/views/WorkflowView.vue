@@ -74,7 +74,7 @@ const runFromList = (workflowId: string) => {
 const goSubPage = (id: SubPageId) => {
   if (id === 'detail') {
     if (selectedWorkflowId.value === 'new' && state.workflows?.length) {
-      selectWorkflow(state.workflows[0].id)
+      selectWorkflow((state.workflows[0] as { id: string }).id)
     }
   } else if (id === 'run') {
     if (!workflowResult.value) {
@@ -85,7 +85,7 @@ const goSubPage = (id: SubPageId) => {
   subPage.value = id
 }
 
-const subnav = [
+const subnav: Array<{ id: SubPageId; label: string; hint: string }> = [
   { id: 'list',   label: '作业流总览', hint: '健康度 / 调度 / 影响' },
   { id: 'templates', label: '作业流模板', hint: '复用 / 创建' },
   { id: 'detail', label: '作业流详情', hint: 'DAG / 配置 / 历史' },

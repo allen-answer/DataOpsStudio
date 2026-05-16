@@ -10,11 +10,13 @@ interface TemplateItem {
   description?: string
   category?: string
   tags?: string[]
+  created_at?: string
   workflow?: {
     id?: string
     name?: string
     description?: string
     project?: string
+    owner?: string
     nodes?: unknown[]
   }
 }
