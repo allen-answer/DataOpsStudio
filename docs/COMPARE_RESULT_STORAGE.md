@@ -277,14 +277,14 @@ def load_run_result(run_id: str):
 | Excel 导出异步化 | 中 | UI 要改：从「点完就下载」改成「排队 + 通知」；提供同步降级（小结果直接同步） |
 | pyarrow batch flush 写入 | 中 | 单测覆盖 batch boundary / schema 推断 / nested struct |
 | 前端分页 | 中 | HistoryView 改 lazy loading，不是大改 |
-| 磁盘空间（同时存 4 个 parquet） | 低 | parquet + snappy 比 JSON 小 5-10× |
+| 磁盘空间（默认 3 个 parquet；same 仅 count/sample，开启 `persist_same_bucket` 时才写第 4 个 parquet） | 低 | parquet + snappy 比 JSON 小 5-10×；same 桶不全量落盘进一步省下大头 |
 
 ---
 
 ## 11. 切片实施（实施时按这个顺序，不是本轮）
 
 1. **切片 A**：`ResultWriter` 协议 + `JsonResultWriter` 等价实现 + runner 切换走 writer。保持单文件 JSON 输出（行为完全不变）。
-2. **切片 B**：`ParquetResultWriter` 实现 + `meta.json` 落盘 + runner 按大小切 writer。读侧仍走老 JSON 路径（写新读老用 fallback `_load_legacy_format` 不可能，所以 B 必须连带 D 一起）。
+2. **切片 B**：`ParquetResultWriter` 实现 + `meta.json` 落盘 + runner 统一走目录格式 + ParquetResultWriter（不按预估行数切 writer）。读侧仍走老 JSON 路径（写新读老用 fallback `_load_legacy_format` 不可能，所以 B 必须连带 D 一起）。
 3. **切片 C**：读侧 `load_run_result` detect 新老格式 + `_load_new_format` 实现 + bucket 分页 endpoint。
 4. **切片 D**：HistoryView 改用 `/api/runs/<id>/meta` + lazy bucket 分页（首屏不拉行）。
 5. **切片 E**：Excel 导出异步化 + `POST /export-excel` + jobs 接管。
