@@ -30,7 +30,7 @@ onMounted(async () => {
   }
   try {
     lineage.error = ''
-    const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
+    const data = await apiGet<Record<string, unknown>>(`/api/lineage/stress-fixture?size=${size}`)
     lineage.result = data
   } catch (e: any) {
     lineage.error = `加载 stress fixture 失败：${e?.message || e}`
@@ -69,7 +69,7 @@ onMounted(async () => {
               <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">SQL/TXT 文件</span>
               <input
                 type="file" accept=".sql,.txt" class="bg-slate-50"
-                @change="lineage.sqlFile = $event.target.files[0]"
+                @change="(e) => lineage.sqlFile = ((e.target as HTMLInputElement).files || [])[0]"
               >
             </label>
           </template>
@@ -84,7 +84,7 @@ onMounted(async () => {
         <div>
           <p class="font-bold text-purple-800">压测 fixture 模式</p>
           <p class="muted text-[12px] leading-relaxed">
-            正在显示 <strong>{{ lineage.result.stress_size }}</strong> 张合成表的血缘图。
+            正在显示 <strong>{{ (lineage.result as any)?.stress_size }}</strong> 张合成表的血缘图。
             建议 Chrome DevTools Performance 录一段（init → 拖动 → 缩放 → focal 切换 → schema 折叠），
             分别在 G6 / Cytoscape 引擎下各做一次，对比 main thread 耗时 / FPS / Memory 峰值。
             URL 改 ?stress=300 / 1000 / 5000 切换 fixture 大小。
@@ -100,17 +100,17 @@ onMounted(async () => {
 
     <!-- 9-tab 报告 -->
     <LineageReportView
-      v-if="report"
+      v-if="report && lineage.result"
       :report="report"
-      :graph-groups="lineage.result.graph_groups || []"
-      :graph-edges="lineage.result.graph_edges || []"
-      :columns="lineage.result.columns || []"
-      :insert-mappings="lineage.result.insert_mappings || []"
-      :ai-enrichment="lineage.result.ai_enrichment || {}"
-      :ai-inferred="lineage.result.ai_inferred || {}"
-      :parse-errors="lineage.result.parse_errors || []"
-      :dynamic-sql-segments="lineage.result.dynamic_sql_segments || []"
-      :ambiguous-column-warnings="lineage.result.warnings || []"
+      :graph-groups="(lineage.result as any).graph_groups || []"
+      :graph-edges="(lineage.result as any).graph_edges || []"
+      :columns="(lineage.result as any).columns || []"
+      :insert-mappings="(lineage.result as any).insert_mappings || []"
+      :ai-enrichment="(lineage.result as any).ai_enrichment || {}"
+      :ai-inferred="(lineage.result as any).ai_inferred || {}"
+      :parse-errors="(lineage.result as any).parse_errors || []"
+      :dynamic-sql-segments="(lineage.result as any).dynamic_sql_segments || []"
+      :ambiguous-column-warnings="(lineage.result as any).warnings || []"
     />
   </section>
 </template>

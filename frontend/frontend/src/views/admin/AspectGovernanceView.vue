@@ -12,22 +12,34 @@ import { apiGet } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
 import { useProjectStore } from '../../stores/project'
 
+interface AspectFieldSpec {
+  type: string                   // 'string' | 'enum' | 'list' | 'number' | ...
+  values?: string[]              // 仅 enum 类型有
+  required?: boolean
+}
+
 interface AspectTypeSpec {
   type: string
   label?: string
   description?: string
   color?: string
-  schema?: unknown
+  schema?: Record<string, AspectFieldSpec>
 }
 
 interface AspectRecord {
+  id?: string
   asset_kind: string
   asset_name: string
+  aspect_type?: string
+  project_id?: string
   value?: Record<string, unknown>
+  updated_by?: string
+  updated_at?: string
   [key: string]: unknown
 }
 
 interface AspectHistoryRecord {
+  id?: string
   asset_kind: string
   asset_name: string
   aspect_type: string
@@ -335,7 +347,7 @@ watch(() => projectStore.currentProjectId, reload)
             <Search class="h-4 w-4 text-slate-300 group-hover:text-purple-500" />
           </div>
           <div class="mt-2 flex flex-wrap items-center gap-1">
-            <span :class="['rounded-full px-2 py-0.5 text-[11px]', colorFor(rec.aspect_type)]">
+            <span :class="['rounded-full px-2 py-0.5 text-[11px]', colorFor(rec.aspect_type || '')]">
               {{ previewValue(rec.value) || rec.aspect_type }}
             </span>
             <span v-if="rec.project_id" class="muted text-[10px]">

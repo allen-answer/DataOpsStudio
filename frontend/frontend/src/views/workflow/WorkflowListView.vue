@@ -19,7 +19,9 @@ const searchTerm = ref<string>('')
 
 // 现在元数据（owner / tags / schedule_cron）来自后端 Workflow 模型，
 // 不再用 mock 模板插值。健康度和 24 小时运行次数仍然由运行历史推导。
-const enriched = computed(() => state.workflows.map((wf) => {
+// BootstrapState.workflows 类型是 unknown[]（schema 尚未抽全），用 any cast 让
+// view 层先跑通；schema 抽全后改回严格类型。
+const enriched = computed(() => (state.workflows as any[]).map((wf: any) => {
   const wfRuns = allWorkflowRuns.value.filter((r) => r.workflow_id === wf.id)
   const latestRun = wfRuns[0] || null
   const success7d = wfRuns.slice(0, 7)

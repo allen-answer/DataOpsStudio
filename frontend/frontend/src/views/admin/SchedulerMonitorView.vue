@@ -24,8 +24,12 @@ const submitting = ref<boolean>(false)
 const autoRefresh = ref<boolean>(true)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
-const entries = computed<unknown[]>(() => status.value?.entries || [])
-const sensors = computed<unknown[]>(() => status.value?.sensors || [])
+// 后端 SchedulerStatus.entries / .sensors 形态较复杂，前期用 Record 通用形状
+// 让 v-for 能直接拿字段；后续要给 schema 化时再窄化。
+interface CronEntry { workflow_id: string; workflow_name?: string; cron?: string; next_run_at?: string; last_run_at?: string; last_job_id?: string; skipped_overlap?: number; last_error?: string; [k: string]: unknown }
+interface SensorEntry { workflow_id: string; workflow_name?: string; sensor_id?: string; type?: string; interval_seconds?: number; cooldown_seconds?: number; next_run_at?: string; last_triggered_at?: string; last_job_id?: string; last_error?: string; [k: string]: unknown }
+const entries = computed<CronEntry[]>(() => (status.value?.entries as CronEntry[]) || [])
+const sensors = computed<SensorEntry[]>(() => (status.value?.sensors as SensorEntry[]) || [])
 const isRunning = computed<boolean>(() => status.value?.running === true)
 
 async function reload(): Promise<void> {

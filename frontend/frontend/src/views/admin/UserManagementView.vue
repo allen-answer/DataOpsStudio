@@ -13,6 +13,7 @@ interface UserItem {
   username: string
   role: Role
   display_name?: string
+  created_at?: string
 }
 
 const authStore = useAuthStore()

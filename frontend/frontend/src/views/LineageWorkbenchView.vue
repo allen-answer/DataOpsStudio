@@ -70,7 +70,7 @@ onMounted(async () => {
     mode.value = 'paste'
     try {
       lineage.error = ''
-      const data = await apiGet(`/api/lineage/stress-fixture?size=${size}`)
+      const data = await apiGet<Record<string, unknown>>(`/api/lineage/stress-fixture?size=${size}`)
       lineage.result = data
     } catch (e: any) {
       lineage.error = `加载 stress fixture 失败：${e?.message || e}`
@@ -87,7 +87,7 @@ const result = computed(() => inputState.value?.result || null)
 const error = computed(() => inputState.value?.error || '')
 const report = computed(() => result.value?.report || null)
 const isAnalyzing = computed(() => Boolean(inputState.value?.isAnalyzing))
-const aiPending = computed(() => result.value?.ai_enrichment?.status === 'pending')
+const aiPending = computed(() => (result.value?.ai_enrichment as any)?.status === 'pending')
 const progressVisible = computed(() => isAnalyzing.value || aiPending.value)
 const progressLabel = computed(() => {
   if (isAnalyzing.value) return '规则血缘解析中'
@@ -317,17 +317,17 @@ function onZipChange(e: Event): void {
 
     <!-- 9-tab 报告 -->
     <LineageReportView
-      v-if="report"
+      v-if="report && result"
       :report="report"
-      :graph-groups="isSinglePipeline ? (result.graph_groups || []) : (result.table_groups || [])"
-      :graph-edges="isSinglePipeline ? (result.graph_edges || []) : (result.table_edges || [])"
-      :columns="isSinglePipeline ? (result.columns || []) : []"
-      :insert-mappings="isSinglePipeline ? (result.insert_mappings || []) : (result.field_mappings || [])"
-      :ai-enrichment="result.ai_enrichment || {}"
-      :ai-inferred="result.ai_inferred || {}"
-      :parse-errors="result.parse_errors || []"
-      :dynamic-sql-segments="result.dynamic_sql_segments || []"
-      :ambiguous-column-warnings="result.warnings || []"
+      :graph-groups="isSinglePipeline ? ((result as any).graph_groups || []) : ((result as any).table_groups || [])"
+      :graph-edges="isSinglePipeline ? ((result as any).graph_edges || []) : ((result as any).table_edges || [])"
+      :columns="isSinglePipeline ? ((result as any).columns || []) : []"
+      :insert-mappings="isSinglePipeline ? ((result as any).insert_mappings || []) : ((result as any).field_mappings || [])"
+      :ai-enrichment="(result as any).ai_enrichment || {}"
+      :ai-inferred="(result as any).ai_inferred || {}"
+      :parse-errors="(result as any).parse_errors || []"
+      :dynamic-sql-segments="(result as any).dynamic_sql_segments || []"
+      :ambiguous-column-warnings="(result as any).warnings || []"
     />
   </section>
 </template>

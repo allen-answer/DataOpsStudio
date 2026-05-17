@@ -60,8 +60,8 @@ onMounted(() => { loadHistory() })
       </div>
 
       <div v-if="historyActiveTab === 'compare'" class="mb-4 flex flex-wrap gap-4">
-        <label v-for="sheet in state.historySheets" :key="sheet" class="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm">
-          <input class="w-auto" type="checkbox" :checked="selectedSheets.has(sheet)" @change="$event.target.checked ? selectedSheets.add(sheet) : selectedSheets.delete(sheet)">
+        <label v-for="sheet in (state.historySheets as string[])" :key="sheet" class="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm">
+          <input class="w-auto" type="checkbox" :checked="selectedSheets.has(sheet)" @change="(e) => (e.target as HTMLInputElement).checked ? selectedSheets.add(sheet) : selectedSheets.delete(sheet)">
           {{ sheet }}
         </label>
       </div>
@@ -105,7 +105,7 @@ onMounted(() => { loadHistory() })
             <tbody>
               <tr v-for="(item, idx) in filteredHistory" :key="item.run_id || idx" class="border-t border-slate-100 transition hover:bg-slate-50">
                 <td class="px-3 py-3 align-top">
-                  <input class="w-auto" type="checkbox" :value="item.run_id" :checked="selectedHistory.has(item.run_id)" @change="$event.target.checked ? selectedHistory.add(item.run_id) : selectedHistory.delete(item.run_id)">
+                  <input class="w-auto" type="checkbox" :value="item.run_id" :checked="selectedHistory.has(item.run_id)" @change="(e) => (e.target as HTMLInputElement).checked ? selectedHistory.add(item.run_id) : selectedHistory.delete(item.run_id)">
                 </td>
                 <td class="px-3 py-3 align-top"><code class="block truncate text-[12px] leading-5 text-slate-700" :title="item.run_id">{{ item.run_id }}</code></td>
                 <td class="px-3 py-3 align-top"><span class="line-clamp-2">{{ historyItemTaskLabel(item) }}</span></td>

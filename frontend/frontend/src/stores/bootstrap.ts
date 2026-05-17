@@ -22,12 +22,18 @@ import { defineStore } from 'pinia'
 import { apiGet } from '../api'
 
 
+export interface DriverInfo {
+  available: boolean
+  installed_modules: string[]
+  candidate_modules: string[]
+}
+
 export interface BootstrapState {
   datasources: unknown[]
   tasks: unknown[]
   workflows: unknown[]
   workflowTemplates: unknown[]
-  drivers: Record<string, boolean>
+  drivers: Record<string, DriverInfo>
   dbTypes: string[]
   history: unknown[]
   historySheets: unknown[]
@@ -38,7 +44,7 @@ interface BootstrapApiResponse {
   tasks?: unknown[]
   workflows?: unknown[]
   workflow_templates?: unknown[]
-  drivers?: Record<string, boolean>
+  drivers?: Record<string, DriverInfo>
   db_types?: string[]
   history?: unknown[]
   history_sheets?: unknown[]
@@ -70,8 +76,8 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     return state
   }
 
-  // sidebar 显示驱动可用性 dot；从 state.drivers map 派生 [(name, ok), ...]
-  const driverItems = computed<[string, boolean][]>(
+  // sidebar 显示驱动可用性 dot；从 state.drivers map 派生 [(name, info), ...]
+  const driverItems = computed<[string, DriverInfo][]>(
     () => Object.entries(state.drivers || {})
   )
 

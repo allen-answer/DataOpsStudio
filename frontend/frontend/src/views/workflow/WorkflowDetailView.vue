@@ -72,7 +72,7 @@ const latestRun = computed(() => workflowResult.value || null)
 // 状态），直接 healthMeta[health].pill 会炸渲染。统一走 healthDisplay 取兜底值。
 const health = computed(() => workflowHealth(currentWorkflow.value, workflowRunHistory.value[0] || null) || 'none')
 const healthDisplay = computed(() => healthMeta[health.value] || healthMeta.none)
-const workflowAsyncTerminal = computed(() => ['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value?.status))
+const workflowAsyncTerminal = computed(() => ['success', 'failed', 'cancelled'].includes(workflowAsyncStatus.value?.status || ''))
 const workflowAsyncTone = computed(() => {
   const status = workflowAsyncStatus.value?.status
   if (status === 'success') return 'border-emerald-200 bg-emerald-50 text-emerald-800'
@@ -122,7 +122,7 @@ const openAsyncRun = async () => {
   emit('open-run', runId)
 }
 
-const tabs = [
+const tabs: Array<{ id: TabId; label: string }> = [
   { id: 'history',  label: '运行历史' },
   { id: 'events',   label: '事件日志' },
   { id: 'lineage',  label: '依赖关系' },
@@ -219,7 +219,7 @@ watch(
           <button class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!isSavedWorkflow" :title="!isSavedWorkflow ? '请先保存作业流' : '提交后台执行'" @click="runWorkflowAsync">
             后台执行
           </button>
-          <button v-if="workflowAsyncJob && workflowAsyncStatus && !['success','failed','cancelled'].includes(workflowAsyncStatus.status)"
+          <button v-if="workflowAsyncJob && workflowAsyncStatus && !['success','failed','cancelled'].includes(workflowAsyncStatus.status || '')"
                   class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
                   @click="cancelWorkflowAsync">
             ▣ 取消
@@ -246,7 +246,7 @@ watch(
             <span class="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset ring-current/10">{{ workflowAsyncLabel }}</span>
             <span class="font-mono text-[11px] opacity-70">job {{ workflowAsyncJob.job_id?.slice(0, 8) }}</span>
           </div>
-          <p class="mt-1 text-sm font-semibold">{{ workflowAsyncStatus.message || '后台任务已提交' }}</p>
+          <p class="mt-1 text-sm font-semibold">{{ (workflowAsyncStatus as any).message || '后台任务已提交' }}</p>
           <p v-if="workflowAsyncStatus.error" class="mt-1 break-words text-xs opacity-80">{{ workflowAsyncStatus.error }}</p>
         </div>
         <div class="flex shrink-0 items-center gap-2">
@@ -268,7 +268,7 @@ watch(
     <div class="grid grid-cols-[minmax(0,1fr)_380px] gap-3">
       <WorkflowDagCanvas
         :nodes="workflowDraft.nodes"
-        :latest-run="latestRun"
+        :latest-run="latestRun || undefined"
         v-model:selected-node-id="selectedNodeId"
         @add-node="handleAddNodeFromCanvas" />
 

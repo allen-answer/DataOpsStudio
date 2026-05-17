@@ -62,7 +62,7 @@ function projectName(id: string): string {
     </div>
 
     <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-      <article v-for="item in state.datasources" :key="item.id" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md">
+      <article v-for="item in (state.datasources as any[])" :key="item.id" class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md">
         <template v-if="editingDatasourceId === item.id">
           <div class="mb-4 flex items-center justify-between">
             <span class="text-sm font-bold text-slate-700">编辑数据源</span>

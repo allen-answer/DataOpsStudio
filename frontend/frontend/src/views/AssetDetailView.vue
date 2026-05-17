@@ -12,12 +12,20 @@ import { apiGet, apiJson } from '../api'
 import { useAuthStore } from '../stores/auth'
 import TraceCompareModal from '../components/lineage/TraceCompareModal.vue'
 
+interface AspectFieldSpec {
+  name: string
+  type: string
+  required?: boolean
+  options?: string[]
+  values?: string[]   // enum 类型从后端返回的可选值（部分 schema 同时有 options/values）
+}
+
 interface AspectTypeSpec {
   type: string
   label?: string
   description?: string
   color?: string
-  schema?: Array<{ name: string; type: string; required?: boolean; options?: string[] }>
+  schema?: AspectFieldSpec[]
 }
 
 interface AspectEntry {
@@ -249,8 +257,8 @@ async function runIntrospect(): Promise<void> {
 const mergedColumns = computed(() => {
   if (!introspectColumns.value.length) return []
   const lineageByName = new Map(columns.value.map((c) => [c.name.toLowerCase(), c]))
-  const out = []
-  const seen = new Set()
+  const out: Array<Record<string, any>> = []
+  const seen = new Set<string>()
   for (const ic of introspectColumns.value) {
     const lower = ic.name.toLowerCase()
     seen.add(lower)
@@ -605,8 +613,8 @@ function setListValue(field: string, text: string): void {
                   type="text"
                   class="mt-0.5 w-full"
                   placeholder="逗号分隔，如 a, b, c"
-                  :value="listValueAsText(fieldName)"
-                  @input="(e) => setListValue(fieldName, e.target.value)"
+                  :value="listValueAsText(String(fieldName))"
+                  @input="(e) => setListValue(String(fieldName), (e.target as HTMLInputElement).value)"
                 />
                 <input
                   v-else
@@ -885,7 +893,7 @@ function setListValue(field: string, text: string): void {
                           v-for="(items, hop) in groupByHop(columnLineageMap[col.name].upstream)"
                           :key="`up_hop_${hop}`"
                           class="flex flex-wrap items-center gap-1"
-                          :style="{ paddingLeft: `${(hop - 1) * 16}px` }"
+                          :style="{ paddingLeft: `${(Number(hop) - 1) * 16}px` }"
                         >
                           <span v-if="(columnLineageDepth[col.name] || 1) > 1"
                                 class="muted mr-1 text-[10px]">第 {{ hop }} 跳</span>
@@ -919,7 +927,7 @@ function setListValue(field: string, text: string): void {
                           v-for="(items, hop) in groupByHop(columnLineageMap[col.name].downstream)"
                           :key="`dn_hop_${hop}`"
                           class="flex flex-wrap items-center gap-1"
-                          :style="{ paddingLeft: `${(hop - 1) * 16}px` }"
+                          :style="{ paddingLeft: `${(Number(hop) - 1) * 16}px` }"
                         >
                           <span v-if="(columnLineageDepth[col.name] || 1) > 1"
                                 class="muted mr-1 text-[10px]">第 {{ hop }} 跳</span>

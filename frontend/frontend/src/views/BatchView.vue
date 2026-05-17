@@ -42,7 +42,7 @@ const report = computed(() => batch.result?.report || null)
             <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">脚本文件</span>
             <input
               type="file" accept=".sql,.txt,.zip" multiple class="bg-slate-50"
-              @change="batch.files = Array.from($event.target.files)"
+              @change="(e) => batch.files = Array.from(((e.target as HTMLInputElement).files) || [])"
             >
             <small class="muted mt-1 block text-[11px]">可一次选择多个 .sql/.txt 文件，或上传一个 .zip 脚本包</small>
           </label>
@@ -69,17 +69,17 @@ const report = computed(() => batch.result?.report || null)
 
     <!-- 9-tab 报告 -->
     <LineageReportView
-      v-if="report"
+      v-if="report && batch.result"
       :report="report"
-      :graph-groups="batch.result.table_groups || []"
-      :graph-edges="batch.result.table_edges || []"
+      :graph-groups="(batch.result as any).table_groups || []"
+      :graph-edges="(batch.result as any).table_edges || []"
       :columns="[]"
-      :insert-mappings="batch.result.field_mappings || []"
-      :ai-enrichment="batch.result.ai_enrichment || {}"
-      :ai-inferred="batch.result.ai_inferred || {}"
-      :parse-errors="batch.result.parse_errors || []"
-      :dynamic-sql-segments="batch.result.dynamic_sql_segments || []"
-      :ambiguous-column-warnings="batch.result.warnings || []"
+      :insert-mappings="(batch.result as any).field_mappings || []"
+      :ai-enrichment="(batch.result as any).ai_enrichment || {}"
+      :ai-inferred="(batch.result as any).ai_inferred || {}"
+      :parse-errors="(batch.result as any).parse_errors || []"
+      :dynamic-sql-segments="(batch.result as any).dynamic_sql_segments || []"
+      :ambiguous-column-warnings="(batch.result as any).warnings || []"
     />
   </section>
 </template>

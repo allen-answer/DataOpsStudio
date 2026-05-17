@@ -10,6 +10,7 @@ interface UserItem {
   id: string
   username: string
   display_name?: string
+  role?: string
 }
 
 interface ProjectItem {
@@ -242,7 +243,7 @@ onMounted(() => {
                   <div>
                     <p class="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">添加成员</p>
                     <div class="flex gap-2">
-                      <select class="flex-1" @change="addMember($event.target.value); $event.target.value = ''">
+                      <select class="flex-1" @change="(e) => { const t = e.target as HTMLSelectElement; addMember(t.value); t.value = '' }">
                         <option value="">-- 选择用户 --</option>
                         <option v-for="u in candidateUsers" :key="u.id" :value="u.id">
                           {{ userLabel(u.id) }} · {{ u.role }}

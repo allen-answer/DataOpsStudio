@@ -8,6 +8,11 @@ interface AuditLogEntry {
   username: string
   method: string
   resource_type?: string
+  resource_id?: string
+  user_id?: string
+  status_code?: number
+  path?: string
+  ts?: string
   status?: number
   [key: string]: unknown
 }

@@ -23,6 +23,10 @@ export interface HistoryRecord {
   started_at?: string
   status?: string
   summary?: Record<string, unknown>
+  source_rows?: number
+  target_rows?: number
+  excel_filename?: string
+  result_filename?: string
 }
 
 export interface TaskMinimal {

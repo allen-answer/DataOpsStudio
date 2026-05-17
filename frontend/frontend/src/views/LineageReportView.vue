@@ -34,8 +34,12 @@ const props = defineProps({
   ambiguousColumnWarnings: { type: Array, default: () => [] },
 })
 
+type TabId =
+  | 'summary' | 'inputs' | 'outputs' | 'process' | 'table' | 'column'
+  | 'semantic' | 'impact' | 'risks' | 'ai' | 'ai_inferred'
+
 // labelKey 走 i18n —— S4.C PR2 用 $t(tab.labelKey) 渲染
-const TABS = [
+const TABS: Array<{ id: TabId; labelKey: string; icon: unknown }> = [
   { id: 'summary',     labelKey: 'lineageReport.tabSummary',    icon: LayoutDashboard },
   { id: 'inputs',      labelKey: 'lineageReport.tabInputs',     icon: Inbox },
   { id: 'outputs',     labelKey: 'lineageReport.tabOutputs',    icon: Upload },
@@ -49,17 +53,13 @@ const TABS = [
   { id: 'ai_inferred', labelKey: 'lineageReport.tabAIInferred', icon: Sparkles },
 ]
 
-type TabId =
-  | 'summary' | 'inputs' | 'outputs' | 'process' | 'table' | 'column'
-  | 'semantic' | 'impact' | 'risks' | 'ai' | 'ai_inferred'
-
 const activeTab = ref<TabId>('summary')
 const columnView = ref<'table' | 'graph'>('table')
 const focusedColumnNodeId = ref<string>('')
 
 // 总览卡片"点风险点 5"会 emit('navigate', {tab:'risks', preset:{levelFilter:'high'}})
 // —— 这里把 tab 切过去，preset 透给目标 panel（一次性，view 后续 watch tab 会清掉）
-const tabPresets = ref<Record<string, unknown>>({})
+const tabPresets = ref<Record<string, Record<string, any> | undefined>>({})
 
 interface NavigatePayload { tab: TabId; preset?: unknown }
 
