@@ -193,13 +193,13 @@ DataOpsStudio-win-offline-X.Y.Z.zip
 curl -fsS http://localhost:8010/api/drivers | jq
 ```
 
-返回示例：
+返回示例（key 是 `DatabaseType` enum 的 value，大小写跟 `app/models/common.py` 一致）：
 ```json
 {
-  "mysql":  {"available": true,  "installed_modules": ["pymysql"],   "candidate_modules": ["pymysql","MySQLdb"]},
-  "dm":     {"available": true,  "installed_modules": ["dmPython"],  "candidate_modules": ["dmPython"]},
-  "oracle": {"available": false, "installed_modules": [],            "candidate_modules": ["oracledb","cx_Oracle"]},
-  "db2":    {"available": false, "installed_modules": [],            "candidate_modules": ["ibm_db_dbi","ibm_db"]}
+  "DM":     {"available": true,  "installed_modules": ["dmPython"],  "candidate_modules": ["dmPython"]},
+  "MySQL":  {"available": true,  "installed_modules": ["pymysql"],   "candidate_modules": ["pymysql","MySQLdb"]},
+  "Oracle": {"available": false, "installed_modules": [],            "candidate_modules": ["oracledb","cx_Oracle"]},
+  "DB2":    {"available": false, "installed_modules": [],            "candidate_modules": ["ibm_db_dbi","ibm_db"]}
 }
 ```
 
