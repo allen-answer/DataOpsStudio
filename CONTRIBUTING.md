@@ -27,6 +27,26 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
+## Git Hooks（强烈建议装）
+
+仓库带一个 pre-commit hook 拦截**服务器登录信息**（IP / SSH key 路径 /
+`ssh -i ... user@host` 命令）误提交。clone 后跑一次：
+
+```bash
+# Linux / macOS / WSL / Git Bash
+bash scripts/install-git-hooks.sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass scripts/install-git-hooks.ps1
+```
+
+Hook 源在 `scripts/git-hooks/`，会被 copy 到 `.git/hooks/`。如要新增需要拦截
+的模式（比如新生产实例 IP），改 `scripts/git-hooks/pre-commit` 里的
+`PATTERNS` 变量，再重跑安装脚本。
+
+**规则**：服务器 IP / SSH key 路径 / 数据库 host 不进仓库；只进运维渠道
+或本地 `.claude/` 配置（已 gitignore）。
+
 ## 项目结构
 
 ```

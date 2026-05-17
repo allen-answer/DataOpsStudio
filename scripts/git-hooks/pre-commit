@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 拦截把服务器登录信息推到 git 的 commit。
+#
+# 黑名单覆盖已知泄露的 IP / SSH key 文件名 / 远端登录用户串。新加生产实例
+# 时把对应 IP / key 路径加进 PATTERNS。
+#
+# 路径过滤：`scripts/git-hooks/` 自身排除（hook 文件里就要写匹配规则，
+# 不能自己拦自己）。
+#
+# 装法：scripts/install-git-hooks.sh（POSIX）或 install-git-hooks.ps1（Win）。
+# 这个文件本身不会被 git 跑，必须 copy 到 .git/hooks/pre-commit 才生效。
+
+set -eu
+
+PATTERNS='110\.42\.230\.97|connect_key\.pem|ubuntu@[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|ssh -i [^ ]+\.pem'
+
+# 扫 staged 内容；--no-color 防染色；exclude hook 源避免自匹配
+hits=$(git diff --cached --no-color -U0 \
+  -- ':(exclude)scripts/git-hooks/**' \
+  | grep -nE "$PATTERNS" || true)
+
+if [ -n "$hits" ]; then
+  echo "ERROR: pre-commit 拦截 —— 检测到服务器登录信息：" >&2
+  echo "$hits" | head -20 >&2
+  echo "" >&2
+  echo "处理：把这些信息移到 .claude/memory/ 或运维渠道，从 staged 文件里删掉再 commit。" >&2
+  echo "（确定要 commit 走 git commit --no-verify 绕过，慎用）" >&2
+  exit 1
+fi
