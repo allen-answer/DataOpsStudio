@@ -6,15 +6,17 @@ update 收到 password='' 视为"保持原值不变"，避免前端编辑表单�
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.dbclients import pool as _pool
 from app.dbclients.factory import test_connection
 from app.models import ConnectionTestResult, DataSource, DataSourceCreate, OkResponse
+from app.services.auth import get_current_user, require_role
 from app.services.repositories import datasource_store
 
 
-router = APIRouter()
+# router 级默认：未登录直接 401。mutation endpoint 单独覆盖 require_role("editor")。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 def _redact(ds: DataSource) -> DataSource:
@@ -31,12 +33,12 @@ def list_datasources(project_id: str = ""):
 
 
 @router.post("/api/datasources", response_model=DataSource)
-def create_datasource(payload: DataSourceCreate):
+def create_datasource(payload: DataSourceCreate, _: object = Depends(require_role("editor"))):
     return _redact(datasource_store.create(payload))
 
 
 @router.put("/api/datasources/{datasource_id}", response_model=DataSource)
-def update_datasource(datasource_id: str, payload: DataSourceCreate):
+def update_datasource(datasource_id: str, payload: DataSourceCreate, _: object = Depends(require_role("editor"))):
     # password 留空 = 保持原值（前端编辑表单不强制重输密码）
     if not payload.password:
         existing = datasource_store.get(datasource_id)
@@ -53,7 +55,7 @@ def update_datasource(datasource_id: str, payload: DataSourceCreate):
 
 
 @router.delete("/api/datasources/{datasource_id}", response_model=OkResponse)
-def delete_datasource(datasource_id: str):
+def delete_datasource(datasource_id: str, _: object = Depends(require_role("editor"))):
     try:
         datasource_store.delete(datasource_id)
     except KeyError as exc:
@@ -63,7 +65,7 @@ def delete_datasource(datasource_id: str):
 
 
 @router.post("/api/datasources/{datasource_id}/test", response_model=ConnectionTestResult)
-def test_datasource(datasource_id: str):
+def test_datasource(datasource_id: str, _: object = Depends(require_role("editor"))):
     datasource = datasource_store.get(datasource_id)
     if datasource is None:
         raise HTTPException(status_code=404, detail="Datasource not found")

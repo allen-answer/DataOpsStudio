@@ -5,11 +5,13 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadF
 
 from app.models import LineageAnalyzeResult, LineageBatchAnalyzeResponse, User
 from app.services import lineage_ai, lineage_service
-from app.services.auth import require_role
+from app.services.auth import get_current_user, require_role
 from app.services.lineage_ai_config import get_public_lineage_ai_config, save_lineage_ai_config
 
 
-router = APIRouter()
+# router 级 default：viewer 读 ai status / fixture / job 查询。
+# analyze / trace-compare / ai config (admin) 各自单独升级。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/lineage/ai/status")
@@ -94,7 +96,7 @@ def lineage_trace_compare_api(
 
 
 @router.post("/api/lineage/analyze", response_model=LineageAnalyzeResult)
-def lineage_api(payload: dict[str, str] = Body(...)):
+def lineage_api(payload: dict[str, str] = Body(...), _: User = Depends(require_role("editor"))):
     try:
         return lineage_service.analyze_json(payload)
     except HTTPException:
@@ -115,6 +117,7 @@ def lineage_form_api(
     ai_enabled: str = Form(""),
     sql_file: UploadFile | None = File(None),
     schema_file: list[UploadFile] = File(default=[]),
+    _: User = Depends(require_role("editor")),
 ):
     try:
         return lineage_service.analyze_form(
@@ -139,6 +142,7 @@ def lineage_batch_api(
     ai_enabled: str = Form(""),
     sql_files: list[UploadFile] = File(default=[]),
     schema_file: list[UploadFile] = File(default=[]),
+    _: User = Depends(require_role("editor")),
 ):
     try:
         return lineage_service.analyze_batch(

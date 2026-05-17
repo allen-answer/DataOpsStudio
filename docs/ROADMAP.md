@@ -36,9 +36,9 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 - [x] `docs/COMPARE_RESULT_STORAGE.md` —— 大结果落盘方案（**仅设计**）
 - [x] `tests/test_sql_guard.py` —— SELECT/WITH 允许 + DML/DDL/多语句/FOR UPDATE 拒绝 + 字符串注释不误判
 - [x] `release-please` → tag → Windows offline 打包 链路 dry-run 通过 + release.yml 加 `workflow_dispatch` / `draft: false` / `generate_release_notes: false`
-- [x] `frontend-build` typecheck 修绿 ROADMAP 点名的 3 个 view（`WorkflowRunView` / `WorkflowTemplateView` / `WorkflowView`）；其余 view 累积红留 P0.5
-- [ ] **P0.4 · 后端 endpoint 补 auth dependency**：P0.3 smoke 发现 `/api/datasources` / `/api/tasks` / `/api/workflows` / `/api/history` / `/config/export` 无 `Depends(...)` 直接 200，**当前 auth gate 完全在前端**。`services/auth.py` 已有 JWT + RBAC + bcrypt 实现，需要给这些 endpoint 挂 `Depends(get_current_user)` + role check。决策：保持"内网工具 + 前端 gate"定位还是补后端强制？补的话工作量中等（统一 dependency + audit middleware 已就位）
-- [ ] **P0.5 · 收尾其余 view 的 typecheck 红**：P0.1 之后 `npm run typecheck` 仍有 ~150 行红，散在 admin/* + Asset/Batch/Datasource/History/LineageReport/LineageView/LineageWorkbench/WorkflowDetail/WorkflowList 等。按 batch 收口
+- [x] `frontend-build` typecheck 修绿 ROADMAP 点名的 3 个 view（`WorkflowRunView` / `WorkflowTemplateView` / `WorkflowView`）；其余 view 累积红留 P0.5（**注意：CI 上 `npm run typecheck` 仍会红 —— P0.5 未完成前 frontend-build job 红色不是 P0.4 引入的 regression**）
+- [x] **P0.4 · 后端 endpoint 强制鉴权**：13 个 API 文件挂 `Depends(get_current_user)` + role check，覆盖核心 5（datasources/tasks/workflows/history/config_io）+ stretch 7（workflow_runs/uploads/scheduler/runs/lineage/assets/search/lineage_graph/scenarios/slow_sql/system）+ projects（已挂）。新增 `docs/AUTHORIZATION_MATRIX.md` 是后端权限 SOT；新增 `tests/test_api_auth_matrix.py` 31 用例覆盖 401/403/200 矩阵。conftest 加 `client / client_admin / client_editor / client_viewer / client_anon` fixture，老业务测试默认 admin token 零改动
+- [ ] **P0.5 · 收尾其余 view 的 typecheck 红**：P0.1 之后 `npm run typecheck` 仍报错（散在 admin/* + Asset/Batch/Datasource/History/LineageReport/LineageView/LineageWorkbench/WorkflowDetail/WorkflowList 等）。CI frontend-build job 会因 typecheck step 失败，按 batch 收口
 - [ ] **P0.6 · 真 Docker + demo-db SMOKE 实测**：P0.3 本地 uvicorn 跑了 §1/§7/§9 段，但 §3 数据源 / §4 数据对比 / §5 血缘 / §6 作业流 全跳过（需要 Docker + 浏览器）。下次 oncall 在有 Docker 的机器上跑一次全套
 
 ### P1 · 数据对比深化

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api._shared import coerce_string_dict, ensure_workflow_node_targets
@@ -18,6 +18,7 @@ from app.models import (
     WorkflowTemplateCreate,
     WorkflowTemplateInstantiate,
 )
+from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_workflow_run
 from app.services.notifier import notify_workflow_run
 from app.services.openlineage_emitter import emit_workflow_run_openlineage
@@ -26,7 +27,8 @@ from app.services.workflow_engine import run_workflow
 from app.services.workflow_history import list_workflow_runs, persist_workflow_run
 
 
-router = APIRouter()
+# router 级 default：viewer 也要登录。mutation / run / template 写操作单独升级 editor。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class WorkflowTemplateMeta(BaseModel):
@@ -63,13 +65,13 @@ def list_workflows(project_id: str = ""):
 
 
 @router.post("/api/workflows", response_model=Workflow)
-def create_workflow(payload: WorkflowCreate):
+def create_workflow(payload: WorkflowCreate, _: object = Depends(require_role("editor"))):
     ensure_workflow_node_targets(payload)
     return workflow_store.create(payload)
 
 
 @router.put("/api/workflows/{workflow_id}", response_model=Workflow)
-def update_workflow(workflow_id: str, payload: WorkflowCreate):
+def update_workflow(workflow_id: str, payload: WorkflowCreate, _: object = Depends(require_role("editor"))):
     ensure_workflow_node_targets(payload)
     try:
         return workflow_store.update(workflow_id, payload)
@@ -78,7 +80,7 @@ def update_workflow(workflow_id: str, payload: WorkflowCreate):
 
 
 @router.delete("/api/workflows/{workflow_id}", response_model=OkResponse)
-def delete_workflow(workflow_id: str):
+def delete_workflow(workflow_id: str, _: object = Depends(require_role("editor"))):
     try:
         workflow_store.delete(workflow_id)
     except KeyError as exc:
@@ -92,12 +94,12 @@ def list_workflow_templates():
 
 
 @router.post("/api/workflow-templates", response_model=WorkflowTemplate)
-def create_workflow_template(payload: WorkflowTemplateCreate):
+def create_workflow_template(payload: WorkflowTemplateCreate, _: object = Depends(require_role("editor"))):
     return workflow_template_store.create(_template_payload(payload))
 
 
 @router.delete("/api/workflow-templates/{template_id}", response_model=OkResponse)
-def delete_workflow_template(template_id: str):
+def delete_workflow_template(template_id: str, _: object = Depends(require_role("editor"))):
     try:
         workflow_template_store.delete(template_id)
     except KeyError as exc:
@@ -106,7 +108,11 @@ def delete_workflow_template(template_id: str):
 
 
 @router.post("/api/workflow-templates/{template_id}/instantiate", response_model=Workflow)
-def instantiate_workflow_template(template_id: str, payload: WorkflowTemplateInstantiate | None = Body(None)):
+def instantiate_workflow_template(
+    template_id: str,
+    payload: WorkflowTemplateInstantiate | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     template = workflow_template_store.get(template_id)
     if template is None:
         raise HTTPException(status_code=404, detail="Workflow template not found")
@@ -124,7 +130,11 @@ def instantiate_workflow_template(template_id: str, payload: WorkflowTemplateIns
 
 
 @router.post("/api/workflows/{workflow_id}/template", response_model=WorkflowTemplate)
-def save_workflow_as_template(workflow_id: str, payload: WorkflowTemplateMeta | None = Body(None)):
+def save_workflow_as_template(
+    workflow_id: str,
+    payload: WorkflowTemplateMeta | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     workflow = workflow_store.get(workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -140,7 +150,11 @@ def save_workflow_as_template(workflow_id: str, payload: WorkflowTemplateMeta | 
 
 
 @router.post("/api/workflows/{workflow_id}/run", response_model=WorkflowRun)
-def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
+def run_workflow_api(
+    workflow_id: str,
+    payload: dict[str, object] | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     workflow = workflow_store.get(workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -158,7 +172,11 @@ def run_workflow_api(workflow_id: str, payload: dict[str, object] | None = Body(
 
 
 @router.post("/api/workflows/{workflow_id}/run-async", response_model=JobInfo)
-def run_workflow_async_api(workflow_id: str, payload: dict[str, object] | None = Body(None)):
+def run_workflow_async_api(
+    workflow_id: str,
+    payload: dict[str, object] | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     if workflow_store.get(workflow_id) is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     payload = payload or {}

@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 
 from app.dbclients.factory import fetch_column_details, fetch_rows
 from app.models import (
@@ -18,12 +18,14 @@ from app.readers.csv_reader import CsvReader, list_columns as read_csv_columns
 from app.readers.excel_reader import ExcelReader, list_columns as read_excel_columns
 from app.readers.parquet_reader import ParquetReader, list_columns as read_parquet_columns
 from app.services import excel_uploads, file_uploads
+from app.services.auth import require_role
 from app.services.repositories import datasource_store
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
 
 
-router = APIRouter()
+# 所有 preview / sql / upload 都属业务写操作（执行 SQL / 落临时文件），统一 editor。
+router = APIRouter(dependencies=[Depends(require_role("editor"))])
 
 
 def _preview_reader_rows(reader, limit: int) -> tuple[list[dict[str, object]], bool]:

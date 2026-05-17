@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
+from app.services.auth import get_current_user
 from app.services.search import search as run_search
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 SearchKind = Literal["datasource", "task", "workflow", "history", "lineage_script"]

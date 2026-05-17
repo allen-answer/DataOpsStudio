@@ -1,7 +1,7 @@
 """对比任务 CRUD + 同步 / 异步执行 + 行预览。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.api._shared import ensure_datasources_for_kind
 from app.dbclients.factory import fetch_rows_with_schema
@@ -15,13 +15,15 @@ from app.models import (
     SourceKind,
     SqlMode,
 )
+from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_task_run
 from app.services.repositories import datasource_store, task_store
 from app.services.runner import build_reader, run_task
 from app.utils.sql_guard import validate_readonly_sql
 
 
-router = APIRouter()
+# router 级默认：viewer 也要登录。mutation / run / preview 单独升级 editor。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/tasks", response_model=list[CompareTask])
@@ -33,13 +35,13 @@ def list_tasks(project_id: str = ""):
 
 
 @router.post("/api/tasks", response_model=CompareTask)
-def create_task(payload: CompareTaskCreate):
+def create_task(payload: CompareTaskCreate, _: object = Depends(require_role("editor"))):
     ensure_datasources_for_kind(payload)
     return task_store.create(payload)
 
 
 @router.put("/api/tasks/{task_id}", response_model=CompareTask)
-def update_task(task_id: str, payload: CompareTaskCreate):
+def update_task(task_id: str, payload: CompareTaskCreate, _: object = Depends(require_role("editor"))):
     ensure_datasources_for_kind(payload)
     try:
         return task_store.update(task_id, payload)
@@ -48,7 +50,7 @@ def update_task(task_id: str, payload: CompareTaskCreate):
 
 
 @router.delete("/api/tasks/{task_id}", response_model=OkResponse)
-def delete_task(task_id: str):
+def delete_task(task_id: str, _: object = Depends(require_role("editor"))):
     try:
         task_store.delete(task_id)
     except KeyError as exc:
@@ -57,7 +59,7 @@ def delete_task(task_id: str):
 
 
 @router.post("/api/tasks/{task_id}/copy", response_model=CompareTask)
-def copy_task_api(task_id: str):
+def copy_task_api(task_id: str, _: object = Depends(require_role("editor"))):
     task = task_store.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -90,7 +92,7 @@ def copy_task_api(task_id: str):
 
 
 @router.post("/api/tasks/{task_id}/run", response_model=CompareResult)
-def run_task_api(task_id: str):
+def run_task_api(task_id: str, _: object = Depends(require_role("editor"))):
     try:
         return run_task(task_id)
     except KeyError as exc:
@@ -100,14 +102,22 @@ def run_task_api(task_id: str):
 
 
 @router.post("/api/tasks/{task_id}/run-async", response_model=JobInfo)
-def run_task_async_api(task_id: str, payload: dict[str, object] | None = Body(None)):
+def run_task_async_api(
+    task_id: str,
+    payload: dict[str, object] | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     if task_store.get(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
 
 
 @router.post("/api/tasks/{task_id}/preview", response_model=PreviewRowsResponse)
-def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None)):
+def preview_task_api(
+    task_id: str,
+    payload: dict[str, object] | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     payload = payload or {}
     task = task_store.get(task_id)
     if task is None:

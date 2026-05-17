@@ -1,7 +1,7 @@
 """作业流运行历史：list / get / delete / rerun。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.api._shared import coerce_string_dict
 from app.models import (
@@ -11,6 +11,7 @@ from app.models import (
     WorkflowRun,
     WorkflowRunSummary,
 )
+from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_workflow_run
 from app.services.openlineage_emitter import build_workflow_run_events, emit_workflow_run_openlineage
 from app.services.repositories import workflow_store
@@ -20,7 +21,8 @@ from app.services.workflow_history import (
 )
 
 
-router = APIRouter()
+# router 级 default：viewer 读历史；rerun / delete / emit 升级 editor。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/workflow-runs", response_model=list[WorkflowRunSummary])
@@ -47,7 +49,7 @@ def get_workflow_run_openlineage_api(run_id: str):
 
 
 @router.post("/api/workflow-runs/{run_id}/openlineage/emit")
-def emit_workflow_run_openlineage_api(run_id: str):
+def emit_workflow_run_openlineage_api(run_id: str, _: object = Depends(require_role("editor"))):
     run_data = get_workflow_run(run_id)
     if run_data is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -62,7 +64,7 @@ def emit_workflow_run_openlineage_api(run_id: str):
 
 
 @router.delete("/api/workflow-runs/{run_id}", response_model=OkResponse)
-def delete_workflow_run_api(run_id: str):
+def delete_workflow_run_api(run_id: str, _: object = Depends(require_role("editor"))):
     try:
         delete_workflow_run(run_id)
     except KeyError as exc:
@@ -71,7 +73,11 @@ def delete_workflow_run_api(run_id: str):
 
 
 @router.post("/api/workflow-runs/{run_id}/rerun", response_model=JobInfo)
-def rerun_workflow_run_api(run_id: str, payload: dict[str, object] | None = Body(None)):
+def rerun_workflow_run_api(
+    run_id: str,
+    payload: dict[str, object] | None = Body(None),
+    _: object = Depends(require_role("editor")),
+):
     """从指定节点重跑：上次 run 的 from_node_id 及其所有传递下游重新执行；
     其他节点（必然是 from_node 的祖先 + 旁支）若上次 success 则复用 output.
 

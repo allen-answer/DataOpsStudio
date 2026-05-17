@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from dataclasses import asdict
@@ -25,10 +25,13 @@ from app.scenarios.orchestrator import run_all as run_all_pipeline
 from app.scenarios.recorder import record_scenario
 from app.scenarios.runtime import ScenarioRuntimeError, materialize_to_datasource
 from app.scenarios.verifier import verify_scenario
+from app.services.auth import require_role
 from app.utils.paths import SCENARIOS_DIR
 
 
-router = APIRouter()
+# Scenario sandbox 是 admin 工具：起虚拟业务数据 + DDL/INSERT + 跑对比 + LLM
+# fill，权限敏感。全 router admin only（包括 list 列表也属管理面）。
+router = APIRouter(dependencies=[Depends(require_role("admin"))])
 
 
 class MaterializeRequest(BaseModel):

@@ -17,12 +17,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.models import User
-from app.services.auth import require_role
+from app.services.auth import get_current_user, require_role
 from app.services.lineage_graph_query import bfs_subgraph
 from app.services.lineage_index import get_lineage_index
 
 
-router = APIRouter()
+# router 级 default：viewer 查询全局血缘子图。refresh 已挂 admin。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 Direction = Literal["upstream", "downstream", "both"]

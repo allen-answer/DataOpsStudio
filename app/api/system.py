@@ -4,17 +4,20 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dbclients.drivers import detect_drivers
 from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode
+from app.services.auth import get_current_user
 from app.services.history import list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS
 from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
 from app.utils.paths import BASE_DIR, RESULTS_DIR
 
 
+# system router 混合公开 + 鉴权 endpoint —— 不在 router 级挂 auth，
+# 单个 endpoint 决定。/  /spa  /api/drivers 公开；/api/bootstrap  /results/* 走 viewer。
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ def drivers():
 
 
 @router.get("/api/bootstrap", response_model=BootstrapResponse)
-def bootstrap(project_id: str = ""):
+def bootstrap(project_id: str = "", _: object = Depends(get_current_user)):
     # 首屏拉取 —— 只要前 200 条历史；全量在历史页按需加载
     history = list_result_history(project_id=project_id, limit=200)
     # bootstrap 是首屏拉取，datasources 走前端展示，password 必须脱敏
@@ -78,7 +81,7 @@ def bootstrap(project_id: str = ""):
 
 
 @router.get("/results/{filename:path}")
-def download_result(filename: str):
+def download_result(filename: str, _: object = Depends(get_current_user)):
     """支持子目录的下载：/results/workflow_runs/<run>/exports/<file>.xlsx 也走这里。
     path traversal 防御：解析后必须仍位于 RESULTS_DIR 之下。"""
     path = (RESULTS_DIR / filename).resolve()

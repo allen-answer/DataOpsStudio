@@ -1,13 +1,14 @@
 """异步任务（compare 或 workflow run）的状态查询与取消。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.models import JobInfo
+from app.services.auth import get_current_user, require_role
 from app.services.jobs import cancel_job, get_job
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/runs/{job_id}", response_model=JobInfo)
@@ -19,7 +20,7 @@ def run_status_api(job_id: str):
 
 
 @router.post("/api/runs/{job_id}/cancel", response_model=JobInfo)
-def cancel_run_api(job_id: str):
+def cancel_run_api(job_id: str, _: object = Depends(require_role("editor"))):
     try:
         return cancel_job(job_id)
     except KeyError as exc:

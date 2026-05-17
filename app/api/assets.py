@@ -14,10 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.models.user import User
-from app.services.auth import require_role
+from app.services.auth import get_current_user, require_role
 
 
-router = APIRouter()
+# router 级 default：所有 asset 查询要登录（viewer）。aspect write 单独升级 editor（已挂）。
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/assets/table/{name:path}")

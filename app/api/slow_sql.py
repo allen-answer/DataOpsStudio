@@ -8,13 +8,15 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.services.auth import require_role
 from app.services.slow_sql import SlowSqlError, analyze_sql, enrich_via_ai
 
 
-router = APIRouter()
+# slow-sql 跑 EXPLAIN / LLM 复核，编辑级权限（执行 SQL + 烧 token）。
+router = APIRouter(dependencies=[Depends(require_role("editor"))])
 
 
 class SlowSqlRequest(BaseModel):
