@@ -8,11 +8,11 @@ from decimal import Decimal
 from typing import Any
 
 from app.compare.engine import compare_rows, compare_sorted_row_iterators
+from app.compare.result_writer import JsonResultWriter, feed_buckets
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
 from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
 from app.services.compare_schema import build_schema_report
 from app.services.excel_uploads import resolve_excel_path, resolve_uploaded_path
-from app.services.exporter import write_excel, write_result_json
 from app.services.repositories import datasource_store, task_store
 from app.utils.sql_guard import validate_readonly_sql
 from app.utils.paths import RESULTS_DIR
@@ -97,6 +97,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     excel_path = RESULTS_DIR / f"{run_id}.xlsx"
     summary = CompareSummary(**{name: len(rows) for name, rows in buckets.items()})
     elapsed_seconds = round(time.perf_counter() - start, 3)
+    # payload 不含 buckets —— writer.finalize 时 merge 再写
     payload = {
         "run_id": run_id,
         "task_id": task.id,
@@ -109,11 +110,18 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         "rules": task.rules.model_dump(),
         "limits": task.limits.model_dump(),
         "schema_report": schema_report,
-        "buckets": buckets,
     }
 
-    write_result_json(result_path, payload)
-    write_excel(excel_path, buckets, max_rows=task.limits.export_max_rows)
+    # 切片 A：走 JsonResultWriter，行为跟旧 write_result_json + write_excel 等价。
+    # 切片 B 起换 ParquetResultWriter 时 runner 这层完全不动。
+    writer = JsonResultWriter(
+        result_path=result_path,
+        excel_path=excel_path,
+        payload=payload,
+        excel_max_rows=task.limits.export_max_rows,
+    )
+    feed_buckets(writer, buckets)
+    manifest = writer.finalize()
     logger.info(
         "task success task_id=%s task_name=%s only_source=%s only_target=%s diff=%s same=%s result=%s excel=%s elapsed=%.3fs",
         task.id,
@@ -122,8 +130,8 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         summary.only_target,
         summary.diff,
         summary.same,
-        result_path.name,
-        excel_path.name,
+        manifest.result_filename,
+        manifest.excel_filename,
         elapsed_seconds,
     )
 
@@ -131,10 +139,10 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         run_id=run_id,
         task_id=task.id,
         summary=summary,
-        result_path=str(result_path),
-        result_filename=result_path.name,
-        excel_path=str(excel_path),
-        excel_filename=excel_path.name,
+        result_path=str(manifest.result_path),
+        result_filename=manifest.result_filename,
+        excel_path=str(manifest.excel_path),
+        excel_filename=manifest.excel_filename,
         task_name=task.name,
         started_at=started_at.isoformat(timespec="seconds"),
         elapsed_seconds=elapsed_seconds,
