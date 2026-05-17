@@ -607,7 +607,7 @@ def test_lineage_ai_config_api_is_admin_only_and_non_sensitive(isolated_storage)
     assert "api_key" not in payload
     assert "api-secret" not in response.text
 
-    status = client.get("/api/lineage/ai/status").json()
+    status = client.get("/api/lineage/ai/status", headers=headers).json()
     assert status["api_key_set"] is True
     assert "api_key" not in status
     assert "api-secret" not in json.dumps(status)

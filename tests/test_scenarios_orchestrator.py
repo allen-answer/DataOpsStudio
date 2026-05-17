@@ -247,7 +247,9 @@ def test_ai_fill_exception_continues(isolated_storage, monkeypatch):
 
 
 @pytest.fixture
-def client_with_scenario(isolated_storage, monkeypatch):
+def client_with_scenario(client_admin, isolated_storage, monkeypatch):
+    """带 admin token 的 TestClient + 准备好 example scenario 文件。
+    scenarios router 全 admin only，必须 admin token。"""
     from app.utils.paths import BASE_DIR
     from app.api import scenarios as api_module
     from app.scenarios import loader as loader_module
@@ -261,8 +263,7 @@ def client_with_scenario(isolated_storage, monkeypatch):
     monkeypatch.setattr(paths_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(loader_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(api_module, "SCENARIOS_DIR", sdir)
-    from main import app
-    return TestClient(app)
+    return client_admin
 
 
 def test_endpoint_smoke(client_with_scenario, isolated_storage, monkeypatch):

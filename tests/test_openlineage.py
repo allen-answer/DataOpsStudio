@@ -31,11 +31,7 @@ class _FakeResponse:
         return False
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from main import app
-
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def _run_with_artifact(status: WorkflowRunStatus = WorkflowRunStatus.SUCCESS) -> WorkflowRun:

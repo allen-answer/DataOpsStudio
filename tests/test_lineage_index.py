@@ -171,9 +171,7 @@ def test_index_skips_non_lineage_node_outputs(isolated_storage):
 # ─── 集成：HTTP 端点 ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_http_graph_query_returns_subgraph_from_index(client, isolated_storage):

@@ -288,8 +288,8 @@ def test_realistic_falls_back_when_no_values():
 
 
 @pytest.fixture
-def client_with_scenarios(isolated_storage, monkeypatch):
-    """复用 sandbox 的 path patching 策略 —— 把 SCENARIOS_DIR 重定向到 tmp。"""
+def client_with_scenarios(client_admin, isolated_storage, monkeypatch):
+    """sandbox path patching + admin token（scenarios router 全 admin only）。"""
     from app.utils.paths import BASE_DIR
     sdir = isolated_storage["cfg"] / "scenarios"
     sdir.mkdir()
@@ -303,8 +303,7 @@ def client_with_scenarios(isolated_storage, monkeypatch):
     monkeypatch.setattr(paths_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(loader_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(api_module, "SCENARIOS_DIR", sdir)
-    from main import app
-    return TestClient(app)
+    return client_admin
 
 
 def test_ai_fill_endpoint_returns_filled_scenario(client_with_scenarios, ai_provider_on, monkeypatch):

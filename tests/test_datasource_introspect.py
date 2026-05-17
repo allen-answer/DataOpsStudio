@@ -167,10 +167,7 @@ def test_introspect_columns_empty_inputs_raise(isolated_storage):
 # ─── HTTP endpoint ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_introspect_endpoint_requires_datasource_id(client, fake_mysql_ds):

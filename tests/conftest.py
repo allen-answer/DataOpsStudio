@@ -7,6 +7,15 @@
 之所以要 patch 多个模块属性而不是只 patch paths.py：因为很多模块在 import
 顶层做了 `from app.utils.paths import RESULTS_DIR`，把当时的值绑到自己的
 模块命名空间。只 patch paths 模块来不及改这些已经绑好的引用。
+
+P0.4 起后端 endpoint 强制鉴权，老测试 client 不带 token 会 401。本文件
+提供：
+  - `client`           ：带 admin token 的 TestClient（老测试默认用，零改动）
+  - `client_anon`      ：纯匿名 TestClient（专门测 401 / 公开 endpoint）
+  - `client_editor`    ：editor 角色（专门测 403 / 普通业务）
+  - `client_viewer`    ：viewer 角色（专门测只读 / 403 写）
+  - `client_admin`     ：跟 `client` 一样的 admin 角色（语义明确时用）
+所有 fixture 都依赖 `isolated_storage` + auto-bootstrap 三档用户。
 """
 from __future__ import annotations
 
@@ -111,3 +120,88 @@ def isolated_storage(tmp_path, monkeypatch):
         "uploads": uploads,
         "data": data,
     }
+
+
+# ─── P0.4 鉴权 fixture：自动 bootstrap admin/editor/viewer + 各色 TestClient ───
+
+
+_TEST_USERS = (
+    ("admin",  "admin",   "admin"),
+    ("editor", "editor",  "editor"),
+    ("viewer", "viewer",  "viewer"),
+)
+
+
+def _bootstrap_users(isolated_storage):
+    """isolated_storage 起好后建 admin (内置) + editor + viewer 三档账号。
+
+    密码 = 用户名（仅本地测试，bcrypt 一致）。
+    """
+    import json
+    import uuid
+    from datetime import datetime
+    from app.services import auth as auth_svc
+    from app.utils.paths import USERS_FILE
+
+    auth_svc.bootstrap_default_admin()
+    raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    existing_names = {u.get("username") for u in raw}
+    for username, password, role in _TEST_USERS:
+        if username in existing_names:
+            continue
+        raw.append({
+            "id": uuid.uuid4().hex,
+            "username": username,
+            "password_hash": auth_svc.hash_password(password),
+            "role": role,
+            "display_name": username,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        })
+    USERS_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    auth_svc.user_store.invalidate_cache()
+
+
+def _new_client(role: str | None):
+    """新建一个 TestClient，若 role 非 None 则自动登录并挂 Authorization 头。"""
+    from fastapi.testclient import TestClient
+    from main import app
+    tc = TestClient(app)
+    if role is None:
+        return tc
+    r = tc.post("/api/auth/login", json={"username": role, "password": role})
+    assert r.status_code == 200, f"login {role} failed: {r.status_code} {r.text}"
+    tc.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return tc
+
+
+@pytest.fixture
+def client(isolated_storage):
+    """默认 admin 角色的 TestClient —— 老业务测试不改一行直接复用。"""
+    _bootstrap_users(isolated_storage)
+    return _new_client("admin")
+
+
+@pytest.fixture
+def client_admin(isolated_storage):
+    """语义明确的 admin client（跟 `client` 等价，文件里同时测多角色时清楚标识）。"""
+    _bootstrap_users(isolated_storage)
+    return _new_client("admin")
+
+
+@pytest.fixture
+def client_editor(isolated_storage):
+    _bootstrap_users(isolated_storage)
+    return _new_client("editor")
+
+
+@pytest.fixture
+def client_viewer(isolated_storage):
+    _bootstrap_users(isolated_storage)
+    return _new_client("viewer")
+
+
+@pytest.fixture
+def client_anon(isolated_storage):
+    """纯匿名 TestClient —— 不带任何 token，专测 401 / 公开 endpoint。"""
+    _bootstrap_users(isolated_storage)
+    return _new_client(None)

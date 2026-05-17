@@ -120,9 +120,7 @@ def test_get_table_asset_empty_name_raises(isolated_storage):
 # ─── HTTP ───────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_http_table_asset_with_dotted_name(client, isolated_storage):

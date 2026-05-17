@@ -244,10 +244,7 @@ def test_analyze_sql_wraps_driver_error(isolated_storage, mysql_datasource, monk
 # ─── /api/slow-sql/analyze endpoint ─────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_endpoint_happy_path(client, mysql_datasource, monkeypatch):

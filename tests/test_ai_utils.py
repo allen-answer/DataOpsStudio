@@ -9,16 +9,16 @@ from fastapi.testclient import TestClient
 from app.services.lineage_ai import LineageAIConfig
 
 
-@pytest.fixture
-def client(isolated_storage, monkeypatch):
-    """带 admin token 的 TestClient。"""
-    from app.services import auth as auth_svc
-    auth_svc.bootstrap_default_admin()
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。本文件原 _login() helper
+# 仍保留供个别测试直接拿 token 用（如把 header 设到自定义 request）。
 
 
 def _login(client) -> str:
+    """从 admin client 上反查 token（兼容老测试调用方式）。"""
+    auth_header = client.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    # 兜底：未带 token（不应发生）走一次 login
     r = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
     return r.json()["access_token"]
 

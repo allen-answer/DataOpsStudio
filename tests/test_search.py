@@ -193,9 +193,7 @@ def test_search_score_orders_name_above_table_above_sql(isolated_storage):
 # ─── 集成：HTTP 端点 ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_http_search_returns_envelope(client, isolated_storage):

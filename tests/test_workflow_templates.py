@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from app.services import auth as auth_svc
+
 
 def _client() -> TestClient:
+    """带 admin token 的 TestClient（P0.4 后端鉴权后所有 workflow CRUD 都要 token）。"""
+    auth_svc.bootstrap_default_admin()
     from main import app
-    return TestClient(app)
+    tc = TestClient(app)
+    r = tc.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    tc.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return tc
 
 
 def _workflow_payload(name: str = "daily-orders") -> dict:

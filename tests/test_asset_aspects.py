@@ -198,7 +198,11 @@ def test_load_schema_broken_yaml_falls_back_to_last_known(isolated_storage, monk
 
 @pytest.fixture
 def auth_client(isolated_storage):
-    """带 admin / editor / viewer 三种用户的 TestClient（从 test_auth.py 复用模式）。"""
+    """带 admin / editor / viewer 三种用户的 TestClient（保留 alice / bob 名称）。
+
+    本 fixture **不挂默认 Authorization** —— 各测试自己 `_login()` 决定角色，
+    显式测 401 / 403 矩阵。
+    """
     auth_svc.bootstrap_default_admin()
     from app.utils.paths import USERS_FILE
     raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
@@ -231,9 +235,13 @@ def _bearer(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_get_aspect_types_endpoint_open(auth_client):
-    """读 schema 不要求登录（前端编辑器要拿 schema 渲染表单）。"""
-    r = auth_client.get("/api/assets/aspects/types")
+def test_get_aspect_types_endpoint_requires_viewer(auth_client):
+    """读 schema 走 viewer+（P0.4 起 assets router 全 viewer 起步）。"""
+    # 匿名 → 401
+    assert auth_client.get("/api/assets/aspects/types").status_code == 401
+    # viewer 可读
+    bob_token = _login(auth_client, "bob", "bob123")
+    r = auth_client.get("/api/assets/aspects/types", headers=_bearer(bob_token))
     assert r.status_code == 200
     types = {t["type"] for t in r.json()}
     assert "owner" in types and "pii" in types
@@ -265,7 +273,7 @@ def test_upsert_then_table_asset_includes_aspect(auth_client):
         "aspect_type": "sla", "value": {"tier": "t0", "refresh_interval": "5m"},
     }, headers=_bearer(alice_token))
 
-    r = auth_client.get("/api/assets/table/dwd.t_orders")
+    r = auth_client.get("/api/assets/table/dwd.t_orders", headers=_bearer(alice_token))
     assert r.status_code == 200
     body = r.json()
     assert "aspects" in body
@@ -318,8 +326,8 @@ def test_search_aspects_endpoint(auth_client):
         "aspect_type": "pii", "value": {"level": "high"},
     }, headers=_bearer(alice_token))
 
-    # search 也开放（admin 反查 PII 资产）
-    r = auth_client.get("/api/assets/aspects/search?aspect_type=pii")
+    # search 走 viewer+；这里复用 alice 的 token
+    r = auth_client.get("/api/assets/aspects/search?aspect_type=pii", headers=_bearer(alice_token))
     assert r.status_code == 200
     names = {h["asset_name"] for h in r.json()}
     assert names == {"ods.t_users", "dwd.t_pay"}
@@ -369,7 +377,7 @@ def test_bulk_aspects_index_endpoint(auth_client):
         "aspect_type": "pii", "value": {"level": "high"},
     }, headers=_bearer(alice_token))
 
-    r = auth_client.get("/api/assets/aspects/index")
+    r = auth_client.get("/api/assets/aspects/index", headers=_bearer(alice_token))
     assert r.status_code == 200
     body = r.json()
     assert "ods.t_users" in body
@@ -479,6 +487,7 @@ def test_history_endpoint_via_api(auth_client):
 
     r = auth_client.get(
         "/api/assets/aspects/history?asset_kind=table&asset_name=dwd.t_users",
+        headers=_bearer(alice_token),
     )
     assert r.status_code == 200
     body = r.json()

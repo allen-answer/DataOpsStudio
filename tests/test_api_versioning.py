@@ -55,9 +55,7 @@ def test_install_v1_aliases_idempotent():
 # ─── 集成：实际 app ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_known_endpoints_have_v1_alias(client):

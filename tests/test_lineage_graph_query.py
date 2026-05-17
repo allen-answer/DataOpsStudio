@@ -162,9 +162,7 @@ def test_normalized_edge_skips_malformed():
 # ─── HTTP 端点 ───────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_http_subgraph_returns_envelope(client):

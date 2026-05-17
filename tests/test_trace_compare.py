@@ -210,22 +210,22 @@ def test_no_lineage_data_returns_empty_chain(isolated_storage):
 # ─── HTTP 端点 ──────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from app.services import auth as auth_svc
-    auth_svc.bootstrap_default_admin()
-    return TestClient(app)
+# `client` / `client_anon` 来自 conftest.py。本文件保留 _login() helper 兼容旧 inline 头模式。
 
 
 def _login(client: TestClient) -> str:
-    """bootstrap_default_admin seeds admin/admin (the actual default password)."""
+    """从 admin client 反查 token，兼容老测试 inline header 写法。"""
+    auth_header = client.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
     r = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 
 
-def test_endpoint_requires_editor(client):
-    r = client.post("/api/lineage/trace-compare", json={})
+def test_endpoint_requires_editor(client_anon):
+    """匿名调 trace-compare 必须 401（router 级 get_current_user 拦）。"""
+    r = client_anon.post("/api/lineage/trace-compare", json={})
     assert r.status_code == 401
 
 

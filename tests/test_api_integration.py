@@ -19,13 +19,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 
-@pytest.fixture
-def client(isolated_storage):
-    """绑在隔离 storage 上的 TestClient。"""
-    # main.py 里 import mimetypes 注册 .xlsx 等的步骤要在 client 起来之前
-    # 已生效——直接 import main 就触发了。
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py —— 默认带 admin token（P0.4 后端强制鉴权）。
 
 
 # --- workflow CRUD ---

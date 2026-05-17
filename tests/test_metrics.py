@@ -109,9 +109,7 @@ def test_render_prometheus_includes_all_known_metrics():
 # ─── /metrics endpoint ──────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。/metrics 是公开端点。
 
 
 def test_metrics_endpoint_text_format(client):

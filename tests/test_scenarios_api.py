@@ -17,10 +17,7 @@ from app.utils.paths import BASE_DIR
 SCENARIO_EXAMPLE = BASE_DIR / "config" / "scenarios" / "orders-recon.example.yml"
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。scenarios router 全 admin only。
 
 
 @pytest.fixture

@@ -380,8 +380,8 @@ def test_project_id_filter(isolated_storage):
 
 
 @pytest.fixture
-def client_with_scenario(isolated_storage, monkeypatch):
-    """把 example.yml 复制进 isolated SCENARIOS_DIR。"""
+def client_with_scenario(client_admin, isolated_storage, monkeypatch):
+    """把 example.yml 复制进 isolated SCENARIOS_DIR + admin token（scenarios admin only）。"""
     from app.utils.paths import BASE_DIR
     from app.api import scenarios as api_module
     from app.scenarios import loader as loader_module
@@ -395,8 +395,7 @@ def client_with_scenario(isolated_storage, monkeypatch):
     monkeypatch.setattr(paths_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(loader_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(api_module, "SCENARIOS_DIR", sdir)
-    from main import app
-    return TestClient(app)
+    return client_admin
 
 
 def test_endpoint_returns_no_task_when_nothing_recorded(client_with_scenario):

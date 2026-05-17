@@ -109,9 +109,7 @@ def test_semantic_lineage_observation_includes_stress_summary():
 # ─── HTTP 端点 ───────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_http_stress_fixture_endpoint(client):

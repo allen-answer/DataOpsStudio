@@ -259,10 +259,7 @@ def test_analyze_sql_oracle_driver_error_wrapped(oracle_datasource, monkeypatch)
 # ─── endpoint integration ─────────────────────────────────────────────────
 
 
-@pytest.fixture
-def client(isolated_storage):
-    from main import app
-    return TestClient(app)
+# `client` fixture 来自 conftest.py（admin-authed）。
 
 
 def test_endpoint_analyze_oracle_dispatches_correctly(client, oracle_datasource, monkeypatch):
