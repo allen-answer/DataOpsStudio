@@ -39,7 +39,7 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 - [x] `frontend-build` typecheck 全绿（P0.5 收口；详见下面）
 - [x] **P0.4 · 后端 endpoint 强制鉴权**：13 个 API 文件挂 `Depends(get_current_user)` + role check，覆盖核心 5（datasources/tasks/workflows/history/config_io）+ stretch 7（workflow_runs/uploads/scheduler/runs/lineage/assets/search/lineage_graph/scenarios/slow_sql/system）+ projects（已挂）。新增 `docs/AUTHORIZATION_MATRIX.md` 是后端权限 SOT；新增 `tests/test_api_auth_matrix.py` 31 用例覆盖 401/403/200 矩阵。conftest 加 `client / client_admin / client_editor / client_viewer / client_anon` fixture，老业务测试默认 admin token 零改动
 - [x] **P0.5 · 收尾全部 view 的 typecheck 红**：14 个 view + bootstrap/history store 的 157 行 TS 报错全部修绿；修法以最小侵入为主（event handler cast `as HTMLInputElement` / 接口加缺失字段 / 顶层 `state.xxx as any[]` 兜底待 schema 抽全）。`npm run typecheck` 0 error；npm test 34/34；npm run build 通过。CI frontend-build job 可全绿
-- [ ] **P0.6 · 真 Docker + demo-db SMOKE 实测**：P0.3 本地 uvicorn 跑了 §1/§7/§9 段，但 §3 数据源 / §4 数据对比 / §5 血缘 / §6 作业流 全跳过（需要 Docker + 浏览器）。下次 oncall 在有 Docker 的机器上跑一次全套
+- [x] **P0.6 · 真 Docker + demo-db SMOKE 实测**：在云端生产实例跑通。Docker 容器健康 + nginx 反代 + mysql8 12ms 连接 + DM dmPython 驱动可用 + SQL safety + login + 5 真实业务 datasource / 6 task / 4 workflow / 5 run history 全验证。**实测同时发现云上为 P0.4 之前版本**：anon 可拉 `/api/datasources` `/config/export` 等 7 个业务 endpoint（公网 IP 加重风险），随后 `git init + remote + reset --hard origin/main + docker compose up -d --build` deploy `c1c4616` 上云，再次 SMOKE 验证全部业务 endpoint anon→401 / admin→200，矩阵真生效。云端工作目录首次接入 git，下次 deploy 走 `git pull && docker compose up -d --build` 即可（具体云端 IP / SSH 等连接信息不入仓库，走运维渠道）
 
 ### P1 · 数据对比深化
 - [ ] 大结果落盘真实实现（按 `docs/COMPARE_RESULT_STORAGE.md` 切片 1 起步）
