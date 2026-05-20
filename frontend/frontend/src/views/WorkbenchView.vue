@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ChevronLeft, ChevronRight, Play } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import WorkbenchTaskList from './workbench/WorkbenchTaskList.vue'
 import WorkbenchStepBar from './workbench/WorkbenchStepBar.vue'
 import WorkbenchSummary from './workbench/WorkbenchSummary.vue'
@@ -25,7 +25,6 @@ const { taskDraft } = taskStore  // reactive 直接拿
 const {
   selectedTaskId, isSavedTask, taskValidationIssues, canSaveTask,
 } = storeToRefs(taskStore)
-const { runTask } = taskStore
 
 const search = ref('')
 
@@ -89,7 +88,7 @@ function goNext() { if (canNext.value) currentStep.value = STEP_IDS[currentIndex
       <StepMapping v-else-if="currentStep === 'mapping'" />
       <StepResult v-else-if="currentStep === 'result'" />
 
-      <!-- 步骤导航：上一步 / 下一步 / 最后一步直接执行 -->
+      <!-- 步骤导航：上一步 / 下一步。执行对比统一收到右侧摘要面板，不在这里重复。 -->
       <div class="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-soft">
         <button class="btn btn-outline" :disabled="!canPrev" @click="goPrev">
           <ChevronLeft class="h-4 w-4" /> 上一步
@@ -102,9 +101,7 @@ function goNext() { if (canNext.value) currentStep.value = STEP_IDS[currentIndex
         <button v-if="canNext" class="btn btn-primary" @click="goNext">
           下一步 <ChevronRight class="h-4 w-4" />
         </button>
-        <button v-else class="btn btn-primary" :disabled="!isSavedTask || !canSaveTask" @click="runTask">
-          <Play class="h-4 w-4" /> 执行对比
-        </button>
+        <span v-else class="muted text-[11px]">在右侧摘要面板执行对比 →</span>
       </div>
     </main>
 

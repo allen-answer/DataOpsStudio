@@ -9,15 +9,19 @@ title = "DataOpsStudio gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "示例 / 测试 / hook 规则文件里的占位凭证不算泄露"
+description = "示例 / 模板 / hook 规则文件里的占位凭证不算泄露"
+# 注意：不整目录 allowlist tests/ —— 那样会盖掉真实泄露。测试里故意用的假
+# 凭证改为下面 regexes 里逐条精确匹配。
 paths = [
   '''.*\.example\.json$''',          # config/*.example.json 模板占位密码
   '''.*\.example\.yml$''',           # scenario / 配置 example 模板
   '''\.secret-patterns\.example$''', # secret 规则模板（含占位示例）
-  '''tests/.*''',                    # 测试 fixture 故意用假凭证
   '''scripts/git-hooks/.*''',        # pre-commit hook 自身就是规则文件
 ]
 regexes = [
   # 后端 JWT 的 dev 默认值 —— 文档化的开发占位，生产必须用 env 覆盖，非真实 secret
   '''dev-only-jwt-secret-change-me-in-prod''',
+  # 测试里故意用的假口令字面量（tests/test_api_integration.py）—— 显式逐条放行，
+  # 而不是整目录 allowlist tests/
+  '''my-super-secret-pw-123''',
 ]
