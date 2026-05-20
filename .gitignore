@@ -84,3 +84,7 @@ scripts/uninstall-openclaw-*
 
 # Local skill / spec drafts — not for upstream
 JOB.md
+
+# 团队私有的 secret 匹配规则（pre-commit hook 读取）—— 含真实环境信息，永不入库。
+# 注：上面的 *.local 其实已覆盖它，这里显式列出以表明意图。模板见 .secret-patterns.example
+.secret-patterns.local

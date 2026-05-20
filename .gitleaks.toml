@@ -1,0 +1,23 @@
+# gitleaks 配置 —— CI secret scan 用（见 .github/workflows/ci.yml 的 secret-scan job）。
+#
+# 扫的是【当前工作树的 tracked 文件】（gitleaks dir），不扫 git 历史 —— 目的是
+# 防止新的真实运维信息（私钥 / 云密钥 / 高熵 token）进入仓库当前状态。
+title = "DataOpsStudio gitleaks config"
+
+[extend]
+# 在 gitleaks 内置规则集之上扩展。
+useDefault = true
+
+[allowlist]
+description = "示例 / 测试 / hook 规则文件里的占位凭证不算泄露"
+paths = [
+  '''.*\.example\.json$''',          # config/*.example.json 模板占位密码
+  '''.*\.example\.yml$''',           # scenario / 配置 example 模板
+  '''\.secret-patterns\.example$''', # secret 规则模板（含占位示例）
+  '''tests/.*''',                    # 测试 fixture 故意用假凭证
+  '''scripts/git-hooks/.*''',        # pre-commit hook 自身就是规则文件
+]
+regexes = [
+  # 后端 JWT 的 dev 默认值 —— 文档化的开发占位，生产必须用 env 覆盖，非真实 secret
+  '''dev-only-jwt-secret-change-me-in-prod''',
+]

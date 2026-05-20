@@ -1,4 +1,9 @@
-"""作业流定义 CRUD + 同步 / 异步执行 + 该作业流的运行历史列表。"""
+"""作业流定义 CRUD + 同步 / 异步执行 + 该作业流的运行历史列表。
+
+项目级隔离见 docs/PROJECT_AUTHORIZATION.md：list 按用户可访问项目过滤，
+mutation / run / runs / template 校验用户对作业流所在项目有权。模板库本身
+视为跨项目共享，仅在实例化出 workflow 时校验目标项目。
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -6,10 +11,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api._authz import filter_by_project, require_project_access
 from app.api._shared import coerce_string_dict, ensure_workflow_node_targets
 from app.models import (
     JobInfo,
     OkResponse,
+    User,
     Workflow,
     WorkflowCreate,
     WorkflowRun,
@@ -57,21 +64,28 @@ def _template_payload(payload: WorkflowTemplateCreate) -> WorkflowTemplateCreate
 
 
 @router.get("/api/workflows", response_model=list[Workflow])
-def list_workflows(project_id: str = ""):
-    items = workflow_store.list()
+def list_workflows(project_id: str = "", current: User = Depends(get_current_user)):
+    items = filter_by_project(workflow_store.list(), current)
     if project_id:
         items = [w for w in items if w.project_id == project_id or not w.project_id]
     return items
 
 
 @router.post("/api/workflows", response_model=Workflow)
-def create_workflow(payload: WorkflowCreate, _: object = Depends(require_role("editor"))):
+def create_workflow(payload: WorkflowCreate, current: User = Depends(require_role("editor"))):
+    require_project_access(current, payload.project_id, detail="无权在该项目下创建作业流")
     ensure_workflow_node_targets(payload)
     return workflow_store.create(payload)
 
 
 @router.put("/api/workflows/{workflow_id}", response_model=Workflow)
-def update_workflow(workflow_id: str, payload: WorkflowCreate, _: object = Depends(require_role("editor"))):
+def update_workflow(workflow_id: str, payload: WorkflowCreate, current: User = Depends(require_role("editor"))):
+    existing = workflow_store.get(workflow_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, existing.project_id)
+    if payload.project_id != existing.project_id:
+        require_project_access(current, payload.project_id, detail="无权把作业流移动到该项目")
     ensure_workflow_node_targets(payload)
     try:
         return workflow_store.update(workflow_id, payload)
@@ -80,7 +94,11 @@ def update_workflow(workflow_id: str, payload: WorkflowCreate, _: object = Depen
 
 
 @router.delete("/api/workflows/{workflow_id}", response_model=OkResponse)
-def delete_workflow(workflow_id: str, _: object = Depends(require_role("editor"))):
+def delete_workflow(workflow_id: str, current: User = Depends(require_role("editor"))):
+    existing = workflow_store.get(workflow_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, existing.project_id)
     try:
         workflow_store.delete(workflow_id)
     except KeyError as exc:
@@ -111,7 +129,7 @@ def delete_workflow_template(template_id: str, _: object = Depends(require_role(
 def instantiate_workflow_template(
     template_id: str,
     payload: WorkflowTemplateInstantiate | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
     template = workflow_template_store.get(template_id)
     if template is None:
@@ -125,6 +143,9 @@ def instantiate_workflow_template(
         "status": payload.status,
     }
     workflow_payload = workflow_payload.model_copy(update=update)
+    # 实例化产出一个真实 workflow —— 它落到模板自带的 project_id 下，
+    # 校验当前用户对该目标项目有权（不能借模板把作业流建进别人项目）。
+    require_project_access(current, workflow_payload.project_id, detail="无权在该项目下创建作业流")
     ensure_workflow_node_targets(workflow_payload)
     return workflow_store.create(workflow_payload)
 
@@ -133,11 +154,12 @@ def instantiate_workflow_template(
 def save_workflow_as_template(
     workflow_id: str,
     payload: WorkflowTemplateMeta | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
     workflow = workflow_store.get(workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, workflow.project_id)
     payload = payload or WorkflowTemplateMeta()
     template = WorkflowTemplateCreate(
         name=payload.name or workflow.name,
@@ -153,11 +175,12 @@ def save_workflow_as_template(
 def run_workflow_api(
     workflow_id: str,
     payload: dict[str, object] | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
     workflow = workflow_store.get(workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, workflow.project_id, detail="无权运行该项目的作业流")
     variables = coerce_string_dict((payload or {}).get("variables"))
     try:
         run = run_workflow(workflow, variables)
@@ -175,17 +198,21 @@ def run_workflow_api(
 def run_workflow_async_api(
     workflow_id: str,
     payload: dict[str, object] | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
-    if workflow_store.get(workflow_id) is None:
+    workflow = workflow_store.get(workflow_id)
+    if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, workflow.project_id, detail="无权运行该项目的作业流")
     payload = payload or {}
     variables = coerce_string_dict(payload.get("variables"))
     return submit_workflow_run(workflow_id, variables, max_retries=payload.get("max_retries"))
 
 
 @router.get("/api/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
-def list_workflow_runs_api(workflow_id: str, limit: int = 50):
-    if workflow_store.get(workflow_id) is None:
+def list_workflow_runs_api(workflow_id: str, limit: int = 50, current: User = Depends(get_current_user)):
+    workflow = workflow_store.get(workflow_id)
+    if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    require_project_access(current, workflow.project_id)
     return list_workflow_runs(workflow_id, limit=limit)

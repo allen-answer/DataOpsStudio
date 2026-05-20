@@ -3,14 +3,18 @@
 API 层 password 始终脱敏（返回空串）—— 内部 store 仍持明文供连接 / test 用。
 update 收到 password='' 视为"保持原值不变"，避免前端编辑表单时 password
 被空覆盖。
+
+项目级隔离见 docs/PROJECT_AUTHORIZATION.md：list 按用户可访问项目过滤，
+mutation / test 校验用户对资源所在项目有权。
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api._authz import filter_by_project, require_project_access
 from app.dbclients import pool as _pool
 from app.dbclients.factory import test_connection
-from app.models import ConnectionTestResult, DataSource, DataSourceCreate, OkResponse
+from app.models import ConnectionTestResult, DataSource, DataSourceCreate, OkResponse, User
 from app.services.auth import get_current_user, require_role
 from app.services.repositories import datasource_store
 
@@ -25,25 +29,29 @@ def _redact(ds: DataSource) -> DataSource:
 
 
 @router.get("/api/datasources", response_model=list[DataSource])
-def list_datasources(project_id: str = ""):
-    items = datasource_store.list()
+def list_datasources(project_id: str = "", current: User = Depends(get_current_user)):
+    items = filter_by_project(datasource_store.list(), current)
     if project_id:
         items = [ds for ds in items if ds.project_id == project_id or not ds.project_id]
     return [_redact(ds) for ds in items]
 
 
 @router.post("/api/datasources", response_model=DataSource)
-def create_datasource(payload: DataSourceCreate, _: object = Depends(require_role("editor"))):
+def create_datasource(payload: DataSourceCreate, current: User = Depends(require_role("editor"))):
+    require_project_access(current, payload.project_id, detail="无权在该项目下创建数据源")
     return _redact(datasource_store.create(payload))
 
 
 @router.put("/api/datasources/{datasource_id}", response_model=DataSource)
-def update_datasource(datasource_id: str, payload: DataSourceCreate, _: object = Depends(require_role("editor"))):
+def update_datasource(datasource_id: str, payload: DataSourceCreate, current: User = Depends(require_role("editor"))):
+    existing = datasource_store.get(datasource_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+    require_project_access(current, existing.project_id)
+    if payload.project_id != existing.project_id:
+        require_project_access(current, payload.project_id, detail="无权把数据源移动到该项目")
     # password 留空 = 保持原值（前端编辑表单不强制重输密码）
     if not payload.password:
-        existing = datasource_store.get(datasource_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Datasource not found")
         payload = payload.model_copy(update={"password": existing.password})
     try:
         updated = datasource_store.update(datasource_id, payload)
@@ -55,7 +63,11 @@ def update_datasource(datasource_id: str, payload: DataSourceCreate, _: object =
 
 
 @router.delete("/api/datasources/{datasource_id}", response_model=OkResponse)
-def delete_datasource(datasource_id: str, _: object = Depends(require_role("editor"))):
+def delete_datasource(datasource_id: str, current: User = Depends(require_role("editor"))):
+    existing = datasource_store.get(datasource_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+    require_project_access(current, existing.project_id)
     try:
         datasource_store.delete(datasource_id)
     except KeyError as exc:
@@ -65,10 +77,11 @@ def delete_datasource(datasource_id: str, _: object = Depends(require_role("edit
 
 
 @router.post("/api/datasources/{datasource_id}/test", response_model=ConnectionTestResult)
-def test_datasource(datasource_id: str, _: object = Depends(require_role("editor"))):
+def test_datasource(datasource_id: str, current: User = Depends(require_role("editor"))):
     datasource = datasource_store.get(datasource_id)
     if datasource is None:
         raise HTTPException(status_code=404, detail="Datasource not found")
+    require_project_access(current, datasource.project_id)
     try:
         return test_connection(datasource)
     except Exception as exc:

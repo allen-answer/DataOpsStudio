@@ -1,29 +1,61 @@
 #!/usr/bin/env bash
-# 拦截把服务器登录信息推到 git 的 commit。
+# 拦截把敏感信息（私钥 / SSH 登录串 / 云密钥）误提交到 git 的 commit。
 #
-# 黑名单覆盖已知泄露的 IP / SSH key 文件名 / 远端登录用户串。新加生产实例
-# 时把对应 IP / key 路径加进 PATTERNS。
+# 这个 hook 只放【通用】规则 —— 不绑定任何具体环境，不含任何真实 IP /
+# 主机名 / key 文件名 / 运维用户名。仓库里不允许出现真实运维信息。
 #
-# 路径过滤：`scripts/git-hooks/` 自身排除（hook 文件里就要写匹配规则，
-# 不能自己拦自己）。
+# 团队私有的、与具体环境绑定的额外规则（某台生产实例的 IP、部署 key 文件名
+# 等）放在仓库根的 .secret-patterns.local —— 该文件已 gitignore，永不入库。
+# 模板见 .secret-patterns.example。hook 会自动读取并附加到通用规则后面。
+#
+# 路径过滤：hook 自身、.secret-patterns.example 排除（它们本来就要写匹配
+# 规则 / 占位示例，不能自己拦自己）。
 #
 # 装法：scripts/install-git-hooks.sh（POSIX）或 install-git-hooks.ps1（Win）。
 # 这个文件本身不会被 git 跑，必须 copy 到 .git/hooks/pre-commit 才生效。
 
 set -eu
 
-PATTERNS='110\.42\.230\.97|connect_key\.pem|ubuntu@[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|ssh -i [^ ]+\.pem'
+ROOT="$(git rev-parse --show-toplevel)"
 
-# 扫 staged 内容；--no-color 防染色；exclude hook 源避免自匹配
+# 通用规则：跟具体环境无关的敏感信息形态。
+GENERIC_PATTERNS=(
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'              # SSH / TLS 私钥块
+  'ssh -i [^[:space:]]+\.(pem|key|ppk)'             # ssh -i xxx.pem 登录命令
+  'scp -i [^[:space:]]+\.(pem|key|ppk)'             # scp -i xxx.pem
+  '[A-Za-z0-9_.-]+@([0-9]{1,3}\.){3}[0-9]{1,3}'     # user@1.2.3.4 登录串
+  'AKIA[0-9A-Z]{16}'                                # AWS Access Key ID
+)
+
+# 合并通用规则 + 本地私有规则（.secret-patterns.local，一行一个 ERE 正则）。
+PATTERNS=("${GENERIC_PATTERNS[@]}")
+LOCAL_FILE="$ROOT/.secret-patterns.local"
+if [ -f "$LOCAL_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|\#*) continue ;;          # 跳过空行 / # 注释行
+    esac
+    PATTERNS+=("$line")
+  done < "$LOCAL_FILE"
+fi
+
+# 拼成单个 ERE alternation
+JOINED=""
+for p in "${PATTERNS[@]}"; do
+  if [ -z "$JOINED" ]; then JOINED="$p"; else JOINED="$JOINED|$p"; fi
+done
+
+# 扫 staged 内容；--no-color 防染色；exclude hook 源 / 模板避免自匹配
 hits=$(git diff --cached --no-color -U0 \
-  -- ':(exclude)scripts/git-hooks/**' \
-  | grep -nE "$PATTERNS" || true)
+  -- ':(exclude)scripts/git-hooks/**' ':(exclude).secret-patterns.example' \
+  | grep -nE "$JOINED" || true)
 
 if [ -n "$hits" ]; then
-  echo "ERROR: pre-commit 拦截 —— 检测到服务器登录信息：" >&2
+  echo "ERROR: pre-commit 拦截 —— 检测到敏感信息（私钥 / SSH 登录串 / 云密钥）：" >&2
   echo "$hits" | head -20 >&2
   echo "" >&2
-  echo "处理：把这些信息移到 .claude/memory/ 或运维渠道，从 staged 文件里删掉再 commit。" >&2
+  echo "处理：把这些信息移到运维渠道或本地 .claude/ 配置（已 gitignore），" >&2
+  echo "从 staged 文件里删掉再 commit。环境相关的私有规则写进 .secret-patterns.local。" >&2
   echo "（确定要 commit 走 git commit --no-verify 绕过，慎用）" >&2
   exit 1
 fi

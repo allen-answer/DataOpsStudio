@@ -7,8 +7,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.api._authz import (
+    accessible_project_ids,
+    can_access_project,
+    filter_by_project,
+    result_download_project_id,
+)
 from app.dbclients.drivers import detect_drivers
-from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode
+from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode, User
 from app.services.auth import get_current_user
 from app.services.history import list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS
@@ -53,17 +59,24 @@ def drivers():
 
 
 @router.get("/api/bootstrap", response_model=BootstrapResponse)
-def bootstrap(project_id: str = "", _: object = Depends(get_current_user)):
-    # 首屏拉取 —— 只要前 200 条历史；全量在历史页按需加载
-    history = list_result_history(project_id=project_id, limit=200)
-    # bootstrap 是首屏拉取，datasources 走前端展示，password 必须脱敏
-    redacted_datasources = [
-        ds.model_copy(update={"password": ""}) for ds in datasource_store.list()
-    ]
-    tasks = task_store.list()
-    workflows = workflow_store.list()
+def bootstrap(project_id: str = "", current: User = Depends(get_current_user)):
+    # 首屏拉取 —— 只要前 200 条历史；全量在历史页按需加载。
+    # 历史按当前用户可见项目过滤（admin 传 None = 不限制）。
+    history = list_result_history(
+        project_id=project_id,
+        limit=200,
+        allowed_project_ids=accessible_project_ids(current),
+    )
+    # bootstrap 是首屏拉取，datasources 走前端展示，password 必须脱敏。
+    # 三类资源先按用户可访问项目过滤（非 admin 看不到别人项目的资源）。
+    redacted_datasources = filter_by_project(
+        [ds.model_copy(update={"password": ""}) for ds in datasource_store.list()],
+        current,
+    )
+    tasks = filter_by_project(task_store.list(), current)
+    workflows = filter_by_project(workflow_store.list(), current)
     if project_id:
-        # 项目隔离：当前项目下的资源 + 历史遗留无 project_id 的全局资源
+        # 显式项目过滤：当前项目下的资源 + 历史遗留无 project_id 的全局资源
         redacted_datasources = [d for d in redacted_datasources if d.project_id == project_id or not d.project_id]
         tasks = [t for t in tasks if t.project_id == project_id or not t.project_id]
         workflows = [w for w in workflows if w.project_id == project_id or not w.project_id]
@@ -81,10 +94,17 @@ def bootstrap(project_id: str = "", _: object = Depends(get_current_user)):
 
 
 @router.get("/results/{filename:path}")
-def download_result(filename: str, _: object = Depends(get_current_user)):
+def download_result(filename: str, current: User = Depends(get_current_user)):
     """支持子目录的下载：/results/workflow_runs/<run>/exports/<file>.xlsx 也走这里。
-    path traversal 防御：解析后必须仍位于 RESULTS_DIR 之下。"""
+    path traversal 防御：解析后必须仍位于 RESULTS_DIR 之下。
+
+    项目级隔离：不能只看登录态 —— 把文件解析回它所属项目（compare result
+    走 task / workflow 产物走 workflow），用户对该项目无权 → 403。无法归属的
+    文件（上传文件 / 未知）回落到仅登录态。见 docs/PROJECT_AUTHORIZATION.md。"""
     path = (RESULTS_DIR / filename).resolve()
     if RESULTS_DIR.resolve() not in path.parents or not path.exists():
         raise HTTPException(status_code=404, detail="Result not found")
+    project_id, resolved = result_download_project_id(filename)
+    if resolved and not can_access_project(current, project_id):
+        raise HTTPException(status_code=403, detail="无权下载该结果文件")
     return FileResponse(path, filename=Path(filename).name)

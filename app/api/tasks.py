@@ -1,8 +1,13 @@
-"""对比任务 CRUD + 同步 / 异步执行 + 行预览。"""
+"""对比任务 CRUD + 同步 / 异步执行 + 行预览。
+
+项目级隔离见 docs/PROJECT_AUTHORIZATION.md：list 按用户可访问项目过滤，
+mutation / run / preview 校验用户对任务所在项目有权。
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from app.api._authz import filter_by_project, require_project_access
 from app.api._shared import ensure_datasources_for_kind
 from app.dbclients.factory import fetch_rows_with_schema
 from app.models import (
@@ -14,6 +19,7 @@ from app.models import (
     PreviewRowsResponse,
     SourceKind,
     SqlMode,
+    User,
 )
 from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_task_run
@@ -27,21 +33,28 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/api/tasks", response_model=list[CompareTask])
-def list_tasks(project_id: str = ""):
-    items = task_store.list()
+def list_tasks(project_id: str = "", current: User = Depends(get_current_user)):
+    items = filter_by_project(task_store.list(), current)
     if project_id:
         items = [t for t in items if t.project_id == project_id or not t.project_id]
     return items
 
 
 @router.post("/api/tasks", response_model=CompareTask)
-def create_task(payload: CompareTaskCreate, _: object = Depends(require_role("editor"))):
+def create_task(payload: CompareTaskCreate, current: User = Depends(require_role("editor"))):
+    require_project_access(current, payload.project_id, detail="无权在该项目下创建对比任务")
     ensure_datasources_for_kind(payload)
     return task_store.create(payload)
 
 
 @router.put("/api/tasks/{task_id}", response_model=CompareTask)
-def update_task(task_id: str, payload: CompareTaskCreate, _: object = Depends(require_role("editor"))):
+def update_task(task_id: str, payload: CompareTaskCreate, current: User = Depends(require_role("editor"))):
+    existing = task_store.get(task_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, existing.project_id)
+    if payload.project_id != existing.project_id:
+        require_project_access(current, payload.project_id, detail="无权把对比任务移动到该项目")
     ensure_datasources_for_kind(payload)
     try:
         return task_store.update(task_id, payload)
@@ -50,7 +63,11 @@ def update_task(task_id: str, payload: CompareTaskCreate, _: object = Depends(re
 
 
 @router.delete("/api/tasks/{task_id}", response_model=OkResponse)
-def delete_task(task_id: str, _: object = Depends(require_role("editor"))):
+def delete_task(task_id: str, current: User = Depends(require_role("editor"))):
+    existing = task_store.get(task_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, existing.project_id)
     try:
         task_store.delete(task_id)
     except KeyError as exc:
@@ -59,11 +76,13 @@ def delete_task(task_id: str, _: object = Depends(require_role("editor"))):
 
 
 @router.post("/api/tasks/{task_id}/copy", response_model=CompareTask)
-def copy_task_api(task_id: str, _: object = Depends(require_role("editor"))):
+def copy_task_api(task_id: str, current: User = Depends(require_role("editor"))):
     task = task_store.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, task.project_id)
     payload = CompareTaskCreate(
+        project_id=task.project_id,
         name=f"{task.name} 副本",
         source_kind=task.source_kind,
         target_kind=task.target_kind,
@@ -92,7 +111,11 @@ def copy_task_api(task_id: str, _: object = Depends(require_role("editor"))):
 
 
 @router.post("/api/tasks/{task_id}/run", response_model=CompareResult)
-def run_task_api(task_id: str, _: object = Depends(require_role("editor"))):
+def run_task_api(task_id: str, current: User = Depends(require_role("editor"))):
+    task = task_store.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
     try:
         return run_task(task_id)
     except KeyError as exc:
@@ -105,10 +128,12 @@ def run_task_api(task_id: str, _: object = Depends(require_role("editor"))):
 def run_task_async_api(
     task_id: str,
     payload: dict[str, object] | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
-    if task_store.get(task_id) is None:
+    task = task_store.get(task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
     return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
 
 
@@ -116,12 +141,13 @@ def run_task_async_api(
 def preview_task_api(
     task_id: str,
     payload: dict[str, object] | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: User = Depends(require_role("editor")),
 ):
     payload = payload or {}
     task = task_store.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(current, task.project_id)
     side = str(payload.get("side") or "source")
     limit = int(payload.get("limit") or 20)
     preview_limit = min(limit, 200)

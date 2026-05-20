@@ -13,10 +13,14 @@ def list_result_history(
     project_id: str = "",
     *,
     limit: int | None = None,
+    allowed_project_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """列历史结果。
     - task_id 非空：仅匹配该 task 的 run
     - project_id 非空：仅匹配该项目下 task 的 run + task 已删的孤儿 run（保留历史）
+    - allowed_project_ids 非空：用户级项目隔离（见 docs/PROJECT_AUTHORIZATION.md）。
+      只返回归属于这些项目（或全局 task）的 run。`None` = 不限制（admin）。
+      非 admin 场景下 task 已删 / 无 task_id 的孤儿 run 一律隐藏（无法核实归属）。
     - limit：截断返回前 N 条（None = 全量保 backward compat）。设了 limit 时
       先按文件 mtime DESC 排序（fs metadata 免读），只读 `limit*2+10` 个候选
       JSON，再按 `sort_time`（started_at 优先 / mtime 兜底）二次排序。跟
@@ -29,6 +33,15 @@ def list_result_history(
         project_task_ids = {
             t.id for t in task_store.list()
             if (t.project_id or "") == project_id or not (t.project_id or "")
+        }
+    # 用户级项目隔离：预算「可见 task id 集合」（全局 task + 用户项目下的 task）。
+    # 不在集合里的 result_task_id（含孤儿 / 空）一律跳过。
+    accessible_task_ids: set[str] | None = None
+    if allowed_project_ids is not None:
+        from app.services.repositories import task_store
+        accessible_task_ids = {
+            t.id for t in task_store.list()
+            if not (t.project_id or "") or t.project_id in allowed_project_ids
         }
     paths = list(RESULTS_DIR.glob("*.json"))
     if limit is not None:
@@ -51,6 +64,10 @@ def list_result_history(
         excel_path = RESULTS_DIR / excel_name
         result_task_id = data.get("task_id", "")
         if task_id and result_task_id != task_id:
+            continue
+        # 用户级隔离：result 必须挂在用户可见的 task 上。孤儿 / 无 task_id 的
+        # run 不在 accessible_task_ids 里 → 跳过（非 admin 无法核实归属）。
+        if accessible_task_ids is not None and result_task_id not in accessible_task_ids:
             continue
         if project_task_ids is not None and result_task_id and result_task_id not in project_task_ids:
             # 已知 task 但不归当前项目 —— 跳过；
