@@ -217,3 +217,81 @@ def test_history_filtered_by_user(scope):
 
     admin_runs = {r["run_id"] for r in scope["admin"].get("/api/history").json()}
     assert {"run_a_hist", "run_b_hist"} <= admin_runs
+
+
+# ─── 8. 引用资源授权：task 引用的 datasource ─────────────────────────────────
+# 外壳（task）的项目权限过了，但 task 引用的 datasource 不能跨到无权项目。
+
+
+def _task_payload(name, ds_id, project_id):
+    return {
+        "name": name, "source_id": ds_id, "target_id": ds_id,
+        "source_sql": "SELECT 1 AS id", "key_columns": ["id"], "project_id": project_id,
+    }
+
+
+def test_editor_cannot_create_task_referencing_other_project_datasource(scope):
+    r = scope["editorA"].post("/api/tasks", json=_task_payload("cross-ds", scope["ds_b"], scope["proj_a"]))
+    assert r.status_code == 403
+
+
+def test_editor_cannot_update_task_to_other_project_datasource(scope):
+    # task_a 在 ProjectA，editorA 有权改它；但不能把它的数据源换成 ProjectB 的
+    r = scope["editorA"].put(
+        f"/api/tasks/{scope['task_a']}",
+        json=_task_payload("task-A", scope["ds_b"], scope["proj_a"]),
+    )
+    assert r.status_code == 403
+
+
+def test_editor_can_create_task_referencing_own_project_datasource(scope):
+    r = scope["editorA"].post("/api/tasks", json=_task_payload("own-ds", scope["ds_a"], scope["proj_a"]))
+    assert r.status_code == 200
+
+
+def test_editor_can_create_task_referencing_global_datasource(scope):
+    r = scope["editorA"].post("/api/tasks", json=_task_payload("global-ds", scope["ds_g"], scope["proj_a"]))
+    assert r.status_code == 200
+
+
+# ─── 9. 引用资源授权：workflow compare 节点引用的 task ───────────────────────
+
+
+def _workflow_payload(name, task_id, project_id):
+    return {
+        "name": name, "project_id": project_id,
+        "nodes": [{"id": "n1", "type": "compare", "config": {"task_id": task_id}}],
+    }
+
+
+def test_editor_cannot_create_workflow_referencing_other_project_task(scope):
+    r = scope["editorA"].post(
+        "/api/workflows", json=_workflow_payload("wf-cross", scope["task_b"], scope["proj_a"]),
+    )
+    assert r.status_code == 403
+
+
+def test_editor_can_create_workflow_referencing_own_project_task(scope):
+    r = scope["editorA"].post(
+        "/api/workflows", json=_workflow_payload("wf-own", scope["task_a"], scope["proj_a"]),
+    )
+    assert r.status_code == 200
+
+
+def test_editor_can_create_workflow_referencing_global_task(scope):
+    r = scope["editorA"].post(
+        "/api/workflows", json=_workflow_payload("wf-global", scope["task_g"], scope["proj_a"]),
+    )
+    assert r.status_code == 200
+
+
+# ─── 10. config import 收紧为 admin only ─────────────────────────────────────
+
+
+def test_config_import_requires_admin(scope):
+    files = {"config_file": ("config.json", b'{"datasources": [], "tasks": []}', "application/json")}
+    assert scope["viewerA"].post("/config/import", files=files).status_code == 403
+    assert scope["editorA"].post("/config/import", files=files).status_code == 403
+    # admin 能用 —— 通过 auth gate（import 成功走 303 重定向）
+    r = scope["admin"].post("/config/import", files=files, follow_redirects=False)
+    assert r.status_code not in (401, 403), (r.status_code, r.text)

@@ -107,7 +107,6 @@
 | POST | `/api/workflow-runs/{id}/openlineage/emit` | editor |
 | DELETE | `/api/history/{id}` | editor |
 | POST | `/history/export` | editor（生成临时下载文件）|
-| POST | `/config/import` | editor ★ |
 | POST | `/api/runs/{id}/cancel` | editor |
 | POST | `/api/preview/rows` | editor |
 | POST | `/api/preview/columns` | editor |
@@ -126,9 +125,9 @@
 | PUT | `/api/assets/aspects` | editor（已挂）|
 | DELETE | `/api/assets/aspects` | editor（已挂）|
 
-★ `/config/import` 改 datasources / tasks 数据，editor 能做。**导出** `/config/export` 看下表（admin）。
-
 ★★ AI utility 端点 (`translate-error` / `suggest-column-mapping`) 当前已挂 `get_current_user` —— viewer 也能用，因为它们不改业务数据，只是 LLM 辅助查询。保持 viewer。
+
+注：`/config/import` 已从 editor 收紧为 **admin only**，见下方 admin 表。
 
 ---
 
@@ -152,8 +151,9 @@
 | POST | `/api/scheduler/stop` | admin |
 | POST | `/api/scheduler/tick` | admin |
 | GET | `/config/export` | admin ★ |
+| POST | `/config/import` | admin ★ |
 
-★ `/config/export` 即使 `include_passwords=false` 默认脱敏，仍然导出全部 datasources / tasks 配置；属系统级备份，**admin only**。如果业务 viewer 需要导出查看，将来加 `/api/datasources/export-viewer` 走 viewer + 强制脱敏。
+★ `/config/export` / `/config/import` 是系统级配置备份 / 恢复，两者都 **admin only**。导出即使 `include_passwords=false` 默认脱敏，仍含全量 datasources / tasks 配置；导入是批量创建 / 覆盖，且导入文件可携带任意 `project_id`（绕过单对象创建时的项目校验），风险高于普通 editor 写单个对象。详见 `docs/PROJECT_AUTHORIZATION.md` 第 4.3 节。如果业务 viewer 需要导出查看，将来加 `/api/datasources/export-viewer` 走 viewer + 强制脱敏。
 
 ---
 

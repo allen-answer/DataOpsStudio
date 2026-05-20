@@ -12,7 +12,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api._authz import filter_by_project, require_project_access
-from app.api._shared import coerce_string_dict, ensure_workflow_node_targets
+from app.api._shared import (
+    authorize_workflow_compare_tasks,
+    coerce_string_dict,
+    ensure_workflow_node_targets_authorized,
+)
 from app.models import (
     JobInfo,
     OkResponse,
@@ -53,8 +57,10 @@ def _workflow_to_create(workflow: Workflow) -> WorkflowCreate:
     return WorkflowCreate.model_validate(workflow.model_dump(exclude={"id"}))
 
 
-def _template_payload(payload: WorkflowTemplateCreate) -> WorkflowTemplateCreate:
-    ensure_workflow_node_targets(payload.workflow)
+def _template_payload(payload: WorkflowTemplateCreate, current_user: User) -> WorkflowTemplateCreate:
+    # 模板内嵌的 workflow 引用的 compare task 也要过授权校验 —— 防止借模板
+    # 把无权项目的 task 引用固化进可复用蓝图。
+    ensure_workflow_node_targets_authorized(payload.workflow, current_user)
     now = _now_iso()
     return payload.model_copy(update={
         "tags": [tag for tag in payload.tags if tag],
@@ -74,7 +80,7 @@ def list_workflows(project_id: str = "", current: User = Depends(get_current_use
 @router.post("/api/workflows", response_model=Workflow)
 def create_workflow(payload: WorkflowCreate, current: User = Depends(require_role("editor"))):
     require_project_access(current, payload.project_id, detail="无权在该项目下创建作业流")
-    ensure_workflow_node_targets(payload)
+    ensure_workflow_node_targets_authorized(payload, current)
     return workflow_store.create(payload)
 
 
@@ -86,7 +92,7 @@ def update_workflow(workflow_id: str, payload: WorkflowCreate, current: User = D
     require_project_access(current, existing.project_id)
     if payload.project_id != existing.project_id:
         require_project_access(current, payload.project_id, detail="无权把作业流移动到该项目")
-    ensure_workflow_node_targets(payload)
+    ensure_workflow_node_targets_authorized(payload, current)
     try:
         return workflow_store.update(workflow_id, payload)
     except KeyError as exc:
@@ -112,8 +118,8 @@ def list_workflow_templates():
 
 
 @router.post("/api/workflow-templates", response_model=WorkflowTemplate)
-def create_workflow_template(payload: WorkflowTemplateCreate, _: object = Depends(require_role("editor"))):
-    return workflow_template_store.create(_template_payload(payload))
+def create_workflow_template(payload: WorkflowTemplateCreate, current: User = Depends(require_role("editor"))):
+    return workflow_template_store.create(_template_payload(payload, current))
 
 
 @router.delete("/api/workflow-templates/{template_id}", response_model=OkResponse)
@@ -146,7 +152,7 @@ def instantiate_workflow_template(
     # 实例化产出一个真实 workflow —— 它落到模板自带的 project_id 下，
     # 校验当前用户对该目标项目有权（不能借模板把作业流建进别人项目）。
     require_project_access(current, workflow_payload.project_id, detail="无权在该项目下创建作业流")
-    ensure_workflow_node_targets(workflow_payload)
+    ensure_workflow_node_targets_authorized(workflow_payload, current)
     return workflow_store.create(workflow_payload)
 
 
@@ -168,7 +174,7 @@ def save_workflow_as_template(
         tags=payload.tags or workflow.tags,
         workflow=_workflow_to_create(workflow),
     )
-    return workflow_template_store.create(_template_payload(template))
+    return workflow_template_store.create(_template_payload(template, current))
 
 
 @router.post("/api/workflows/{workflow_id}/run", response_model=WorkflowRun)
@@ -181,6 +187,9 @@ def run_workflow_api(
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     require_project_access(current, workflow.project_id, detail="无权运行该项目的作业流")
+    # 运行前再校验一遍 compare 节点引用的 task —— 防止作业流创建后 task 被移到
+    # 别的项目、或历史遗留的跨项目引用被间接 run。
+    authorize_workflow_compare_tasks(workflow, current)
     variables = coerce_string_dict((payload or {}).get("variables"))
     try:
         run = run_workflow(workflow, variables)
@@ -204,6 +213,7 @@ def run_workflow_async_api(
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     require_project_access(current, workflow.project_id, detail="无权运行该项目的作业流")
+    authorize_workflow_compare_tasks(workflow, current)
     payload = payload or {}
     variables = coerce_string_dict(payload.get("variables"))
     return submit_workflow_run(workflow_id, variables, max_retries=payload.get("max_retries"))

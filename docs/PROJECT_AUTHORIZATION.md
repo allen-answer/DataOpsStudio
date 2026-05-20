@@ -132,21 +132,73 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 
 ---
 
-## 4. 状态码约定
+## 4. 引用资源授权（防止间接越权）
+
+外壳资源（task / workflow）的项目权限校验过了，**不代表它引用的内部资源
+也安全**。典型越权链：
+
+> editor A 对 ProjectA 有写权 → 创建一个 ProjectA 的 task，但把 `source_id`
+> 指向 ProjectB 的 datasource → A 之后 run 这个 task，就间接查了 ProjectB
+> 的库。外壳校验放行了，内部引用没校验 —— 这就是间接越权。
+
+所以「内部引用资源」必须独立校验。实现在 `app/api/_shared.py` 三个函数。
+
+### 4.1 task 引用的 datasource
+
+`create_task` / `update_task` 走 `ensure_datasources_for_kind_authorized(payload, current_user)`：
+
+1. `source_kind=SQL` 时，`source_id` 指向的 datasource 必须存在（否则 400）。
+2. `target_kind=SQL` 时，`target_id` 指向的 datasource 必须存在（否则 400）。
+3. 当前用户必须能访问该 datasource 的 `project_id`，否则 **403**。
+4. task 的 `project_id` 非空时，datasource 的 `project_id` 必须**与 task 相同**，
+   或 datasource 是**全局资源**（`project_id=""`）；否则 **403**。
+5. 规则 4 是结构一致性约束，对**所有角色（含 admin）生效** —— 否则 admin
+   建的「ProjectA task → ProjectB datasource」会成为 ProjectA 成员越权的跳板。
+   规则 3 的访问校验则按用户判定（admin 自然通过）。
+
+### 4.2 workflow compare 节点引用的 task
+
+`create_workflow` / `update_workflow` / 模板实例化 / 存模板走
+`ensure_workflow_node_targets_authorized(payload, current_user)`（结构校验 +
+引用授权）；`run` / `run-async` 走轻量的
+`authorize_workflow_compare_tasks(workflow, current_user)`（只做引用授权，
+不重复结构校验，也不因 task 已被删而 400）：
+
+1. compare 节点的 `config.task_id` 必须存在（结构校验阶段，否则 400）。
+2. 当前用户必须能访问该 task 的 `project_id`，否则 **403**。
+3. workflow 的 `project_id` 非空时，compare task 必须**与 workflow 同项目**
+   或是**全局 task**；否则 **403**。
+4. run 前再校验一遍 —— 防止 workflow 创建后 task 被移到别的项目、或历史
+   遗留的跨项目引用被间接执行。
+
+### 4.3 config 导入 / 导出收紧为 admin only
+
+`/config/import` 是批量创建 / 覆盖 datasources + tasks，导入文件里可携带
+**任意 `project_id`**，绕过单对象创建时的项目校验。因此导入 / 导出都 admin only：
+
+| Method | Path | 角色 |
+|--------|------|------|
+| GET | `/config/export` | **admin only**（含全量配置，可选含明文密码） |
+| POST | `/config/import` | **admin only**（批量写入 + 可携带任意 project_id，风险高于 editor 写单对象） |
+
+---
+
+## 5. 状态码约定
 
 | 情况 | 状态码 |
 |------|--------|
 | 未登录 | 401 |
 | 已登录但 role 不够（viewer 想写） | 403 |
 | 已登录、role 够，但对资源所在项目无权 | 403 |
+| 已登录、role 够，但引用了无权 / 跨项目的 datasource / task | 403 |
 | 资源不存在 | 404 |
 | 列表读取中无权的资源 | 静默过滤掉（不报错） |
 
 ---
 
-## 5. 最小切片覆盖范围（本轮）
+## 6. 覆盖范围
 
-本轮在以下文件落地项目级隔离：
+**第一轮（外壳资源项目隔离）**：
 
 - `app/api/datasources.py` —— list 过滤 + create/update/delete/test 校验
 - `app/api/tasks.py` —— list 过滤 + create/update/delete/copy/run/run-async/preview 校验
@@ -155,15 +207,23 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 - `app/api/system.py` —— `/api/bootstrap` 按用户过滤 + `/results/*` 按归属项目校验
 - `app/services/history.py` —— `list_result_history` 新增 `allowed_project_ids` 参数
 
+**第二轮（引用资源授权，本文件第 4 节）**：
+
+- `app/api/_shared.py` —— `ensure_datasources_for_kind_authorized` /
+  `authorize_workflow_compare_tasks` / `ensure_workflow_node_targets_authorized`
+- `app/api/tasks.py` —— create/update 用 datasource 授权校验
+- `app/api/workflows.py` —— create/update/instantiate/save-template/run 用 task 授权校验
+- `app/api/config_io.py` —— `/config/import` 收紧为 admin only
+
 共享 helper：`app/api/_authz.py`。
 
-**不在本轮范围**：workflow templates 库本身（视为跨项目共享库，仅在实例化
-出 workflow 时校验目标项目）、`/api/runs/{job_id}` 异步 job 状态查询、
+**不在范围**：workflow templates 库本身（视为跨项目共享库，仅在实例化 /
+存模板时校验引用 task）、`/api/runs/{job_id}` 异步 job 状态查询、
 assets / search / lineage 索引类 endpoint 的项目过滤 —— 留后续迭代。
 
 ---
 
-## 6. 测试契约
+## 7. 测试契约
 
 `tests/test_project_authorization.py` 覆盖：
 
@@ -176,3 +236,11 @@ assets / search / lineage 索引类 endpoint 的项目过滤 —— 留后续迭
 | 5 | bootstrap 按当前用户过滤 | A 只见自己项目 + 全局 |
 | 6 | viewer A 下载 B 项目 run 的 `/results/<run_id>.json` | 403 |
 | 7 | 全局资源（`project_id=""`）对所有登录用户可见 | A、B 都能看到 |
+| 8 | editor A 创建 ProjectA task 引用 ProjectB datasource | 403 |
+| 9 | editor A 更新 ProjectA task 改成引用 ProjectB datasource | 403 |
+| 10 | editor A 创建 ProjectA task 引用 ProjectA datasource | 200 |
+| 11 | editor A 创建 ProjectA task 引用全局 datasource | 200 |
+| 12 | editor A 创建 ProjectA workflow 引用 ProjectB task | 403 |
+| 13 | editor A 创建 ProjectA workflow 引用 ProjectA task | 200 |
+| 14 | editor A 创建 ProjectA workflow 引用全局 task | 200 |
+| 15 | viewer / editor `POST /config/import` | 403；admin 放行 |

@@ -9,7 +9,8 @@ import re
 
 from fastapi import HTTPException
 
-from app.models import CompareTaskCreate, SourceKind, WorkflowCreate
+from app.api._authz import can_access_project
+from app.models import CompareTaskCreate, SourceKind, User, Workflow, WorkflowCreate
 from app.services.repositories import datasource_store, task_store
 from app.services.workflow_engine import topological_order, validate_when_syntax
 from app.utils.sql_guard import validate_readonly_sql
@@ -105,3 +106,89 @@ def coerce_string_dict(value: object | None) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(key): str(item) for key, item in value.items()}
+
+
+# ─── 引用资源授权（见 docs/PROJECT_AUTHORIZATION.md「引用资源授权」）───────────
+# 外壳资源（task / workflow）的项目权限在 endpoint 层用 _authz.require_project_access
+# 校验；下面这组函数补上「内部引用资源」的校验 —— task 引用的 datasource、
+# workflow compare 节点引用的 task —— 防止「有权改外壳 → 间接引用无权项目的
+# 资源」这种越权（外壳过了校验，但内部引用没过）。
+
+
+def ensure_datasources_for_kind_authorized(
+    payload: CompareTaskCreate, current_user: User
+) -> None:
+    """在 ensure_datasources_for_kind 存在性校验之上，再校验：
+    - 当前用户能访问被引用 datasource 所属项目（否则 403）
+    - task 归属某项目时，datasource 必须同项目或为全局资源（否则 403）—— 防止
+      ProjectA 的对比任务引用 ProjectB 的数据源，被 ProjectA 成员间接 run。
+
+    create_task / update_task 用这个替代裸 ensure_datasources_for_kind。
+    """
+    ensure_datasources_for_kind(payload)  # 先做存在性校验（缺失 → 400）
+    task_project = payload.project_id or ""
+    sides: list[tuple[str, str]] = []
+    if payload.source_kind == SourceKind.SQL:
+        sides.append(("source", payload.source_id))
+    if payload.target_kind == SourceKind.SQL:
+        sides.append(("target", payload.target_id))
+    for side, datasource_id in sides:
+        datasource = datasource_store.get(datasource_id)
+        if datasource is None:
+            continue  # 存在性已由上面保证；防御性跳过
+        ds_project = datasource.project_id or ""
+        if not can_access_project(current_user, ds_project):
+            raise HTTPException(
+                status_code=403,
+                detail=f"无权引用 {side} 数据源 —— 它属于你无权访问的项目",
+            )
+        # task 归属某项目时，datasource 必须同项目或全局（结构一致性，对所有
+        # 角色生效 —— 否则 admin 建的跨项目引用会成为他人越权的跳板）。
+        if task_project and ds_project and ds_project != task_project:
+            raise HTTPException(
+                status_code=403,
+                detail=f"{side} 数据源属于其它项目，不能被本项目的对比任务引用",
+            )
+
+
+def authorize_workflow_compare_tasks(
+    payload: WorkflowCreate | Workflow, current_user: User
+) -> None:
+    """校验 workflow 里 compare 节点引用的 task —— 只做引用授权，不做结构校验：
+    - 当前用户能访问被引用 task 所属项目（否则 403）
+    - workflow 归属某项目时，task 必须同项目或为全局 task（否则 403）
+
+    run workflow 走这个轻量版本：结构在 create 时已校验，run 时不重复校验，
+    也不因 task 已被删而 400（那留给执行层处理）。
+    """
+    workflow_project = payload.project_id or ""
+    for node in payload.nodes:
+        if node.type.value != "compare":
+            continue
+        task_id = str(node.config.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        task = task_store.get(task_id)
+        if task is None:
+            continue  # 存在性不在这里管
+        task_project = task.project_id or ""
+        if not can_access_project(current_user, task_project):
+            raise HTTPException(
+                status_code=403,
+                detail=f"node {node.id}: 无权引用 task {task_id} —— 它属于你无权访问的项目",
+            )
+        if workflow_project and task_project and task_project != workflow_project:
+            raise HTTPException(
+                status_code=403,
+                detail=f"node {node.id}: compare task 属于其它项目，不能被本项目的作业流引用",
+            )
+
+
+def ensure_workflow_node_targets_authorized(
+    payload: WorkflowCreate, current_user: User
+) -> None:
+    """结构 + 存在性校验（ensure_workflow_node_targets）+ compare 节点引用 task
+    授权校验。create_workflow / update_workflow / 模板实例化 / 存模板用这个。
+    """
+    ensure_workflow_node_targets(payload)
+    authorize_workflow_compare_tasks(payload, current_user)

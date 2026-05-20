@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.api._authz import filter_by_project, require_project_access
-from app.api._shared import ensure_datasources_for_kind
+from app.api._shared import ensure_datasources_for_kind_authorized
 from app.dbclients.factory import fetch_rows_with_schema
 from app.models import (
     CompareResult,
@@ -43,7 +43,7 @@ def list_tasks(project_id: str = "", current: User = Depends(get_current_user)):
 @router.post("/api/tasks", response_model=CompareTask)
 def create_task(payload: CompareTaskCreate, current: User = Depends(require_role("editor"))):
     require_project_access(current, payload.project_id, detail="无权在该项目下创建对比任务")
-    ensure_datasources_for_kind(payload)
+    ensure_datasources_for_kind_authorized(payload, current)
     return task_store.create(payload)
 
 
@@ -55,7 +55,7 @@ def update_task(task_id: str, payload: CompareTaskCreate, current: User = Depend
     require_project_access(current, existing.project_id)
     if payload.project_id != existing.project_id:
         require_project_access(current, payload.project_id, detail="无权把对比任务移动到该项目")
-    ensure_datasources_for_kind(payload)
+    ensure_datasources_for_kind_authorized(payload, current)
     try:
         return task_store.update(task_id, payload)
     except KeyError as exc:

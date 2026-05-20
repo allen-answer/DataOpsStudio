@@ -13,8 +13,10 @@ from app.services.auth import require_role
 from app.services.config_io import export_config, import_config
 
 
-# config 全局备份 / 恢复，权限更严：导出 admin only（含 datasources / tasks 全量），
-# 导入 editor（属业务写）。详见 docs/AUTHORIZATION_MATRIX.md。
+# config 全局备份 / 恢复，权限更严：导出 / 导入都 admin only。导入是批量
+# 创建 / 覆盖 datasources + tasks，且可携带任意 project_id（能绕过单对象
+# 创建时的项目校验），风险高于普通 editor 写单个对象。详见
+# docs/AUTHORIZATION_MATRIX.md 与 docs/PROJECT_AUTHORIZATION.md。
 router = APIRouter()
 
 
@@ -27,7 +29,7 @@ def config_export(include_passwords: bool = False, _: object = Depends(require_r
 
 
 @router.post("/config/import")
-def config_import(config_file: UploadFile = File(...), _: object = Depends(require_role("editor"))):
+def config_import(config_file: UploadFile = File(...), _: object = Depends(require_role("admin"))):
     if not config_file.filename or Path(config_file.filename).suffix.lower() != ".json":
         raise HTTPException(status_code=400, detail="Only .json config files are supported")
     try:
