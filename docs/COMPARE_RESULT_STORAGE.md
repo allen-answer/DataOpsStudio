@@ -288,8 +288,23 @@ def load_run_result(run_id: str):
    - `RunLimits.persist_same_bucket: bool = False`（parquet 模式下 same 桶默认 count_only + sample）
    - `RunLimits.same_sample_rows: int = 100`（count_only 时 meta.json 里 sample 行数上限）
    - `meta.json` schema：`format` / `format_version` / `written_at` + envelope 透传 + `buckets: [{name, path, rows, mode, sample?, bytes?}]`
-3. **切片 C**：读侧 `load_run_result` detect 新老格式 + `_load_new_format` 实现 + bucket 分页 endpoint `GET /api/runs/<id>/buckets/<name>?offset=&limit=`。
-4. **切片 D**：HistoryView 改用 `/api/runs/<id>/meta` + lazy bucket 分页（首屏不拉行）。切片 C+D 一起 ship 后可考虑把 `RunLimits.result_format` 默认改成 `"parquet"`。
+3. **切片 C** ✅：读侧 `app/services/run_result.py` —— `detect_format` / `load_run_meta` /
+   `read_bucket` / `delete_run` 四个入口统一双格式 dispatch。`list_result_history`
+   同时扫 `RESULTS_DIR/*.json`（legacy）+ `RESULTS_DIR/*/meta.json`（parquet）。
+   `_authz.compare_result_project_id` + `result_download_project_id` 支持目录形态。
+   两个新端点：
+   - `GET /api/runs/<id>/meta` —— envelope + buckets 元清单（legacy 自动合成 `mode=full` 清单）
+   - `GET /api/runs/<id>/buckets/<bucket>?offset=&limit=` —— `{rows, total, offset, limit, mode}`
+     - `mode=full`：parquet `iter_batches` 按 row group 顺序扫到 offset 再 take limit（首阶段不承诺真随机访问，§7 详）
+     - `mode=count_only`：从 meta.json 的 sample 数组切片
+4. **切片 D** ✅（轻量版）：HistoryView 列表懒拉 —— `loadHistory()` 默认 `limit=100`
+   首屏；滚到底自动调 `loadMoreHistory()` append 下一批（带去重 + hasMore 标识 +
+   底部 Load more 按钮兜底）。`/api/history` 当前不接 offset 参数，临时方案用
+   `limit=existing+PAGE_SIZE` 拉更大窗口去重 append，等后端 offset 参数补上再换。
+   单 run 的 bucket drilldown UI（用 `/api/runs/<id>/buckets/<n>` 分页）**不在
+   切片 D 范围** —— 当前 HistoryView 是列表 + 下载链接，没有 row drilldown 入口；
+   若后续需要 drilldown 详情面板独立 PR 做。切片 C+D 落地后可考虑把
+   `RunLimits.result_format` 默认改成 `"parquet"`。
 5. **切片 E**：Excel 导出异步化 + `POST /export-excel` + jobs 接管。
 6. **切片 F（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
 

@@ -2,6 +2,9 @@
 
 历史 perf 优化：limit 设了走 mtime DESC 预排，只读 limit*2+10 个 JSON，再按
 sort_time 二次排序保语义正确。limit=None 时仍读全量保兼容。
+
+切片 C：list_result_history 同时扫 RESULTS_DIR/*.json（legacy）+ RESULTS_DIR/*/meta.json
+（parquet）；后者 result_filename 走 `<run_id>/meta.json`，format 字段标 "parquet"。
 """
 from __future__ import annotations
 
@@ -100,3 +103,69 @@ def test_list_history_filter_by_task_id_with_limit(isolated_storage):
     items_a = list_result_history(task_id="task-A", limit=10)
     assert all(it["task_id"] == "task-A" for it in items_a)
     assert len(items_a) == 5  # 只有 5 个匹配
+
+
+# ─── 切片 C：list_result_history 兼容 parquet runs ───────────────────────────
+
+
+def _make_parquet_meta(results_dir, run_id: str, task_id: str = "", started_at: str = "") -> None:
+    """模拟一个 parquet run：建 <run_id>/meta.json（不需要真 parquet 文件，
+    list_result_history 只读 meta.json 取 summary）。"""
+    run_dir = results_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "run_id": run_id, "task_id": task_id,
+        "task_name": "t",
+        "started_at": started_at or "2026-05-01T10:00:00",
+        "summary": {"only_source": 0, "only_target": 0, "diff": 0, "same": 0},
+        "buckets": [],
+        "format": "parquet",
+        "format_version": 1,
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def test_list_history_picks_up_parquet_runs(isolated_storage):
+    """legacy json + parquet dir 同存时两类都列出。"""
+    from app.services.history import list_result_history
+    results_dir = isolated_storage["results"]
+    # 2 个 legacy json
+    for i in range(2):
+        (results_dir / f"legacy_r{i}.json").write_text(
+            json.dumps({"run_id": f"legacy_r{i}", "task_id": "",
+                        "started_at": f"2026-05-0{i+1}T10:00:00",
+                        "summary": {"only_source": 0, "only_target": 0, "diff": 0, "same": 0}}),
+            encoding="utf-8",
+        )
+    # 3 个 parquet 目录
+    for i in range(3):
+        _make_parquet_meta(results_dir, f"parq_r{i}", started_at=f"2026-05-1{i}T10:00:00")
+
+    items = list_result_history()
+    by_id = {it["run_id"]: it for it in items}
+    assert "legacy_r0" in by_id and "legacy_r1" in by_id
+    assert "parq_r0" in by_id and "parq_r1" in by_id and "parq_r2" in by_id
+
+    # parquet 的 result_filename 是目录化路径 + format 标 parquet
+    assert by_id["parq_r0"]["result_filename"] == "parq_r0/meta.json"
+    assert by_id["parq_r0"]["format"] == "parquet"
+    # legacy 的 result_filename 仍是文件名 + format 标 json
+    assert by_id["legacy_r0"]["result_filename"] == "legacy_r0.json"
+    assert by_id["legacy_r0"]["format"] == "json"
+
+
+def test_list_history_filter_by_task_id_covers_both_formats(isolated_storage):
+    from app.services.history import list_result_history
+    results_dir = isolated_storage["results"]
+    (results_dir / "L1.json").write_text(
+        json.dumps({"run_id": "L1", "task_id": "tA",
+                    "started_at": "2026-05-01T10:00:00",
+                    "summary": {"only_source": 0, "only_target": 0, "diff": 0, "same": 0}}),
+        encoding="utf-8",
+    )
+    _make_parquet_meta(results_dir, "P1", task_id="tA")
+    _make_parquet_meta(results_dir, "P2", task_id="tB")
+
+    items = list_result_history(task_id="tA")
+    ids = {it["run_id"] for it in items}
+    assert ids == {"L1", "P1"}

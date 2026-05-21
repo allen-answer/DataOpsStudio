@@ -110,24 +110,21 @@ def require_datasource_access(
 
 
 def compare_result_project_id(run_id: str) -> tuple[str, bool]:
-    """解析 results/<run_id>.json 的 task_id → task.project_id。
+    """解析 results/<run_id>{.json | /meta.json} 的 task_id → task.project_id。
+
+    切片 C 起 reader 支持双格式：parquet 走 `<run_id>/meta.json`，legacy 走
+    `<run_id>.json`。两种 envelope 都有 `task_id` 字段，统一走 `load_run_meta`
+    抽 task_id 再反查 task.project_id。
 
     返回 (project_id, resolved)。resolved=False 表示无法归属（文件缺失 /
     无 task_id / task 已删的孤儿 run）。
     """
-    import json
-
-    from app.utils import paths
-
-    results_dir = paths.RESULTS_DIR
-    path = (results_dir / f"{run_id}.json").resolve()
+    from app.services.run_result import RunNotFound, load_run_meta
     try:
-        if results_dir.resolve() not in path.parents or not path.exists():
-            return ("", False)
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        envelope = load_run_meta(run_id)
+    except (RunNotFound, Exception):
         return ("", False)
-    task_id = str(data.get("task_id") or "")
+    task_id = str(envelope.get("task_id") or "")
     if not task_id:
         return ("", False)
     from app.services.repositories import task_store
@@ -141,7 +138,9 @@ def compare_result_project_id(run_id: str) -> tuple[str, bool]:
 def result_download_project_id(filename: str) -> tuple[str, bool]:
     """把 /results/{filename} 解析回归属项目。
 
-    - `<run_id>.json` / `<run_id>.xlsx` → 对比 / 血缘结果，走 task 反查
+    - `<run_id>.json` / `<run_id>.xlsx` → legacy 对比 / 血缘结果，走 task 反查
+    - `<run_id>/meta.json` / `<run_id>/{bucket}.parquet` → parquet 目录格式，
+      用目录名当 run_id 反查（切片 C+）
     - `workflow_runs/<run_id>/...` → 作业流产物，走 workflow 反查
     - 其它（上传文件 / 未知）→ resolved=False，调用方回落到仅登录态
 
@@ -170,5 +169,9 @@ def result_download_project_id(filename: str) -> tuple[str, bool]:
     if len(parts) == 1:
         stem = parts[0].rsplit(".", 1)[0]
         return compare_result_project_id(stem)
+
+    # parquet 目录形式：第一段是 run_id，后续是 meta.json / *.parquet
+    if len(parts) >= 2:
+        return compare_result_project_id(parts[0])
 
     return ("", False)

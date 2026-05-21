@@ -115,6 +115,7 @@ export default {
       tabLineage: '血缘分析',
       exportSelected: '导出选中',
       deleteSelected: '删除选中',
+      loadMore: '加载更多',
     },
     assetDetail: {
       kindTable: '表资产',

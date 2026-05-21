@@ -11,13 +11,14 @@ const historyStore = useHistoryStore()
 const {
   selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
   historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
+  historyHasMore, historyLoading,
 } = storeToRefs(historyStore)
-const { loadHistory, exportHistory, deleteHistory } = historyStore
+const { loadHistory, loadMoreHistory, exportHistory, deleteHistory } = historyStore
 
 const { historyItemTaskLabel, summaryValue } = useNoticeStore()
 
-// bootstrap 默认只拉前 200 条历史（首屏轻量）。HistoryView 是「看所有历史」
-// 的专属页面，进来时主动调一次 loadHistory() 拉满（limit=2000）。
+// 切片 D：首屏只拉 PAGE_SIZE=100 条（不再 limit=2000 一次性拉满）。滚到底
+// 或点 Load more 按钮触发 loadMoreHistory() append。
 onMounted(() => { loadHistory() })
 </script>
 
@@ -67,7 +68,16 @@ onMounted(() => { loadHistory() })
       </div>
 
       <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-        <div class="h-[620px] overflow-auto">
+        <div
+          class="h-[620px] overflow-auto"
+          @scroll="(e) => {
+            const el = e.target as HTMLElement
+            // 离底 200px 内自动触发下一页 —— 避免用户在长列表里反复点 Load more
+            if (historyHasMore && !historyLoading && el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+              loadMoreHistory()
+            }
+          }"
+        >
           <div v-if="!filteredHistory.length" class="grid h-full place-items-center px-6 text-center text-sm text-slate-400">
             <div>
               <p class="text-slate-500">{{ historyActiveTab === 'compare' ? '还没有对比历史' : '还没有血缘分析历史' }}</p>
@@ -178,6 +188,15 @@ onMounted(() => { loadHistory() })
               </tr>
             </tbody>
           </table>
+        </div>
+        <!-- 切片 D：列表底部分页状态条 + 显式 Load more 按钮 -->
+        <div v-if="historyHasMore || historyLoading" class="flex items-center justify-center gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
+          <span v-if="historyLoading">{{ $t('common.loading') }}…</span>
+          <button
+            v-else-if="historyHasMore"
+            class="rounded-lg border border-slate-200 px-4 py-1.5 font-semibold text-slate-700 transition hover:bg-slate-50"
+            @click="loadMoreHistory"
+          >{{ $t('pages.history.loadMore') }}</button>
         </div>
       </div>
     </div>

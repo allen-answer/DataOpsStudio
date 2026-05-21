@@ -68,7 +68,7 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(paths_module, "LOCAL_SECRET_KEY_FILE", cfg / ".dataops_secret.key")
 
     # 3. 已经在 import 顶层绑住 path 的模块 —— 必须各自 patch
-    from app.services import workflow_history, history as history_svc, history_exporter, excel_uploads, jobs, config_io as config_io_svc
+    from app.services import workflow_history, history as history_svc, history_exporter, excel_uploads, jobs, config_io as config_io_svc, run_result as run_result_svc
     monkeypatch.setattr(workflow_history, "WORKFLOW_RUNS_DIR", wf_runs)
     monkeypatch.setattr(history_svc, "RESULTS_DIR", results)
     monkeypatch.setattr(history_exporter, "RESULTS_DIR", results)
@@ -78,6 +78,8 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_svc, "DATASOURCES_FILE", cfg / "datasources.json")
     monkeypatch.setattr(config_io_svc, "TASKS_FILE", cfg / "tasks.json")
     monkeypatch.setattr(config_io_svc, "RESULTS_DIR", results)
+    # 切片 C：reader 模块也在顶层绑了 RESULTS_DIR
+    monkeypatch.setattr(run_result_svc, "RESULTS_DIR", results)
     # jobs 模块的 _jobs 全局 dict 跨测试残留，清一下
     jobs._jobs.clear()
     jobs._futures.clear()

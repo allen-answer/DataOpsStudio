@@ -114,6 +114,7 @@ export default {
       tabLineage: 'Lineage',
       exportSelected: 'Export Selected',
       deleteSelected: 'Delete Selected',
+      loadMore: 'Load more',
     },
     assetDetail: {
       kindTable: 'Table Asset',

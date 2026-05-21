@@ -154,21 +154,69 @@ export const useHistoryStore = defineStore('history', () => {
     () => (_bootstrap.state.history as HistoryRecord[]).filter((item) => item.type === 'lineage').length,
   )
 
-  /** 拉一遍 /api/history 写回 bootstrapStore.state；HistoryView 删除 / 跑完 task
-   * 后调用。不复用 bootstrap.reload() 是因为这里只刷历史，不刷 datasources/tasks。
+  /** 切片 D：HistoryView 列表懒加载分页。
    *
-   * limit=2000 是 /api/history 当前允许的上限。HistoryView 是「看所有历史」的专属
-   * 页面，bootstrap 默认 200 条不够；显式拉够。如果将来真有项目历史超 2000 条，
-   * 再考虑前端分页。 */
+   * 旧方案 `loadHistory()` 一次拉满 limit=2000，2000 行 DOM 让 HistoryView 进入
+   * 时卡 1-2s。切片 D 改成分页：
+   * - 首屏 / refresh：`loadHistory()` 拉前 `PAGE_SIZE=100` 条覆盖 bootstrap.state.history
+   * - 滚到底部 / 点 Load more：`loadMoreHistory()` 拉下一批 append
+   * - `historyHasMore` 标识是否还有下一页（最近一次返回 == PAGE_SIZE 视为可能还有）
+   *
+   * loadHistory 总是从 0 重新拉（覆盖现有 history），保证刷新后拿到最新数据。
+   * 想拉全量（如导出脚本场景）显式调 `loadAllHistory()`。
+   */
+  const PAGE_SIZE = 100
+  const historyHasMore = ref<boolean>(false)
+  const historyLoading = ref<boolean>(false)
+
   async function loadHistory(): Promise<void> {
-    _bootstrap.state.history = await apiGet<HistoryRecord[]>('/api/history?limit=2000')
-    selectedHistory.value = new Set()
+    historyLoading.value = true
+    try {
+      const items = await apiGet<HistoryRecord[]>(`/api/history?limit=${PAGE_SIZE}`)
+      _bootstrap.state.history = items
+      historyHasMore.value = items.length >= PAGE_SIZE
+      selectedHistory.value = new Set()
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  async function loadMoreHistory(): Promise<void> {
+    if (!historyHasMore.value || historyLoading.value) return
+    historyLoading.value = true
+    try {
+      const existing = _bootstrap.state.history as HistoryRecord[]
+      const seen = new Set(existing.map((it) => it.run_id))
+      // /api/history 当前不支持 offset，先拉下一页 size 的 2× 倍尝试覆盖 sort 后的边界。
+      // 等后端加 offset 参数（同切片或后续 slice）再换。临时方案：拉更大窗口去重 append。
+      const nextSize = existing.length + PAGE_SIZE
+      const items = await apiGet<HistoryRecord[]>(`/api/history?limit=${nextSize}`)
+      const newOnes = items.filter((it) => !seen.has(it.run_id))
+      _bootstrap.state.history = [...existing, ...newOnes]
+      // 后端返回 < nextSize 说明已到底
+      historyHasMore.value = items.length >= nextSize
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  /** 一次拉全量（导出 / 老调用方兼容）。HistoryView 不再用，留作 escape hatch。 */
+  async function loadAllHistory(): Promise<void> {
+    historyLoading.value = true
+    try {
+      _bootstrap.state.history = await apiGet<HistoryRecord[]>('/api/history?limit=2000')
+      historyHasMore.value = false
+      selectedHistory.value = new Set()
+    } finally {
+      historyLoading.value = false
+    }
   }
 
   return {
     selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
     historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
+    historyHasMore, historyLoading,
     clearSelection, setHistoryTab,
-    deleteHistory, exportHistory, loadHistory,
+    deleteHistory, exportHistory, loadHistory, loadMoreHistory, loadAllHistory,
   }
 })

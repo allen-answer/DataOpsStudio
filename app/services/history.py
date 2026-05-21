@@ -43,7 +43,12 @@ def list_result_history(
             t.id for t in task_store.list()
             if not (t.project_id or "") or t.project_id in allowed_project_ids
         }
-    paths = list(RESULTS_DIR.glob("*.json"))
+    # 两类 result 文件：
+    # - legacy：RESULTS_DIR/<run_id>.json（writer slice A 老格式）
+    # - parquet：RESULTS_DIR/<run_id>/meta.json（writer slice B 新目录格式）
+    legacy_paths = list(RESULTS_DIR.glob("*.json"))
+    parquet_metas = [p for p in RESULTS_DIR.glob("*/meta.json") if p.is_file()]
+    paths = legacy_paths + parquet_metas
     if limit is not None:
         # 先按 mtime 预排，限制读取量。读取预算 hedge 2× 应对 mtime ≠ sort_time
         # 偏离（compare 任务跑得久才落盘）。
@@ -59,7 +64,9 @@ def list_result_history(
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        run_id = data.get("run_id") or path.stem
+        is_parquet = path.name == "meta.json" and path.parent != RESULTS_DIR
+        # parquet 模式：data["run_id"] 跟目录名应当一致；fallback 用目录名
+        run_id = data.get("run_id") or (path.parent.name if is_parquet else path.stem)
         excel_name = f"{run_id}.xlsx"
         excel_path = RESULTS_DIR / excel_name
         result_task_id = data.get("task_id", "")
@@ -77,6 +84,10 @@ def list_result_history(
                 continue
         sort_time = _history_sort_time(data, path)
         result_type = _classify_result(data)
+        # parquet meta.json 的 result_filename 走 `<run_id>/meta.json` —— 前端
+        # 直链下载这文件能拿到 envelope；切片 D 加 detail UI 时再换成
+        # /api/runs/<id>/meta endpoint。
+        result_filename = f"{run_id}/meta.json" if is_parquet else path.name
         items.append(
             {
                 "run_id": run_id,
@@ -88,9 +99,10 @@ def list_result_history(
                 "target_rows": data.get("target_rows", 0),
                 "summary": data.get("summary", {}),
                 "sort_time": sort_time.isoformat(timespec="seconds"),
-                "result_filename": path.name,
+                "result_filename": result_filename,
                 "excel_filename": excel_name if excel_path.exists() else "",
                 "type": result_type,
+                "format": data.get("format", "parquet" if is_parquet else "json"),
             }
         )
     items.sort(key=lambda item: item["sort_time"], reverse=True)
@@ -100,14 +112,10 @@ def list_result_history(
 
 
 def delete_result(run_id: str) -> None:
-    deleted = False
-    for suffix in (".json", ".xlsx"):
-        path = (RESULTS_DIR / f"{run_id}{suffix}").resolve()
-        if RESULTS_DIR.resolve() in path.parents and path.exists():
-            path.unlink()
-            deleted = True
-    if not deleted:
-        raise KeyError(run_id)
+    """删 run 产物。两种格式都尝试，至少删了一个才算成功。"""
+    from app.services.run_result import delete_run
+
+    delete_run(run_id)
 
 
 def _history_sort_time(data: dict[str, Any], path: Path) -> datetime:
