@@ -184,7 +184,27 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 4. run 前再校验一遍 —— 防止 workflow 创建后 task 被移到别的项目、或历史
    遗留的跨项目引用被间接执行。
 
-### 4.3 直接 `datasource_id` 接口授权
+### 4.3 异步 job 项目级授权（P1-F hardening）
+
+`/api/runs/{job_id}` 和 `/api/runs/{job_id}/cancel` 历史上只校验登录态——
+任何登录用户拿到 job_id 就能读 JobInfo（含 `result.download_url` 等元
+数据）。P1-F 加上了 job 级项目归属反查：
+
+| job.kind | 归属反查 | 实现 |
+|----------|----------|------|
+| `compare` / `task` | `job.task_id` → `task_store.get(task_id).project_id` | `_authz.job_project_id` |
+| `workflow` | `job.workflow_id` → `workflow_store.get(workflow_id).project_id` | 同上 |
+| `excel_export` | `job.task_id` 字段存的是 run_id → `compare_result_project_id(run_id)`（自动 dispatch parquet/legacy） | 同上 |
+
+**孤儿 job 兜底**（task / workflow / run 已删）：`resolved=False` 时回落
+到仅校验登录态放行，避免历史 job poll 接口因为下游资源被删变 4xx。
+
+实现：`_authz.job_project_id(job) → (project_id, resolved)`；端点用
+`_gate_job_access(job, current)` 在拿到 job 后立即校验。回归用例在
+`tests/test_project_authorization.py` 第 13 节（4 个：excel_export 跨项目
+403 / compare job 跨项目 403 / 孤儿 job 不门禁 / cancel 同样 gated）。
+
+### 4.4 直接 `datasource_id` 接口授权
 
 部分 endpoint 不接外壳资源（task / workflow），而是**直接接 `datasource_id`**
 并执行 SQL / EXPLAIN / 字段预览 / introspect。这类接口必须独立校验用户对
@@ -214,7 +234,7 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 并在 `tests/test_project_authorization.py` 第 11 节加一组「跨项目 403 / 自有
 项目 200 / 全局 200 / admin 全权」用例。
 
-### 4.4 config 导入 / 导出收紧为 admin only
+### 4.5 config 导入 / 导出收紧为 admin only
 
 `/config/import` 是批量创建 / 覆盖 datasources + tasks，导入文件里可携带
 **任意 `project_id`**，绕过单对象创建时的项目校验。因此导入 / 导出都 admin only：

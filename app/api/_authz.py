@@ -175,3 +175,52 @@ def result_download_project_id(filename: str) -> tuple[str, bool]:
         return compare_result_project_id(parts[0])
 
     return ("", False)
+
+
+# ─── 异步 job 项目归属解析（slice F hardening） ─────────────────────────────
+# /api/runs/{job_id} 老路径只校验登录态 —— 任何已登录用户拿到 job_id 就能读
+# JobInfo（含 result.download_url），借此发现别项目的 run 元数据。本 helper
+# 按 job.kind 分流到对应资源归属：
+#   - compare / task → job.task_id → task.project_id
+#   - workflow → job.workflow_id → workflow.project_id
+#   - excel_export → job.task_id 字段存的是 run_id → compare_result_project_id
+# 解析不出归属（孤儿 / 任务已删）回落到 resolved=False，仅校验登录态放行。
+
+
+def job_project_id(job: dict) -> tuple[str, bool]:
+    """把 job dict 反查到归属项目。
+
+    返回 (project_id, resolved)。resolved=False 跟 result_download_project_id
+    同语义：上层应回落到仅登录态（不暴露 403/404 跨项目枚举差异）。
+    """
+    kind = str((job or {}).get("kind") or "")
+    if kind in ("compare", "task"):
+        task_id = str(job.get("task_id") or "")
+        if not task_id:
+            return ("", False)
+        from app.services.repositories import task_store
+        task = task_store.get(task_id)
+        if task is None:
+            return ("", False)
+        return (task.project_id or "", True)
+
+    if kind == "workflow":
+        workflow_id = str(job.get("workflow_id") or "")
+        if not workflow_id:
+            return ("", False)
+        from app.services.repositories import workflow_store
+        workflow = workflow_store.get(workflow_id)
+        if workflow is None:
+            return ("", False)
+        return (workflow.project_id or "", True)
+
+    if kind == "excel_export":
+        # PR3 设计：excel_export job 复用 task_id 字段存 run_id（不破坏现 JobInfo
+        # schema）。归属反查走 compare_result_project_id，跟 /api/runs/<id>/meta
+        # 同条链路 —— 老 legacy json 跟新 parquet 目录都覆盖。
+        run_id = str(job.get("task_id") or "")
+        if not run_id:
+            return ("", False)
+        return compare_result_project_id(run_id)
+
+    return ("", False)

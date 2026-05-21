@@ -116,6 +116,8 @@ def feed_buckets(writer: ResultWriter, buckets: CompareBuckets) -> None:
 
 class ParquetResultWriter:
     """切片 B：把对比结果落成目录形态的 parquet + meta.json。
+    切片 F.2：每桶按 `batch_size` 增量 flush row group —— writer 内存
+    上限 = O(batch_size × bucket 数)，不依赖单桶总行数。
 
     输出布局（详见 docs/COMPARE_RESULT_STORAGE.md §4）：
         <run_dir>/
@@ -125,22 +127,28 @@ class ParquetResultWriter:
             diff.parquet             mode=full
             same.parquet             仅 persist_same_bucket=True 时存在
 
-    设计取舍：
-    - **不增量 flush，整桶 batch write**：切片 B 仍接 `compare_rows` 全量返回的
-      dict，writer 内存里攒齐桶再 `pq.write_table` 一次性写。把 streaming
-      写入（按 batch flush row group）留给切片 B+（engine 改成 generator 后）。
-      PR1 的 same 桶 `count_only` 已经把最大头痛省下来；正式 streaming 写入
-      等真有 10M only_source 场景再上。
+    设计取舍（含切片 F.2 修订）：
+    - **按 batch flush row group**：每桶维护一个 buffer，长度达 batch_size
+      时调 `pyarrow.parquet.ParquetWriter.write_table` 增量写一个 row group。
+      finalize 时把所有剩余 buffer flush 完 + close writer。详见
+      `docs/STREAMING_COMPARE_WRITER.md`。
+    - **schema 锁定**：每桶第一行用 `pa.Table.from_pylist([row])` 推 schema；
+      后续 batch 用同 schema build。pyarrow 对额外字段的处理较宽松（可能静默
+      coerce），明显的类型冲突 / 嵌套 struct 字段不匹配会抛
+      `ValueError("row schema drift in <bucket>")`。要真正严格 schema 校验
+      需要单独的 row dict 检查层，留 slice F+。
+    - **空桶不开 ParquetWriter**：第一行才 lazy open；零行桶 finalize 时
+      meta.json 仍写 `path=null + rows=0`，跟切片 B 行为兼容。
     - **same 桶 count_only 时 sample 是任意 N 行**（dict 插入顺序，通常是第一批
       源端命中的行）。要"随机"或"按 key 排序"留给后续优化。
-    - **schema 推断走 pyarrow `Table.from_pylist`**：靠第一批行的 dict shape
-      推；空桶不写文件（reader 看 meta.json 的 count=0 / path=null 就知道）。
     - **嵌套字段（diff 的 changes / source / target dict）**：pyarrow struct
-      原生支持；同名 key 缺失的 dict 走 NaN/None。
+      原生支持。
     - **Excel 不在本 writer 内写**：parquet 模式下 Excel 默认按需异步导（切片
       E），所以 `finalize()` 不产 xlsx 文件。Manifest 的 `excel_path` 仍返回
       `<run_id>.xlsx` 路径作为"将来导出去那里"，但文件并不存在。
     """
+
+    DEFAULT_BATCH_SIZE = 5000
 
     def __init__(
         self,
@@ -150,21 +158,34 @@ class ParquetResultWriter:
         *,
         persist_same_bucket: bool = False,
         same_sample_rows: int = 100,
+        batch_size: int | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.excel_path = excel_path        # placeholder（本 writer 不写）
         self._payload = payload
         self._persist_same = persist_same_bucket
         self._sample_rows = same_sample_rows
-        self._buckets: CompareBuckets = {name: [] for name in _BUCKET_NAMES}
-        # same 桶 count_only 时单独留 sample；不污染 _buckets["same"] 避免
-        # write 整桶时被当全量写入
+        self._batch_size = max(int(batch_size or self.DEFAULT_BATCH_SIZE), 1)
+
+        # 每桶状态：buffer 是当前未 flush 的 batch；writer 是 lazy 打开的
+        # ParquetWriter；schema 是首批推出的 pyarrow.Schema；count 是总行数。
+        # parquet_paths 给 finalize 写 meta.json 的 bytes 字段用。
+        self._bucket_buffers: dict[str, list[dict[str, Any]]] = {
+            name: [] for name in _BUCKET_NAMES
+        }
+        self._bucket_writers: dict[str, Any] = {name: None for name in _BUCKET_NAMES}
+        self._bucket_schemas: dict[str, Any] = {name: None for name in _BUCKET_NAMES}
+        self._bucket_counts: dict[str, int] = {name: 0 for name in _BUCKET_NAMES}
+        self._bucket_paths: dict[str, Path | None] = {name: None for name in _BUCKET_NAMES}
+
+        # same 桶 count_only 走单独路径：只累计 count + 头 N 行 sample，
+        # 不进 buffer / writer。
         self._same_count = 0
         self._same_sample: list[dict[str, Any]] = []
         self._finalized = False
 
     def write_bucket_row(self, bucket: str, row: dict[str, Any]) -> None:
-        if bucket not in self._buckets:
+        if bucket not in self._bucket_buffers:
             raise ValueError(f"unknown bucket: {bucket!r}; expected one of {_BUCKET_NAMES}")
         if self._finalized:
             raise RuntimeError("cannot write after finalize()")
@@ -173,7 +194,41 @@ class ParquetResultWriter:
             if len(self._same_sample) < self._sample_rows:
                 self._same_sample.append(row)
             return
-        self._buckets[bucket].append(row)
+        self._bucket_buffers[bucket].append(row)
+        self._bucket_counts[bucket] += 1
+        if len(self._bucket_buffers[bucket]) >= self._batch_size:
+            self._flush_bucket(bucket)
+
+    def _flush_bucket(self, bucket: str) -> None:
+        """把 bucket buffer 写一个 row group 出去。lazy open ParquetWriter
+        + 锁定 schema。空 buffer no-op。"""
+        buffer = self._bucket_buffers[bucket]
+        if not buffer:
+            return
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        if self._bucket_writers[bucket] is None:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            path = self.run_dir / f"{bucket}.parquet"
+            # 用首批推 schema 一次性锁定
+            first_table = pa.Table.from_pylist(buffer)
+            schema = first_table.schema
+            writer = pq.ParquetWriter(path, schema, compression="snappy")
+            writer.write_table(first_table)
+            self._bucket_writers[bucket] = writer
+            self._bucket_schemas[bucket] = schema
+            self._bucket_paths[bucket] = path
+        else:
+            schema = self._bucket_schemas[bucket]
+            try:
+                table = pa.Table.from_pylist(buffer, schema=schema)
+            except (pa.lib.ArrowInvalid, pa.lib.ArrowTypeError, pa.lib.ArrowNotImplementedError) as exc:
+                raise ValueError(
+                    f"row schema drift in bucket {bucket!r}: {exc}",
+                ) from exc
+            self._bucket_writers[bucket].write_table(table)
+        buffer.clear()
 
     def finalize(self) -> ResultManifest:
         if self._finalized:
@@ -181,6 +236,15 @@ class ParquetResultWriter:
         self._finalized = True
 
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        # 把所有桶残留 buffer flush + close writer
+        for name in _BUCKET_NAMES:
+            if self._bucket_buffers[name]:
+                self._flush_bucket(name)
+            writer = self._bucket_writers[name]
+            if writer is not None:
+                writer.close()
+                self._bucket_writers[name] = None
+
         bucket_metas: list[dict[str, Any]] = []
         bucket_counts: dict[str, int] = {}
         for name in _BUCKET_NAMES:
@@ -195,15 +259,13 @@ class ParquetResultWriter:
                     "sample": list(self._same_sample),
                 })
                 continue
-            rows = self._buckets[name]
-            count = len(rows)
+            count = self._bucket_counts[name]
             bucket_counts[name] = count
-            if count == 0:
-                # 不写空文件 —— meta.json 里 path=null + rows=0 已经传达
+            parquet_path = self._bucket_paths[name]
+            if count == 0 or parquet_path is None:
+                # 没行 / 没开过 writer —— meta.json path=null + rows=0
                 bucket_metas.append({"name": name, "path": None, "rows": 0, "mode": "full"})
                 continue
-            parquet_path = self.run_dir / f"{name}.parquet"
-            _write_bucket_parquet(parquet_path, rows)
             bucket_metas.append({
                 "name": name,
                 "path": parquet_path.name,
@@ -233,19 +295,25 @@ class ParquetResultWriter:
             bucket_counts=bucket_counts,
         )
 
+    @property
+    def samples(self) -> dict[str, list[dict[str, Any]]]:
+        """切片 F.3：暴露每桶头 N 行 sample 给 runner（避免再持 full dict）。
 
-def _write_bucket_parquet(path: Path, rows: list[dict[str, Any]]) -> None:
-    """单桶一次性 batch write。空 rows 不该到这（caller 已过滤）。
+        full 桶的 sample 取自尚未 flush 的 buffer（首批 batch_size 行）+ 已
+        flush 的 first row group 表头切片。简化实现：以"buffer 当前快照"为
+        样本——只要 caller 在 finalize 前问，且 batch_size >= 20，样本必至少
+        有 min(written, 20) 行；same 桶仍返回 _same_sample。
 
-    pyarrow 缺省（不指定 schema）走 `from_pylist` 自动推；嵌套 dict 推成 struct
-    type，list 推成 list type。对 diff 桶的 changes / source / target 嵌套
-    友好。压缩走 snappy（速度 + 压缩比平衡）。
-    """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path, compression="snappy")
+        runner 切片 F.3 的样本采集是另起一份 dict（在 events 循环里维护），
+        本属性给后续把 sample 收口到 writer 用，本切片暂未挪。
+        """
+        out: dict[str, list[dict[str, Any]]] = {}
+        for name in _BUCKET_NAMES:
+            if name == "same" and not self._persist_same:
+                out[name] = list(self._same_sample)
+            else:
+                out[name] = list(self._bucket_buffers[name][:20])
+        return out
 
 
 def _json_default(obj: Any) -> Any:

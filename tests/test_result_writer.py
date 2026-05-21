@@ -434,3 +434,128 @@ def test_parquet_writer_unknown_bucket_raises(tmp_path: Path, sample_payload):
     )
     with pytest.raises(ValueError, match="unknown bucket"):
         writer.write_bucket_row("garbage", {"key": [1]})
+
+
+# ─── 切片 F.2：ParquetResultWriter 增量 row group flush ───────────────────────
+
+
+def _read_parquet_row_groups(path: Path) -> int:
+    import pyarrow.parquet as pq
+    return pq.ParquetFile(path).num_row_groups
+
+
+def test_parquet_writer_batch_flush_creates_multiple_row_groups(tmp_path: Path, sample_payload):
+    """batch_size=3 + 10 行 only_source 应该写出 >= 3 个 row group。"""
+    run_dir = tmp_path / "run_F2_1"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run.xlsx",
+        payload=sample_payload,
+        batch_size=3,
+    )
+    for i in range(10):
+        writer.write_bucket_row("only_source", {"key": [i], "source": {"id": i, "v": f"x{i}"}})
+    manifest = writer.finalize()
+
+    assert manifest.bucket_counts["only_source"] == 10
+    path = run_dir / "only_source.parquet"
+    assert path.exists()
+    assert _read_parquet_row_groups(path) >= 3, "expected at least 3 row groups"
+    # 全 10 行可读
+    rows = _read_parquet_rows(path)
+    assert len(rows) == 10
+    assert [r["key"][0] for r in rows] == list(range(10))
+
+
+def test_parquet_writer_batch_flush_finalize_flushes_residual(tmp_path: Path, sample_payload):
+    """batch_size=5 + 7 行 —— 应该 1 个满 batch flush + finalize 时把剩 2 行 flush。"""
+    run_dir = tmp_path / "run_F2_2"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run.xlsx",
+        payload=sample_payload,
+        batch_size=5,
+    )
+    for i in range(7):
+        writer.write_bucket_row("diff", {
+            "key": [i], "source": {"id": i, "v": 1}, "target": {"id": i, "v": 2},
+            "changes": {"v": {"source": 1, "target": 2, "target_column": "v"}},
+        })
+    writer.finalize()
+    rows = _read_parquet_rows(run_dir / "diff.parquet")
+    assert len(rows) == 7
+
+
+def test_parquet_writer_empty_bucket_no_writer_opened(tmp_path: Path, sample_payload):
+    """finalize 时桶完全没行 —— 不开 ParquetWriter，parquet 文件不存在，
+    meta.json path=null + rows=0（跟切片 B 行为兼容）。"""
+    run_dir = tmp_path / "run_F2_3"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run.xlsx",
+        payload=sample_payload,
+        batch_size=10,
+    )
+    # 不写任何行
+    manifest = writer.finalize()
+    assert manifest.bucket_counts == {
+        "only_source": 0, "only_target": 0, "diff": 0, "same": 0,
+    }
+    for name in ("only_source", "only_target", "diff", "same"):
+        assert not (run_dir / f"{name}.parquet").exists(), f"{name}.parquet should NOT exist"
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    for bm in meta["buckets"]:
+        assert bm["rows"] == 0
+        assert bm["path"] is None
+
+
+def test_parquet_writer_batch_flush_same_count_only_still_works(tmp_path: Path, sample_payload):
+    """same 桶 count_only 跟 batch flush 共存：same 仍然不开 parquet writer，
+    只累 count + sample；其它桶按 batch flush。"""
+    run_dir = tmp_path / "run_F2_4"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run.xlsx",
+        payload=sample_payload,
+        batch_size=3,
+        same_sample_rows=5,
+    )
+    for i in range(7):
+        writer.write_bucket_row("only_source", {"key": [i], "source": {"id": i}})
+    for i in range(20):
+        writer.write_bucket_row("same", {"key": [i], "source": {"id": i}, "target": {"id": i}})
+    manifest = writer.finalize()
+
+    assert manifest.bucket_counts["only_source"] == 7
+    assert manifest.bucket_counts["same"] == 20
+    # same 不写 parquet
+    assert not (run_dir / "same.parquet").exists()
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    same_meta = next(b for b in meta["buckets"] if b["name"] == "same")
+    assert same_meta["mode"] == "count_only"
+    assert len(same_meta["sample"]) == 5
+
+
+def test_parquet_writer_batch_flush_stable_schema_round_trip(tmp_path: Path, sample_payload):
+    """schema 稳定 + 多次 batch flush 的 round-trip：所有行可读，字段值保留。
+
+    pyarrow 对 schema drift 较宽松（extra field 静默 coerce），所以本切片
+    不强测 "drift raise" —— 只验证常规多 batch 写入 + 读回字段无丢失。严格
+    schema 校验留 slice F+。
+    """
+    run_dir = tmp_path / "run_F2_5"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run.xlsx",
+        payload=sample_payload,
+        batch_size=2,
+    )
+    for i in range(7):
+        writer.write_bucket_row("only_source", {
+            "key": [i], "source": {"id": i, "name": f"n{i}", "amount": i * 10},
+        })
+    writer.finalize()
+    rows = _read_parquet_rows(run_dir / "only_source.parquet")
+    assert len(rows) == 7
+    assert all(r["source"]["amount"] == r["source"]["id"] * 10 for r in rows)

@@ -10,7 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api._authz import compare_result_project_id, require_project_access
+from app.api._authz import (
+    compare_result_project_id,
+    job_project_id,
+    require_project_access,
+)
 from app.models import JobInfo, User
 from app.services.auth import get_current_user, require_role
 from app.services.excel_export import submit_excel_export
@@ -26,16 +30,35 @@ from app.services.run_result import (
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
+def _gate_job_access(job: dict, current: User) -> None:
+    """切片 F hardening：按 job.kind 反查归属项目；无权 403。
+
+    无法归属（孤儿 / task 已删 / excel_export 指向已删 run）回落仅登录态放行——
+    跟 /results/* 下载同语义，不因孤儿状态把现有调用方打爆。
+    """
+    project_id, resolved = job_project_id(job)
+    if not resolved:
+        return
+    require_project_access(current, project_id, detail="无权查看该项目的异步任务")
+
+
 @router.get("/api/runs/{job_id}", response_model=JobInfo)
-def run_status_api(job_id: str):
+def run_status_api(job_id: str, current: User = Depends(get_current_user)):
     try:
-        return get_job(job_id)
+        job = get_job(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
+    _gate_job_access(job, current)
+    return job
 
 
 @router.post("/api/runs/{job_id}/cancel", response_model=JobInfo)
-def cancel_run_api(job_id: str, _: object = Depends(require_role("editor"))):
+def cancel_run_api(job_id: str, current: User = Depends(require_role("editor"))):
+    try:
+        job = get_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    _gate_job_access(job, current)
     try:
         return cancel_job(job_id)
     except KeyError as exc:

@@ -4,7 +4,11 @@ from decimal import Decimal
 
 import pytest
 
-from app.compare.engine import compare_rows, compare_sorted_row_iterators
+from app.compare.engine import (
+    compare_rows,
+    compare_rows_streaming,
+    compare_sorted_row_iterators,
+)
 from app.models import CompareRules
 
 
@@ -252,3 +256,79 @@ def test_int_decimal_equivalence():
     tgt = [{"id": 1, "salary": Decimal("15000.00")}]  # SQL side: Decimal
     result = compare_rows(src, tgt, ["id"])
     assert len(result["same"]) == 1
+
+
+# ─── 切片 F.1：compare_rows_streaming 事件流契约 ───────────────────────────────
+
+
+def _events_to_buckets(events):
+    out = {"only_source": [], "only_target": [], "diff": [], "same": []}
+    for bucket, row in events:
+        out[bucket].append(row)
+    return out
+
+
+def test_streaming_events_equivalent_to_compare_rows_simple():
+    """全 same / 全 diff / mix 三个场景 streaming 收口后跟 compare_rows 等价。"""
+    cases = [
+        # 全 same
+        ([{"id": 1, "v": "a"}], [{"id": 1, "v": "a"}]),
+        # 全 diff
+        ([{"id": 1, "v": "a"}], [{"id": 1, "v": "b"}]),
+        # mix: only_source + diff + same + only_target
+        (
+            [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 3, "v": "c"}],
+            [{"id": 2, "v": "b"}, {"id": 3, "v": "X"}, {"id": 4, "v": "d"}],
+        ),
+    ]
+    for src, tgt in cases:
+        from_streaming = _events_to_buckets(
+            compare_rows_streaming(src, tgt, ["id"])
+        )
+        from_compare = compare_rows(src, tgt, ["id"])
+        assert from_streaming == from_compare, f"divergence on {src} vs {tgt}"
+
+
+def test_streaming_is_a_generator_not_list():
+    """compare_rows_streaming 必须是 generator —— 否则 streaming 假命题。"""
+    import types
+    gen = compare_rows_streaming([], [], ["id"])
+    assert isinstance(gen, types.GeneratorType)
+
+
+def test_streaming_yields_only_source_diff_same_then_only_target():
+    """事件产出顺序：先 source-side（only_source / diff / same 混合按 source_index
+    序），再 only_target。runner 样本采集 + reader fixture 都依赖这个顺序稳定。"""
+    src = [{"id": 1}, {"id": 2}, {"id": 3}]
+    tgt = [{"id": 2}, {"id": 3}, {"id": 4}]  # 4 是 only_target
+    events = list(compare_rows_streaming(src, tgt, ["id"]))
+    # 倒数那个一定是 only_target
+    assert events[-1][0] == "only_target"
+    assert events[-1][1]["key"] == [4]
+    # 前面的全是 source-side
+    for bucket, _ in events[:-1]:
+        assert bucket in {"only_source", "diff", "same"}
+
+
+def test_streaming_respects_rules_column_mappings():
+    """rules.column_mappings 在 streaming 路径下生效（跟 compare_rows 一致）。"""
+    src = [{"id": 1, "amt_src": 10}]
+    tgt = [{"id": 1, "amt_tgt": 10}]
+    rules = CompareRules(column_mappings={"amt_src": "amt_tgt"})
+    streaming_buckets = _events_to_buckets(
+        compare_rows_streaming(src, tgt, ["id"], rules)
+    )
+    compare_buckets = compare_rows(src, tgt, ["id"], rules)
+    assert streaming_buckets == compare_buckets
+    assert len(streaming_buckets["same"]) == 1
+
+
+def test_streaming_compare_rows_now_uses_streaming_internally():
+    """compare_rows 切到 streaming 后，跟历史 dict 行为完全兼容（这条断言已经
+    被前面 26 条 test_compare_engine 隐式覆盖；这里显式标记一下回归约束）。"""
+    src = [{"id": i, "v": i * 2} for i in range(50)]
+    tgt = [{"id": i, "v": i * 2 if i % 3 else i * 99} for i in range(45, 60)]
+    buckets = compare_rows(src, tgt, ["id"])
+    # 跟 streaming 一致
+    via_stream = _events_to_buckets(compare_rows_streaming(src, tgt, ["id"]))
+    assert buckets == via_stream

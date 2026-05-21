@@ -2,12 +2,57 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Iterator
 
 from app.models import CompareRules
 
 
 CompareBuckets = dict[str, list[dict[str, Any]]]
+
+# 切片 F.1：streaming compare event 类型 —— (bucket_name, row_payload)
+CompareEvent = tuple[str, dict[str, Any]]
+
+
+def compare_rows_streaming(
+    source_rows: list[dict[str, Any]],
+    target_rows: list[dict[str, Any]],
+    key_columns: list[str],
+    rules: CompareRules | None = None,
+) -> Iterator[CompareEvent]:
+    """切片 F.1：把 compare_rows 拆成事件流，逐行 yield ('bucket_name', row_payload)。
+
+    分类逻辑跟 compare_rows 100% 等价，只是不在内存里攒 4 桶 list。caller
+    可以直接喂给 streaming writer（ParquetResultWriter batch flush），让
+    runner 内存不依赖 result 总行数。
+
+    产出顺序跟 compare_rows 的 list append 顺序一致（兼容样本采集与 fixture
+    断言）：先按 source_index 顺序 yield only_source/diff/same，再按
+    target_index 顺序 yield only_target。
+
+    详见 docs/STREAMING_COMPARE_WRITER.md。
+    """
+    rules = rules or CompareRules()
+    rules = _rules_with_positional_mappings(source_rows, target_rows, key_columns, rules)
+    source_index = _index_rows(source_rows, key_columns, {}, "source")
+    target_index = _index_rows(target_rows, key_columns, rules.column_mappings, "target")
+
+    for key, source_row in source_index.items():
+        target_row = target_index.get(key)
+        if target_row is None:
+            yield ("only_source", {"key": list(key), "source": source_row})
+            continue
+        changes = _row_changes(source_row, target_row, key_columns, rules)
+        if changes:
+            yield ("diff", {
+                "key": list(key), "source": source_row, "target": target_row,
+                "changes": changes,
+            })
+        else:
+            yield ("same", {"key": list(key), "source": source_row, "target": target_row})
+
+    for key, target_row in target_index.items():
+        if key not in source_index:
+            yield ("only_target", {"key": list(key), "target": target_row})
 
 
 def compare_rows(
@@ -16,37 +61,18 @@ def compare_rows(
     key_columns: list[str],
     rules: CompareRules | None = None,
 ) -> CompareBuckets:
-    rules = rules or CompareRules()
-    rules = _rules_with_positional_mappings(source_rows, target_rows, key_columns, rules)
-    source_index = _index_rows(source_rows, key_columns, {}, "source")
-    target_index = _index_rows(target_rows, key_columns, rules.column_mappings, "target")
+    """老 API：返回完整 CompareBuckets dict。
 
-    only_source: list[dict[str, Any]] = []
-    only_target: list[dict[str, Any]] = []
-    diff: list[dict[str, Any]] = []
-    same: list[dict[str, Any]] = []
-
-    for key, source_row in source_index.items():
-        target_row = target_index.get(key)
-        if target_row is None:
-            only_source.append({"key": list(key), "source": source_row})
-            continue
-        changes = _row_changes(source_row, target_row, key_columns, rules)
-        if changes:
-            diff.append({"key": list(key), "source": source_row, "target": target_row, "changes": changes})
-        else:
-            same.append({"key": list(key), "source": source_row, "target": target_row})
-
-    for key, target_row in target_index.items():
-        if key not in source_index:
-            only_target.append({"key": list(key), "target": target_row})
-
-    return {
-        "only_source": only_source,
-        "only_target": only_target,
-        "diff": diff,
-        "same": same,
+    切片 F.1 后内部走 streaming 收口 —— 所有调用方行为零回归（含 inline
+    preview、json runner、scenarios 验证）。需要"不持完整 dict"的场景请直
+    接用 `compare_rows_streaming`。
+    """
+    out: CompareBuckets = {
+        "only_source": [], "only_target": [], "diff": [], "same": [],
     }
+    for bucket, row in compare_rows_streaming(source_rows, target_rows, key_columns, rules):
+        out[bucket].append(row)
+    return out
 
 
 def compare_sorted_row_iterators(

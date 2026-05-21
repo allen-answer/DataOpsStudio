@@ -7,13 +7,21 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.compare.engine import compare_rows, compare_sorted_row_iterators
+from app.compare.engine import (
+    compare_rows,
+    compare_rows_streaming,
+    compare_sorted_row_iterators,
+)
 from app.compare.result_writer import (
     JsonResultWriter,
     ParquetResultWriter,
     ResultWriter,
     feed_buckets,
 )
+
+
+_BUCKET_NAMES: tuple[str, ...] = ("only_source", "only_target", "diff", "same")
+_SAMPLE_ROWS_PER_BUCKET = 20
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
 from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
 from app.services.compare_schema import build_schema_report
@@ -50,6 +58,16 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         schema_report: dict[str, Any] = {}
 
         progress = lambda side: lambda count: _notify(status_callback, f"querying_{side}", f"读取{('源' if side == 'source' else '目标')}数据：已 {count} 行")
+
+        # 切片 F.3：result_format=parquet + 非 stream_compare 时走 streaming 路径——
+        # 不再 compare_rows 攒 buckets dict，直接 events → writer。
+        use_streaming_writer = (
+            task.limits.result_format == "parquet" and not task.limits.stream_compare
+        )
+
+        buckets: dict[str, list[dict[str, Any]]] | None = None
+        source_rows: list[dict[str, Any]] | None = None
+        target_rows: list[dict[str, Any]] | None = None
 
         if task.limits.stream_compare:
             _notify(status_callback, "querying_source", "准备流式分块对比：请确保两边数据已按主键排序")
@@ -88,10 +106,13 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             if task.rules.schema_policy == "strict" and schema_report.get("has_schema_mismatch"):
                 messages = [item.get("message", "") for item in schema_report.get("warnings", []) if item.get("message")]
                 raise ValueError("Schema mismatch: " + "；".join(messages))
-            _notify(status_callback, "comparing", "执行对比")
-            buckets = compare_rows(source_rows, target_rows, task.key_columns, task.rules)
             source_rows_count = len(source_rows)
             target_rows_count = len(target_rows)
+            if not use_streaming_writer:
+                # json 路径或 stream_compare —— 必须先攒 buckets dict 给 JsonResultWriter
+                _notify(status_callback, "comparing", "执行对比")
+                buckets = compare_rows(source_rows, target_rows, task.key_columns, task.rules)
+            # 否则推迟到 writer 选定后走 streaming events
     except Exception:
         logger.exception("task failed task_id=%s task_name=%s", task.id, task.name)
         raise
@@ -99,9 +120,9 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     _notify(status_callback, "exporting", "写入结果")
     run_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
     excel_path = RESULTS_DIR / f"{run_id}.xlsx"
-    summary = CompareSummary(**{name: len(rows) for name, rows in buckets.items()})
     elapsed_seconds = round(time.perf_counter() - start, 3)
-    # payload 不含 buckets —— writer.finalize 时 merge 再写
+    # payload 不含 buckets —— writer.finalize 时 merge 再写；summary 也推迟到
+    # manifest.bucket_counts 出来后再算（streaming 路径里 dict 已经不持有）
     payload = {
         "run_id": run_id,
         "task_id": task.id,
@@ -110,7 +131,8 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         "elapsed_seconds": elapsed_seconds,
         "source_rows": source_rows_count,
         "target_rows": target_rows_count,
-        "summary": summary.model_dump(),
+        # summary 先占位，finalize 后回填到 meta.json 的 envelope 字段
+        "summary": {name: 0 for name in _BUCKET_NAMES},
         "rules": task.rules.model_dump(),
         "limits": task.limits.model_dump(),
         "schema_report": schema_report,
@@ -119,7 +141,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     # 切片 B：按 task.limits.result_format 选 writer。
     # - "json"（默认）：JsonResultWriter，老格式向后兼容
     # - "parquet"：ParquetResultWriter，目录形态 + same 桶 count_only
-    # reader 在 PR2 才能读 parquet，PR1 期间 parquet 是 opt-in。
+    # 切片 F.3：parquet + 非 stream_compare 直接 events → writer，不持完整 buckets
     writer: ResultWriter
     if task.limits.result_format == "parquet":
         run_dir = RESULTS_DIR / run_id
@@ -138,8 +160,28 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             payload=payload,
             excel_max_rows=task.limits.export_max_rows,
         )
-    feed_buckets(writer, buckets)
+
+    # samples 在 feed/event loop 里同步收集，runner 不再依赖完整 buckets dict
+    samples_buffer: dict[str, list[dict[str, Any]]] = {name: [] for name in _BUCKET_NAMES}
+
+    if use_streaming_writer:
+        _notify(status_callback, "comparing", "执行流式对比 + 增量落 parquet")
+        assert source_rows is not None and target_rows is not None
+        for bucket, row in compare_rows_streaming(
+            source_rows, target_rows, task.key_columns, task.rules,
+        ):
+            writer.write_bucket_row(bucket, row)
+            if len(samples_buffer[bucket]) < _SAMPLE_ROWS_PER_BUCKET:
+                samples_buffer[bucket].append(row)
+    else:
+        # json 模式或 parquet+stream_compare —— buckets dict 已经在上面攒齐
+        assert buckets is not None
+        feed_buckets(writer, buckets)
+        for name in _BUCKET_NAMES:
+            samples_buffer[name] = list(buckets.get(name, []))[:_SAMPLE_ROWS_PER_BUCKET]
+
     manifest = writer.finalize()
+    summary = CompareSummary(**manifest.bucket_counts)
     logger.info(
         "task success task_id=%s task_name=%s only_source=%s only_target=%s diff=%s same=%s result=%s excel=%s elapsed=%.3fs",
         task.id,
@@ -167,7 +209,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         source_rows=source_rows_count,
         target_rows=target_rows_count,
         schema_report=schema_report,
-        samples={name: [_json_safe(row) for row in rows[:20]] for name, rows in buckets.items()},
+        samples={name: [_json_safe(row) for row in rows] for name, rows in samples_buffer.items()},
     )
 
 

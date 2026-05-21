@@ -331,7 +331,25 @@ def load_run_result(run_id: str):
      当前仍同步）。本切片 Excel 写出仍走 openpyxl 普通模式 —— 内存上限通过
      `max_rows` 兜底控制，但要进一步降到 O(batch_size) 量级得 write_only +
      行级流式喂入。
-6. **切片 F（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
+6. **切片 F**（拆分 step）：参考 `docs/STREAMING_COMPARE_WRITER.md`。
+   - **F.1** ✅：`compare/engine.compare_rows_streaming` 生成器，yield
+     `("bucket", row)` 事件；`compare_rows` 改成 streaming 的薄包装，行为
+     零回归。
+   - **F.2** ✅：`ParquetResultWriter` 加 `batch_size`（默认 5000）+ lazy
+     open `ParquetWriter` + 增量 `write_table` row group；finalize 把残留
+     buffer flush + close。writer 内存上限 = O(batch_size × bucket 数)。
+   - **F.3** ✅：runner 在 `result_format=parquet` + 非 `stream_compare`
+     时走 streaming events → writer，不持完整 buckets dict；样本采集在
+     event 循环里维护 `samples_buffer`，每桶头 20 行。`summary` 改从
+     `manifest.bucket_counts` 取（writer 自己 count）。
+   - **F.4**（未做）：Excel `write_only` 流式写出 —— 当前 `write_excel`
+     仍是 openpyxl 普通模式，内存上限被 `max_rows` 兜底控制但 ≈
+     O(max_rows × col_width)。继续降到 O(batch × col_width) 留独立 PR。
+   - **F-hardening** ✅：`/api/runs/{job_id}` + `/cancel` 加 `_gate_job_access`
+     按 kind 反查项目归属（compare/task → task；workflow → workflow；
+     excel_export → 复用 compare_result_project_id），孤儿 job 回落仅
+     登录态。详见 `docs/PROJECT_AUTHORIZATION.md` job-level 节。
+7. **切片 G（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
 
 设计文档原本说"B + C + D 必须捆绑一次发布"——**实际 PR1 通过 per-task opt-in
 规避了这条约束**：default `json` 维持老 reader 工作，新写不破老读；C+D 落地

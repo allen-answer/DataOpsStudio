@@ -644,3 +644,86 @@ def test_p1_legacy_json_run_still_authorized(scope):
     # 直链 .json 下载同样
     assert scope["editorA"].get(f"/results/{run_id}.json").status_code == 403
     assert scope["editorB"].get(f"/results/{run_id}.json").status_code == 200
+
+
+# ─── 13. P1-F hardening：/api/runs/{job_id} 异步 job 项目级授权 ──────────────
+# 老路径：任何登录用户拿到 job_id 就能读 JobInfo —— 暴露别项目的 run 元数据
+# / download_url。本节验证按 kind 分流的归属判定：
+#   - excel_export job → job.task_id 字段存的是 run_id → compare_result_project_id
+#   - compare / task job → job.task_id → task.project_id
+#   - workflow job → job.workflow_id → workflow.project_id
+# 孤儿 job（task / workflow / run 已删）保留登录态访问，避免历史 job poll 失效。
+
+
+def test_p1f_excel_export_job_editorA_blocked(scope, parquet_run_in_proj_b):
+    """editorB 起 excel_export job 后，editorA 不能 poll 该 job。"""
+    # editorB 触发 job
+    r = scope["editorB"].post(f"/api/runs/{parquet_run_in_proj_b}/export-excel")
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    # editorA 跨项目 poll → 403
+    rA = scope["editorA"].get(f"/api/runs/{job_id}")
+    assert rA.status_code == 403, rA.text
+
+    # editorB 自己 200
+    rB = scope["editorB"].get(f"/api/runs/{job_id}")
+    assert rB.status_code == 200, rB.text
+
+    # admin 不受限
+    rAd = scope["admin"].get(f"/api/runs/{job_id}")
+    assert rAd.status_code == 200, rAd.text
+
+
+def test_p1f_compare_job_editorA_blocked(scope):
+    """直接造一个 compare job 记录指向 task_b（ProjectB） —— editorA 不能 poll。"""
+    from app.services.jobs import _set_job, _iso
+    from datetime import datetime
+    job_id = "fake-compare-job-001"
+    _set_job(job_id, {
+        "job_id": job_id, "kind": "compare", "task_id": scope["task_b"],
+        "status": "success", "stage": "done", "message": "done",
+        "created_at": _iso(datetime.now()), "updated_at": _iso(datetime.now()),
+        "expires_at": "", "retry_count": 0, "max_retries": 0,
+        "result": None, "error": "", "cancel_requested": False,
+    })
+    assert scope["editorA"].get(f"/api/runs/{job_id}").status_code == 403
+    assert scope["editorB"].get(f"/api/runs/{job_id}").status_code == 200
+    assert scope["admin"].get(f"/api/runs/{job_id}").status_code == 200
+
+
+def test_p1f_orphan_job_falls_back_to_login_only(scope):
+    """job 指向已删 task —— 归属无法解析，回落到仅登录态（不 403 拒绝），
+    避免历史 job poll 接口变 4xx。"""
+    from app.services.jobs import _set_job, _iso
+    from datetime import datetime
+    job_id = "fake-orphan-job"
+    _set_job(job_id, {
+        "job_id": job_id, "kind": "compare", "task_id": "ghost-task-deleted",
+        "status": "failed", "stage": "failed", "message": "task gone",
+        "created_at": _iso(datetime.now()), "updated_at": _iso(datetime.now()),
+        "expires_at": "", "retry_count": 0, "max_retries": 0,
+        "result": None, "error": "", "cancel_requested": False,
+    })
+    # 任意登录用户都能读（resolved=False 时不门禁）
+    assert scope["editorA"].get(f"/api/runs/{job_id}").status_code == 200
+    assert scope["editorB"].get(f"/api/runs/{job_id}").status_code == 200
+
+
+def test_p1f_cancel_endpoint_also_gated(scope):
+    """POST /api/runs/{job_id}/cancel 同样走 _gate_job_access。"""
+    from app.services.jobs import _set_job, _iso
+    from datetime import datetime
+    job_id = "fake-running-job"
+    _set_job(job_id, {
+        "job_id": job_id, "kind": "compare", "task_id": scope["task_b"],
+        "status": "running", "stage": "exporting", "message": "running",
+        "created_at": _iso(datetime.now()), "updated_at": _iso(datetime.now()),
+        "expires_at": "", "retry_count": 0, "max_retries": 0,
+        "result": None, "error": "", "cancel_requested": False,
+    })
+    # editorA 不能 cancel editorB 项目的 job
+    assert scope["editorA"].post(f"/api/runs/{job_id}/cancel").status_code == 403
+    # editorB 可以（cancel 走完后状态变 cancelling / cancelled）
+    rB = scope["editorB"].post(f"/api/runs/{job_id}/cancel")
+    assert rB.status_code == 200, rB.text
