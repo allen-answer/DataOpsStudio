@@ -288,3 +288,103 @@ def test_endpoint_403_for_viewer_role(client_viewer, isolated_storage, buckets):
 
     r = client_viewer.post("/api/runs/RUN_V/export-excel")
     assert r.status_code == 403
+
+
+# ─── P1 修复：max_rows 兜底 + parquet bucket 读量上限 ────────────────────────
+
+
+def test_build_excel_falls_back_to_meta_export_max_rows(isolated_storage):
+    """没传 max_rows 时从 meta.limits.export_max_rows 兜底。
+    构造 only_source 50 行的 parquet run + envelope.limits.export_max_rows=10，
+    Excel only_source sheet 应该最多 10 行 data（+ 1 行 header）。"""
+    task_id = _create_task()
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i, "v": f"x{i}"}} for i in range(50)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    envelope = _envelope(task_id, "RUN_CAP")
+    envelope["limits"] = {"export_max_rows": 10}
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_CAP",
+        excel_path=isolated_storage["results"] / "RUN_CAP.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    from app.services.excel_export import build_excel_for_run
+    path = build_excel_for_run("RUN_CAP")  # 不传 max_rows
+    wb = load_workbook(path)
+    # only_source sheet：header 1 + 10 data = 11 行
+    assert wb["only_source"].max_row == 11
+
+
+def test_build_excel_explicit_max_rows_overrides_meta(isolated_storage):
+    """显式传 max_rows 优先级最高，覆盖 meta 默认。"""
+    task_id = _create_task()
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i}} for i in range(50)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    envelope = _envelope(task_id, "RUN_OVR")
+    envelope["limits"] = {"export_max_rows": 1000}
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_OVR",
+        excel_path=isolated_storage["results"] / "RUN_OVR.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    from app.services.excel_export import build_excel_for_run
+    path = build_excel_for_run("RUN_OVR", max_rows=5)
+    wb = load_workbook(path)
+    assert wb["only_source"].max_row == 6  # header + 5
+
+
+def test_load_buckets_from_parquet_caps_reads(isolated_storage):
+    """_load_buckets_from_parquet 直接传 max_rows 时每桶按顺序消耗预算。
+    write_excel 的顺序是 diff → only_source → only_target → same，预算 25 时
+    diff 先吃满（20），only_source 拿剩 5。"""
+    task_id = _create_task()
+    bs = {
+        "diff": [
+            {"key": [i], "source": {"id": i, "v": 1}, "target": {"id": i, "v": 2},
+             "changes": {"v": {"source": 1, "target": 2, "target_column": "v"}}}
+            for i in range(20)
+        ],
+        "only_source": [{"key": [100 + i], "source": {"id": 100 + i}} for i in range(20)],
+        "only_target": [],
+        "same": [],
+    }
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_C",
+        excel_path=isolated_storage["results"] / "RUN_C.xlsx",
+        payload=_envelope(task_id, "RUN_C"),
+    )
+    feed_buckets(writer, bs)
+    writer.finalize()
+
+    from app.services.excel_export import _load_buckets_from_parquet
+    out = _load_buckets_from_parquet("RUN_C", max_rows=25)
+    assert len(out["diff"]) == 20
+    assert len(out["only_source"]) == 5
+    assert out["only_target"] == []
+
+
+def test_resolve_default_max_rows_handles_missing(isolated_storage, buckets):
+    """envelope 缺 limits / export_max_rows 时返 None（不限）。"""
+    task_id = _create_task()
+    envelope = _envelope(task_id, "RUN_NO_LIMITS")
+    envelope["limits"] = {}
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_NO_LIMITS",
+        excel_path=isolated_storage["results"] / "RUN_NO_LIMITS.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, buckets)
+    writer.finalize()
+
+    from app.services.excel_export import _resolve_default_max_rows
+    assert _resolve_default_max_rows("RUN_NO_LIMITS") is None
+    assert _resolve_default_max_rows("ghost-run") is None

@@ -484,3 +484,163 @@ def test_direct_endpoints_404_on_unknown_datasource(scope, stub_db):
         json={"sql": "SELECT 1", "datasource_id": "ghost-id"},
     )
     assert r.status_code == 404, r.text
+
+
+# ─── 12. P1 阻塞：parquet run 项目级授权（compare_result_project_id + result_download_project_id） ───
+# 切片 B/C/E 落地后，parquet runs 目录形态（results/<run_id>/{meta.json, *.parquet}）
+# 的归属反查路径不能只支持 legacy <run_id>.json。下列测试同时验证：
+# - /api/runs/<id>/meta + /buckets + /export-excel 三个 API 端点（_check_run_project_access 路径）
+# - /results/<run_id>/meta.json + /results/<run_id>/<bucket>.parquet 直链下载（result_download_project_id 路径）
+
+
+def _build_parquet_run_under_task(results_dir, task_id: str, run_id: str) -> None:
+    """在指定 task 下建一个真 parquet run，落 meta.json + parquet 文件 +
+    legacy json 同名 stub 不写（专测 parquet 路径，验证 detect_format 走目录）。"""
+    from app.compare.result_writer import ParquetResultWriter, feed_buckets
+
+    bs = {
+        "only_source": [{"key": [1], "source": {"id": 1, "name": "a"}}],
+        "only_target": [],
+        "diff": [
+            {"key": [2], "source": {"id": 2, "v": 1}, "target": {"id": 2, "v": 2},
+             "changes": {"v": {"source": 1, "target": 2, "target_column": "v"}}},
+        ],
+        "same": [{"key": [3], "source": {"id": 3}, "target": {"id": 3}}],
+    }
+    envelope = {
+        "run_id": run_id, "task_id": task_id, "task_name": "p1-fixture",
+        "started_at": "2026-05-21T10:00:00", "elapsed_seconds": 1.0,
+        "source_rows": 2, "target_rows": 2,
+        "summary": {"only_source": 1, "only_target": 0, "diff": 1, "same": 1},
+        "rules": {}, "limits": {"export_max_rows": 50000}, "schema_report": {},
+    }
+    writer = ParquetResultWriter(
+        run_dir=results_dir / run_id,
+        excel_path=results_dir / f"{run_id}.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, bs)
+    writer.finalize()
+
+
+@pytest.fixture
+def parquet_run_in_proj_b(scope):
+    """在 ProjectB 的 task_b 下落一个 parquet run。返回 run_id。
+    editorA 应该全部 403，editorB 应该全部 200。"""
+    run_id = "PARQ_RUN_B_001"
+    _build_parquet_run_under_task(scope["results_dir"], scope["task_b"], run_id)
+    return run_id
+
+
+@pytest.fixture
+def parquet_run_in_proj_a(scope):
+    """对照组：ProjectA 的 task_a 下的 parquet run。editorA 应该 200。"""
+    run_id = "PARQ_RUN_A_001"
+    _build_parquet_run_under_task(scope["results_dir"], scope["task_a"], run_id)
+    return run_id
+
+
+# /api/runs/<id>/meta -------------------------------------------------------
+
+
+def test_p1_parquet_meta_editorA_blocked_for_proj_b(scope, parquet_run_in_proj_b):
+    r = scope["editorA"].get(f"/api/runs/{parquet_run_in_proj_b}/meta")
+    assert r.status_code == 403, r.text
+
+
+def test_p1_parquet_meta_editorB_can_read_own(scope, parquet_run_in_proj_b):
+    r = scope["editorB"].get(f"/api/runs/{parquet_run_in_proj_b}/meta")
+    assert r.status_code == 200, r.text
+    assert r.json()["format"] == "parquet"
+
+
+# /api/runs/<id>/buckets/<bucket> -------------------------------------------
+
+
+def test_p1_parquet_bucket_editorA_blocked(scope, parquet_run_in_proj_b):
+    r = scope["editorA"].get(f"/api/runs/{parquet_run_in_proj_b}/buckets/diff")
+    assert r.status_code == 403, r.text
+
+
+def test_p1_parquet_bucket_editorB_can_read(scope, parquet_run_in_proj_b):
+    r = scope["editorB"].get(f"/api/runs/{parquet_run_in_proj_b}/buckets/diff")
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] == 1
+
+
+# POST /api/runs/<id>/export-excel ------------------------------------------
+
+
+def test_p1_parquet_export_excel_editorA_blocked(scope, parquet_run_in_proj_b):
+    r = scope["editorA"].post(f"/api/runs/{parquet_run_in_proj_b}/export-excel")
+    assert r.status_code == 403, r.text
+
+
+def test_p1_parquet_export_excel_editorB_can_trigger(scope, parquet_run_in_proj_b):
+    r = scope["editorB"].post(f"/api/runs/{parquet_run_in_proj_b}/export-excel")
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "excel_export"
+
+
+# GET /results/<run_id>/* 直链下载 -------------------------------------------
+# 这是 P1 阻塞最容易漏的部分：parquet 模式下用户/前端可能直链 /results/<id>/meta.json
+# 拿 envelope，或者直链 /results/<id>/diff.parquet 给 pandas/duckdb 离线分析。
+# result_download_project_id 必须能识别 <run_id>/<file> 模式反查归属项目。
+
+
+def test_p1_results_meta_json_editorA_blocked(scope, parquet_run_in_proj_b):
+    r = scope["editorA"].get(f"/results/{parquet_run_in_proj_b}/meta.json")
+    assert r.status_code == 403, r.text
+
+
+def test_p1_results_meta_json_editorB_can_download(scope, parquet_run_in_proj_b):
+    r = scope["editorB"].get(f"/results/{parquet_run_in_proj_b}/meta.json")
+    assert r.status_code == 200, r.text
+
+
+def test_p1_results_parquet_file_editorA_blocked(scope, parquet_run_in_proj_b):
+    r = scope["editorA"].get(f"/results/{parquet_run_in_proj_b}/diff.parquet")
+    assert r.status_code == 403, r.text
+
+
+def test_p1_results_parquet_file_editorB_can_download(scope, parquet_run_in_proj_b):
+    r = scope["editorB"].get(f"/results/{parquet_run_in_proj_b}/diff.parquet")
+    assert r.status_code == 200, r.text
+
+
+# ProjectA run 同 user 正路径（防回归：editorA 对自己项目仍 200） ------------
+
+
+def test_p1_parquet_own_project_full_access(scope, parquet_run_in_proj_a):
+    """editorA 对自己 ProjectA 的 parquet run 应能读 meta / bucket / 直链 meta.json。"""
+    assert scope["editorA"].get(f"/api/runs/{parquet_run_in_proj_a}/meta").status_code == 200
+    assert scope["editorA"].get(f"/api/runs/{parquet_run_in_proj_a}/buckets/only_source").status_code == 200
+    assert scope["editorA"].get(f"/results/{parquet_run_in_proj_a}/meta.json").status_code == 200
+
+
+# legacy json run 回归（保 PR2 的兼容） -------------------------------------
+
+
+def test_p1_legacy_json_run_still_authorized(scope):
+    """legacy <run_id>.json 也走同一条 compare_result_project_id 路径，
+    确保 P1 修改没影响老格式。"""
+    from app.compare.result_writer import JsonResultWriter, feed_buckets
+
+    run_id = "LEGACY_RUN_B_001"
+    writer = JsonResultWriter(
+        result_path=scope["results_dir"] / f"{run_id}.json",
+        excel_path=scope["results_dir"] / f"{run_id}.xlsx",
+        payload={
+            "run_id": run_id, "task_id": scope["task_b"], "task_name": "legacy",
+            "summary": {"only_source": 0, "only_target": 0, "diff": 0, "same": 0},
+        },
+    )
+    feed_buckets(writer, {"only_source": [], "only_target": [], "diff": [], "same": []})
+    writer.finalize()
+
+    # editorA 跨项目 403；editorB 200
+    assert scope["editorA"].get(f"/api/runs/{run_id}/meta").status_code == 403
+    assert scope["editorB"].get(f"/api/runs/{run_id}/meta").status_code == 200
+    # 直链 .json 下载同样
+    assert scope["editorA"].get(f"/results/{run_id}.json").status_code == 403
+    assert scope["editorB"].get(f"/results/{run_id}.json").status_code == 200

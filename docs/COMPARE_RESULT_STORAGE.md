@@ -319,11 +319,18 @@ def load_run_result(run_id: str):
    - 前端：HistoryView 的 Excel 链接对 `format=parquet` runs 显示按钮触发
      异步导出（导出中显示"导出中…"占位），完成后浏览器自动下载；legacy
      runs 仍走 `<a href>` 直链下载（runner 已经同步落 xlsx）。
+   - **P1 修复**：`build_excel_for_run(run_id, max_rows=None)` 没传上限时从
+     `meta.envelope.limits.export_max_rows` 兜底；`_load_buckets_from_parquet`
+     接 `max_rows` 后用 `pq.ParquetFile.iter_batches` 按桶顺序（diff →
+     only_source → only_target → same）take 到预算用完即停 —— 避免对每个
+     parquet 文件 `read_table().to_pylist()` 把整桶载入内存。endpoint 不带
+     `max_rows`，所以默认走兜底；RunLimits.export_max_rows 默认 50_000 给到
+     非空值，相当于内存峰值 ≈ 50k rows × 字段宽度。
    - **未做（留 slice F+）**：streaming Excel 写出（openpyxl write_only）+
      completion 通知（webhook / 企微）+ 多 run 合并异步导出（`/history/export`
-     当前仍同步）。本切片 Excel 写出仍是把全部 buckets 读回内存再喂 openpyxl
-     —— 对千万级行的极端 case 还是会 OOM，但跟"runner 同步阻塞 worker"那个
-     痛点已经解开。
+     当前仍同步）。本切片 Excel 写出仍走 openpyxl 普通模式 —— 内存上限通过
+     `max_rows` 兜底控制，但要进一步降到 O(batch_size) 量级得 write_only +
+     行级流式喂入。
 6. **切片 F（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
 
 设计文档原本说"B + C + D 必须捆绑一次发布"——**实际 PR1 通过 per-task opt-in

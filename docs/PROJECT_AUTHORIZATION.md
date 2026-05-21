@@ -102,9 +102,22 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 
 | 文件形态 | 归属解析路径 |
 |----------|--------------|
-| `results/<run_id>.json` / `.xlsx`（对比 / 血缘结果） | 读 JSON 里的 `task_id` → `task_store.get` → `task.project_id` |
+| `results/<run_id>.json` / `.xlsx`（legacy 对比 / 血缘结果） | 读 JSON 里的 `task_id` → `task_store.get` → `task.project_id` |
+| `results/<run_id>/meta.json` / `*.parquet` / `export.xlsx`（parquet 目录格式，切片 B+） | 用目录名当 `run_id`，走 `compare_result_project_id` —— 内部调 `load_run_meta` 自动 dispatch 到 `<run_id>/meta.json`，从 envelope 取 `task_id` → `task_store.get` → `task.project_id` |
 | `results/workflow_runs/<run_id>/...`（作业流产物） | `get_workflow_run(run_id)` → `workflow_id` → `workflow.project_id` |
 | 其它（上传文件 / 临时导出 / 无法解析） | 不做项目归属，回落到「仅登录态」 |
+
+> **parquet 目录归属反查的核心**：`app/api/_authz.compare_result_project_id`
+> 不直接读 legacy `<run_id>.json`，而是调 `app/services/run_result.load_run_meta`，
+> 后者通过 `detect_format(run_id)` 优先尝试 `<run_id>/meta.json`、再回退
+> `<run_id>.json`。这条链路同时被 4 个入口复用：
+> - `GET /api/runs/<id>/meta`、`GET /api/runs/<id>/buckets/<bucket>`、
+>   `POST /api/runs/<id>/export-excel` —— 走 `_check_run_project_access`
+> - `GET /results/<run_id>/{meta.json | *.parquet | export.xlsx}` ——
+>   走 `result_download_project_id` 取 path 第一段当 run_id 再喂同函数
+>
+> 所以**新增 `<run_id>/*` 下的文件类型不需要改 `_authz.py`** —— 自动走
+> 项目级授权。回归用例在 `tests/test_project_authorization.py` 第 12 节。
 
 判定：
 - 能解析出归属项目，且用户对该项目无权 → **403**。

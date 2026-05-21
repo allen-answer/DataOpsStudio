@@ -68,13 +68,21 @@ def _load_buckets_from_legacy(run_id: str) -> CompareBuckets:
     return {name: list(buckets_data.get(name, [])) for name in _BUCKET_NAMES}
 
 
-def _load_buckets_from_parquet(run_id: str) -> CompareBuckets:
-    """parquet 走 meta.json 找各桶路径 + pyarrow `read_table().to_pylist()` 全
-    量读回内存。同 count_only 时拿 meta.json 的 sample（无 parquet 文件）。
+def _load_buckets_from_parquet(
+    run_id: str,
+    *,
+    max_rows: int | None = None,
+) -> CompareBuckets:
+    """parquet 走 meta.json 找各桶路径 + pyarrow `iter_batches` 按需 take。
 
-    全量读回内存是 PR3 的接受 tradeoff —— Excel 导出本身就要把行喂给 openpyxl，
-    内存 footprint 跟 dataset size 同阶；流式 Excel 写出（write_only）留给
-    切片 F+。
+    P1 加 `max_rows` 上限：传非 None 时按 `write_excel._limit_buckets` 同样
+    的桶顺序 (diff / only_source / only_target / same) 分配预算，每桶用
+    row group 迭代，避免一次 `read_table().to_pylist()` 把整文件载入内存。
+    same 桶 count_only 时拿 meta.json 的 sample（无 parquet 文件）。
+
+    `max_rows=None` 仍走全量读回 —— 给单测 / 小结果用；正式 endpoint 走
+    `build_excel_for_run` 总会先落到 `limits.export_max_rows` 的非空兜底值。
+    完全流式 Excel 写出（write_only）留给切片 F+。
     """
     import pyarrow.parquet as pq
 
@@ -82,12 +90,19 @@ def _load_buckets_from_parquet(run_id: str) -> CompareBuckets:
     meta = load_run_meta(run_id)
     by_name = {b["name"]: b for b in meta.get("buckets") or []}
     buckets: CompareBuckets = {}
-    for name in _BUCKET_NAMES:
+    # write_excel 的 _limit_buckets 按 (diff, only_source, only_target, same)
+    # 顺序消耗 max_rows —— 这里按同样顺序分配，保证内存峰值 ≤ 实际写出量
+    order = ("diff", "only_source", "only_target", "same")
+    remaining = max_rows if max_rows is not None else None
+    for name in order:
         bucket_meta = by_name.get(name) or {}
         mode = bucket_meta.get("mode") or "full"
         if mode == "count_only":
-            # same 桶 count_only：只有 sample 可用；Excel 里能呈现的就这 N 行
-            buckets[name] = list(bucket_meta.get("sample") or [])
+            sample = list(bucket_meta.get("sample") or [])
+            if remaining is not None:
+                sample = sample[: max(remaining, 0)]
+                remaining -= len(sample)
+            buckets[name] = sample
             continue
         parquet_path_name = bucket_meta.get("path")
         if not parquet_path_name:
@@ -97,8 +112,40 @@ def _load_buckets_from_parquet(run_id: str) -> CompareBuckets:
         if not parquet_path.exists():
             buckets[name] = []
             continue
-        buckets[name] = pq.read_table(parquet_path).to_pylist()
+        if remaining is None:
+            buckets[name] = pq.read_table(parquet_path).to_pylist()
+            continue
+        if remaining <= 0:
+            buckets[name] = []
+            continue
+        out: list[dict[str, object]] = []
+        pq_file = pq.ParquetFile(parquet_path)
+        for batch in pq_file.iter_batches(batch_size=min(remaining, 5000)):
+            for row in batch.to_pylist():
+                out.append(row)
+                if len(out) >= remaining:
+                    break
+            if len(out) >= remaining:
+                break
+        buckets[name] = out
+        remaining -= len(out)
     return buckets
+
+
+def _resolve_default_max_rows(run_id: str) -> int | None:
+    """从 run envelope 的 `limits.export_max_rows` 拿默认值。缺失 / 非正数
+    返回 None（不限）；正常 task 走 RunLimits 默认 50_000 一定有非 None 值。"""
+    try:
+        meta = load_run_meta(run_id)
+    except RunNotFound:
+        return None
+    limits = meta.get("limits") or {}
+    raw = limits.get("export_max_rows")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def build_excel_for_run(
@@ -110,7 +157,12 @@ def build_excel_for_run(
     """同步实现：从 run 的存储格式读出 4 桶 → 老 `write_excel` → 落到目标路径。
 
     `target_path=None` 时自动选择（见 `export_excel_path`）。
-    `max_rows` 透传给 `write_excel`（复用 `RunLimits.export_max_rows` 上限）。
+
+    `max_rows=None` 时从 run envelope 的 `limits.export_max_rows` 兜底 ——
+    P1 修复：旧实现传 None 给 write_excel 就是"无限"，对千万级行的 parquet
+    run 会让 reader 把整桶 parquet 加载到内存。现在 endpoint 不带 max_rows
+    走默认会被 envelope.limits.export_max_rows 兜住（RunLimits 默认 50_000）。
+    显式传 0 或 None 兜底仍解析不到非正数才真的不限（CLI / 单测路径）。
 
     抛 RunNotFound / ExcelExportError 让调用方决定 4xx vs 5xx。
     """
@@ -118,12 +170,15 @@ def build_excel_for_run(
     if fmt == "missing":
         raise RunNotFound(run_id)
 
+    if max_rows is None:
+        max_rows = _resolve_default_max_rows(run_id)
+
     target_path = target_path or export_excel_path(run_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         if fmt == "parquet":
-            buckets = _load_buckets_from_parquet(run_id)
+            buckets = _load_buckets_from_parquet(run_id, max_rows=max_rows)
         else:
             buckets = _load_buckets_from_legacy(run_id)
     except Exception as exc:
