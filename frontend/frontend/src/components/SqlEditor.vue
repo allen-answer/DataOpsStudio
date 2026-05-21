@@ -77,8 +77,9 @@ watch(fullscreen, (on) => {
 </script>
 
 <template>
-  <!-- 全屏时整体提到 fixed 顶层覆盖视口；普通时 relative 让全屏按钮浮在右上角 -->
-  <div :class="fullscreen ? 'fixed inset-0 z-50 flex flex-col bg-slate-900/85 p-3 backdrop-blur-sm' : 'relative'">
+  <!-- 全屏时整体提到 fixed 顶层覆盖视口；普通时 relative 让全屏按钮浮在右上角。
+       !m-0 抵消父级 space-y-* 给本 div 的 margin-top —— 否则 fixed 层会被顶下来一截。 -->
+  <div :class="fullscreen ? 'fixed inset-0 z-50 !m-0 flex flex-col bg-slate-900/85 p-3 backdrop-blur-sm' : 'relative'">
     <div v-if="fullscreen" class="mb-2 px-1">
       <span class="text-xs font-semibold text-slate-300">SQL 编辑器 · 全屏（Esc 退出）</span>
     </div>
