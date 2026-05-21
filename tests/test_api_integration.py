@@ -21,11 +21,17 @@ from openpyxl import Workbook
 
 @pytest.fixture
 def client(isolated_storage):
-    """绑在隔离 storage 上的 TestClient。"""
+    """绑在隔离 storage 上的 TestClient（已以 admin 登录，避开 401/403）。"""
     # main.py 里 import mimetypes 注册 .xlsx 等的步骤要在 client 起来之前
     # 已生效——直接 import main 就触发了。
     from main import app
-    return TestClient(app)
+    from app.services import auth as auth_svc
+    auth_svc.bootstrap_default_admin()
+    c = TestClient(app)
+    r = c.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    assert r.status_code == 200, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return c
 
 
 # --- workflow CRUD ---

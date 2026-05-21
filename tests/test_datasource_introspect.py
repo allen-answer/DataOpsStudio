@@ -170,7 +170,13 @@ def test_introspect_columns_empty_inputs_raise(isolated_storage):
 @pytest.fixture
 def client(isolated_storage):
     from main import app
-    return TestClient(app)
+    from app.services import auth as auth_svc
+    auth_svc.bootstrap_default_admin()
+    c = TestClient(app)
+    r = c.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    assert r.status_code == 200, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return c
 
 
 def test_introspect_endpoint_requires_datasource_id(client, fake_mysql_ds):

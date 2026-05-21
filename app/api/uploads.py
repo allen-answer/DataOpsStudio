@@ -5,20 +5,22 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 
+from app.api._authz import require_datasource_access
 from app.dbclients.factory import fetch_column_details, fetch_rows
 from app.models import (
     ExcelUploadResponse,
     PreviewColumnsResponse,
     PreviewRowsResponse,
     SqlAssistResponse,
+    User,
 )
 from app.readers.csv_reader import CsvReader, list_columns as read_csv_columns
 from app.readers.excel_reader import ExcelReader, list_columns as read_excel_columns
 from app.readers.parquet_reader import ParquetReader, list_columns as read_parquet_columns
 from app.services import excel_uploads, file_uploads
-from app.services.repositories import datasource_store
+from app.services.auth import get_current_user
 from app.services.sql_tools import sql_assist
 from app.utils.sql_guard import validate_readonly_sql
 
@@ -38,7 +40,10 @@ def _preview_reader_rows(reader, limit: int) -> tuple[list[dict[str, object]], b
 
 
 @router.post("/api/preview/rows", response_model=PreviewRowsResponse)
-def preview_rows_api(payload: dict[str, object] = Body(...)):
+def preview_rows_api(
+    payload: dict[str, object] = Body(...),
+    current: User = Depends(get_current_user),
+):
     """Preview rows from the current draft without requiring a saved task."""
     kind = str(payload.get("kind") or "sql").lower()
     side = str(payload.get("side") or "source")
@@ -47,9 +52,7 @@ def preview_rows_api(payload: dict[str, object] = Body(...)):
     if kind == "sql":
         datasource_id = str(payload.get("datasource_id") or "").strip()
         sql = str(payload.get("sql") or "")
-        datasource = datasource_store.get(datasource_id)
-        if datasource is None:
-            raise HTTPException(status_code=404, detail="Datasource not found")
+        datasource = require_datasource_access(current, datasource_id)
         try:
             validate_readonly_sql(sql)
             rows = fetch_rows(datasource, sql, max_rows=limit, raise_on_overflow=False)
@@ -103,7 +106,10 @@ def preview_rows_api(payload: dict[str, object] = Body(...)):
 
 
 @router.post("/api/preview/columns", response_model=PreviewColumnsResponse)
-def preview_columns_api(payload: dict[str, object] = Body(...)):
+def preview_columns_api(
+    payload: dict[str, object] = Body(...),
+    current: User = Depends(get_current_user),
+):
     """Return column names for a SQL query or Excel sheet without persisting
     a task. Used by the field-selection UI so users can pick include/exclude
     before saving the task."""
@@ -111,9 +117,7 @@ def preview_columns_api(payload: dict[str, object] = Body(...)):
     if kind == "sql":
         datasource_id = str(payload.get("datasource_id") or "").strip()
         sql = str(payload.get("sql") or "")
-        datasource = datasource_store.get(datasource_id)
-        if datasource is None:
-            raise HTTPException(status_code=404, detail="Datasource not found")
+        datasource = require_datasource_access(current, datasource_id)
         try:
             validate_readonly_sql(sql)
             details = fetch_column_details(datasource, sql)

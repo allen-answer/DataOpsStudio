@@ -71,6 +71,7 @@ def introspect_columns_api(
     name: str,
     datasource_id: str = Query(..., min_length=1, description="必须指定从哪个 datasource 拉"),
     no_cache: bool = Query(False, description="跳过缓存（admin 改了表 schema 后强制刷）"),
+    current: User = Depends(require_role("viewer")),
 ) -> dict[str, Any]:
     """S1.C：从活的 db 连接拉表的真实字段定义（information_schema /
     all_tab_columns）。MySQL / Oracle / DM 已支持，DB2 stub。
@@ -78,11 +79,11 @@ def introspect_columns_api(
     返回 `{datasource_name, db_type, columns: [...]}`。前端把 columns 跟
     lineage-based columns merge 显示，让"从来没动过"的字段也能被发现。
     """
+    from app.api._authz import require_datasource_access
     from app.services.datasource_introspect import introspect_columns
-    from app.services.repositories import datasource_store
-    source = datasource_store.get(datasource_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail=f"datasource {datasource_id} not found")
+    source = require_datasource_access(
+        current, datasource_id, detail=f"datasource {datasource_id} not found",
+    )
     try:
         cols = introspect_columns(datasource_id, name, use_cache=not no_cache)
     except ValueError as exc:

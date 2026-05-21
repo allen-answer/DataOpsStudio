@@ -1,8 +1,9 @@
 """对比任务 CRUD + 同步 / 异步执行 + 行预览。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
+from app.api._authz import require_datasource_access
 from app.api._shared import ensure_datasources_for_kind
 from app.dbclients.factory import fetch_rows_with_schema
 from app.models import (
@@ -14,9 +15,11 @@ from app.models import (
     PreviewRowsResponse,
     SourceKind,
     SqlMode,
+    User,
 )
+from app.services.auth import get_current_user
 from app.services.jobs import submit_task_run
-from app.services.repositories import datasource_store, task_store
+from app.services.repositories import task_store
 from app.services.runner import build_reader, run_task
 from app.utils.sql_guard import validate_readonly_sql
 
@@ -107,7 +110,11 @@ def run_task_async_api(task_id: str, payload: dict[str, object] | None = Body(No
 
 
 @router.post("/api/tasks/{task_id}/preview", response_model=PreviewRowsResponse)
-def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None)):
+def preview_task_api(
+    task_id: str,
+    payload: dict[str, object] | None = Body(None),
+    current: User = Depends(get_current_user),
+):
     payload = payload or {}
     task = task_store.get(task_id)
     if task is None:
@@ -139,9 +146,10 @@ def preview_task_api(task_id: str, payload: dict[str, object] | None = Body(None
     override_datasource_id = payload.get("datasource_id")
     if isinstance(override_datasource_id, str) and override_datasource_id.strip():
         datasource_id = override_datasource_id.strip()
-    datasource = datasource_store.get(datasource_id)
-    if datasource is None:
-        raise HTTPException(status_code=404, detail="Datasource not found")
+    # 项目级授权：override 路径下尤其重要 —— 任意持有 datasource_id 的用户
+    # 都能通过 task.preview 间接执行 SQL。非 override 路径也校验，避免任务
+    # 被移动到别的项目或 datasource project_id 变更后出现历史越权。
+    datasource = require_datasource_access(current, datasource_id)
     sql = task.target_sql if side == "target" and task.sql_mode == SqlMode.DOUBLE else task.source_sql
     override_sql = payload.get("sql")
     if isinstance(override_sql, str) and override_sql.strip():
