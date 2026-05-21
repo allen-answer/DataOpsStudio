@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api._authz import require_datasource_access
+from app.models import User
 from app.services.auth import require_role
 from app.services.slow_sql import SlowSqlError, analyze_sql, enrich_via_ai
 
@@ -35,7 +37,12 @@ class SlowSqlEnrichRequest(BaseModel):
 
 
 @router.post("/api/slow-sql/analyze")
-def analyze(payload: SlowSqlRequest = Body(...)) -> dict[str, Any]:
+def analyze(
+    payload: SlowSqlRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    # 项目级授权：editor 不能拿别的项目的 datasource_id 跑 EXPLAIN 反查 plan。
+    require_datasource_access(current, payload.datasource_id)
     try:
         return analyze_sql(
             payload.datasource_id,

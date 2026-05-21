@@ -262,12 +262,14 @@ def test_endpoint_happy_path(client, mysql_datasource, monkeypatch):
     assert any(i["code"] == "full_table_scan" for i in body["issues"])
 
 
-def test_endpoint_400_on_unknown_datasource(client, isolated_storage):
+def test_endpoint_404_on_unknown_datasource(client, isolated_storage):
+    """切到 404 —— 项目级授权层先校验 datasource 是否存在（datasource_id 找不到
+    跟 SQL 报错语义不同），符合标准 HTTP 语义。"""
     r = client.post(
         "/api/slow-sql/analyze",
         json={"sql": "SELECT 1", "datasource_id": "no-such"},
     )
-    assert r.status_code == 400
+    assert r.status_code == 404
 
 
 def test_endpoint_400_on_bad_sql(client, mysql_datasource):

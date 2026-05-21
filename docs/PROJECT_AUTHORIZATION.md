@@ -171,7 +171,37 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 4. run 前再校验一遍 —— 防止 workflow 创建后 task 被移到别的项目、或历史
    遗留的跨项目引用被间接执行。
 
-### 4.3 config 导入 / 导出收紧为 admin only
+### 4.3 直接 `datasource_id` 接口授权
+
+部分 endpoint 不接外壳资源（task / workflow），而是**直接接 `datasource_id`**
+并执行 SQL / EXPLAIN / 字段预览 / introspect。这类接口必须独立校验用户对
+该 datasource 所属项目的权限，否则任意持有 id 的登录用户都能跨项目读库。
+
+| Endpoint | 入口字段 | 实际操作 |
+|----------|----------|----------|
+| `POST /api/preview/rows`（`kind=sql`） | `payload.datasource_id` | 执行 SELECT，回少量行 |
+| `POST /api/preview/columns`（`kind=sql`） | `payload.datasource_id` | 执行 SELECT 取字段元信息 |
+| `POST /api/tasks/{id}/preview` | `payload.datasource_id`（override） | 同上，但替换任务的默认 datasource |
+| `POST /api/slow-sql/analyze` | `payload.datasource_id` | EXPLAIN + 规则推断 |
+| `GET /api/assets/introspect/{name}` | `?datasource_id=` query | 读 `information_schema` / `all_tab_columns` |
+
+实现统一走 `app/api/_authz.py` 的 `require_datasource_access(user, datasource_id)`：
+
+- datasource 不存在 → **404**
+- datasource 存在但用户对 `datasource.project_id` 无权 → **403**
+- 通过则返回 `DataSource` 对象，调用方复用，避免重复 `datasource_store.get`
+
+**`/api/tasks/{id}/preview` 的 override 路径**特别关键：editor 对 task_a
+（自己项目）已经走完 task 项目级授权，但**仍不能**把 `override datasource_id`
+指向别的项目的 datasource —— 必须再过一次 `require_datasource_access`。
+未 override 的常规路径也校验一遍，避免 task 被移到别项目或 datasource 的
+`project_id` 后续变更后变成历史越权跳板。
+
+**新增直接 `datasource_id` 接口**：必须按上述模板调 `require_datasource_access`，
+并在 `tests/test_project_authorization.py` 第 11 节加一组「跨项目 403 / 自有
+项目 200 / 全局 200 / admin 全权」用例。
+
+### 4.4 config 导入 / 导出收紧为 admin only
 
 `/config/import` 是批量创建 / 覆盖 datasources + tasks，导入文件里可携带
 **任意 `project_id`**，绕过单对象创建时的项目校验。因此导入 / 导出都 admin only：
@@ -215,6 +245,14 @@ bootstrap 一次性返回 datasources / tasks / workflows / history。每一类�
 - `app/api/workflows.py` —— create/update/instantiate/save-template/run 用 task 授权校验
 - `app/api/config_io.py` —— `/config/import` 收紧为 admin only
 
+**第三轮（直接 `datasource_id` 接口授权，本文件 4.3 节）**：
+
+- `app/api/_authz.py` —— `require_datasource_access(user, datasource_id, detail)`
+- `app/api/tasks.py` —— `preview_task_api` override 路径 + 常规路径都校验
+- `app/api/uploads.py` —— `preview_rows_api` / `preview_columns_api` SQL kind
+- `app/api/slow_sql.py` —— `/api/slow-sql/analyze`（enrich 不接 datasource，不动）
+- `app/api/assets.py` —— `/api/assets/introspect/{name}`
+
 共享 helper：`app/api/_authz.py`。
 
 **不在范围**：workflow templates 库本身（视为跨项目共享库，仅在实例化 /
@@ -244,3 +282,10 @@ assets / search / lineage 索引类 endpoint 的项目过滤 —— 留后续迭
 | 13 | editor A 创建 ProjectA workflow 引用 ProjectA task | 200 |
 | 14 | editor A 创建 ProjectA workflow 引用全局 task | 200 |
 | 15 | viewer / editor `POST /config/import` | 403；admin 放行 |
+| 16 | editor A `/api/preview/rows`、`/api/preview/columns` 指 ProjectB datasource | 403 |
+| 17 | editor A `/api/tasks/{task_a}/preview` override 到 ProjectB datasource | 403 |
+| 18 | editor A `/api/slow-sql/analyze` 指 ProjectB datasource | 403 |
+| 19 | editor A `/api/assets/introspect/{name}` 指 ProjectB datasource | 403 |
+| 20 | editor A 同上 4 个 endpoint 指自己项目 / 全局 datasource | 200 |
+| 21 | admin 同上 4 个 endpoint 指任意 datasource | 200 |
+| 22 | 任意角色 同上 4 个 endpoint 指不存在的 datasource_id | 404 |

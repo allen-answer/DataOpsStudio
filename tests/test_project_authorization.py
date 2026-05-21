@@ -295,3 +295,192 @@ def test_config_import_requires_admin(scope):
     # admin 能用 —— 通过 auth gate（import 成功走 303 重定向）
     r = scope["admin"].post("/config/import", files=files, follow_redirects=False)
     assert r.status_code not in (401, 403), (r.status_code, r.text)
+
+
+# ─── 11. 直接 datasource_id 接口授权 ─────────────────────────────────────────
+# 凡是直接接收 datasource_id 并执行 SQL / EXPLAIN / 字段预览 / introspect 的
+# endpoint，都必须调 require_datasource_access。这一节覆盖 5 个入口：
+# /api/preview/rows、/api/preview/columns、/api/tasks/{id}/preview override、
+# /api/slow-sql/analyze、/api/assets/introspect/{name}。
+
+
+@pytest.fixture
+def stub_db(monkeypatch):
+    """所有命中 db 的执行点 monkeypatch 成空结果，让授权校验是测试的唯一变量。"""
+    from app.api import uploads as uploads_api
+    from app.api import tasks as tasks_api
+    from app.api import slow_sql as slow_sql_api
+    from app.services import datasource_introspect as di
+
+    monkeypatch.setattr(uploads_api, "fetch_rows", lambda *a, **k: [])
+
+    class _Details:
+        columns = []
+        warnings = []
+
+    monkeypatch.setattr(uploads_api, "fetch_column_details", lambda *a, **k: _Details())
+
+    class _RowsResult:
+        columns = []
+        rows = []
+        warnings = []
+
+    monkeypatch.setattr(tasks_api, "fetch_rows_with_schema", lambda *a, **k: _RowsResult())
+
+    # api 模块在 import 时把 analyze_sql 绑到自己命名空间，必须改 api 模块的引用
+    monkeypatch.setattr(
+        slow_sql_api, "analyze_sql",
+        lambda *a, **k: {"plan": [], "issues": [], "suggestions": []},
+    )
+    monkeypatch.setattr(di, "introspect_columns", lambda *a, **k: [])
+
+
+# /api/preview/rows -----------------------------------------------------------
+
+
+def test_preview_rows_editor_cannot_use_other_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/preview/rows", json={
+        "kind": "sql", "datasource_id": scope["ds_b"], "sql": "SELECT 1",
+    })
+    assert r.status_code == 403, r.text
+
+
+def test_preview_rows_editor_can_use_own_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/preview/rows", json={
+        "kind": "sql", "datasource_id": scope["ds_a"], "sql": "SELECT 1",
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_preview_rows_editor_can_use_global_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/preview/rows", json={
+        "kind": "sql", "datasource_id": scope["ds_g"], "sql": "SELECT 1",
+    })
+    assert r.status_code == 200, r.text
+
+
+# /api/preview/columns --------------------------------------------------------
+
+
+def test_preview_columns_editor_cannot_use_other_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/preview/columns", json={
+        "kind": "sql", "datasource_id": scope["ds_b"], "sql": "SELECT 1",
+    })
+    assert r.status_code == 403, r.text
+
+
+def test_preview_columns_editor_can_use_own_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/preview/columns", json={
+        "kind": "sql", "datasource_id": scope["ds_a"], "sql": "SELECT 1",
+    })
+    assert r.status_code == 200, r.text
+
+
+# /api/tasks/{id}/preview override_datasource_id ------------------------------
+
+
+def test_task_preview_editor_cannot_override_to_other_project_datasource(scope, stub_db):
+    """editorA 对 task_a（自己项目）已通过授权，但不能把 override 指向 ProjectB ds。"""
+    r = scope["editorA"].post(
+        f"/api/tasks/{scope['task_a']}/preview",
+        json={"side": "source", "datasource_id": scope["ds_b"], "sql": "SELECT 1"},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_task_preview_editor_no_override_still_works(scope, stub_db):
+    """非 override 路径 —— editorA 对自己项目 task 仍能正常预览。"""
+    r = scope["editorA"].post(
+        f"/api/tasks/{scope['task_a']}/preview",
+        json={"side": "source"},
+    )
+    assert r.status_code == 200, r.text
+
+
+# /api/slow-sql/analyze -------------------------------------------------------
+
+
+def test_slow_sql_editor_cannot_analyze_other_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/slow-sql/analyze", json={
+        "sql": "SELECT 1", "datasource_id": scope["ds_b"],
+    })
+    assert r.status_code == 403, r.text
+
+
+def test_slow_sql_editor_can_analyze_own_project_datasource(scope, stub_db):
+    r = scope["editorA"].post("/api/slow-sql/analyze", json={
+        "sql": "SELECT 1", "datasource_id": scope["ds_a"],
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_slow_sql_viewer_blocked_by_role(scope, stub_db):
+    """slow-sql 是 editor 角色门槛 —— viewer 即便对项目有权也走不到授权层。"""
+    r = scope["viewerA"].post("/api/slow-sql/analyze", json={
+        "sql": "SELECT 1", "datasource_id": scope["ds_a"],
+    })
+    assert r.status_code == 403
+
+
+# /api/assets/introspect/{name} ----------------------------------------------
+
+
+def test_introspect_editor_cannot_introspect_other_project_datasource(scope, stub_db):
+    r = scope["editorA"].get(
+        f"/api/assets/introspect/ods.t1?datasource_id={scope['ds_b']}",
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_introspect_editor_can_introspect_own_project_datasource(scope, stub_db):
+    r = scope["editorA"].get(
+        f"/api/assets/introspect/ods.t1?datasource_id={scope['ds_a']}",
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_introspect_editor_can_introspect_global_datasource(scope, stub_db):
+    r = scope["editorA"].get(
+        f"/api/assets/introspect/ods.t1?datasource_id={scope['ds_g']}",
+    )
+    assert r.status_code == 200, r.text
+
+
+# admin 全权（汇总） ----------------------------------------------------------
+
+
+def test_admin_can_access_any_datasource_via_direct_endpoints(scope, stub_db):
+    for ds in (scope["ds_a"], scope["ds_b"], scope["ds_g"]):
+        r = scope["admin"].post(
+            "/api/preview/rows",
+            json={"kind": "sql", "datasource_id": ds, "sql": "SELECT 1"},
+        )
+        assert r.status_code == 200, f"preview/rows ds={ds}: {r.text}"
+
+        r = scope["admin"].post(
+            "/api/slow-sql/analyze",
+            json={"sql": "SELECT 1", "datasource_id": ds},
+        )
+        assert r.status_code == 200, f"slow-sql/analyze ds={ds}: {r.text}"
+
+        r = scope["admin"].get(
+            f"/api/assets/introspect/ods.t1?datasource_id={ds}",
+        )
+        assert r.status_code == 200, f"introspect ds={ds}: {r.text}"
+
+
+# 404 / 403 区分 -------------------------------------------------------------
+
+
+def test_direct_endpoints_404_on_unknown_datasource(scope, stub_db):
+    """admin 也好、editor 也好，datasource_id 不存在统一 404，不暴露 403/404 差别。"""
+    r = scope["admin"].post(
+        "/api/preview/rows",
+        json={"kind": "sql", "datasource_id": "ghost-id", "sql": "SELECT 1"},
+    )
+    assert r.status_code == 404, r.text
+    r = scope["editorA"].post(
+        "/api/slow-sql/analyze",
+        json={"sql": "SELECT 1", "datasource_id": "ghost-id"},
+    )
+    assert r.status_code == 404, r.text

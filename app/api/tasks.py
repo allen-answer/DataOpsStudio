@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from app.api._authz import filter_by_project, require_project_access
+from app.api._authz import (
+    filter_by_project,
+    require_datasource_access,
+    require_project_access,
+)
 from app.api._shared import ensure_datasources_for_kind_authorized
 from app.dbclients.factory import fetch_rows_with_schema
 from app.models import (
@@ -23,7 +27,7 @@ from app.models import (
 )
 from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_task_run
-from app.services.repositories import datasource_store, task_store
+from app.services.repositories import task_store
 from app.services.runner import build_reader, run_task
 from app.utils.sql_guard import validate_readonly_sql
 
@@ -175,9 +179,10 @@ def preview_task_api(
     override_datasource_id = payload.get("datasource_id")
     if isinstance(override_datasource_id, str) and override_datasource_id.strip():
         datasource_id = override_datasource_id.strip()
-    datasource = datasource_store.get(datasource_id)
-    if datasource is None:
-        raise HTTPException(status_code=404, detail="Datasource not found")
+    # 项目级授权：override 路径下尤其关键 —— 否则任意能 preview 自己项目 task
+    # 的 editor 都能把 override 指向别的项目的 datasource。非 override 路径也校验
+    # 一遍，避免 task 被移动 / datasource project 变更后历史越权。
+    datasource = require_datasource_access(current, datasource_id)
     sql = task.target_sql if side == "target" and task.sql_mode == SqlMode.DOUBLE else task.source_sql
     override_sql = payload.get("sql")
     if isinstance(override_sql, str) and override_sql.strip():

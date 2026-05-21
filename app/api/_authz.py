@@ -79,6 +79,32 @@ def require_project_access(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
+def require_datasource_access(
+    current_user: User,
+    datasource_id: str,
+    *,
+    detail: str = "无权访问该数据源",
+):
+    """直接接 `datasource_id` 的接口（SQL / EXPLAIN / 字段预览 / introspect）
+    必须走这个 helper，否则任意持有 id 的登录用户都能跨项目读库。
+
+    - datasource 不存在 → 404
+    - datasource 存在但当前用户对 `datasource.project_id` 无权 → 403
+    - 通过则返回 `DataSource` 对象，调用方复用，避免重复 `datasource_store.get`
+
+    `detail` 参数仅作用于 403 文案；404 固定为 "数据源不存在"（既能避免被
+    用户拿来枚举 id，也跟既有 require_project_access 的语义一致）。
+    """
+    from app.services.repositories import datasource_store
+
+    datasource = datasource_store.get(datasource_id)
+    if datasource is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+    if not can_access_project(current_user, datasource.project_id or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+    return datasource
+
+
 # ─── 结果文件 → 归属项目解析 ──────────────────────────────────────────────────
 # /results/* 下载不能只看登录态：先把文件解析回它所属项目再校验权限。
 
