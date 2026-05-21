@@ -35,7 +35,7 @@ F.4 是后续单独 PR：
 | **F.1** | `compare/engine.compare_rows_streaming(...)` 生成器，yield `("bucket", row)` 事件 | ✅ 为 #1 解锁——caller 不再被迫拿完整 dict | ✅ |
 | **F.2** | `ParquetResultWriter` batch flush：每 N 行往 parquet row group append 一次 | ✅ #2 —— writer 内存 = O(batch_size)，跟总行数无关 | ✅ |
 | **F.3** | `runner.run_task` 在 `result_format="parquet"` 时走 streaming 路径：events → writer.feed → 收尾用 writer.samples，**不再持 buckets dict** | ✅ #1 + #3 收尾 —— runner 内存上限 = O(batch_size × bucket 数) | ✅ |
-| **F.4** | `services/excel_export.write_excel` 切 openpyxl `write_only=True` + 按 row 流式 append | ✅ #4 —— Excel 导出内存上限 ≈ O(max_rows × col_width) 进一步降到 O(batch × col_width) | ❌ |
+| **F.4** | `services/excel_export.write_excel` 切 openpyxl `write_only=True` + 按 row 流式 append | ✅ #4 —— Excel 导出内存上限 ≈ O(max_rows × col_width) 进一步降到 O(batch × col_width) | ✅ |
 
 **JsonResultWriter 不动**：legacy json 格式天然需要把所有行序列化进同一个
 `<run_id>.json` 文件的 `buckets` 字段，不可能流式。runner 在 `result_format=json`
@@ -131,11 +131,47 @@ streaming 模式下没法在末尾一次性切 [:20]。让 runner 在 events 循
 
 ## 5. 不属本切片
 
-- F.4 Excel `write_only` 流式写出
+- F.4 Excel `write_only` 流式写出 ✅（已实现，下方 §7 描述）
 - `compare_sorted_row_iterators` events 化
 - 写入压缩切到 zstd（行 > 100MB 触发）—— 设计文档 §5 说的，留 perf 调优
 - writer.samples 暴露到 manifest 让 runner 不自己维护 buffer
 - DuckDB 联查桶（切片 F+ 已经独立到 G）
+
+---
+
+## 7. F.4 落地（Excel `write_only` 流式写出）
+
+### 实现位置
+- `app/services/run_result.iter_bucket_rows(run_id, bucket, *, max_rows=None)`：
+  行级 generator，基于 pyarrow `ParquetFile.iter_batches`，到 `max_rows` 即
+  break 让剩余 batch 不解码。legacy json / count_only sample 走兜底路径。
+- `app/services/exporter.write_excel_streaming(path, *, bucket_iter_factory,
+  bucket_columns, max_rows)`：`openpyxl.Workbook(write_only=True)`，4 个
+  per-bucket sheet + 汇总对照 sheet，行级 `ws.append([WriteOnlyCell, ...])`。
+- `app/services/excel_export.build_excel_for_run` parquet 路径切到 streaming：
+  `_collect_bucket_columns_from_meta` 通过 pyarrow `ParquetFile.schema_arrow`
+  抽 source / target struct 字段名（不解码 row group 数据），传给 writer
+  当 header layout 用。
+
+### Excel 输出的行为变化（write_only 必要妥协）
+1. **汇总对照 sheet 没有 merged top headers**：write_only 不支持 `merge_cells`。
+   改成单 header 行 `["源.col1", "源.col2", ..., "目.col1", ..., "是否存在",
+   "差异字段"]`，仍含分桶填色（diff 黄 / only_source 红 / only_target 蓝 /
+   same 白）。
+2. **per-bucket sheet 字段顺序非 dict 插入序**：pyarrow struct 字段顺序由
+   ParquetResultWriter 首批 batch 写入时锁定，稳定但跟老 json 路径的 dict
+   key 顺序可能不一致。
+3. **不再调 `auto_filter` / `freeze_panes`**：write_only 模式可设但本切片
+   暂未启用，避免跟流式 append 顺序冲突。
+
+### 影响范围
+- runner 同步落 Excel（`result_format=json` 路径）：完全不变 —— runner 仍
+  在 `JsonResultWriter.finalize` 里调老 `write_excel`。
+- 异步导出端点 `POST /api/runs/<id>/export-excel`：parquet runs 自动走
+  streaming，legacy json runs 仍走老 `write_excel`。
+- 测试：legacy 路径回归全过；parquet streaming 路径单独覆盖 5 个新用例
+  （round-trip / max_rows 跨桶 / schema 推断 / build_excel 真走 streaming /
+  P1 max_rows 兜底跟 streaming 联用不失效）。
 
 ---
 

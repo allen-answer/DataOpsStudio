@@ -4,13 +4,24 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from app.compare.engine import CompareBuckets
+
+
+_SHEET_ORDER: tuple[str, ...] = ("diff", "only_source", "only_target", "same")
+_BUCKET_COLORS = {
+    "diff": "FFF5E5",
+    "only_source": "FDECEC",
+    "only_target": "EAF2FF",
+    "same": "FFFFFF",
+}
 
 
 def write_result_json(path: Path, data: dict[str, Any]) -> None:
@@ -195,3 +206,196 @@ def _excel_safe(value: Any) -> Any:
     if isinstance(value, bytes):
         return value.hex()
     return str(value)
+
+
+# ─── 切片 F.4：streaming Excel writer（openpyxl write_only） ─────────────────
+
+
+BucketIterFactory = Callable[[str], Iterator[dict[str, Any]]]
+
+
+def write_excel_streaming(
+    path: Path,
+    *,
+    bucket_iter_factory: BucketIterFactory,
+    bucket_columns: dict[str, dict[str, list[str]]],
+    max_rows: int | None = None,
+) -> None:
+    """切片 F.4：用 openpyxl `Workbook(write_only=True)` 行级流式写出 Excel。
+
+    跟同模块 `write_excel(path, buckets, max_rows)` 等价但不持完整 buckets dict ——
+    `bucket_iter_factory(bucket_name)` 每调一次返一个新 generator，让 caller
+    控制底层 reader（parquet `iter_batches` / json 整 dump / sample fallback）。
+
+    `bucket_columns` 由 caller 预先决定（pyarrow 读 parquet schema 不解码
+    数据；legacy json 直接 list[0] 取 keys）：
+        {bucket_name: {"source": [col1, col2, ...], "target": [col1, ...]}}
+
+    跟 write_excel 的差异（write_only 模式必要妥协）：
+    - **汇总对照 sheet 没有 merged top headers**：write_only 不支持
+      `merge_cells`。改成单 header 行 `["源.col1", ..., "目.col1", ...,
+      "是否存在", "差异字段"]`，仍含分桶填色。
+    - **per-bucket sheet 顺序**：跟 write_excel 一致（diff, only_source,
+      only_target, same），每桶 sheet 字段集 = caller 传的 bucket_columns。
+    - **max_rows**：跨桶总额度，按 (diff → only_source → only_target → same)
+      顺序消耗；同时反映在汇总 sheet 总行数 + 各 per-bucket sheet。
+
+    设计取舍详见 `docs/STREAMING_COMPARE_WRITER.md` F.4 节。
+    """
+    wb = Workbook(write_only=True)
+
+    # 汇总 sheet 列集：source 列并集 + 分隔 + target 列并集 + 是否存在 + 差异字段
+    summary_source: list[str] = _union_columns(bucket_columns, side="source")
+    summary_target: list[str] = _union_columns(bucket_columns, side="target")
+    summary_ws = wb.create_sheet("汇总对照")
+    _write_streaming_summary_header(summary_ws, summary_source, summary_target)
+
+    # 4 个 per-bucket sheet —— 提前 create 好，每个 sheet 自带 header
+    per_bucket_ws: dict[str, Any] = {}
+    for name in _SHEET_ORDER:
+        ws = wb.create_sheet(name)
+        cols = bucket_columns.get(name) or {}
+        per_bucket_ws[name] = (ws, _write_streaming_bucket_header(ws, name, cols))
+
+    remaining = max_rows if max_rows is not None else None
+    for bucket_name in _SHEET_ORDER:
+        if remaining is not None and remaining <= 0:
+            break
+        ws_per, per_col_layout = per_bucket_ws[bucket_name]
+        for row in bucket_iter_factory(bucket_name):
+            if remaining is not None and remaining <= 0:
+                break
+            _append_summary_row(
+                summary_ws, summary_source, summary_target, bucket_name, row,
+            )
+            _append_bucket_row(ws_per, per_col_layout, row)
+            if remaining is not None:
+                remaining -= 1
+
+    wb.save(path)
+
+
+def _union_columns(
+    bucket_columns: dict[str, dict[str, list[str]]],
+    *,
+    side: str,
+) -> list[str]:
+    """按出现顺序保留，去重：跟 write_excel._side_columns 同语义。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for bucket in _SHEET_ORDER:
+        for col in (bucket_columns.get(bucket) or {}).get(side, []) or []:
+            if col not in seen:
+                seen.add(col)
+                out.append(col)
+    return out
+
+
+def _write_streaming_summary_header(
+    ws: Any, source_columns: list[str], target_columns: list[str],
+) -> None:
+    """单 header 行：源.<col> ... 目.<col> ... 是否存在 / 差异字段。
+    write_only 不支持 merge_cells，所以没有第二层分组 header；改用前缀区分。"""
+    header_font = Font(bold=True)
+    source_fill = PatternFill("solid", fgColor="EAF7EF")
+    target_fill = PatternFill("solid", fgColor="FFF3D8")
+    compare_fill = PatternFill("solid", fgColor="F1F5F9")
+
+    header_cells: list[Any] = []
+    for col in source_columns:
+        cell = WriteOnlyCell(ws, value=f"源.{col}")
+        cell.font = header_font
+        cell.fill = source_fill
+        header_cells.append(cell)
+    for col in target_columns:
+        cell = WriteOnlyCell(ws, value=f"目.{col}")
+        cell.font = header_font
+        cell.fill = target_fill
+        header_cells.append(cell)
+    for label in ("是否存在", "差异字段"):
+        cell = WriteOnlyCell(ws, value=label)
+        cell.font = header_font
+        cell.fill = compare_fill
+        header_cells.append(cell)
+    ws.append(header_cells)
+
+
+def _write_streaming_bucket_header(
+    ws: Any, bucket_name: str, cols: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """每个 per-bucket sheet 的 header：key + source.<col> + target.<col> + changes。
+    返回 layout 给 _append_bucket_row 用。"""
+    header_font = Font(bold=True)
+    fill = PatternFill("solid", fgColor=_BUCKET_COLORS.get(bucket_name, "FFFFFF"))
+    layout = {"source": list(cols.get("source") or []), "target": list(cols.get("target") or [])}
+
+    cells: list[Any] = []
+    key_cell = WriteOnlyCell(ws, value="key")
+    key_cell.font = header_font
+    key_cell.fill = fill
+    cells.append(key_cell)
+    for col in layout["source"]:
+        c = WriteOnlyCell(ws, value=f"source.{col}")
+        c.font = header_font
+        c.fill = fill
+        cells.append(c)
+    for col in layout["target"]:
+        c = WriteOnlyCell(ws, value=f"target.{col}")
+        c.font = header_font
+        c.fill = fill
+        cells.append(c)
+    if bucket_name == "diff":
+        changes_cell = WriteOnlyCell(ws, value="changes")
+        changes_cell.font = header_font
+        changes_cell.fill = fill
+        cells.append(changes_cell)
+    ws.append(cells)
+    return layout
+
+
+def _append_summary_row(
+    ws: Any, source_columns: list[str], target_columns: list[str],
+    bucket_name: str, row: dict[str, Any],
+) -> None:
+    """每行：源列值 + 目标列值 + 是否存在 + 差异字段。带 bucket 颜色 fill。"""
+    fill = PatternFill("solid", fgColor=_BUCKET_COLORS.get(bucket_name, "FFFFFF"))
+    source = row.get("source") or {}
+    target = row.get("target") or {}
+    cells: list[Any] = []
+    for col in source_columns:
+        c = WriteOnlyCell(ws, value=_excel_safe(source.get(col)))
+        c.fill = fill
+        cells.append(c)
+    for col in target_columns:
+        c = WriteOnlyCell(ws, value=_excel_safe(target.get(col)))
+        c.fill = fill
+        cells.append(c)
+    cells.append(_cell_with_fill(ws, _existence_label(bucket_name), fill))
+    cells.append(_cell_with_fill(ws, _diff_columns(row), fill))
+    ws.append(cells)
+
+
+def _append_bucket_row(
+    ws: Any, layout: dict[str, list[str]], row: dict[str, Any],
+) -> None:
+    """per-bucket sheet 行：key + source.<col> + target.<col> + (changes)。"""
+    source = row.get("source") or {}
+    target = row.get("target") or {}
+    cells: list[Any] = [
+        WriteOnlyCell(ws, value=json.dumps(row.get("key", []), ensure_ascii=False, default=str)),
+    ]
+    for col in layout["source"]:
+        cells.append(WriteOnlyCell(ws, value=_excel_safe(source.get(col))))
+    for col in layout["target"]:
+        cells.append(WriteOnlyCell(ws, value=_excel_safe(target.get(col))))
+    if "changes" in row:
+        cells.append(WriteOnlyCell(
+            ws, value=json.dumps(row["changes"], ensure_ascii=False, default=str),
+        ))
+    ws.append(cells)
+
+
+def _cell_with_fill(ws: Any, value: Any, fill: PatternFill) -> Any:
+    cell = WriteOnlyCell(ws, value=value)
+    cell.fill = fill
+    return cell

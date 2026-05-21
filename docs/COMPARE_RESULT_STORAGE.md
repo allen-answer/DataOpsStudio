@@ -342,9 +342,15 @@ def load_run_result(run_id: str):
      时走 streaming events → writer，不持完整 buckets dict；样本采集在
      event 循环里维护 `samples_buffer`，每桶头 20 行。`summary` 改从
      `manifest.bucket_counts` 取（writer 自己 count）。
-   - **F.4**（未做）：Excel `write_only` 流式写出 —— 当前 `write_excel`
-     仍是 openpyxl 普通模式，内存上限被 `max_rows` 兜底控制但 ≈
-     O(max_rows × col_width)。继续降到 O(batch × col_width) 留独立 PR。
+   - **F.4** ✅：Excel `write_only` 流式写出 —— `services/exporter.py` 加
+     `write_excel_streaming(path, *, bucket_iter_factory, bucket_columns,
+     max_rows)`，`services/run_result.py` 加 `iter_bucket_rows` 行级生成器。
+     `excel_export.build_excel_for_run` 对 parquet runs 走 streaming，内存
+     上限降到 O(batch × col_width)。**Excel 输出变化**：汇总 sheet 退化成
+     单 header 行（无 merged top header，write_only 不支持 `merge_cells`），
+     per-bucket sheet 列顺序锁在 parquet schema 而非 dict 插入序。legacy json
+     runs 仍走老 `write_excel`，输出无变化。详见
+     `docs/STREAMING_COMPARE_WRITER.md` §7。
    - **F-hardening** ✅：`/api/runs/{job_id}` + `/cancel` 加 `_gate_job_access`
      按 kind 反查项目归属（compare/task → task；workflow → workflow；
      excel_export → 复用 compare_result_project_id），孤儿 job 回落仅

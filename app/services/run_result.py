@@ -190,6 +190,85 @@ def read_bucket(
     }
 
 
+def iter_bucket_rows(
+    run_id: str,
+    bucket: str,
+    *,
+    max_rows: int | None = None,
+):
+    """切片 F.4：行级流式迭代器 —— 给 Excel write_only 流式导出用。
+
+    yield 行 dict（跟 read_bucket 返回的行 shape 一致），不一次性把整桶
+    decode 到内存。`max_rows` 是硬上限，到点 break。
+
+    legacy json 路径：data["buckets"][bucket] 已经在内存（json.loads 时整
+    文件都解了），仍逐行 yield 让上层 caller 体验一致；要真正不持完整 dict
+    得切 ijson 之类 streaming json parser，老格式已是 legacy 暂不优化。
+
+    parquet 路径：走 `pq.ParquetFile.iter_batches`，按 row group 顺序 decode
+    一个 batch yield 完再 decode 下一个；caller 一旦 break，剩下的 batch
+    完全不读。
+
+    same 桶 count_only 时 yield meta.json 里的 sample 行；其它 mode 同理。
+
+    抛 RunNotFound / BucketNotAvailable / ValueError 跟 read_bucket 同语义。
+    """
+    if bucket not in _BUCKET_NAMES:
+        raise ValueError(f"unknown bucket: {bucket!r}; expected one of {_BUCKET_NAMES}")
+
+    fmt = detect_format(run_id)
+    if fmt == "missing":
+        raise RunNotFound(run_id)
+
+    yielded = 0
+
+    def _bound() -> bool:
+        return max_rows is not None and yielded >= max_rows
+
+    if fmt == "json":
+        data = json.loads(_legacy_path(run_id).read_text(encoding="utf-8"))
+        for row in (data.get("buckets") or {}).get(bucket, []):
+            if _bound():
+                return
+            yield row
+            yielded += 1
+        return
+
+    # parquet：先看 meta 决定 path / mode
+    meta = load_run_meta(run_id)
+    bucket_meta = next((b for b in meta["buckets"] if b["name"] == bucket), None)
+    if bucket_meta is None:
+        return
+
+    mode = bucket_meta.get("mode") or "full"
+    if mode == "count_only":
+        for row in bucket_meta.get("sample") or []:
+            if _bound():
+                return
+            yield row
+            yielded += 1
+        return
+
+    parquet_path_name = bucket_meta.get("path")
+    if not parquet_path_name:
+        return
+    parquet_path = _run_dir(run_id) / parquet_path_name
+    if not parquet_path.exists():
+        raise BucketNotAvailable(f"{run_id}/{bucket}")
+
+    import pyarrow.parquet as pq
+
+    pq_file = pq.ParquetFile(parquet_path)
+    # batch_size 取小：流式 Excel 单条 append 不批量决策，5000 已足够 amortize
+    # iter_batches 的解码开销，又不让 in-flight 内存爆
+    for batch in pq_file.iter_batches(batch_size=5000):
+        for row in batch.to_pylist():
+            if _bound():
+                return
+            yield row
+            yielded += 1
+
+
 def delete_run(run_id: str) -> None:
     """删 run 的所有产物。两种格式都试一遍，跟 detect 解耦避免漏文件。
 

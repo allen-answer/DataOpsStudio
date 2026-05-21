@@ -30,10 +30,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.compare.engine import CompareBuckets
-from app.services.exporter import write_excel
+from app.services.exporter import write_excel, write_excel_streaming
 from app.services.run_result import (
     RunNotFound,
     detect_format,
+    iter_bucket_rows,
     load_run_meta,
 )
 from app.utils.paths import RESULTS_DIR
@@ -178,17 +179,101 @@ def build_excel_for_run(
 
     try:
         if fmt == "parquet":
-            buckets = _load_buckets_from_parquet(run_id, max_rows=max_rows)
+            # 切片 F.4：parquet 路径走 streaming Excel —— 不再 _load_buckets_*
+            # 攒 4 桶 dict，writer 走 openpyxl write_only 行级 append。
+            # 内存上限 ≈ O(batch_size × col_width) 而非 O(max_rows × col_width)。
+            _write_excel_streaming_for_parquet(run_id, target_path, max_rows)
         else:
             buckets = _load_buckets_from_legacy(run_id)
-    except Exception as exc:
-        raise ExcelExportError(f"failed to load buckets for {run_id}: {exc}") from exc
-
-    try:
-        write_excel(target_path, buckets, max_rows=max_rows)
+            write_excel(target_path, buckets, max_rows=max_rows)
+    except RunNotFound:
+        raise
     except Exception as exc:
         raise ExcelExportError(f"failed to write excel for {run_id}: {exc}") from exc
     return target_path
+
+
+def _write_excel_streaming_for_parquet(
+    run_id: str, target_path: Path, max_rows: int | None,
+) -> None:
+    """切片 F.4：parquet run → Excel write_only 流式写出。
+
+    步骤：
+    1. 读 meta.json 拿每桶 path / mode / sample —— 决定哪个桶有 parquet 文件
+    2. 用 pyarrow `ParquetFile.schema_arrow` 抽 source / target 字段名（不解码
+       数据），写到 `bucket_columns: {bucket: {"source": [...], "target": [...]}}`
+       给 write_excel_streaming 当 header layout 用
+    3. `iter_bucket_rows` 工厂传给 `write_excel_streaming` 实现真流式
+    """
+    meta = load_run_meta(run_id)
+    bucket_columns = _collect_bucket_columns_from_meta(run_id, meta)
+
+    def factory(bucket_name: str):
+        # `max_rows=None` 让 writer 自己按总额度跨桶分配；这里返完整迭代器
+        return iter_bucket_rows(run_id, bucket_name, max_rows=None)
+
+    write_excel_streaming(
+        target_path,
+        bucket_iter_factory=factory,
+        bucket_columns=bucket_columns,
+        max_rows=max_rows,
+    )
+
+
+def _collect_bucket_columns_from_meta(
+    run_id: str, meta: dict[str, Any],
+) -> dict[str, dict[str, list[str]]]:
+    """从 meta.json 各桶的 parquet schema / sample 抽 source / target 字段名。
+
+    parquet 桶 (mode=full + path 非空)：走 pyarrow schema，找 struct 字段
+        "source" / "target" 的子字段名（不读 row group 数据）。**字段顺序跟
+        pyarrow `struct.field(i)` 的内部顺序一致**（写入时由首批 dict 推
+        schema 时锁定）—— 跟老 write_excel 按行 dict 插入顺序略有差异，对
+        Excel 用户表现为列顺序可能跟 JsonResultWriter 模式不一样，但稳定。
+    count_only 桶（path=null）：从 sample 第一行 dict.keys() 推（sample 是
+        in-memory 列表，廉价）。
+    空桶：返 {"source": [], "target": []}。
+
+    嵌套 schema 缺 source / target struct 时（不该发生但兜底）返空列表。
+    """
+    import pyarrow.parquet as pq
+
+    run_dir = RESULTS_DIR / run_id
+    out: dict[str, dict[str, list[str]]] = {}
+    for bucket_meta in meta.get("buckets") or []:
+        name = bucket_meta.get("name")
+        if name not in _BUCKET_NAMES:
+            continue
+        cols: dict[str, list[str]] = {"source": [], "target": []}
+        path_name = bucket_meta.get("path")
+        if path_name:
+            parquet_path = run_dir / path_name
+            if parquet_path.exists():
+                schema = pq.ParquetFile(parquet_path).schema_arrow
+                for side in ("source", "target"):
+                    idx = schema.get_field_index(side)
+                    if idx >= 0:
+                        struct_type = schema.field(idx).type
+                        # 嵌套 struct 类型：iterate fields
+                        if hasattr(struct_type, "num_fields"):
+                            cols[side] = [
+                                struct_type.field(i).name
+                                for i in range(struct_type.num_fields)
+                            ]
+        else:
+            # count_only 或空桶：sample 推断
+            for row in bucket_meta.get("sample") or []:
+                if isinstance(row.get("source"), dict):
+                    cols["source"] = list(row["source"].keys())
+                if isinstance(row.get("target"), dict):
+                    cols["target"] = list(row["target"].keys())
+                if cols["source"] or cols["target"]:
+                    break
+        out[name] = cols
+    # 保证 4 个桶都有 entry（write_excel_streaming layout 假设）
+    for name in _BUCKET_NAMES:
+        out.setdefault(name, {"source": [], "target": []})
+    return out
 
 
 # ─── 异步 job 封装（走 jobs.py 的 _executor / _jobs 状态机） ─────────────────
