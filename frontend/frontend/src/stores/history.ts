@@ -27,6 +27,9 @@ export interface HistoryRecord {
   target_rows?: number
   excel_filename?: string
   result_filename?: string
+  /** 切片 C 起：'json' (legacy) | 'parquet' (新格式目录) —— parquet runs
+   * 没有同步 Excel，前端走 exportRunExcel 异步导出。 */
+  format?: 'json' | 'parquet' | string
 }
 
 export interface TaskMinimal {
@@ -212,11 +215,84 @@ export const useHistoryStore = defineStore('history', () => {
     }
   }
 
+  /** 切片 E：parquet runs 的 Excel 异步导出。
+   *
+   * legacy json runs 由 runner 同步落 `<run_id>.xlsx`，前端可直链下载——
+   * 这种走 `<a href>` 不进本函数。parquet runs 没有同步 xlsx，必须先 POST
+   * `/api/runs/<id>/export-excel` 起 job，poll 完成后从 `result.download_url`
+   * 触发浏览器下载。
+   *
+   * 用 ref<Set> 跟踪正在进行的 run_id，让 view 渲染 "Exporting..." 文案 + 防
+   * 用户双击重复提交（后端虽然能起多个 job 但前端要避免）。
+   *
+   * 不持久化 job_id —— 用户刷新页面就重新触发（job TTL 24h，但前端不复用旧
+   * job_id 避免状态泄漏到陌生 run）。
+   */
+  const exportingRuns = ref<Set<string>>(new Set())
+
+  async function exportRunExcel(runId: string): Promise<void> {
+    const notice = useNoticeStore()
+    if (exportingRuns.value.has(runId)) return  // 防重
+    exportingRuns.value = new Set(exportingRuns.value).add(runId)
+    try {
+      // 起 job
+      const job = await apiJson<{ job_id: string; status: string }>(
+        `/api/runs/${runId}/export-excel`, 'POST',
+      )
+      // poll until terminal
+      const final = await _pollJob(job.job_id)
+      if (final.status !== 'success') {
+        notice.setNotice(`Excel 导出失败：${final.error || final.message || '未知错误'}`)
+        return
+      }
+      const url = (final.result || {}).download_url as string | undefined
+      if (!url) {
+        notice.setNotice('Excel 导出失败：服务端未返回 download_url')
+        return
+      }
+      _triggerDownload(url, (final.result || {}).filename as string | undefined)
+    } catch (error) {
+      notice.setNotice(`Excel 导出失败：${_toErrorMessage(error)}`)
+    } finally {
+      const next = new Set(exportingRuns.value)
+      next.delete(runId)
+      exportingRuns.value = next
+    }
+  }
+
+  async function _pollJob(jobId: string): Promise<{ status: string; result?: Record<string, unknown>; error?: string; message?: string }> {
+    // 简单线性 backoff：500ms → 1s → 1.5s → ... 上限 3s；总不超过 5 分钟
+    let delay = 500
+    const deadline = Date.now() + 5 * 60 * 1000
+    while (Date.now() < deadline) {
+      const job = await apiGet<{ status: string; result?: Record<string, unknown>; error?: string; message?: string }>(
+        `/api/runs/${jobId}`,
+      )
+      if (job.status === 'success' || job.status === 'failed' || job.status === 'cancelled') {
+        return job
+      }
+      await new Promise((r) => setTimeout(r, delay))
+      delay = Math.min(delay + 500, 3000)
+    }
+    throw new Error('Excel 导出超时（5 分钟未完成）')
+  }
+
+  function _triggerDownload(url: string, filename?: string): void {
+    const a = document.createElement('a')
+    a.href = url
+    if (filename) a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
   return {
     selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
     historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
     historyHasMore, historyLoading,
+    exportingRuns,
     clearSelection, setHistoryTab,
     deleteHistory, exportHistory, loadHistory, loadMoreHistory, loadAllHistory,
+    exportRunExcel,
   }
 })

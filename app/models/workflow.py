@@ -231,7 +231,7 @@ class JobInfo(BaseModel):
     """异步任务（compare 或 workflow run）的运行时状态。和 jobs.py 内部
     dict 结构保持对齐 —— 改字段记得两处一起改。"""
     job_id: str
-    kind: Literal["compare", "task", "workflow"]
+    kind: Literal["compare", "task", "workflow", "excel_export"]
     task_id: str = ""
     workflow_id: str = ""
     variables: dict[str, str] = Field(default_factory=dict)

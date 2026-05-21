@@ -305,7 +305,25 @@ def load_run_result(run_id: str):
    切片 D 范围** —— 当前 HistoryView 是列表 + 下载链接，没有 row drilldown 入口；
    若后续需要 drilldown 详情面板独立 PR 做。切片 C+D 落地后可考虑把
    `RunLimits.result_format` 默认改成 `"parquet"`。
-5. **切片 E**：Excel 导出异步化 + `POST /export-excel` + jobs 接管。
+5. **切片 E** ✅：Excel 导出异步化 ——
+   - `app/services/excel_export.py`：`build_excel_for_run(run_id)` 同步实现
+     （legacy json 直读 buckets / parquet 读 meta + 4 个 `.parquet` 文件 +
+     same 桶 count_only 时 fallback 到 meta.json sample）；同步出口给测试 +
+     CLI 用。
+   - `submit_excel_export(run_id)` 走 `services/jobs.py` 的 `_executor`
+     ThreadPoolExecutor，返 JobInfo（`kind="excel_export"`，复用 `task_id`
+     字段存 run_id）；完成后 `result.download_url` = `/results/<run_id>/export.xlsx`
+     （parquet）或 `/results/<run_id>.xlsx`（legacy）。
+   - 新端点：`POST /api/runs/<run_id>/export-excel`（editor+ 角色 + 项目级
+     授权），返 JobInfo；前端 poll `/api/runs/<job_id>` 拿终态。
+   - 前端：HistoryView 的 Excel 链接对 `format=parquet` runs 显示按钮触发
+     异步导出（导出中显示"导出中…"占位），完成后浏览器自动下载；legacy
+     runs 仍走 `<a href>` 直链下载（runner 已经同步落 xlsx）。
+   - **未做（留 slice F+）**：streaming Excel 写出（openpyxl write_only）+
+     completion 通知（webhook / 企微）+ 多 run 合并异步导出（`/history/export`
+     当前仍同步）。本切片 Excel 写出仍是把全部 buckets 读回内存再喂 openpyxl
+     —— 对千万级行的极端 case 还是会 OOM，但跟"runner 同步阻塞 worker"那个
+     痛点已经解开。
 6. **切片 F（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
 
 设计文档原本说"B + C + D 必须捆绑一次发布"——**实际 PR1 通过 per-task opt-in

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.api._authz import compare_result_project_id, require_project_access
 from app.models import JobInfo, User
 from app.services.auth import get_current_user, require_role
+from app.services.excel_export import submit_excel_export
 from app.services.jobs import cancel_job, get_job
 from app.services.run_result import (
     BucketNotAvailable,
@@ -98,3 +99,21 @@ def get_run_bucket_api(
         raise HTTPException(status_code=410, detail=f"bucket data missing: {exc}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/runs/{run_id}/export-excel", response_model=JobInfo)
+def export_run_excel_api(
+    run_id: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """切片 E：把指定 run 的 4 桶结果异步导出成 Excel。
+
+    返回 `JobInfo`（kind=excel_export）；前端 poll `/api/runs/{job_id}` 等
+    job.status=success 后从 `job.result.download_url` 拉文件。
+
+    - parquet runs：写到 `results/<run_id>/export.xlsx`
+    - legacy runs：写到 `results/<run_id>.xlsx`（覆盖 runner 同步落的版本——
+      用户场景里是「重新导一份带最新 max_rows 设置的 Excel」）
+    """
+    _check_run_project_access(run_id, current)
+    return submit_excel_export(run_id)

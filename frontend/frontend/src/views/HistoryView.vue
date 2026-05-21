@@ -11,9 +11,9 @@ const historyStore = useHistoryStore()
 const {
   selectedHistory, selectedSheets, selectedHistoryTaskId, historyActiveTab,
   historyTaskOptions, filteredHistory, compareHistoryCount, lineageHistoryCount,
-  historyHasMore, historyLoading,
+  historyHasMore, historyLoading, exportingRuns,
 } = storeToRefs(historyStore)
-const { loadHistory, loadMoreHistory, exportHistory, deleteHistory } = historyStore
+const { loadHistory, loadMoreHistory, exportHistory, deleteHistory, exportRunExcel } = historyStore
 
 const { historyItemTaskLabel, summaryValue } = useNoticeStore()
 
@@ -125,7 +125,15 @@ onMounted(() => { loadHistory() })
                 <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ item.target_rows }}</td>
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
-                    <a v-if="item.excel_filename" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <!-- legacy json runs：runner 同步落 xlsx → 直链下载 -->
+                    <a v-if="item.excel_filename && item.format !== 'parquet'" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <!-- parquet runs：没有同步 xlsx，触发异步导出 + poll + 下载 -->
+                    <button
+                      v-else-if="item.format === 'parquet'"
+                      class="font-semibold text-blue-600 disabled:cursor-wait disabled:text-slate-400"
+                      :disabled="exportingRuns.has(item.run_id)"
+                      @click="exportRunExcel(item.run_id)"
+                    >{{ exportingRuns.has(item.run_id) ? '导出中…' : 'Excel' }}</button>
                     <a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a>
                   </span>
                 </td>
@@ -178,7 +186,15 @@ onMounted(() => { loadHistory() })
                 <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ summaryValue(item, 'warnings') }}</td>
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
-                    <a v-if="item.excel_filename" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <!-- legacy json runs：runner 同步落 xlsx → 直链下载 -->
+                    <a v-if="item.excel_filename && item.format !== 'parquet'" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <!-- parquet runs：没有同步 xlsx，触发异步导出 + poll + 下载 -->
+                    <button
+                      v-else-if="item.format === 'parquet'"
+                      class="font-semibold text-blue-600 disabled:cursor-wait disabled:text-slate-400"
+                      :disabled="exportingRuns.has(item.run_id)"
+                      @click="exportRunExcel(item.run_id)"
+                    >{{ exportingRuns.has(item.run_id) ? '导出中…' : 'Excel' }}</button>
                     <a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a>
                   </span>
                 </td>
