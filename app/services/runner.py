@@ -8,7 +8,12 @@ from decimal import Decimal
 from typing import Any
 
 from app.compare.engine import compare_rows, compare_sorted_row_iterators
-from app.compare.result_writer import JsonResultWriter, feed_buckets
+from app.compare.result_writer import (
+    JsonResultWriter,
+    ParquetResultWriter,
+    ResultWriter,
+    feed_buckets,
+)
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
 from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
 from app.services.compare_schema import build_schema_report
@@ -93,7 +98,6 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
 
     _notify(status_callback, "exporting", "写入结果")
     run_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    result_path = RESULTS_DIR / f"{run_id}.json"
     excel_path = RESULTS_DIR / f"{run_id}.xlsx"
     summary = CompareSummary(**{name: len(rows) for name, rows in buckets.items()})
     elapsed_seconds = round(time.perf_counter() - start, 3)
@@ -112,14 +116,28 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         "schema_report": schema_report,
     }
 
-    # 切片 A：走 JsonResultWriter，行为跟旧 write_result_json + write_excel 等价。
-    # 切片 B 起换 ParquetResultWriter 时 runner 这层完全不动。
-    writer = JsonResultWriter(
-        result_path=result_path,
-        excel_path=excel_path,
-        payload=payload,
-        excel_max_rows=task.limits.export_max_rows,
-    )
+    # 切片 B：按 task.limits.result_format 选 writer。
+    # - "json"（默认）：JsonResultWriter，老格式向后兼容
+    # - "parquet"：ParquetResultWriter，目录形态 + same 桶 count_only
+    # reader 在 PR2 才能读 parquet，PR1 期间 parquet 是 opt-in。
+    writer: ResultWriter
+    if task.limits.result_format == "parquet":
+        run_dir = RESULTS_DIR / run_id
+        writer = ParquetResultWriter(
+            run_dir=run_dir,
+            excel_path=excel_path,
+            payload=payload,
+            persist_same_bucket=task.limits.persist_same_bucket,
+            same_sample_rows=task.limits.same_sample_rows,
+        )
+    else:
+        result_path = RESULTS_DIR / f"{run_id}.json"
+        writer = JsonResultWriter(
+            result_path=result_path,
+            excel_path=excel_path,
+            payload=payload,
+            excel_max_rows=task.limits.export_max_rows,
+        )
     feed_buckets(writer, buckets)
     manifest = writer.finalize()
     logger.info(

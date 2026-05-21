@@ -283,14 +283,54 @@ def load_run_result(run_id: str):
 
 ## 11. 切片实施（实施时按这个顺序，不是本轮）
 
-1. **切片 A**：`ResultWriter` 协议 + `JsonResultWriter` 等价实现 + runner 切换走 writer。保持单文件 JSON 输出（行为完全不变）。
-2. **切片 B**：`ParquetResultWriter` 实现 + `meta.json` 落盘 + runner 统一走目录格式 + ParquetResultWriter（不按预估行数切 writer）。读侧仍走老 JSON 路径（写新读老用 fallback `_load_legacy_format` 不可能，所以 B 必须连带 D 一起）。
-3. **切片 C**：读侧 `load_run_result` detect 新老格式 + `_load_new_format` 实现 + bucket 分页 endpoint。
-4. **切片 D**：HistoryView 改用 `/api/runs/<id>/meta` + lazy bucket 分页（首屏不拉行）。
+1. **切片 A** ✅：`ResultWriter` 协议 + `JsonResultWriter` 等价实现 + runner 切换走 writer。保持单文件 JSON 输出（行为完全不变）。
+2. **切片 B** ✅：`ParquetResultWriter` 实现 + `meta.json` 落盘。**实际落地用 per-task `RunLimits.result_format` opt-in**（默认 `"json"` 不变行为，`"parquet"` 显式切目录形态），不走"统一切目录"——这样可以独立 PR1 merge 不破坏 reader。同时新增：
+   - `RunLimits.persist_same_bucket: bool = False`（parquet 模式下 same 桶默认 count_only + sample）
+   - `RunLimits.same_sample_rows: int = 100`（count_only 时 meta.json 里 sample 行数上限）
+   - `meta.json` schema：`format` / `format_version` / `written_at` + envelope 透传 + `buckets: [{name, path, rows, mode, sample?, bytes?}]`
+3. **切片 C**：读侧 `load_run_result` detect 新老格式 + `_load_new_format` 实现 + bucket 分页 endpoint `GET /api/runs/<id>/buckets/<name>?offset=&limit=`。
+4. **切片 D**：HistoryView 改用 `/api/runs/<id>/meta` + lazy bucket 分页（首屏不拉行）。切片 C+D 一起 ship 后可考虑把 `RunLimits.result_format` 默认改成 `"parquet"`。
 5. **切片 E**：Excel 导出异步化 + `POST /export-excel` + jobs 接管。
 6. **切片 F（可选）**：DuckDB 联查桶（高级用户在 UI 写 SQL 查结果，复用 parquet）。
 
-每个切片独立可上线，**B + C + D 必须捆绑一次发布**（否则新 run 用旧 UI 读不出来）。
+设计文档原本说"B + C + D 必须捆绑一次发布"——**实际 PR1 通过 per-task opt-in
+规避了这条约束**：default `json` 维持老 reader 工作，新写不破老读；C+D 落地
+后再把 default flip 到 `parquet`。
+
+### `meta.json` 形态（切片 B 实际落地版）
+
+跟 §4 的设计稿基本一致，PR1 实际产出 schema：
+
+```json
+{
+  "run_id": "...",
+  "task_id": "...",
+  "task_name": "...",
+  "started_at": "...",
+  "elapsed_seconds": 12.34,
+  "source_rows": 1234567,
+  "target_rows": 1234600,
+  "summary": {"only_source": 12, "only_target": 45, "diff": 678, "same": 1233832},
+  "rules": {...},
+  "limits": {...},
+  "schema_report": {...},
+  "buckets": [
+    {"name": "only_source", "path": "only_source.parquet", "rows": 12,      "mode": "full",       "bytes": 4096},
+    {"name": "only_target", "path": "only_target.parquet", "rows": 45,      "mode": "full",       "bytes": 6144},
+    {"name": "diff",        "path": "diff.parquet",        "rows": 678,     "mode": "full",       "bytes": 102400},
+    {"name": "same",        "path": null,                  "rows": 1233832, "mode": "count_only", "sample": [/* 头 N 行 */]}
+  ],
+  "format": "parquet",
+  "format_version": 1,
+  "written_at": "2026-05-21T17:00:00"
+}
+```
+
+`bucket.mode`：
+- `"full"` —— 整桶落 parquet，path 指向文件，bytes 是文件大小
+- `"count_only"` —— 只记 count + `sample` 字段；path = null，无 bytes
+
+空桶不写 parquet 文件（`path=null` + `rows=0`）—— 省下空文件管理。
 
 ---
 

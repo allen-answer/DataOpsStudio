@@ -27,6 +27,17 @@ class RunLimits(BaseModel):
     export_max_rows: int = Field(default=50000, gt=0, le=5_000_000)
     fetch_chunk_size: int = Field(default=5000, gt=0, le=200_000)
     stream_compare: bool = False
+    # 结果落盘格式（详见 docs/COMPARE_RESULT_STORAGE.md）：
+    # - "json"（默认）：单文件 results/<run_id>.json + xlsx —— 老格式向后兼容
+    # - "parquet"：目录 results/<run_id>/{meta.json, *.parquet}，配合 reader
+    #   API（PR2 提供）按桶分页读。大结果场景 opt-in。
+    result_format: Literal["json", "parquet"] = "json"
+    # 仅在 result_format="parquet" 时生效：
+    # - False（默认）：same 桶不落 parquet，只在 meta.json 记 count + sample
+    # - True：same 桶跟其它三桶一样全量落 parquet
+    persist_same_bucket: bool = False
+    # 仅在 result_format="parquet" 时生效：meta.json 里每桶 sample 行数
+    same_sample_rows: int = Field(default=100, ge=0, le=10_000)
 
 
 # 字段惯例：

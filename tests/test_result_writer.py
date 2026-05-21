@@ -3,6 +3,9 @@
 切片 A 要求行为完全跟旧 `exporter.write_result_json` + `write_excel` 等价 —— 这
 里既验证新抽象层的接口契约（feed → finalize），也跟 exporter 直调对照确认产物
 完全一致。
+
+切片 B 起补 ParquetResultWriter 的契约测试（目录形态 + meta.json + same 桶
+count_only / persist_same_bucket 双路径）。
 """
 from __future__ import annotations
 
@@ -13,7 +16,9 @@ import pytest
 
 from app.compare.engine import CompareBuckets
 from app.compare.result_writer import (
+    PARQUET_FORMAT_VERSION,
     JsonResultWriter,
+    ParquetResultWriter,
     ResultManifest,
     feed_buckets,
 )
@@ -235,3 +240,197 @@ def test_feed_buckets_ignores_missing_bucket_keys(tmp_path: Path, sample_payload
 
     assert manifest.bucket_counts["only_source"] == 1
     assert manifest.bucket_counts["only_target"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ParquetResultWriter（切片 B）
+# ---------------------------------------------------------------------------
+
+
+def _read_parquet_rows(path: Path) -> list[dict]:
+    """测试用：把 parquet 文件读回 list[dict]，跟 sample_buckets 对照。"""
+    import pyarrow.parquet as pq
+    return pq.read_table(path).to_pylist()
+
+
+def test_parquet_writer_directory_layout(tmp_path: Path, sample_buckets, sample_payload):
+    """parquet writer 输出目录 + meta.json + 3 个 parquet（same 默认 count_only）。"""
+    run_dir = tmp_path / "run_X"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_X.xlsx",
+        payload=sample_payload,
+    )
+    feed_buckets(writer, sample_buckets)
+    manifest = writer.finalize()
+
+    assert run_dir.is_dir()
+    assert (run_dir / "meta.json").exists()
+    assert (run_dir / "only_source.parquet").exists()
+    assert (run_dir / "only_target.parquet").exists()
+    assert (run_dir / "diff.parquet").exists()
+    # 默认 same count_only → 不写 same.parquet
+    assert not (run_dir / "same.parquet").exists()
+
+    # manifest 指向 meta.json；filename 含 run_id 前缀好让下载 URL 直接定位
+    assert manifest.result_path == run_dir / "meta.json"
+    assert manifest.result_filename == "run_X/meta.json"
+    assert manifest.bucket_counts == {"only_source": 1, "only_target": 1, "diff": 1, "same": 1}
+
+
+def test_parquet_writer_meta_json_shape(tmp_path: Path, sample_buckets, sample_payload):
+    """meta.json 必含 envelope + buckets 清单 + format + version + written_at。"""
+    run_dir = tmp_path / "run_Y"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_Y.xlsx",
+        payload=sample_payload,
+        same_sample_rows=3,
+    )
+    feed_buckets(writer, sample_buckets)
+    writer.finalize()
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["format"] == "parquet"
+    assert meta["format_version"] == PARQUET_FORMAT_VERSION
+    assert meta["written_at"]  # ISO timestamp
+    # envelope 字段透传
+    assert meta["run_id"] == sample_payload["run_id"]
+    assert meta["summary"] == sample_payload["summary"]
+    # buckets 清单
+    by_name = {b["name"]: b for b in meta["buckets"]}
+    assert by_name["only_source"]["mode"] == "full"
+    assert by_name["only_source"]["path"] == "only_source.parquet"
+    assert by_name["only_source"]["rows"] == 1
+    assert by_name["only_source"]["bytes"] > 0
+    assert by_name["same"]["mode"] == "count_only"
+    assert by_name["same"]["path"] is None
+    assert by_name["same"]["rows"] == 1
+    assert len(by_name["same"]["sample"]) == 1  # sample size 取 min(写入数, same_sample_rows)
+
+
+def test_parquet_writer_round_trip_rows(tmp_path: Path, sample_buckets, sample_payload):
+    """落到 parquet 的行能完整读回 —— 嵌套 dict（source/target/changes）保留。"""
+    run_dir = tmp_path / "run_Z"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_Z.xlsx",
+        payload=sample_payload,
+    )
+    feed_buckets(writer, sample_buckets)
+    writer.finalize()
+
+    only_source = _read_parquet_rows(run_dir / "only_source.parquet")
+    assert only_source == [{"key": [1], "source": {"id": 1, "name": "alice"}}]
+
+    diff = _read_parquet_rows(run_dir / "diff.parquet")
+    assert len(diff) == 1
+    assert diff[0]["key"] == [3]
+    assert diff[0]["source"]["amount"] == 10
+    assert diff[0]["target"]["amount"] == 11
+    # changes struct 也要保留
+    assert diff[0]["changes"]["amount"]["source"] == 10
+
+
+def test_parquet_writer_persist_same_bucket(tmp_path: Path, sample_buckets, sample_payload):
+    """persist_same_bucket=True 时 same 桶跟其它三桶一样全量落 parquet。"""
+    run_dir = tmp_path / "run_PS"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_PS.xlsx",
+        payload=sample_payload,
+        persist_same_bucket=True,
+    )
+    feed_buckets(writer, sample_buckets)
+    writer.finalize()
+
+    assert (run_dir / "same.parquet").exists()
+    same_rows = _read_parquet_rows(run_dir / "same.parquet")
+    assert len(same_rows) == 1
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    same_meta = next(b for b in meta["buckets"] if b["name"] == "same")
+    assert same_meta["mode"] == "full"
+    assert same_meta["path"] == "same.parquet"
+    assert "sample" not in same_meta  # full 模式不带 sample
+
+
+def test_parquet_writer_same_sample_limit(tmp_path: Path, sample_payload):
+    """same 桶 count_only 时只留前 N 行 sample，超出不进 meta.json。"""
+    same_heavy: CompareBuckets = {
+        "only_source": [], "only_target": [], "diff": [],
+        "same": [
+            {"key": [i], "source": {"id": i}, "target": {"id": i}}
+            for i in range(50)
+        ],
+    }
+    run_dir = tmp_path / "run_SH"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_SH.xlsx",
+        payload=sample_payload,
+        same_sample_rows=5,
+    )
+    feed_buckets(writer, same_heavy)
+    manifest = writer.finalize()
+
+    # parquet 不写
+    assert not (run_dir / "same.parquet").exists()
+    assert manifest.bucket_counts["same"] == 50
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    same_meta = next(b for b in meta["buckets"] if b["name"] == "same")
+    assert same_meta["mode"] == "count_only"
+    assert same_meta["rows"] == 50
+    assert len(same_meta["sample"]) == 5  # 限制生效
+
+
+def test_parquet_writer_empty_buckets_no_parquet_files(tmp_path: Path, sample_payload):
+    """4 桶全空时 finalize 仍能落盘：仅 meta.json，不写任何 parquet。"""
+    run_dir = tmp_path / "run_E"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "run_E.xlsx",
+        payload=sample_payload,
+    )
+    manifest = writer.finalize()
+
+    assert (run_dir / "meta.json").exists()
+    assert not (run_dir / "only_source.parquet").exists()
+    assert not (run_dir / "only_target.parquet").exists()
+    assert not (run_dir / "diff.parquet").exists()
+    assert not (run_dir / "same.parquet").exists()
+    assert manifest.bucket_counts == {
+        "only_source": 0, "only_target": 0, "diff": 0, "same": 0,
+    }
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    for bucket_meta in meta["buckets"]:
+        assert bucket_meta["rows"] == 0
+        assert bucket_meta["path"] is None
+
+
+def test_parquet_writer_finalize_twice_raises(tmp_path: Path, sample_payload):
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "run", excel_path=tmp_path / "run.xlsx", payload=sample_payload,
+    )
+    writer.finalize()
+    with pytest.raises(RuntimeError, match="twice"):
+        writer.finalize()
+
+
+def test_parquet_writer_write_after_finalize_raises(tmp_path: Path, sample_payload):
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "run", excel_path=tmp_path / "run.xlsx", payload=sample_payload,
+    )
+    writer.finalize()
+    with pytest.raises(RuntimeError, match="cannot write after finalize"):
+        writer.write_bucket_row("diff", {"key": [1]})
+
+
+def test_parquet_writer_unknown_bucket_raises(tmp_path: Path, sample_payload):
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "run", excel_path=tmp_path / "run.xlsx", payload=sample_payload,
+    )
+    with pytest.raises(ValueError, match="unknown bucket"):
+        writer.write_bucket_row("garbage", {"key": [1]})
