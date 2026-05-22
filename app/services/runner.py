@@ -177,8 +177,10 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             excel_max_rows=task.limits.export_max_rows,
         )
 
-    # samples 在 feed/event loop 里同步收集，runner 不再依赖完整 buckets dict
-    samples_buffer: dict[str, list[dict[str, Any]]] = {name: [] for name in _BUCKET_NAMES}
+    # P1：samples 收口到 writer.manifest.samples —— runner 不再维护
+    # samples_buffer。stream_compare+parquet 路径仍要 tally source/target
+    # 行数（writer 看不到 bucket 归属维度的"哪边贡献"），但 sample 本身
+    # 不再重复存。
 
     if use_stream_compare_to_writer:
         # 切片 G：stream_compare + parquet —— sorted_events → writer，归并阶段
@@ -197,8 +199,6 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
                 src_count += 1
             if bucket in ("only_target", "diff", "same"):
                 tgt_count += 1
-            if len(samples_buffer[bucket]) < _SAMPLE_ROWS_PER_BUCKET:
-                samples_buffer[bucket].append(row)
         source_rows_count = src_count
         target_rows_count = tgt_count
         # 回填 payload 让 ParquetResultWriter.finalize 写正确 envelope 字段
@@ -211,14 +211,10 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             source_rows, target_rows, task.key_columns, task.rules,
         ):
             writer.write_bucket_row(bucket, row)
-            if len(samples_buffer[bucket]) < _SAMPLE_ROWS_PER_BUCKET:
-                samples_buffer[bucket].append(row)
     else:
         # json 模式或 parquet+stream_compare（已被上面分支接管）—— 走 buckets dict
         assert buckets is not None
         feed_buckets(writer, buckets)
-        for name in _BUCKET_NAMES:
-            samples_buffer[name] = list(buckets.get(name, []))[:_SAMPLE_ROWS_PER_BUCKET]
 
     manifest = writer.finalize()
     summary = CompareSummary(**manifest.bucket_counts)
@@ -249,7 +245,10 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         source_rows=source_rows_count,
         target_rows=target_rows_count,
         schema_report=schema_report,
-        samples={name: [_json_safe(row) for row in rows] for name, rows in samples_buffer.items()},
+        samples={
+            name: [_json_safe(row) for row in rows]
+            for name, rows in manifest.samples.items()
+        },
     )
 
 

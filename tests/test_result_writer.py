@@ -559,3 +559,73 @@ def test_parquet_writer_batch_flush_stable_schema_round_trip(tmp_path: Path, sam
     rows = _read_parquet_rows(run_dir / "only_source.parquet")
     assert len(rows) == 7
     assert all(r["source"]["amount"] == r["source"]["id"] * 10 for r in rows)
+
+
+# ─── P1：ResultManifest.samples 收口（两个 writer 都填） ────────────────────
+
+
+def test_json_writer_manifest_samples_first_20_per_bucket(tmp_path: Path, sample_payload):
+    """JsonResultWriter 整桶在内存，manifest.samples = 每桶前 20 行。"""
+    writer = JsonResultWriter(
+        result_path=tmp_path / "RUN.json",
+        excel_path=tmp_path / "RUN.xlsx",
+        payload=sample_payload,
+    )
+    for i in range(50):
+        writer.write_bucket_row("only_source", {"key": [i], "source": {"id": i}})
+    for i in range(5):
+        writer.write_bucket_row("diff", {"key": [i], "source": {"id": i},
+                                          "target": {"id": i + 1},
+                                          "changes": {"id": {"source": i, "target": i + 1, "target_column": "id"}}})
+    manifest = writer.finalize()
+    assert len(manifest.samples["only_source"]) == 20
+    assert [r["key"][0] for r in manifest.samples["only_source"]] == list(range(20))
+    assert len(manifest.samples["diff"]) == 5    # 不到 20 时拿全量
+    assert manifest.samples["only_target"] == []
+    assert manifest.samples["same"] == []
+
+
+def test_parquet_writer_manifest_samples_survives_batch_flush(tmp_path: Path, sample_payload):
+    """ParquetResultWriter batch_size=3 + 50 行 only_source —— manifest.samples
+    必须仍是首 20 行（不能被 batch flush 清空 _bucket_buffers 误伤）。"""
+    run_dir = tmp_path / "RUN_M1"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "RUN_M1.xlsx",
+        payload=sample_payload,
+        batch_size=3,   # 故意小，迫使多次 flush
+    )
+    for i in range(50):
+        writer.write_bucket_row("only_source", {"key": [i], "source": {"id": i}})
+    manifest = writer.finalize()
+    assert len(manifest.samples["only_source"]) == 20
+    assert [r["key"][0] for r in manifest.samples["only_source"]] == list(range(20))
+
+
+def test_parquet_writer_manifest_samples_same_count_only(tmp_path: Path, sample_payload):
+    """ParquetResultWriter same 桶 count_only：manifest.samples["same"] 来自
+    _same_sample（截到 _SAMPLE_ROWS_DEFAULT=20 上限）。"""
+    run_dir = tmp_path / "RUN_M2"
+    writer = ParquetResultWriter(
+        run_dir=run_dir,
+        excel_path=tmp_path / "RUN_M2.xlsx",
+        payload=sample_payload,
+        same_sample_rows=30,   # 比 manifest 上限大
+    )
+    for i in range(30):
+        writer.write_bucket_row("same", {"key": [i], "source": {"id": i}, "target": {"id": i}})
+    manifest = writer.finalize()
+    # _same_sample 容量 30，但 manifest sample 上限 20
+    assert len(manifest.samples["same"]) == 20
+
+
+def test_parquet_writer_manifest_samples_empty_buckets(tmp_path: Path, sample_payload):
+    """空桶 manifest.samples 是空 list（不是 None / 缺 key）。"""
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "RUN_M3",
+        excel_path=tmp_path / "RUN_M3.xlsx",
+        payload=sample_payload,
+    )
+    manifest = writer.finalize()
+    for name in ("only_source", "only_target", "diff", "same"):
+        assert manifest.samples[name] == []

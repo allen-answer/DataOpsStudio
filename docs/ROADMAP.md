@@ -55,7 +55,7 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 - [x] **`compare_sorted_row_events` + runner stream_compare=True + parquet 真流式写出**（切片 G）
 - [x] Excel `write_only` 流式写出（切片 F.4） —— `exporter.write_excel_streaming` + `run_result.iter_bucket_rows`；Excel 导出内存上限 ≈ O(batch_size × col_width)
 - [x] `/api/history` offset 标准分页（service + endpoint 加 `offset:int=0`，前端 `loadMoreHistory` 切到 `offset=existing.length` 不再扩窗口去重）
-- [ ] writer.samples 暴露到 manifest（让 runner 不维护 samples_buffer）
+- [x] writer.samples 暴露到 manifest（`ResultManifest.samples` 字段；两个 writer finalize 时填充；runner 删 samples_buffer 直接用 `manifest.samples`）
 
 **其它**：
 - [ ] 流式对比 + 文件源支持（Parquet 已自描述有序，CSV 需 ORDER 校验）

@@ -35,13 +35,23 @@ PARQUET_FORMAT_VERSION = 1
 
 @dataclass
 class ResultManifest:
-    """`writer.finalize()` 返回值 —— runner 拿这个拼 `CompareResult` 响应。"""
+    """`writer.finalize()` 返回值 —— runner 拿这个拼 `CompareResult` 响应。
+
+    P1 收口：`samples` 字段把每桶前 N 行抽样交给 writer 维护，runner 不再
+    自维护 `samples_buffer`。each writer 决定怎么填（JsonResultWriter 整桶
+    在内存所以最后 slice [:N]；ParquetResultWriter 用专门的 sample buffer
+    在 write_bucket_row 时累积，避免被 batch flush 清空）。
+    """
 
     result_path: Path
     result_filename: str
     excel_path: Path
     excel_filename: str
     bucket_counts: dict[str, int]
+    samples: dict[str, list[dict[str, Any]]]
+
+
+_SAMPLE_ROWS_DEFAULT = 20
 
 
 class ResultWriter(Protocol):
@@ -99,6 +109,11 @@ class JsonResultWriter:
             excel_path=self.excel_path,
             excel_filename=self.excel_path.name,
             bucket_counts={name: len(rows) for name, rows in self._buckets.items()},
+            # 整桶在内存，直接 slice 前 N 行
+            samples={
+                name: list(rows[:_SAMPLE_ROWS_DEFAULT])
+                for name, rows in self._buckets.items()
+            },
         )
 
 
@@ -182,6 +197,13 @@ class ParquetResultWriter:
         # 不进 buffer / writer。
         self._same_count = 0
         self._same_sample: list[dict[str, Any]] = []
+        # P1：runner samples_buffer 收口到 writer —— 每桶前 _sample_rows_for_manifest
+        # 行单独留一份，不受 batch flush 清 buffer 影响。same 桶 count_only 直接
+        # 复用 _same_sample，不重复存。
+        self._sample_rows_for_manifest = _SAMPLE_ROWS_DEFAULT
+        self._samples: dict[str, list[dict[str, Any]]] = {
+            name: [] for name in _BUCKET_NAMES
+        }
         self._finalized = False
 
     def write_bucket_row(self, bucket: str, row: dict[str, Any]) -> None:
@@ -196,6 +218,9 @@ class ParquetResultWriter:
             return
         self._bucket_buffers[bucket].append(row)
         self._bucket_counts[bucket] += 1
+        # 单独捕获 manifest sample，避免被 batch flush 清空
+        if len(self._samples[bucket]) < self._sample_rows_for_manifest:
+            self._samples[bucket].append(row)
         if len(self._bucket_buffers[bucket]) >= self._batch_size:
             self._flush_bucket(bucket)
 
@@ -287,33 +312,25 @@ class ParquetResultWriter:
             encoding="utf-8",
         )
 
+        # P1 收口：samples 走专门的 _samples buffer（write_bucket_row 累积，
+        # 不受 batch flush 清 _bucket_buffers 影响）。same count_only 复用
+        # _same_sample 但 clip 到 _sample_rows_for_manifest（meta.json 仍是
+        # 完整 _same_sample 容量），保跟其它桶 manifest sample 上限一致。
+        samples: dict[str, list[dict[str, Any]]] = {}
+        for name in _BUCKET_NAMES:
+            if name == "same" and not self._persist_same:
+                samples[name] = list(self._same_sample[: self._sample_rows_for_manifest])
+            else:
+                samples[name] = list(self._samples[name])
+
         return ResultManifest(
             result_path=meta_path,
             result_filename=f"{self.run_dir.name}/meta.json",
             excel_path=self.excel_path,  # 仅占位；切片 E 才生成
             excel_filename=self.excel_path.name,
             bucket_counts=bucket_counts,
+            samples=samples,
         )
-
-    @property
-    def samples(self) -> dict[str, list[dict[str, Any]]]:
-        """切片 F.3：暴露每桶头 N 行 sample 给 runner（避免再持 full dict）。
-
-        full 桶的 sample 取自尚未 flush 的 buffer（首批 batch_size 行）+ 已
-        flush 的 first row group 表头切片。简化实现：以"buffer 当前快照"为
-        样本——只要 caller 在 finalize 前问，且 batch_size >= 20，样本必至少
-        有 min(written, 20) 行；same 桶仍返回 _same_sample。
-
-        runner 切片 F.3 的样本采集是另起一份 dict（在 events 循环里维护），
-        本属性给后续把 sample 收口到 writer 用，本切片暂未挪。
-        """
-        out: dict[str, list[dict[str, Any]]] = {}
-        for name in _BUCKET_NAMES:
-            if name == "same" and not self._persist_same:
-                out[name] = list(self._same_sample)
-            else:
-                out[name] = list(self._bucket_buffers[name][:20])
-        return out
 
 
 def _json_default(obj: Any) -> Any:
