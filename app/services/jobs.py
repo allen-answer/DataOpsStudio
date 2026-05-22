@@ -141,6 +141,34 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     return get_job(job_id)
 
 
+def active_job_counts() -> dict[str, int]:
+    """活跃（非终态）job 计数 —— 供 resource_guard 构建 QueueState。
+
+    活跃 = status 不在 `_TERMINAL_STATUSES`（即 queued / running / cancelling）。
+    返回 `{compare_running, export_running, active_total}`。compare 同时计入
+    历史命名的 `task` kind；excel_export 单独计。
+    """
+    with _lock:
+        jobs = list(_jobs.values())
+    compare_running = 0
+    export_running = 0
+    active_total = 0
+    for job in jobs:
+        if job.get("status") in _TERMINAL_STATUSES:
+            continue
+        active_total += 1
+        kind = job.get("kind") or ""
+        if kind in ("compare", "task"):
+            compare_running += 1
+        elif kind == "excel_export":
+            export_running += 1
+    return {
+        "compare_running": compare_running,
+        "export_running": export_running,
+        "active_total": active_total,
+    }
+
+
 def cleanup_jobs(ttl_seconds: int | None = None, now: datetime | None = None) -> int:
     ttl = DEFAULT_JOB_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
     if ttl <= 0:

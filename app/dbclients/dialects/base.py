@@ -51,6 +51,17 @@ class Dialect(ABC):
         """
         raise NotImplementedError
 
+    def statement_timeout_sql(self, seconds: float) -> str | None:
+        """返回一条「设置本会话语句超时」的 SQL；不支持的方言返回 None。
+
+        在每次查询执行前由 `factory._apply_statement_timeout` best-effort 下发
+        —— 防止一条慢查询长期占住数据库连接。`seconds` 由 caller 保证 > 0。
+
+        默认返回 None（不支持）。MySQL 子类覆盖。Oracle / DM 的语句超时不是
+        一条 SQL 能搞定的（需驱动 call timeout / Resource Manager），留作缺口。
+        """
+        return None
+
     @abstractmethod
     def connect(self, source: DataSource, module_name: str) -> Any:
         """新建一个 DB 连接对象。

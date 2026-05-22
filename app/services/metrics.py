@@ -139,6 +139,11 @@ ai_usage_tokens_total = Counter(
     "AI token consumption by kind / direction (input/output)",
     ["kind", "direction"],
 )
+guard_decisions_total = Counter(
+    "dataops_guard_decisions_total",
+    "resource_guard decisions by decision (allow/queue/deny) and primary reason code",
+    ["decision", "reason"],
+)
 
 
 def _lineage_table_count() -> int:
@@ -178,6 +183,7 @@ _COUNTERS_HISTOGRAMS = [
     http_request_duration_seconds,
     ai_usage_calls_total,
     ai_usage_tokens_total,
+    guard_decisions_total,
 ]
 
 
@@ -196,5 +202,6 @@ __all__ = [
     "http_request_duration_seconds",
     "ai_usage_calls_total",
     "ai_usage_tokens_total",
+    "guard_decisions_total",
     "render_prometheus",
 ]

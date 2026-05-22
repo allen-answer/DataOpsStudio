@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import NamedTuple
 from typing import Any
@@ -73,7 +74,7 @@ def fetch_rows_with_schema(
     )
     try:
         with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
-            result = _fetch_with_dbapi(connection, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
+            result = _fetch_with_dbapi(connection, source.db_type, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
         logger.info(
             "query success datasource=%s db_type=%s rows=%s elapsed=%.3fs",
             source.name,
@@ -106,6 +107,7 @@ def test_connection(source: DataSource) -> dict[str, Any]:
 
 def _fetch_with_dbapi(
     connection: Any,
+    db_type: Any,
     sql: str,
     max_rows: int | None = None,
     raise_on_overflow: bool = True,
@@ -119,6 +121,7 @@ def _fetch_with_dbapi(
         except Exception as exc:
             raise DbClientError(f"create cursor failed: {exc}") from exc
 
+        _apply_statement_timeout(cursor, db_type)
         try:
             cursor.execute(sql)
         except Exception as exc:
@@ -168,6 +171,7 @@ def fetch_column_details(source: DataSource, sql: str) -> QueryColumns:
         cursor = None
         try:
             cursor = connection.cursor()
+            _apply_statement_timeout(cursor, source.db_type)
             try:
                 cursor.execute(sql)
             except Exception as exc:
@@ -204,7 +208,7 @@ def iter_rows(
     connection = cm.__enter__()
     success = False
     try:
-        yield from _iter_with_dbapi(connection, sql, max_rows, chunk_size, progress_callback)
+        yield from _iter_with_dbapi(connection, source.db_type, sql, max_rows, chunk_size, progress_callback)
         success = True
     finally:
         if success:
@@ -218,8 +222,43 @@ def _connect(source: DataSource, module_name: str) -> Any:
     return get_dialect(source.db_type).connect(source, module_name)
 
 
+def _statement_timeout_seconds() -> float:
+    """语句超时秒数。env `DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS`，默认 900（15
+    分钟）；`<= 0` 关闭。每次查询读一遍 —— 改 env 后无需重启即生效。"""
+    try:
+        value = float(os.getenv("DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS", "900"))
+    except (TypeError, ValueError):
+        return 900.0
+    return value if value > 0 else 0.0
+
+
+def _apply_statement_timeout(cursor: Any, db_type: Any) -> None:
+    """查询执行前 best-effort 下发会话语句超时 —— 防慢查询长期占住 DB 连接。
+
+    失败只记 warning，绝不让真查询陪葬：MariaDB / 老版本 / 不支持的方言下发
+    会报错，超时是安全网而非查询的前置条件，吞掉即可。
+    """
+    seconds = _statement_timeout_seconds()
+    if seconds <= 0:
+        return
+    try:
+        timeout_sql = get_dialect(db_type).statement_timeout_sql(seconds)
+    except Exception:  # noqa: BLE001 —— 取不到 dialect 不该影响查询
+        return
+    if not timeout_sql:
+        return
+    try:
+        cursor.execute(timeout_sql)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "set statement timeout failed (db_type=%s): %s",
+            getattr(db_type, "value", db_type), exc,
+        )
+
+
 def _iter_with_dbapi(
     connection: Any,
+    db_type: Any,
     sql: str,
     max_rows: int | None = None,
     chunk_size: int | None = None,
@@ -229,6 +268,7 @@ def _iter_with_dbapi(
     fetched = 0
     try:
         cursor = connection.cursor()
+        _apply_statement_timeout(cursor, db_type)
         cursor.execute(sql)
         columns = uniquify_columns([desc[0] for desc in cursor.description or []])
         batch_size = max(1, int(chunk_size or 5000))

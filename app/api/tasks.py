@@ -28,12 +28,32 @@ from app.models import (
 from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_task_run
 from app.services.repositories import task_store
+from app.services.resource_guard import decision_detail, guard_compare_run
 from app.services.runner import build_reader, run_task
+from app.services.sql_preflight import SQLPreflightDecision, assess_sql
 from app.utils.sql_guard import validate_readonly_sql
 
 
 # router 级默认：viewer 也要登录。mutation / run / preview 单独升级 editor。
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _guard_or_raise(task: CompareTask, *, allow_queue: bool) -> None:
+    """resource_guard 准入检查。dry-run（DATAOPS_GUARD_ENFORCE=false）只记不拦。
+
+    enforce 模式下 deny → 429；queue 在异步路径放行（自然进 executor 队列），
+    在同步路径拒绝并建议改后台执行（同步 run 不排队）。
+    """
+    decision = guard_compare_run(task)
+    if not decision.enforced:
+        return
+    if decision.decision == "deny":
+        raise HTTPException(status_code=429, detail=decision_detail(decision))
+    if decision.decision == "queue" and not allow_queue:
+        raise HTTPException(
+            status_code=429,
+            detail=decision_detail(decision) + "；同步执行不排队，请改用「后台执行」",
+        )
 
 
 @router.get("/api/tasks", response_model=list[CompareTask])
@@ -120,6 +140,7 @@ def run_task_api(task_id: str, current: User = Depends(require_role("editor"))):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
+    _guard_or_raise(task, allow_queue=False)
     try:
         return run_task(task_id)
     except KeyError as exc:
@@ -138,7 +159,43 @@ def run_task_async_api(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
+    _guard_or_raise(task, allow_queue=True)
     return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
+
+
+@router.post("/api/sql/preflight", response_model=SQLPreflightDecision)
+def sql_preflight_api(
+    payload: dict[str, object] | None = Body(None),
+    current: User = Depends(require_role("editor")),
+) -> SQLPreflightDecision:
+    """对比 SQL 运行前静态体检（advisory，不连库、不拦）。Workbench 点运行前调用。
+
+    body: `{sql, dialect?, key_columns?, mode?, max_rows?, stream_compare?}`。
+    路由挂在 tasks 模块下 —— preflight 紧贴 run，Workbench 同处调用。
+    """
+    payload = payload or {}
+    sql = str(payload.get("sql") or "")
+    if not sql.strip():
+        raise HTTPException(status_code=400, detail="sql is required")
+    raw_keys = payload.get("key_columns") or []
+    if isinstance(raw_keys, str):
+        key_columns = [c.strip() for c in raw_keys.split(",") if c.strip()]
+    else:
+        key_columns = [str(c) for c in raw_keys if str(c).strip()]
+    mode = payload.get("mode")
+    mode = mode if mode in ("preview", "compare") else "compare"
+    try:
+        max_rows = int(payload.get("max_rows") or 100_000)
+    except (TypeError, ValueError):
+        max_rows = 100_000
+    return assess_sql(
+        sql=sql,
+        dialect=str(payload.get("dialect") or ""),
+        key_columns=key_columns,
+        mode=mode,
+        max_rows=max_rows,
+        stream_compare=bool(payload.get("stream_compare")),
+    )
 
 
 @router.post("/api/tasks/{task_id}/preview", response_model=PreviewRowsResponse)

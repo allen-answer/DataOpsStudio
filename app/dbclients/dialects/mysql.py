@@ -19,6 +19,12 @@ class MysqlDialect(Dialect):
     def connection_test_sql(self) -> str:
         return "select 1 as ok"
 
+    def statement_timeout_sql(self, seconds: float) -> str | None:
+        # MySQL `max_execution_time` 单位毫秒，且只作用于只读 SELECT —— 正好
+        # 是本系统所有查询的形态。MariaDB 不认这个变量，下发会失败，由
+        # factory 的 best-effort 包装吞掉（记 warning，不影响真查询）。
+        return f"SET SESSION MAX_EXECUTION_TIME={int(seconds * 1000)}"
+
     def connect(self, source: DataSource, module_name: str) -> Any:
         # pymysql 和 MySQLdb 的 connect() 签名不一样：
         # - pymysql：user/password/database + read_timeout/write_timeout
