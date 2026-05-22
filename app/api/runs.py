@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api._authz import (
     compare_result_project_id,
@@ -17,7 +17,8 @@ from app.api._authz import (
 )
 from app.models import JobInfo, User
 from app.services.auth import get_current_user, require_role
-from app.services.excel_export import submit_excel_export
+from app.services.download_token import issue_download_token
+from app.services.excel_export import export_excel_path, submit_excel_export
 from app.services.jobs import cancel_job, get_job
 from app.services.run_result import (
     BucketNotAvailable,
@@ -140,3 +141,58 @@ def export_run_excel_api(
     """
     _check_run_project_access(run_id, current)
     return submit_excel_export(run_id)
+
+
+# ─── 切片 P1：签名下载 token ────────────────────────────────────────────────
+
+
+def _resolve_run_file(run_id: str, kind: str) -> str:
+    """把 (run_id, kind) 解析成相对 RESULTS_DIR 的文件路径。文件不存在 → 404。
+
+    走 `run_result` 模块的 RESULTS_DIR / detect_format —— 不在本模块顶层
+    绑 RESULTS_DIR，避免又多一处要测试 monkeypatch 的路径引用。
+    """
+    from app.services import run_result
+
+    results_dir = run_result.RESULTS_DIR
+    fmt = run_result.detect_format(run_id)
+    if fmt == "missing":
+        raise HTTPException(status_code=404, detail="Run not found")
+    if kind == "excel":
+        path = export_excel_path(run_id)
+    elif kind == "result":
+        path = (
+            results_dir / run_id / "meta.json" if fmt == "parquet"
+            else results_dir / f"{run_id}.json"
+        )
+    else:
+        raise HTTPException(status_code=400, detail="kind 必须是 result 或 excel")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"该 run 没有可下载的 {kind} 文件")
+    return path.relative_to(results_dir).as_posix()
+
+
+@router.post("/api/runs/{run_id}/downloads")
+def create_run_download(
+    run_id: str,
+    payload: dict[str, Any] | None = Body(None),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """为指定 run 的结果文件签发短时下载 token。
+
+    body `{kind: "result" | "excel"}`（默认 result）。前端拿 `download_url`
+    去 `GET /api/downloads/{token}` 拉文件 —— 取代直接拼可猜的 `/results/<path>`。
+    """
+    _check_run_project_access(run_id, current)
+    kind = str((payload or {}).get("kind") or "result")
+    rel = _resolve_run_file(run_id, kind)
+    project_id, _ = compare_result_project_id(run_id)
+    token, ttl = issue_download_token(
+        run_id=run_id, relative_path=rel, project_id=project_id, user_id=current.id,
+    )
+    return {
+        "token": token,
+        "download_url": f"/api/downloads/{token}",
+        "expires_in": ttl,
+        "relative_path": rel,
+    }

@@ -16,6 +16,7 @@ from app.api._authz import (
 from app.dbclients.drivers import detect_drivers
 from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode, User
 from app.services.auth import get_current_user
+from app.services.download_token import verify_download_token
 from app.services.history import list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS
 from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
@@ -108,3 +109,27 @@ def download_result(filename: str, current: User = Depends(get_current_user)):
     if resolved and not can_access_project(current, project_id):
         raise HTTPException(status_code=403, detail="无权下载该结果文件")
     return FileResponse(path, filename=Path(filename).name)
+
+
+_DOWNLOAD_SUFFIX_WHITELIST = {".json", ".xlsx", ".parquet"}
+
+
+@router.get("/api/downloads/{token}")
+def download_via_token(token: str, current: User = Depends(get_current_user)):
+    """签名 token 下载 —— 取代路径式 `/results/*`。
+
+    token 短时有效、HMAC 防篡改；项目权限以当前用户实时校验（token 里的
+    project_id 仅作记录）。即便 token 泄露也只在 TTL 内有效，且仍受项目权限拦。
+    """
+    payload = verify_download_token(token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="下载链接无效或已过期")
+    if not can_access_project(current, str(payload.get("project_id") or "")):
+        raise HTTPException(status_code=403, detail="无权下载该结果文件")
+    rel = str(payload.get("rel") or "")
+    path = (RESULTS_DIR / rel).resolve()
+    if RESULTS_DIR.resolve() not in path.parents or not path.exists():
+        raise HTTPException(status_code=404, detail="Result not found")
+    if path.suffix.lower() not in _DOWNLOAD_SUFFIX_WHITELIST:
+        raise HTTPException(status_code=400, detail="不允许的文件类型")
+    return FileResponse(path, filename=path.name)
