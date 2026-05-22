@@ -169,3 +169,67 @@ def test_list_history_filter_by_task_id_covers_both_formats(isolated_storage):
     items = list_result_history(task_id="tA")
     ids = {it["run_id"] for it in items}
     assert ids == {"L1", "P1"}
+
+
+# ─── P1：list_result_history offset 标准分页 ────────────────────────────────
+
+
+def test_list_history_offset_basic_slice(isolated_storage):
+    """20 条 history + limit=5 + offset=5 返回第 6-10 条（按 sort_time DESC）。"""
+    from app.services.history import list_result_history
+    results_dir = isolated_storage["results"]
+    for i in range(20):
+        (results_dir / f"r{i:02d}.json").write_text(
+            json.dumps({"run_id": f"r{i:02d}", "task_id": "",
+                        "started_at": f"2026-05-{i+1:02d}T10:00:00"}),
+            encoding="utf-8",
+        )
+    page1 = list_result_history(limit=5, offset=0)
+    page2 = list_result_history(limit=5, offset=5)
+    page3 = list_result_history(limit=5, offset=10)
+    # 整体按 started_at DESC：page1=[r19..r15], page2=[r14..r10], page3=[r09..r05]
+    assert [it["run_id"] for it in page1] == ["r19", "r18", "r17", "r16", "r15"]
+    assert [it["run_id"] for it in page2] == ["r14", "r13", "r12", "r11", "r10"]
+    assert [it["run_id"] for it in page3] == ["r09", "r08", "r07", "r06", "r05"]
+
+
+def test_list_history_offset_overshoot_returns_empty(isolated_storage):
+    """offset 超出总数 → 空 list，不抛。"""
+    from app.services.history import list_result_history
+    (isolated_storage["results"] / "r.json").write_text(
+        json.dumps({"run_id": "r", "task_id": ""}), encoding="utf-8",
+    )
+    assert list_result_history(limit=10, offset=100) == []
+
+
+def test_list_history_offset_default_zero(isolated_storage):
+    """没传 offset 时跟前 PR 行为完全一致。"""
+    from app.services.history import list_result_history
+    for i in range(5):
+        (isolated_storage["results"] / f"r{i}.json").write_text(
+            json.dumps({"run_id": f"r{i}", "task_id": "",
+                        "started_at": f"2026-05-0{i+1}T10:00:00"}),
+            encoding="utf-8",
+        )
+    items = list_result_history(limit=3)  # 默认 offset=0
+    assert [it["run_id"] for it in items] == ["r4", "r3", "r2"]
+
+
+def test_list_history_offset_endpoint(client, isolated_storage):
+    """端点透传 offset query —— 拼到 service call。"""
+    for i in range(10):
+        (isolated_storage["results"] / f"r{i}.json").write_text(
+            json.dumps({"run_id": f"r{i}", "task_id": "",
+                        "started_at": f"2026-05-{i+1:02d}T10:00:00"}),
+            encoding="utf-8",
+        )
+    r = client.get("/api/history?limit=3&offset=3")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [it["run_id"] for it in body] == ["r6", "r5", "r4"]
+
+
+def test_list_history_offset_endpoint_rejects_negative(client, isolated_storage):
+    """offset < 0 应该被 FastAPI Query(ge=0) 拒掉。"""
+    r = client.get("/api/history?limit=10&offset=-1")
+    assert r.status_code == 422

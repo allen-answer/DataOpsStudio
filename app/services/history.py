@@ -13,6 +13,7 @@ def list_result_history(
     project_id: str = "",
     *,
     limit: int | None = None,
+    offset: int = 0,
     allowed_project_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """列历史结果。
@@ -22,9 +23,11 @@ def list_result_history(
       只返回归属于这些项目（或全局 task）的 run。`None` = 不限制（admin）。
       非 admin 场景下 task 已删 / 无 task_id 的孤儿 run 一律隐藏（无法核实归属）。
     - limit：截断返回前 N 条（None = 全量保 backward compat）。设了 limit 时
-      先按文件 mtime DESC 排序（fs metadata 免读），只读 `limit*2+10` 个候选
-      JSON，再按 `sort_time`（started_at 优先 / mtime 兜底）二次排序。跟
-      `list_workflow_runs` 同套路，避免「目录里几千条历史每次都全量读」。
+      先按文件 mtime DESC 排序（fs metadata 免读），只读 `(limit+offset)*2+10`
+      个候选 JSON，再按 `sort_time`（started_at 优先 / mtime 兜底）二次排序。
+      跟 `list_workflow_runs` 同套路，避免「目录里几千条历史每次都全量读」。
+    - offset：标准分页起点（默认 0）。HistoryView loadMore 第 N 页传
+      `offset=N×PAGE_SIZE`；按 sort_time DESC 排序后从该位置切片。
     """
     # project 过滤要 join task_store —— lazy import 避免循环
     project_task_ids: set[str] | None = None
@@ -52,8 +55,11 @@ def list_result_history(
     if limit is not None:
         # 先按 mtime 预排，限制读取量。读取预算 hedge 2× 应对 mtime ≠ sort_time
         # 偏离（compare 任务跑得久才落盘）。
+        # offset 分页时预算扩到 (limit+offset)*2+10 保证翻第 N 页时上面 N 页
+        # 的候选都被读到，否则 limit slice [offset:offset+limit] 取不到数据。
         paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        read_budget = max(limit * 2 + 10, limit + 20)
+        target = limit + max(offset, 0)
+        read_budget = max(target * 2 + 10, target + 20)
     else:
         read_budget = None
     items = []
@@ -107,7 +113,10 @@ def list_result_history(
         )
     items.sort(key=lambda item: item["sort_time"], reverse=True)
     if limit is not None:
-        return items[:limit]
+        start = max(offset, 0)
+        return items[start : start + limit]
+    if offset:
+        return items[max(offset, 0) :]
     return items
 
 

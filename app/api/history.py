@@ -28,12 +28,14 @@ def result_history_api(
     task_id: str = "",
     project_id: str = "",
     limit: int = Query(200, ge=1, le=2000, description="返回前 N 条；项目里历史多的话避免全量解析"),
+    offset: int = Query(0, ge=0, description="标准分页起点；HistoryView loadMore 第 N 页传 N*PAGE_SIZE"),
     current: User = Depends(get_current_user),
 ):
     return list_result_history(
         task_id,
         project_id,
         limit=limit,
+        offset=offset,
         allowed_project_ids=accessible_project_ids(current),
     )
 

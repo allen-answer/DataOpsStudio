@@ -189,15 +189,13 @@ export const useHistoryStore = defineStore('history', () => {
     historyLoading.value = true
     try {
       const existing = _bootstrap.state.history as HistoryRecord[]
-      const seen = new Set(existing.map((it) => it.run_id))
-      // /api/history 当前不支持 offset，先拉下一页 size 的 2× 倍尝试覆盖 sort 后的边界。
-      // 等后端加 offset 参数（同切片或后续 slice）再换。临时方案：拉更大窗口去重 append。
-      const nextSize = existing.length + PAGE_SIZE
-      const items = await apiGet<HistoryRecord[]>(`/api/history?limit=${nextSize}`)
-      const newOnes = items.filter((it) => !seen.has(it.run_id))
-      _bootstrap.state.history = [...existing, ...newOnes]
-      // 后端返回 < nextSize 说明已到底
-      historyHasMore.value = items.length >= nextSize
+      // P1：后端 /api/history 现在支持 offset query —— 直接传 existing.length
+      // 拉下一页 PAGE_SIZE 条，append 不需要去重 / 不再用扩窗口 workaround。
+      const items = await apiGet<HistoryRecord[]>(
+        `/api/history?limit=${PAGE_SIZE}&offset=${existing.length}`,
+      )
+      _bootstrap.state.history = [...existing, ...items]
+      historyHasMore.value = items.length >= PAGE_SIZE
     } finally {
       historyLoading.value = false
     }
