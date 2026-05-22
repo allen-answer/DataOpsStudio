@@ -307,3 +307,94 @@ def test_delete_run_missing_raises(tmp_path, monkeypatch):
     from app.services.run_result import delete_run
     with pytest.raises(KeyError):
         delete_run("nope")
+
+
+# ─── 切片 F.4：iter_bucket_rows 流式迭代器 ──────────────────────────────────
+
+
+def test_iter_bucket_rows_legacy_yields_all(tmp_path, monkeypatch, envelope, buckets):
+    """legacy json 路径：iter 全部行（max_rows=None 不截断）。"""
+    _patch_results_dir(monkeypatch, tmp_path)
+    writer = JsonResultWriter(
+        result_path=tmp_path / "RUN.json",
+        excel_path=tmp_path / "RUN.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, buckets)
+    writer.finalize()
+
+    from app.services.run_result import iter_bucket_rows
+    yielded = list(iter_bucket_rows("RUN", "only_source"))
+    assert len(yielded) == 3
+    assert [r["key"][0] for r in yielded] == [1, 2, 3]
+
+
+def test_iter_bucket_rows_parquet_streams_with_iter_batches(tmp_path, monkeypatch, envelope):
+    """parquet 路径：iter_batches → 一次性 yield 所有行，行内容来自 parquet。"""
+    _patch_results_dir(monkeypatch, tmp_path)
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i, "v": f"x{i}"}} for i in range(50)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "RUN",
+        excel_path=tmp_path / "RUN.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    from app.services.run_result import iter_bucket_rows
+    rows = list(iter_bucket_rows("RUN", "only_source"))
+    assert len(rows) == 50
+    assert rows[0]["source"]["v"] == "x0"
+    assert rows[-1]["source"]["v"] == "x49"
+
+
+def test_iter_bucket_rows_respects_max_rows(tmp_path, monkeypatch, envelope):
+    """max_rows 是硬上限，iter 到点 stop —— 后续 batch 不解码。"""
+    _patch_results_dir(monkeypatch, tmp_path)
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i}} for i in range(50)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "RUN",
+        excel_path=tmp_path / "RUN.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    from app.services.run_result import iter_bucket_rows
+    rows = list(iter_bucket_rows("RUN", "only_source", max_rows=7))
+    assert len(rows) == 7
+
+
+def test_iter_bucket_rows_count_only_same_uses_sample(tmp_path, monkeypatch, envelope, buckets):
+    """parquet same 桶 count_only —— iter yield meta.json sample。"""
+    _patch_results_dir(monkeypatch, tmp_path)
+    writer = ParquetResultWriter(
+        run_dir=tmp_path / "RUN",
+        excel_path=tmp_path / "RUN.xlsx",
+        payload=envelope,
+        same_sample_rows=2,
+    )
+    feed_buckets(writer, buckets)
+    writer.finalize()
+
+    from app.services.run_result import iter_bucket_rows
+    rows = list(iter_bucket_rows("RUN", "same"))
+    # buckets fixture 里 same 有 7 行，sample 上限 2
+    assert len(rows) == 2
+
+
+def test_iter_bucket_rows_is_generator(tmp_path, monkeypatch):
+    """iter_bucket_rows 必须是 generator，否则失去"行级流式"语义。"""
+    import types
+    _patch_results_dir(monkeypatch, tmp_path)
+    from app.services.run_result import iter_bucket_rows, RunNotFound
+    gen = iter_bucket_rows("nope", "diff")
+    assert isinstance(gen, types.GeneratorType)
+    with pytest.raises(RunNotFound):
+        list(gen)

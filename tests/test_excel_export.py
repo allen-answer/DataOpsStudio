@@ -388,3 +388,188 @@ def test_resolve_default_max_rows_handles_missing(isolated_storage, buckets):
     from app.services.excel_export import _resolve_default_max_rows
     assert _resolve_default_max_rows("RUN_NO_LIMITS") is None
     assert _resolve_default_max_rows("ghost-run") is None
+
+
+# ─── 切片 F.4：streaming Excel write_only ─────────────────────────────────────
+
+
+def test_streaming_excel_write_only_round_trip(tmp_path, isolated_storage):
+    """write_excel_streaming 行级 append round-trip：4 桶 sheet + 汇总 sheet
+    各自行数对得上。"""
+    from app.services.exporter import write_excel_streaming
+
+    rows_by_bucket = {
+        "diff": [
+            {"key": [1], "source": {"id": 1, "v": 10}, "target": {"id": 1, "v": 11},
+             "changes": {"v": {"source": 10, "target": 11, "target_column": "v"}}},
+        ],
+        "only_source": [
+            {"key": [2], "source": {"id": 2, "name": "src"}},
+            {"key": [3], "source": {"id": 3, "name": "src2"}},
+        ],
+        "only_target": [
+            {"key": [4], "target": {"id": 4, "name": "tgt"}},
+        ],
+        "same": [
+            {"key": [5], "source": {"id": 5}, "target": {"id": 5}},
+        ],
+    }
+    bucket_columns = {
+        "diff": {"source": ["id", "v"], "target": ["id", "v"]},
+        "only_source": {"source": ["id", "name"], "target": []},
+        "only_target": {"source": [], "target": ["id", "name"]},
+        "same": {"source": ["id"], "target": ["id"]},
+    }
+
+    def factory(name):
+        return iter(rows_by_bucket.get(name, []))
+
+    out_path = tmp_path / "stream.xlsx"
+    write_excel_streaming(
+        out_path,
+        bucket_iter_factory=factory,
+        bucket_columns=bucket_columns,
+        max_rows=None,
+    )
+
+    wb = load_workbook(out_path)
+    assert "汇总对照" in wb.sheetnames
+    assert {"only_source", "only_target", "diff", "same"} <= set(wb.sheetnames)
+
+    assert wb["only_source"].max_row == 1 + 2
+    assert wb["only_target"].max_row == 1 + 1
+    assert wb["diff"].max_row == 1 + 1
+    assert wb["same"].max_row == 1 + 1
+    assert wb["汇总对照"].max_row == 1 + 5
+
+
+def test_streaming_excel_max_rows_caps_summary(tmp_path):
+    """max_rows=2 跨桶 (diff → only_source → ...) 顺序消耗：汇总只 2 行。"""
+    from app.services.exporter import write_excel_streaming
+
+    rows_by_bucket = {
+        "diff": [{"key": [i], "source": {"id": i}, "target": {"id": i + 1},
+                  "changes": {"id": {"source": i, "target": i + 1, "target_column": "id"}}}
+                 for i in range(5)],
+        "only_source": [{"key": [i], "source": {"id": i}} for i in range(5)],
+        "only_target": [], "same": [],
+    }
+    bucket_columns = {
+        "diff": {"source": ["id"], "target": ["id"]},
+        "only_source": {"source": ["id"], "target": []},
+        "only_target": {"source": [], "target": ["id"]},
+        "same": {"source": ["id"], "target": ["id"]},
+    }
+    out_path = tmp_path / "cap.xlsx"
+    write_excel_streaming(
+        out_path,
+        bucket_iter_factory=lambda n: iter(rows_by_bucket.get(n, [])),
+        bucket_columns=bucket_columns,
+        max_rows=2,
+    )
+    wb = load_workbook(out_path)
+    assert wb["diff"].max_row == 1 + 2
+    assert wb["only_source"].max_row == 1   # 仅 header
+    assert wb["汇总对照"].max_row == 1 + 2
+
+
+def test_build_excel_for_parquet_uses_streaming_path(isolated_storage):
+    """build_excel_for_run 对 parquet runs 走 write_excel_streaming —— spy 验证
+    streaming function 被调用、老 _load_buckets_from_parquet 没被走。"""
+    from app.services import excel_export as ee
+
+    task_id = _create_task()
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i, "name": f"u{i}"}} for i in range(20)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_F4",
+        excel_path=isolated_storage["results"] / "RUN_F4.xlsx",
+        payload=_envelope(task_id, "RUN_F4"),
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    streaming_calls: list = []
+    real_streaming = ee.write_excel_streaming
+
+    def spy(*args, **kwargs):
+        streaming_calls.append(kwargs.get("max_rows"))
+        return real_streaming(*args, **kwargs)
+
+    legacy_dict_calls: list = []
+    real_legacy = ee._load_buckets_from_parquet
+
+    def legacy_spy(*args, **kwargs):
+        legacy_dict_calls.append(True)
+        return real_legacy(*args, **kwargs)
+
+    ee.write_excel_streaming = spy
+    ee._load_buckets_from_parquet = legacy_spy
+    try:
+        ee.build_excel_for_run("RUN_F4", max_rows=10)
+    finally:
+        ee.write_excel_streaming = real_streaming
+        ee._load_buckets_from_parquet = real_legacy
+
+    assert len(streaming_calls) == 1, "streaming writer 未被调"
+    assert streaming_calls[0] == 10
+    assert not legacy_dict_calls, "parquet 路径不应再走 _load_buckets_from_parquet"
+
+    out = isolated_storage["results"] / "RUN_F4" / "export.xlsx"
+    assert out.exists()
+    wb = load_workbook(out)
+    assert wb["only_source"].max_row == 1 + 10
+
+
+def test_collect_bucket_columns_from_meta_extracts_struct_fields(isolated_storage):
+    """_collect_bucket_columns_from_meta 通过 pyarrow schema 抽 source/target
+    struct 字段（不解码 row group 数据）。"""
+    task_id = _create_task()
+    bs = {
+        "only_source": [{"key": [i], "source": {"id": i, "name": f"u{i}", "amt": i * 10}}
+                        for i in range(3)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_C",
+        excel_path=isolated_storage["results"] / "RUN_C.xlsx",
+        payload=_envelope(task_id, "RUN_C"),
+    )
+    feed_buckets(writer, bs)
+    writer.finalize()
+
+    from app.services.excel_export import _collect_bucket_columns_from_meta
+    from app.services.run_result import load_run_meta
+    meta = load_run_meta("RUN_C")
+    cols = _collect_bucket_columns_from_meta("RUN_C", meta)
+
+    # pyarrow struct 字段顺序非 dict 插入序（首批写入时锁的），用 set 断言
+    assert set(cols["only_source"]["source"]) == {"id", "name", "amt"}
+    assert cols["only_source"]["target"] == []
+    assert cols["diff"] == {"source": [], "target": []}
+
+
+def test_streaming_excel_keeps_max_rows_cap_for_parquet_run(isolated_storage):
+    """parquet run 走 F.4 streaming 后 max_rows 仍生效（覆盖 P1 patch 回归）。"""
+    task_id = _create_task()
+    big = {
+        "only_source": [{"key": [i], "source": {"id": i}} for i in range(100)],
+        "only_target": [], "diff": [], "same": [],
+    }
+    envelope = _envelope(task_id, "RUN_BIG")
+    envelope["limits"] = {"export_max_rows": 7}
+    writer = ParquetResultWriter(
+        run_dir=isolated_storage["results"] / "RUN_BIG",
+        excel_path=isolated_storage["results"] / "RUN_BIG.xlsx",
+        payload=envelope,
+    )
+    feed_buckets(writer, big)
+    writer.finalize()
+
+    from app.services.excel_export import build_excel_for_run
+    out = build_excel_for_run("RUN_BIG")   # 不传 max_rows，走 meta.limits 7
+    wb = load_workbook(out)
+    assert wb["only_source"].max_row == 1 + 7
+    assert wb["汇总对照"].max_row == 1 + 7
