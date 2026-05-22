@@ -169,6 +169,21 @@ def active_job_counts() -> dict[str, int]:
     }
 
 
+def active_compare_task_ids() -> list[str]:
+    """活跃（非终态）compare 作业各自的 task_id —— 供 resource_guard 算
+    per-project / per-datasource 并发。同一 task 多次在跑会重复出现，调用方
+    据 task 反查 project / datasource 后各自计数。"""
+    with _lock:
+        jobs = list(_jobs.values())
+    return [
+        str(job.get("task_id") or "")
+        for job in jobs
+        if job.get("status") not in _TERMINAL_STATUSES
+        and (job.get("kind") or "") in ("compare", "task")
+        and job.get("task_id")
+    ]
+
+
 def cleanup_jobs(ttl_seconds: int | None = None, now: datetime | None = None) -> int:
     ttl = DEFAULT_JOB_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
     if ttl <= 0:

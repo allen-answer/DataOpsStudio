@@ -168,6 +168,47 @@ def test_export_cap_queues():
     assert "export_cap" in {r.code for r in decision.reasons}
 
 
+def test_project_cap_queues():
+    decision = _eval(_shape(project_id="p1"), queue=_queue(per_project_running=2))
+    assert decision.decision == "queue"
+    assert "project_cap" in {r.code for r in decision.reasons}
+
+
+def test_project_cap_skipped_for_global_task():
+    # 全局任务（project_id 空）没有项目 scope —— 不触发 project_cap
+    decision = _eval(_shape(project_id=""), queue=_queue(per_project_running=9))
+    assert "project_cap" not in {r.code for r in decision.reasons}
+
+
+def test_datasource_cap_queues():
+    decision = _eval(queue=_queue(per_datasource_running=2))
+    assert decision.decision == "queue"
+    assert "datasource_cap" in {r.code for r in decision.reasons}
+
+
+def test_queue_snapshot_counts_per_project_and_datasource(isolated_storage):
+    from app.models import CompareTaskCreate, RunLimits
+    from app.services import jobs as jobs_mod
+    from app.services.repositories import task_store
+    from app.services.resource_guard import queue_snapshot
+
+    t1 = task_store.create(CompareTaskCreate(
+        name="t1", source_id="dsX", target_id="dsX", source_sql="select 1",
+        key_columns=["id"], project_id="pA", limits=RunLimits(),
+    ))
+    t2 = task_store.create(CompareTaskCreate(
+        name="t2", source_id="dsY", target_id="dsY", source_sql="select 1",
+        key_columns=["id"], project_id="pA", limits=RunLimits(),
+    ))
+    jobs_mod._jobs["j1"] = {"job_id": "j1", "kind": "compare", "task_id": t1.id, "status": "running"}
+    jobs_mod._jobs["j2"] = {"job_id": "j2", "kind": "compare", "task_id": t2.id, "status": "queued"}
+
+    snap = queue_snapshot(project_id="pA", datasource_ids=("dsX",))
+    assert snap.per_project_running == 2     # t1 + t2 都属 pA
+    assert snap.per_datasource_running == 1  # 只有 t1 用 dsX
+    assert snap.compare_running == 2
+
+
 # ─── 决策优先级：deny 压过 queue ────────────────────────────────────────────
 
 
@@ -200,9 +241,13 @@ def test_enforce_mode_marks_enforced():
 def test_config_from_env(monkeypatch):
     monkeypatch.setenv("DATAOPS_GUARD_ENFORCE", "true")
     monkeypatch.setenv("DATAOPS_MAX_COMPARE_JOBS", "7")
+    monkeypatch.setenv("DATAOPS_MAX_JOBS_PER_PROJECT", "4")
+    monkeypatch.setenv("DATAOPS_MAX_QUERIES_PER_DATASOURCE", "3")
     config = GuardConfig.from_env()
     assert config.enforce is True
     assert config.max_compare_jobs == 7
+    assert config.max_jobs_per_project == 4
+    assert config.max_queries_per_datasource == 3
 
 
 def test_config_from_env_defaults(monkeypatch):

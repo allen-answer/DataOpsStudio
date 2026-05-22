@@ -62,6 +62,9 @@ class QueueState(BaseModel):
     compare_running: int = 0
     export_running: int = 0
     queue_depth: int = 0
+    # 相对当前任务的 scope：与它同项目 / 同数据源的活跃对比作业数。
+    per_project_running: int = 0
+    per_datasource_running: int = 0
 
 
 class TaskShape(BaseModel):
@@ -99,6 +102,8 @@ class GuardConfig:
     enforce: bool = False
     max_compare_jobs: int = 2
     max_export_jobs: int = 1
+    max_jobs_per_project: int = 2
+    max_queries_per_datasource: int = 2
     guard_queue_max: int = 50
     results_min_free_gb: float = 5.0
     results_max_disk_usage_pct: float = 85.0
@@ -113,6 +118,8 @@ class GuardConfig:
             enforce=_env_bool("DATAOPS_GUARD_ENFORCE", False),
             max_compare_jobs=_env_int("DATAOPS_MAX_COMPARE_JOBS", 2),
             max_export_jobs=_env_int("DATAOPS_MAX_EXPORT_JOBS", 1),
+            max_jobs_per_project=_env_int("DATAOPS_MAX_JOBS_PER_PROJECT", 2),
+            max_queries_per_datasource=_env_int("DATAOPS_MAX_QUERIES_PER_DATASOURCE", 2),
             guard_queue_max=_env_int("DATAOPS_GUARD_QUEUE_MAX", 50),
             results_min_free_gb=_env_float("DATAOPS_RESULTS_MIN_FREE_GB", 5.0),
             results_max_disk_usage_pct=_env_float("DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT", 85.0),
@@ -190,14 +197,36 @@ def _mem_stats() -> tuple[int | None, float | None]:
     return (avail // 1024, round(avail / total * 100.0, 2))
 
 
-def queue_snapshot() -> QueueState:
-    from app.services.jobs import active_job_counts
+def queue_snapshot(
+    *,
+    project_id: str = "",
+    datasource_ids: tuple[str, ...] = (),
+) -> QueueState:
+    """采当前队列状态。给了 project_id / datasource_ids 时，额外算「与之同
+    项目 / 同数据源」的活跃对比作业数 —— 反查每个活跃 job 的 task。"""
+    from app.services.jobs import active_compare_task_ids, active_job_counts
 
     counts = active_job_counts()
+    ds_set = {d for d in datasource_ids if d}
+    per_project = 0
+    per_datasource = 0
+    if project_id or ds_set:
+        from app.services.repositories import task_store
+
+        for task_id in active_compare_task_ids():
+            task = task_store.get(task_id)
+            if task is None:
+                continue
+            if project_id and (task.project_id or "") == project_id:
+                per_project += 1
+            if ds_set and ({task.source_id, task.target_id} & ds_set):
+                per_datasource += 1
     return QueueState(
         compare_running=counts["compare_running"],
         export_running=counts["export_running"],
         queue_depth=counts["active_total"],
+        per_project_running=per_project,
+        per_datasource_running=per_datasource,
     )
 
 
@@ -282,6 +311,24 @@ def evaluate(
             message=f"已有 {queue.export_running} 个导出作业在运行（上限 {config.max_export_jobs}），任务排队",
             field="export_running", actual=str(queue.export_running),
         ))
+    if shape.project_id and queue.per_project_running >= config.max_jobs_per_project:
+        enqueue.append(GuardReason(
+            code="project_cap", severity="medium",
+            message=(
+                f"本项目已有 {queue.per_project_running} 个对比作业在运行"
+                f"（上限 {config.max_jobs_per_project}），任务排队"
+            ),
+            field="per_project_running", actual=str(queue.per_project_running),
+        ))
+    if queue.per_datasource_running >= config.max_queries_per_datasource:
+        enqueue.append(GuardReason(
+            code="datasource_cap", severity="medium",
+            message=(
+                f"目标数据源已有 {queue.per_datasource_running} 个对比查询在运行"
+                f"（上限 {config.max_queries_per_datasource}），任务排队"
+            ),
+            field="per_datasource_running", actual=str(queue.per_datasource_running),
+        ))
 
     if deny:
         decision: Decision = "deny"
@@ -318,6 +365,8 @@ _SUGGESTION_BY_CODE: dict[str, str] = {
     "queue_full": "等待队列消化后重试",
     "compare_cap": "前序对比作业完成后会自动开始",
     "export_cap": "前序导出作业完成后会自动开始",
+    "project_cap": "本项目前序对比作业完成后会自动开始",
+    "datasource_cap": "该数据源前序查询完成后会自动开始",
 }
 
 
@@ -356,7 +405,10 @@ def guard_compare_run(task: CompareTask, *, kind: str = "compare") -> GuardDecis
     decision = evaluate(
         task_shape(task, kind=kind),
         host=host_snapshot(),
-        queue=queue_snapshot(),
+        queue=queue_snapshot(
+            project_id=task.project_id or "",
+            datasource_ids=(task.source_id, task.target_id),
+        ),
         config=config,
     )
     guard_decisions_total.inc(decision=decision.decision, reason=decision.primary_reason)

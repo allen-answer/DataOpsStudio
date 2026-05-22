@@ -24,6 +24,8 @@ runner 之前评估 allow / queue / deny，避免 OOM、磁盘打满、队列雪
 | `queue_full` | 活跃作业数 `>= 50` | deny |
 | `compare_cap` | 运行中对比作业 `>= 2` | queue |
 | `export_cap` | 运行中导出作业 `>= 1` | queue |
+| `project_cap` | 同项目运行中对比作业 `>= 2` | queue |
+| `datasource_cap` | 同数据源运行中对比查询 `>= 2` | queue |
 
 阈值全部可经环境变量覆盖（见下表）。`mem` 规则在拿不到 `/proc/meminfo` 时
 （非 Linux dev 机）自动跳过，绝不因测量失败误拦。
@@ -54,6 +56,8 @@ runner 之前评估 allow / queue / deny，避免 OOM、磁盘打满、队列雪
 | `DATAOPS_GUARD_ENFORCE` | `false` | dry-run / 强制 |
 | `DATAOPS_MAX_COMPARE_JOBS` | `2` | 运行中对比作业上限（超出排队） |
 | `DATAOPS_MAX_EXPORT_JOBS` | `1` | 运行中导出作业上限（超出排队） |
+| `DATAOPS_MAX_JOBS_PER_PROJECT` | `2` | 单项目运行中对比作业上限（超出排队） |
+| `DATAOPS_MAX_QUERIES_PER_DATASOURCE` | `2` | 单数据源运行中对比查询上限（超出排队） |
 | `DATAOPS_GUARD_QUEUE_MAX` | `50` | 活跃作业总数上限（超出拒绝） |
 | `DATAOPS_RESULTS_MIN_FREE_GB` | `5` | 结果盘最低剩余 GB |
 | `DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT` | `85` | 结果盘最高使用率% |
@@ -70,7 +74,7 @@ runner 之前评估 allow / queue / deny，避免 OOM、磁盘打满、队列雪
 
 ## 未覆盖（后续切片）
 
-- `user_cap` / `project_cap` / `datasource_cap` 跨维度并发配额 —— 需 job 记录
-  owner，留给「job owner 硬化」切片。
+- `user_cap` 按用户的并发配额 —— 需 job 记录 owner_user_id，留给「job owner
+  硬化」切片（`project_cap` / `datasource_cap` 已落地，靠 job→task 反查）。
 - `/api/runs/{id}/export-excel` 端点接入。
 - DB statement timeout、API 限流中间件、审计事件管道。
