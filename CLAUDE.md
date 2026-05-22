@@ -98,6 +98,16 @@ wsl -d Ubuntu-20.04 -- docker logs dataops-studio -f
 3. `engine.compare_rows` 将行数据按 `key_columns` 归入 `only_source / only_target / diff / same` 四个桶
 4. 结果以 JSON 和 Excel 写入 `results/`，并持久化到历史记录
 
+**大结果落盘**（切片 B-G 完成，详见 `docs/COMPARE_RESULT_STORAGE.md` + `docs/STREAMING_COMPARE_WRITER.md`）：
+- `RunLimits.result_format`：`"json"`（默认，向后兼容，单文件 `<run_id>.json`）/ `"parquet"`（目录 `<run_id>/{meta.json, *.parquet}`）
+- `RunLimits.persist_same_bucket: bool`：parquet 模式下 same 桶是否全量落 parquet（默认 False，只在 meta.json 记 count + sample）
+- `app/compare/result_writer.py`：`ResultWriter` 协议 + `JsonResultWriter`（向后兼容老格式）+ `ParquetResultWriter`（目录 + batch flush row group，writer 内存 = O(batch_size)）
+- `app/compare/engine.py`：`compare_rows_streaming(...)` / `compare_sorted_row_events(...)` 两个 generator —— runner 在 parquet 模式下不再持完整 buckets dict（4 象限路径矩阵详见 STREAMING_COMPARE_WRITER §7）
+- 读侧 API：`GET /api/runs/<id>/meta` envelope + `GET /api/runs/<id>/buckets/<bucket>?offset=&limit=` 分页（`services/run_result.py`：`load_run_meta` / `read_bucket` / `iter_bucket_rows` 自动 dispatch parquet/legacy）
+- 异步导出：`POST /api/runs/<id>/export-excel` 走 `submit_excel_export`（`services/jobs.py` ThreadPoolExecutor），JobInfo `kind=excel_export`，前端 poll 后下载
+- 项目级授权：`compare_result_project_id` / `result_download_project_id` / `job_project_id` 三个 helper 统一在 `app/api/_authz.py`，覆盖 `/api/runs/<id>/*`、`/results/<id>/*` 下载、job 状态查询（详见 `docs/PROJECT_AUTHORIZATION.md` §4.3）
+- 剩余未做：Excel `write_only` 流式（切片 F.4）、`/api/history` offset 标准分页、writer.samples 收口到 manifest
+
 **持久化** — 应用状态不依赖数据库，全部使用纯 JSON 文件：
 - `config/datasources.json` / `config/tasks.json` / `config/workflows.json` / `config/workflow_templates.json` —— 业务配置
 - `config/users.json` / `config/projects.json` / `config/lineage_ai.json` —— 用户 / 项目空间 / AI 配置（API key 加密落盘）
