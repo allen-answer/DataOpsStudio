@@ -55,13 +55,6 @@ async function loadBootstrap({ keepTaskSelection = false } = {}) {
   }
 }
 
-// 含密码导出 —— 二次确认弹窗，避免误点把明文密码导出去。AppShell emit 上来。
-function confirmIncludePasswords(event) {
-  if (!confirm('导出文件将包含明文数据库密码。仅自用备份请确认；不要分享或提交到代码仓库。')) {
-    event.preventDefault()
-  }
-}
-
 // 切路由时停掉所有轮询定时器，避免离开页面后还在打 API
 watch(() => route.path, () => {
   taskStore.stopAsyncPoll()
@@ -96,7 +89,7 @@ onUnmounted(() => {
 <template>
   <!-- 登录页全屏渲染，不套 sidebar / topbar 壳 -->
   <router-view v-if="route.meta.public" />
-  <AppShell v-else :loading="loading" @confirm-include-passwords="confirmIncludePasswords">
+  <AppShell v-else :loading="loading">
     <div class="px-6 py-6">
       <router-view />
     </div>

@@ -10,8 +10,6 @@ defineProps({
   loading: { type: Boolean, default: false },
 })
 
-defineEmits(['confirm-include-passwords'])
-
 const noticeStore = useNoticeStore()
 const { notice, aiTranslation } = storeToRefs(noticeStore)
 </script>
@@ -21,10 +19,7 @@ const { notice, aiTranslation } = storeToRefs(noticeStore)
     <AppSidebar />
 
     <main class="flex min-w-0 flex-1 flex-col">
-      <AppTopBar
-        :loading="loading"
-        @confirm-include-passwords="(e) => $emit('confirm-include-passwords', e)"
-      >
+      <AppTopBar :loading="loading">
         <template #actions>
           <slot name="actions" />
         </template>

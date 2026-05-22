@@ -24,9 +24,45 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
 })
 
-defineEmits(['confirm-include-passwords'])
-
 const route = useRoute()
+
+// 配置导出：不能用 <a href="/config/export"> —— 浏览器导航不带 Authorization
+// 头，而端点是 admin-only 必 401。走 fetch + Bearer token + blob 触发下载。
+async function exportConfig(includePasswords) {
+  if (includePasswords && !window.confirm('导出文件将包含明文数据库密码。仅自用备份请确认；不要分享或提交到代码仓库。')) {
+    return
+  }
+  const url = `/config/export${includePasswords ? '?include_passwords=true' : ''}`
+  const token = localStorage.getItem('dataops.token') || ''
+  let resp
+  try {
+    resp = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  } catch (err) {
+    window.alert(`导出失败：${(err && err.message) || err}`)
+    return
+  }
+  if (!resp.ok) {
+    const msg = resp.status === 401 ? '登录已失效，请重新登录'
+              : resp.status === 403 ? '需要 admin 权限才能导出配置'
+              : `导出失败（HTTP ${resp.status}）`
+    window.alert(msg)
+    return
+  }
+  const blob = await resp.blob()
+  const cd = resp.headers.get('Content-Disposition') || ''
+  const match = /filename\*?=["']?(?:UTF-8'')?([^"';]+)/i.exec(cd)
+  const filename = match ? decodeURIComponent(match[1]) : `dataops-config-${Date.now()}.json`
+  const objUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objUrl)
+}
 
 // 命令面板（搜索按钮 + Ctrl/Cmd+K）
 const paletteOpen = ref(false)
@@ -88,26 +124,28 @@ const computedCrumbs = computed(() => {
     <div class="flex items-center gap-2">
       <slot name="actions" />
 
-      <!-- Config export shortcut: 安全分享版（密码脱敏） -->
-      <a
-        href="/config/export"
+      <!-- Config export 安全分享版（密码脱敏）—— 用 button 不用 <a href>，
+           SPA 必须自己塞 Bearer token，详见 exportConfig 注释 -->
+      <button
+        type="button"
         title="导出数据源 + 任务配置（密码已脱敏，可放心分享）"
         class="btn btn-ghost h-9 gap-1.5 px-3 text-xs"
+        @click="exportConfig(false)"
       >
         <FileDown class="h-4 w-4" />
         配置导出
-      </a>
+      </button>
 
-      <!-- Config export shortcut: 含明文密码版（高危） -->
-      <a
-        href="/config/export?include_passwords=true"
+      <!-- 含明文密码版（高危）—— exportConfig 内部 window.confirm 二次确认 -->
+      <button
+        type="button"
         title="导出文件包含明文密码 —— 仅自己备份用，不要分享给他人 / 提交到代码仓库"
         class="btn h-9 gap-1.5 border-status-error-bg bg-status-error-bg px-3 text-xs text-status-error hover:bg-rose-100"
-        @click="$emit('confirm-include-passwords', $event)"
+        @click="exportConfig(true)"
       >
         <ShieldAlert class="h-4 w-4" />
         含密码导出
-      </a>
+      </button>
 
       <!-- 命令面板触发器（Ctrl/Cmd+K 全局快捷键） -->
       <button
