@@ -75,12 +75,26 @@ def compare_rows(
     return out
 
 
-def compare_sorted_row_iterators(
+def compare_sorted_row_events(
     source_rows: Any,
     target_rows: Any,
     key_columns: list[str],
     rules: CompareRules | None = None,
-) -> CompareBuckets:
+) -> Iterator[CompareEvent]:
+    """切片 G：stream_compare 模式的 streaming 版本，yield ('bucket', row)。
+
+    输入是 source / target 已按 key 排序的 iterator（跟 compare_sorted_row_iterators
+    输入约束完全一致）。归并算法跟 iterators 等价，但**不再在内存里攒 4 桶 list**——
+    yield 后由 caller（runner streaming 路径）直接喂给 writer。
+
+    保留所有规则：
+    - column_mappings / ignore_columns / numeric_tolerance
+    - trim_strings / case_insensitive / empty_as_null
+    - 未排序检测（_ensure_sorted_key 抛 ValueError）
+    - 重复 key 检测（_ensure_sorted_key 同 key 二度出现抛 ValueError）
+
+    详见 docs/STREAMING_COMPARE_WRITER.md。
+    """
     rules = rules or CompareRules()
     source_iter = iter(source_rows)
     target_iter = iter(target_rows)
@@ -89,60 +103,76 @@ def compare_sorted_row_iterators(
     if source_row is not None and target_row is not None:
         rules = _rules_with_positional_mappings([source_row], [target_row], key_columns, rules)
 
-    only_source: list[dict[str, Any]] = []
-    only_target: list[dict[str, Any]] = []
-    diff: list[dict[str, Any]] = []
-    same: list[dict[str, Any]] = []
     last_source_key: tuple[Any, ...] | None = None
     last_target_key: tuple[Any, ...] | None = None
     source_key: tuple[Any, ...] | None = None
     target_key: tuple[Any, ...] | None = None
 
-    def set_source_key() -> None:
-        nonlocal last_source_key, source_key
-        source_key = _row_key(source_row, key_columns, {}, "source") if source_row is not None else None
-        if source_key is not None:
-            _ensure_sorted_key(last_source_key, source_key, "source")
-            last_source_key = source_key
+    def _compute_source_key() -> tuple[Any, ...] | None:
+        nonlocal last_source_key
+        if source_row is None:
+            return None
+        key = _row_key(source_row, key_columns, {}, "source")
+        _ensure_sorted_key(last_source_key, key, "source")
+        last_source_key = key
+        return key
 
-    def set_target_key() -> None:
-        nonlocal last_target_key, target_key
-        target_key = _row_key(target_row, key_columns, rules.column_mappings, "target") if target_row is not None else None
-        if target_key is not None:
-            _ensure_sorted_key(last_target_key, target_key, "target")
-            last_target_key = target_key
+    def _compute_target_key() -> tuple[Any, ...] | None:
+        nonlocal last_target_key
+        if target_row is None:
+            return None
+        key = _row_key(target_row, key_columns, rules.column_mappings, "target")
+        _ensure_sorted_key(last_target_key, key, "target")
+        last_target_key = key
+        return key
 
-    set_source_key()
-    set_target_key()
+    source_key = _compute_source_key()
+    target_key = _compute_target_key()
 
     while source_row is not None or target_row is not None:
         if target_row is None or (source_key is not None and target_key is not None and source_key < target_key):
-            only_source.append({"key": list(source_key), "source": source_row})
+            yield ("only_source", {"key": list(source_key), "source": source_row})
             source_row = next(source_iter, None)
-            set_source_key()
+            source_key = _compute_source_key()
             continue
         if source_row is None or (source_key is not None and target_key is not None and target_key < source_key):
-            only_target.append({"key": list(target_key), "target": target_row})
+            yield ("only_target", {"key": list(target_key), "target": target_row})
             target_row = next(target_iter, None)
-            set_target_key()
+            target_key = _compute_target_key()
             continue
 
         changes = _row_changes(source_row, target_row, key_columns, rules)
         if changes:
-            diff.append({"key": list(source_key), "source": source_row, "target": target_row, "changes": changes})
+            yield ("diff", {
+                "key": list(source_key), "source": source_row, "target": target_row,
+                "changes": changes,
+            })
         else:
-            same.append({"key": list(source_key), "source": source_row, "target": target_row})
+            yield ("same", {"key": list(source_key), "source": source_row, "target": target_row})
         source_row = next(source_iter, None)
         target_row = next(target_iter, None)
-        set_source_key()
-        set_target_key()
+        source_key = _compute_source_key()
+        target_key = _compute_target_key()
 
-    return {
-        "only_source": only_source,
-        "only_target": only_target,
-        "diff": diff,
-        "same": same,
+
+def compare_sorted_row_iterators(
+    source_rows: Any,
+    target_rows: Any,
+    key_columns: list[str],
+    rules: CompareRules | None = None,
+) -> CompareBuckets:
+    """老 API：返完整 CompareBuckets。
+
+    切片 G 起内部走 `compare_sorted_row_events` 收口 —— 所有调用方（runner
+    json 模式 / 测试 / scenarios）行为零回归。需要"不持完整 dict"的 stream
+    模式场景请直接用 `compare_sorted_row_events`。
+    """
+    out: CompareBuckets = {
+        "only_source": [], "only_target": [], "diff": [], "same": [],
     }
+    for bucket, row in compare_sorted_row_events(source_rows, target_rows, key_columns, rules):
+        out[bucket].append(row)
+    return out
 
 
 def _rules_with_positional_mappings(

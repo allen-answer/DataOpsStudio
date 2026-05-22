@@ -82,6 +82,9 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(run_result_svc, "RESULTS_DIR", results)
     # 切片 E：excel_export 同理（async job worker 跑在线程池里要拿 patched 路径）
     monkeypatch.setattr(excel_export_svc, "RESULTS_DIR", results)
+    # 切片 G：runner 在顶层也绑了 RESULTS_DIR（不 patch 会写到真实 results/）
+    from app.services import runner as runner_svc
+    monkeypatch.setattr(runner_svc, "RESULTS_DIR", results)
     # jobs 模块的 _jobs 全局 dict 跨测试残留，清一下
     jobs._jobs.clear()
     jobs._futures.clear()

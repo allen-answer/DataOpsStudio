@@ -7,6 +7,7 @@ import pytest
 from app.compare.engine import (
     compare_rows,
     compare_rows_streaming,
+    compare_sorted_row_events,
     compare_sorted_row_iterators,
 )
 from app.models import CompareRules
@@ -332,3 +333,127 @@ def test_streaming_compare_rows_now_uses_streaming_internally():
     # 跟 streaming 一致
     via_stream = _events_to_buckets(compare_rows_streaming(src, tgt, ["id"]))
     assert buckets == via_stream
+
+
+# ─── 切片 G：compare_sorted_row_events 事件流契约 ───────────────────────────
+
+
+def _sorted_events_to_buckets(events):
+    out = {"only_source": [], "only_target": [], "diff": [], "same": []}
+    for bucket, row in events:
+        out[bucket].append(row)
+    return out
+
+
+def test_sorted_events_equivalent_to_iterators_simple():
+    """全 same / 全 diff / 混合 3 个场景，events 收口后跟 iterators 完全等价。"""
+    cases = [
+        ([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}],
+         [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]),
+        ([{"id": 1, "v": "a"}],
+         [{"id": 1, "v": "z"}]),
+        ([{"id": 1, "v": "a"}, {"id": 3, "v": "c"}, {"id": 5, "v": "e"}],
+         [{"id": 1, "v": "a"}, {"id": 2, "v": "B"}, {"id": 5, "v": "E"}]),
+    ]
+    for src, tgt in cases:
+        evt_buckets = _sorted_events_to_buckets(
+            compare_sorted_row_events(iter(src), iter(tgt), ["id"])
+        )
+        iter_buckets = compare_sorted_row_iterators(iter(src), iter(tgt), ["id"])
+        assert evt_buckets == iter_buckets, f"divergence on {src} vs {tgt}"
+
+
+def test_sorted_events_is_generator():
+    import types
+    gen = compare_sorted_row_events(iter([]), iter([]), ["id"])
+    assert isinstance(gen, types.GeneratorType)
+
+
+def test_sorted_events_classification_diff_vs_same():
+    """仅源 / 仅目标 / 同 key 同值 (same) / 同 key 异值 (diff) 都各自归桶。"""
+    src = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 3, "v": "c"}]
+    tgt = [{"id": 2, "v": "b"}, {"id": 3, "v": "X"}, {"id": 4, "v": "d"}]
+    events = list(compare_sorted_row_events(iter(src), iter(tgt), ["id"]))
+    by_bucket = {b: [] for b in ("only_source", "only_target", "diff", "same")}
+    for b, r in events:
+        by_bucket[b].append(r["key"][0])
+    assert by_bucket["only_source"] == [1]
+    assert by_bucket["only_target"] == [4]
+    assert by_bucket["same"] == [2]
+    assert by_bucket["diff"] == [3]
+
+
+def test_sorted_events_source_unsorted_raises():
+    src = iter([{"id": 2}, {"id": 1}])
+    tgt = iter([{"id": 1}, {"id": 2}])
+    with pytest.raises(ValueError, match="sorted"):
+        list(compare_sorted_row_events(src, tgt, ["id"]))
+
+
+def test_sorted_events_target_unsorted_raises():
+    src = iter([{"id": 1}, {"id": 2}])
+    tgt = iter([{"id": 2}, {"id": 1}])
+    with pytest.raises(ValueError, match="sorted"):
+        list(compare_sorted_row_events(src, tgt, ["id"]))
+
+
+def test_sorted_events_source_duplicate_key_raises():
+    src = iter([{"id": 1}, {"id": 1}])
+    tgt = iter([{"id": 1}])
+    with pytest.raises(ValueError, match="duplicate key"):
+        list(compare_sorted_row_events(src, tgt, ["id"]))
+
+
+def test_sorted_events_target_duplicate_key_raises():
+    src = iter([{"id": 1}, {"id": 2}])
+    tgt = iter([{"id": 1}, {"id": 1}])
+    with pytest.raises(ValueError, match="duplicate key"):
+        list(compare_sorted_row_events(src, tgt, ["id"]))
+
+
+def test_sorted_events_column_mappings_aligns_renamed_target():
+    """target 列名跟 source 不一样时 rules.column_mappings 透传。"""
+    src = [{"id": 1, "amt_src": 10}, {"id": 2, "amt_src": 20}]
+    tgt = [{"id": 1, "amt_tgt": 10}, {"id": 2, "amt_tgt": 99}]
+    rules = CompareRules(column_mappings={"amt_src": "amt_tgt"})
+    evt = _sorted_events_to_buckets(
+        compare_sorted_row_events(iter(src), iter(tgt), ["id"], rules)
+    )
+    itr = compare_sorted_row_iterators(iter(src), iter(tgt), ["id"], rules)
+    assert evt == itr
+    assert len(evt["same"]) == 1
+    assert len(evt["diff"]) == 1
+
+
+def test_sorted_events_numeric_tolerance_within_range():
+    src = [{"id": 1, "amount": 1.001}]
+    tgt = [{"id": 1, "amount": 1.002}]
+    rules = CompareRules(numeric_tolerance=0.01)
+    evt = _sorted_events_to_buckets(
+        compare_sorted_row_events(iter(src), iter(tgt), ["id"], rules)
+    )
+    assert len(evt["same"]) == 1
+    assert evt["diff"] == []
+
+
+def test_sorted_events_ignore_columns_skips_diff():
+    src = [{"id": 1, "ts": "2024-01-01", "v": "x"}]
+    tgt = [{"id": 1, "ts": "2024-12-31", "v": "x"}]
+    rules = CompareRules(ignore_columns=["ts"])
+    evt = _sorted_events_to_buckets(
+        compare_sorted_row_events(iter(src), iter(tgt), ["id"], rules)
+    )
+    assert len(evt["same"]) == 1
+    assert evt["diff"] == []
+
+
+def test_sorted_iterators_now_uses_events_internally():
+    """compare_sorted_row_iterators 切到 events 包装后行为兼容（前面 7 个
+    test_stream_compare_* 隐式覆盖；这里显式标 contract）。"""
+    src = [{"id": i, "v": i * 2} for i in range(20)]
+    tgt = [{"id": i, "v": i * 2 if i % 4 else i * 99} for i in range(15, 30)]
+    dict_from_iter = compare_sorted_row_iterators(iter(src), iter(tgt), ["id"])
+    dict_from_events = _sorted_events_to_buckets(
+        compare_sorted_row_events(iter(src), iter(tgt), ["id"])
+    )
+    assert dict_from_iter == dict_from_events

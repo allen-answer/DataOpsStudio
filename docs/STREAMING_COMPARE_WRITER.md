@@ -101,11 +101,12 @@ streaming 模式下没法在末尾一次性切 [:20]。让 runner 在 events 循
 继续走 writer）。结尾 `CompareResult.samples = samples_buffer`，行为外部
 等价。
 
-### 3.4 不动的边界
+### 3.4 不动的边界（已在 G 中解锁）
 
-- `compare_sorted_row_iterators`（stream_compare 模式）暂不改 —— 它本来就
-  是 streaming friendly 的归并逻辑，但 return 形态还是 dict。后续如果发现
-  stream_compare + parquet 联用是常见场景，再让它也吐 events。本切片不做。
+- ~~`compare_sorted_row_iterators`（stream_compare 模式）暂不改~~ —— 切片 G
+  已实现：`compare_sorted_row_events` yield events，`compare_sorted_row_iterators`
+  改成它的薄包装。stream_compare + parquet 联用现在是真流式（runner 不再
+  攒完整 buckets dict）。
 - `JsonResultWriter` 完全不动。
 - 前端不动 —— writer 协议不变（仍是 `write_bucket_row` + `finalize`），
   manifest 形态不变，meta.json schema 不变。
@@ -129,13 +130,19 @@ streaming 模式下没法在末尾一次性切 [:20]。让 runner 在 events 循
 
 ---
 
-## 5. 不属本切片
+## 5. 切片进度（cumulative）
 
-- F.4 Excel `write_only` 流式写出
-- `compare_sorted_row_iterators` events 化
-- 写入压缩切到 zstd（行 > 100MB 触发）—— 设计文档 §5 说的，留 perf 调优
-- writer.samples 暴露到 manifest 让 runner 不自己维护 buffer
-- DuckDB 联查桶（切片 F+ 已经独立到 G）
+| 切片 | 状态 | 说明 |
+|------|------|------|
+| F.1 compare_rows_streaming | ✅ | dict mode 路径已可流式 |
+| F.2 ParquetResultWriter batch flush | ✅ | row group 每 5000 行 flush，writer 内存 O(batch_size) |
+| F.3 runner (parquet + 非 stream_compare) events → writer | ✅ | 非 stream_compare 路径不持完整 buckets |
+| **G compare_sorted_row_events + runner stream_compare+parquet** | ✅ 本 PR | stream_compare + parquet 路径也不持完整 buckets，真千万级流式 |
+| F.4 Excel `write_only` 流式写出 | ❌ | openpyxl write_only 改造留独立 PR |
+| `/api/history` offset 分页 | ❌ | 列表分页接 offset 留独立 PR |
+| 写入压缩切到 zstd（行 > 100MB 触发） | ❌ | perf 调优，留独立 |
+| writer.samples 暴露到 manifest | ❌ | runner 自维护 samples_buffer 暂可接受 |
+| DuckDB 联查桶 | ❌ | 切片 G+（已独立成 slice G？文档中已重命名为 G+） |
 
 ---
 
@@ -151,3 +158,49 @@ streaming 模式下没法在末尾一次性切 [:20]。让 runner 在 events 循
   rows=10，parquet 文件 row_group_count >= 3
 - finalize 不调 write_bucket_row 时（empty bucket）不开 ParquetWriter
 - schema drift 行（第二批多 / 少字段）抛 ValueError
+
+## 7. 切片 G 实现细节
+
+### 新 engine 入口
+`app/compare/engine.py::compare_sorted_row_events(source_iter, target_iter,
+key_columns, rules)` —— 归并算法跟 `compare_sorted_row_iterators` 等价，
+yield `(bucket, row)` 事件。`compare_sorted_row_iterators` 重构成 events
+的薄包装，老调用方零回归。
+
+### runner 路径矩阵（4 象限）
+
+| stream_compare | result_format | 路径 | 是否持完整 buckets dict |
+|----------------|---------------|------|------------------------|
+| False | json | `compare_rows` → `JsonResultWriter` | ✅ 必须（json 整文件需要）|
+| False | parquet | F.3：`compare_rows_streaming` events → `ParquetResultWriter` | ❌ |
+| True | json | `compare_sorted_row_iterators` → `JsonResultWriter` | ✅ 必须（json 整文件需要）|
+| **True** | **parquet** | **G：`compare_sorted_row_events` events → `ParquetResultWriter`** | **❌** |
+
+### G 路径下的 source/target 行数统计
+
+writer 创建时 payload 里 source_rows / target_rows 先占位 0，events 循环
+里按桶归属累加：
+- source 贡献 `only_source` + `diff` + `same`
+- target 贡献 `only_target` + `diff` + `same`
+
+循环结束后回填 `payload["source_rows"]` / `["target_rows"]` —— ParquetResultWriter
+在 `finalize()` 通过 `**self._payload` spread 时拿到最新值。等价于
+`_bucket_row_counts` 在完整 dict 上算出来的。
+
+### 内存模型
+
+千万级行场景下，G 路径的 runner 内存上限：
+- ~~`source_rows`~~ / ~~`target_rows`~~ 列表：不再持有
+- ~~`buckets` dict~~：不再持有
+- `samples_buffer`：4 桶 × 20 行 = 80 行（O(20))
+- `source_count` / `target_count`：2 个 int
+- writer 内部 buffer：4 桶 × batch_size = 20000 行（O(batch_size))
+
+总计：O(batch_size × bucket 数 + sample × bucket 数) ≈ 20k 行 in-flight。
+
+### 剩余瓶颈
+
+stream_compare + parquet 全链路 O(batch_size) 内存了，**剩下的瓶颈在
+Excel 异步导出**（F.4）：当前 `excel_export._load_buckets_from_parquet`
+仍把 parquet 读回 list of dicts 给老 `write_excel`。F.4 用 openpyxl
+`write_only` 模式 + parquet `iter_batches` 才能彻底降到 O(batch)。

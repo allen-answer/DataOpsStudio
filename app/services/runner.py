@@ -10,6 +10,7 @@ from typing import Any
 from app.compare.engine import (
     compare_rows,
     compare_rows_streaming,
+    compare_sorted_row_events,
     compare_sorted_row_iterators,
 )
 from app.compare.result_writer import (
@@ -61,13 +62,20 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
 
         # 切片 F.3：result_format=parquet + 非 stream_compare 时走 streaming 路径——
         # 不再 compare_rows 攒 buckets dict，直接 events → writer。
+        # 切片 G：stream_compare=True + result_format=parquet 时走 sorted_events
+        # → writer，归并归并阶段也不再持完整 buckets dict（真正 O(batch) 内存）。
         use_streaming_writer = (
             task.limits.result_format == "parquet" and not task.limits.stream_compare
+        )
+        use_stream_compare_to_writer = (
+            task.limits.result_format == "parquet" and task.limits.stream_compare
         )
 
         buckets: dict[str, list[dict[str, Any]]] | None = None
         source_rows: list[dict[str, Any]] | None = None
         target_rows: list[dict[str, Any]] | None = None
+        source_rows_iter = None
+        target_rows_iter = None
 
         if task.limits.stream_compare:
             _notify(status_callback, "querying_source", "准备流式分块对比：请确保两边数据已按主键排序")
@@ -81,9 +89,17 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
                 chunk_size=task.limits.fetch_chunk_size,
                 progress_callback=progress("target"),
             )
-            _notify(status_callback, "comparing", "执行流式归并对比")
-            buckets = compare_sorted_row_iterators(source_rows_iter, target_rows_iter, task.key_columns, task.rules)
-            source_rows_count, target_rows_count = _bucket_row_counts(buckets)
+            if use_stream_compare_to_writer:
+                # 切片 G：iterator 延迟到 writer 创建后走 events → writer 消费。
+                # source/target 行数在 events 循环里 tally，先占位避免引用未定义。
+                source_rows_count = 0
+                target_rows_count = 0
+            else:
+                # stream_compare + json：仍走老 compare_sorted_row_iterators 攒
+                # buckets dict，给 JsonResultWriter 写整文件。
+                _notify(status_callback, "comparing", "执行流式归并对比")
+                buckets = compare_sorted_row_iterators(source_rows_iter, target_rows_iter, task.key_columns, task.rules)
+                source_rows_count, target_rows_count = _bucket_row_counts(buckets)
         else:
             _notify(status_callback, "querying_source", "读取源数据")
             source_rows = source_reader.fetch_all(
@@ -164,7 +180,31 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     # samples 在 feed/event loop 里同步收集，runner 不再依赖完整 buckets dict
     samples_buffer: dict[str, list[dict[str, Any]]] = {name: [] for name in _BUCKET_NAMES}
 
-    if use_streaming_writer:
+    if use_stream_compare_to_writer:
+        # 切片 G：stream_compare + parquet —— sorted_events → writer，归并阶段
+        # 也不持完整 buckets。source/target 行数通过事件桶归属累加：
+        # source 贡献 only_source / diff / same；target 贡献 only_target /
+        # diff / same。等价于 _bucket_row_counts 在完整 dict 上算出来的值。
+        _notify(status_callback, "comparing", "执行流式归并对比 + 增量落 parquet")
+        assert source_rows_iter is not None and target_rows_iter is not None
+        src_count = 0
+        tgt_count = 0
+        for bucket, row in compare_sorted_row_events(
+            source_rows_iter, target_rows_iter, task.key_columns, task.rules,
+        ):
+            writer.write_bucket_row(bucket, row)
+            if bucket in ("only_source", "diff", "same"):
+                src_count += 1
+            if bucket in ("only_target", "diff", "same"):
+                tgt_count += 1
+            if len(samples_buffer[bucket]) < _SAMPLE_ROWS_PER_BUCKET:
+                samples_buffer[bucket].append(row)
+        source_rows_count = src_count
+        target_rows_count = tgt_count
+        # 回填 payload 让 ParquetResultWriter.finalize 写正确 envelope 字段
+        payload["source_rows"] = src_count
+        payload["target_rows"] = tgt_count
+    elif use_streaming_writer:
         _notify(status_callback, "comparing", "执行流式对比 + 增量落 parquet")
         assert source_rows is not None and target_rows is not None
         for bucket, row in compare_rows_streaming(
@@ -174,7 +214,7 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             if len(samples_buffer[bucket]) < _SAMPLE_ROWS_PER_BUCKET:
                 samples_buffer[bucket].append(row)
     else:
-        # json 模式或 parquet+stream_compare —— buckets dict 已经在上面攒齐
+        # json 模式或 parquet+stream_compare（已被上面分支接管）—— 走 buckets dict
         assert buckets is not None
         feed_buckets(writer, buckets)
         for name in _BUCKET_NAMES:

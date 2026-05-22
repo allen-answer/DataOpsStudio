@@ -42,7 +42,22 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 - [x] **P0.6 · 真 Docker + demo-db SMOKE 实测**：在云端生产实例跑通。Docker 容器健康 + nginx 反代 + mysql8 12ms 连接 + DM dmPython 驱动可用 + SQL safety + login + 5 真实业务 datasource / 6 task / 4 workflow / 5 run history 全验证。**实测同时发现云上为 P0.4 之前版本**：anon 可拉 `/api/datasources` `/config/export` 等 7 个业务 endpoint（公网 IP 加重风险），随后 `git init + remote + reset --hard origin/main + docker compose up -d --build` deploy `c1c4616` 上云，再次 SMOKE 验证全部业务 endpoint anon→401 / admin→200，矩阵真生效。云端工作目录首次接入 git，下次 deploy 走 `git pull && docker compose up -d --build` 即可（具体云端 IP / SSH 等连接信息不入仓库，走运维渠道）
 
 ### P1 · 数据对比深化
-- [ ] 大结果落盘真实实现（按 `docs/COMPARE_RESULT_STORAGE.md` 切片 1 起步）
+
+**大结果落盘真实实现**（按 `docs/COMPARE_RESULT_STORAGE.md` + `docs/STREAMING_COMPARE_WRITER.md` 切片推进）：
+- [x] ResultWriter 协议 + `JsonResultWriter` 等价实现（切片 A）
+- [x] `ParquetResultWriter`（目录格式 + meta.json，切片 B）
+- [x] bucket reader API `/api/runs/<id>/{meta,buckets/<bucket>}`（切片 C）
+- [x] History 列表懒加载 + Load more（切片 D）
+- [x] Excel 异步导出 `POST /api/runs/<id>/export-excel`（切片 E）
+- [x] `compare_rows_streaming` events generator（切片 F.1）
+- [x] `ParquetResultWriter` batch flush row group（切片 F.2）
+- [x] runner stream_compare=False + parquet 走 events → writer（切片 F.3）
+- [x] **`compare_sorted_row_events` + runner stream_compare=True + parquet 真流式写出**（切片 G）
+- [ ] Excel `write_only` 流式写出（切片 F.4，留独立 PR）
+- [ ] `/api/history` offset 标准分页（前端 loadMore 临时用扩窗口去重，offset 化留独立 PR）
+- [ ] writer.samples 暴露到 manifest（让 runner 不维护 samples_buffer）
+
+**其它**：
 - [ ] 流式对比 + 文件源支持（Parquet 已自描述有序，CSV 需 ORDER 校验）
 - [ ] 字段映射的"按位置自动对齐"在 schema 差异大时给更明确的 warning
 

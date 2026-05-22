@@ -1,0 +1,317 @@
+"""切片 G：runner stream_compare=True + result_format=parquet 真流式路径测试。
+
+monkeypatch build_reader 返伪 reader（yield 内存里准备好的 sorted rows），
+跑 run_task，验证：
+1. parquet + stream_compare=True 路径不再调 compare_sorted_row_iterators
+2. meta.json 落对了 bucket counts
+3. same 桶默认 count_only，不写 same.parquet
+4. diff / only_source / only_target parquet 可读
+5. result_format=json + stream_compare=True 仍走老 buckets dict 路径
+6. result_format=parquet + stream_compare=False（F.3 路径）不回归
+
+不连真实 DB，纯内存 iter。
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Callable, Iterator
+from pathlib import Path
+
+import pytest
+
+from app.models import CompareTaskCreate, RunLimits
+from app.services.repositories import task_store
+
+
+@dataclass
+class _FakeReader:
+    """模拟 SqlReader 接口的内存 reader —— 同时支持 fetch_all + iter_rows。"""
+    rows: list[dict[str, Any]]
+
+    def fetch_all(
+        self, *, max_rows=None, chunk_size=None, progress_callback=None,
+    ) -> list[dict[str, Any]]:
+        return list(self.rows)
+
+    def iter_rows(
+        self, *, max_rows=None, chunk_size=None, progress_callback=None,
+    ) -> Iterator[dict[str, Any]]:
+        for row in self.rows:
+            yield row
+
+
+def _patch_readers(monkeypatch, source_rows, target_rows):
+    """monkeypatch runner.build_reader 让 source/target 都拿到 _FakeReader。"""
+    from app.services import runner as runner_module
+    src_reader = _FakeReader(source_rows)
+    tgt_reader = _FakeReader(target_rows)
+
+    def fake_build_reader(task, side):
+        return src_reader if side == "source" else tgt_reader
+
+    monkeypatch.setattr(runner_module, "build_reader", fake_build_reader)
+
+
+def _make_task(*, result_format: str, stream_compare: bool) -> str:
+    """建一个最小 task（SQL 双端，避开 single-mode 跨类型限制）。"""
+    payload = CompareTaskCreate(
+        name=f"streaming-{result_format}-{stream_compare}",
+        source_kind="sql", target_kind="sql",
+        source_id="ds-x", target_id="ds-x",
+        sql_mode="double",
+        source_sql="SELECT id FROM t ORDER BY id",
+        target_sql="SELECT id FROM t ORDER BY id",
+        key_columns=["id"],
+        limits=RunLimits(
+            stream_compare=stream_compare,
+            result_format=result_format,
+        ),
+    )
+    return task_store.create(payload).id
+
+
+# ─── 切片 G 主路径 ─────────────────────────────────────────────────────────
+
+
+def test_stream_compare_parquet_does_not_call_iterators(isolated_storage, monkeypatch):
+    """stream_compare=True + result_format=parquet 必须走 sorted_events 路径，
+    绝对不能再调 compare_sorted_row_iterators（攒完整 buckets dict）。"""
+    src = [{"id": i, "v": f"x{i}"} for i in range(20)]
+    tgt = [{"id": i, "v": f"x{i}"} for i in range(20)]
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compare_sorted_row_iterators 不应被调（应走 events 路径）")
+
+    monkeypatch.setattr(runner_module, "compare_sorted_row_iterators", _boom)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+    assert result.summary.same == 20
+    assert result.summary.diff == 0
+    assert result.summary.only_source == 0
+    assert result.summary.only_target == 0
+
+
+def test_stream_compare_parquet_meta_counts_correct(isolated_storage, monkeypatch):
+    """meta.json 的 bucket counts 跟实际归类对得上。"""
+    # source: id=1..10；target: id=1..5 同 + 6..10 异 + 11..15 仅 target
+    src = [{"id": i, "v": f"x{i}"} for i in range(1, 11)]
+    tgt = [{"id": i, "v": f"x{i}" if i <= 5 else f"y{i}"} for i in range(1, 16)]
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    assert result.summary.same == 5      # id 1..5
+    assert result.summary.diff == 5      # id 6..10
+    assert result.summary.only_source == 0
+    assert result.summary.only_target == 5  # id 11..15
+
+    # meta.json
+    run_dir = isolated_storage["results"] / result.run_id
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    by = {b["name"]: b for b in meta["buckets"]}
+    assert by["same"]["rows"] == 5
+    assert by["diff"]["rows"] == 5
+    assert by["only_target"]["rows"] == 5
+    # source_rows = only_source + diff + same = 0 + 5 + 5
+    assert meta["source_rows"] == 10
+    # target_rows = only_target + diff + same = 5 + 5 + 5
+    assert meta["target_rows"] == 15
+
+
+def test_stream_compare_parquet_same_count_only_no_parquet_file(isolated_storage, monkeypatch):
+    """same 桶默认 count_only：count 准确，但 same.parquet 不存在。"""
+    src = [{"id": i, "v": f"x{i}"} for i in range(100)]
+    tgt = list(src)  # 完全相同 → 全 same
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    assert result.summary.same == 100
+    run_dir = isolated_storage["results"] / result.run_id
+    assert not (run_dir / "same.parquet").exists(), "same.parquet 应不存在（count_only）"
+    # meta.json same 桶 mode=count_only
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    same_meta = next(b for b in meta["buckets"] if b["name"] == "same")
+    assert same_meta["mode"] == "count_only"
+    assert same_meta["rows"] == 100
+    assert len(same_meta["sample"]) <= 100
+
+
+def test_stream_compare_parquet_diff_only_source_only_target_parquet_readable(
+    isolated_storage, monkeypatch,
+):
+    """diff / only_source / only_target 三桶 parquet 文件落盘且可读。"""
+    src = [{"id": i, "v": f"x{i}"} for i in [1, 2, 3, 5]]
+    tgt = [{"id": i, "v": f"x{i}" if i == 1 else f"y{i}"} for i in [1, 2, 4]]
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    import pyarrow.parquet as pq
+    run_dir = isolated_storage["results"] / result.run_id
+
+    only_source = pq.read_table(run_dir / "only_source.parquet").to_pylist()
+    only_target = pq.read_table(run_dir / "only_target.parquet").to_pylist()
+    diff = pq.read_table(run_dir / "diff.parquet").to_pylist()
+
+    assert sorted(r["key"][0] for r in only_source) == [3, 5]
+    assert [r["key"][0] for r in only_target] == [4]
+    assert [r["key"][0] for r in diff] == [2]
+    # diff 行带 changes struct
+    assert "changes" in diff[0]
+
+
+# ─── 其它路径不回归 ─────────────────────────────────────────────────────────
+
+
+def test_json_stream_compare_still_uses_iterators(isolated_storage, monkeypatch):
+    """result_format=json + stream_compare=True 仍走 compare_sorted_row_iterators
+    攒完整 dict（不能切到 events 路径，因为 JsonResultWriter 需要整 dict）。"""
+    src = [{"id": 1}, {"id": 2}]
+    tgt = [{"id": 1}, {"id": 2}]
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+    calls = {"n": 0}
+    real = runner_module.compare_sorted_row_iterators
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "compare_sorted_row_iterators", spy)
+
+    task_id = _make_task(result_format="json", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+    assert calls["n"] == 1, "json+stream_compare 必须走 sorted_iterators"
+    assert result.summary.same == 2
+
+
+def test_parquet_non_stream_compare_still_uses_streaming_writer(
+    isolated_storage, monkeypatch,
+):
+    """F.3 路径：result_format=parquet + stream_compare=False —— 不应走 G 路径
+    （iterators 也不能调，应走 compare_rows_streaming 行级 events）。"""
+    src = [{"id": 1}, {"id": 2}, {"id": 3}]
+    tgt = [{"id": 1}, {"id": 2}]
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+    sorted_calls = {"n": 0}
+
+    def sorted_boom(*args, **kwargs):
+        sorted_calls["n"] += 1
+        raise AssertionError("F.3 路径不应调 sorted_iterators")
+
+    streaming_calls = {"n": 0}
+    real_streaming = runner_module.compare_rows_streaming
+
+    def streaming_spy(*args, **kwargs):
+        streaming_calls["n"] += 1
+        return real_streaming(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "compare_sorted_row_iterators", sorted_boom)
+    monkeypatch.setattr(runner_module, "compare_rows_streaming", streaming_spy)
+
+    task_id = _make_task(result_format="parquet", stream_compare=False)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    assert sorted_calls["n"] == 0
+    assert streaming_calls["n"] == 1
+    assert result.summary.same == 2
+    assert result.summary.only_source == 1
+
+
+def test_json_non_stream_compare_unchanged(isolated_storage, monkeypatch):
+    """原始默认路径：result_format=json + stream_compare=False —— 走 compare_rows
+    攒 dict + JsonResultWriter。F.3/G 都不应影响。"""
+    src = [{"id": 1, "v": "a"}]
+    tgt = [{"id": 1, "v": "b"}]
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="json", stream_compare=False)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+    assert result.summary.diff == 1
+    # legacy <run_id>.json 应该落盘（不是目录格式）
+    legacy = isolated_storage["results"] / f"{result.run_id}.json"
+    assert legacy.exists()
+
+
+# ─── 大数据 synthetic ─────────────────────────────────────────────────────
+
+
+def test_stream_compare_parquet_100k_rows_synthetic(isolated_storage, monkeypatch):
+    """100k sorted rows 全 same（最坏的内存场景之一：100k 行经过 events 但都
+    归到 same count_only）—— 验证：跑通 + meta counts 正确 + 无 same.parquet。
+    不连真实 DB，纯内存 iter。"""
+    n = 100_000
+    src = [{"id": i, "v": "x"} for i in range(n)]
+    tgt = src   # 完全相同
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    assert result.summary.same == n
+    assert result.summary.diff == 0
+    assert result.summary.only_source == 0
+    assert result.summary.only_target == 0
+
+    run_dir = isolated_storage["results"] / result.run_id
+    # same 桶 count_only —— 没 same.parquet
+    assert not (run_dir / "same.parquet").exists()
+    # meta.json source/target_rows 应该是 n
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_rows"] == n
+    assert meta["target_rows"] == n
+    same_meta = next(b for b in meta["buckets"] if b["name"] == "same")
+    assert same_meta["rows"] == n
+
+
+def test_stream_compare_parquet_100k_with_mixed_buckets(isolated_storage, monkeypatch):
+    """100k 行混合：1/3 same, 1/3 diff, 1/3 only_source —— meta counts 准确，
+    diff.parquet 行数对，跑通。"""
+    third = 30_000
+    src = [{"id": i, "v": f"src{i}"} for i in range(3 * third)]
+    tgt = (
+        [{"id": i, "v": f"src{i}"} for i in range(third)]  # same
+        + [{"id": i, "v": f"tgt{i}"} for i in range(third, 2 * third)]  # diff
+        # only_source for 2*third..3*third
+    )
+    _patch_readers(monkeypatch, src, tgt)
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+
+    assert result.summary.same == third
+    assert result.summary.diff == third
+    assert result.summary.only_source == third
+    assert result.summary.only_target == 0
+
+    import pyarrow.parquet as pq
+    run_dir = isolated_storage["results"] / result.run_id
+    diff_rows_n = pq.ParquetFile(run_dir / "diff.parquet").metadata.num_rows
+    only_source_rows_n = pq.ParquetFile(run_dir / "only_source.parquet").metadata.num_rows
+    assert diff_rows_n == third
+    assert only_source_rows_n == third
+    # source_rows = only_source + diff + same
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_rows"] == 3 * third
+    assert meta["target_rows"] == 2 * third
