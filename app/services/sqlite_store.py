@@ -142,6 +142,17 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             ON asset_aspect_history(changed_by, changed_at DESC);
         CREATE INDEX IF NOT EXISTS asset_aspect_history_time_idx
             ON asset_aspect_history(changed_at DESC);
+
+        -- 安全加固：JWT token 吊销表。logout 把当前 token 的 jti 写进来，
+        -- get_current_user 校验时命中即视为无效 —— 让登出 / 泄露的 token
+        -- 立刻失效，不必等它自然 exp。exp 留着给 _prune 清过期记录。
+        CREATE TABLE IF NOT EXISTS revoked_tokens (
+            jti TEXT PRIMARY KEY,
+            exp INTEGER NOT NULL,                -- token 自身过期时间戳（prune 用）
+            revoked_at TEXT NOT NULL DEFAULT '',
+            user_id TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS revoked_tokens_exp_idx ON revoked_tokens(exp);
     """)
 
 

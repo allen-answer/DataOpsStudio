@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.models import LoginRequest, LoginResponse, OkResponse, User, UserCreate, UserUpdate
 from app.services.auth import (
@@ -23,6 +23,7 @@ from app.services.auth import (
     get_current_user,
     hash_password,
     require_role,
+    revoke_active_token,
     user_store,
     verify_password,
     _redact,
@@ -54,6 +55,18 @@ def login(payload: LoginRequest):
 @router.get("/api/auth/me", response_model=User)
 def me(current: User = Depends(get_current_user)):
     return _redact(current)
+
+
+@router.post("/api/auth/logout", response_model=OkResponse)
+def logout(request: Request, current: User = Depends(get_current_user)):
+    """登出：把当前 token 写进服务端吊销表，立即失效（不必等自然 exp）。
+
+    幂等 —— 总返回 ok=True。老 token（无 jti）无法定位吊销，客户端丢弃即可，
+    会在 TTL 内自然失效。
+    """
+    revoke_active_token(request)
+    logger.info("auth logout user_id=%s username=%s", current.id, current.username)
+    return OkResponse(ok=True)
 
 
 # ─── User CRUD ────────────────────────────────────────────────────────────────

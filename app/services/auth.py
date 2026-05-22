@@ -114,12 +114,16 @@ def find_user_by_username(username: str) -> User | None:
 
 
 def create_access_token(user: User) -> tuple[str, int]:
-    """返 (token, expires_in_seconds)。"""
+    """返 (token, expires_in_seconds)。
+
+    带 `jti`（唯一 token id）—— logout / 吊销靠它定位单个 token。
+    """
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user.id,
         "username": user.username,
         "role": user.role,
+        "jti": uuid.uuid4().hex,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=JWT_TTL_SECONDS)).timestamp()),
     }
@@ -132,6 +136,74 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except JWTError:
         return None
+
+
+# ─── token 吊销（真正的 logout）────────────────────────────────────────────────
+# JWT 是无状态的：签发后到 exp 前一直有效，logout 只丢客户端 token 挡不住已
+# 泄露的副本。这里维护一张服务端吊销表 —— 命中即视为无效。表落 SQLite，重启
+# 后仍生效。
+
+
+def revoke_token(jti: str, exp: int, user_id: str = "") -> None:
+    """把一个 jti 写入吊销表。重复吊销同一 jti 幂等（INSERT OR IGNORE）。"""
+    if not jti:
+        return
+    from app.services import sqlite_store
+
+    with sqlite_store.connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO revoked_tokens (jti, exp, revoked_at, user_id) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                jti,
+                int(exp),
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                user_id,
+            ),
+        )
+
+
+def is_token_revoked(jti: str | None) -> bool:
+    """该 jti 是否已吊销。jti 为空（老 token 无此 claim）→ False，平滑兼容。"""
+    if not jti:
+        return False
+    from app.services import sqlite_store
+
+    with sqlite_store.connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,)
+        ).fetchone()
+    return row is not None
+
+
+def prune_revoked_tokens() -> int:
+    """删掉已自然过期的吊销记录 —— 过期 token 本就失效，不必再占表。"""
+    now = int(datetime.now(timezone.utc).timestamp())
+    from app.services import sqlite_store
+
+    with sqlite_store.connect() as conn:
+        cur = conn.execute("DELETE FROM revoked_tokens WHERE exp < ?", (now,))
+        return cur.rowcount
+
+
+def revoke_active_token(request: Request) -> bool:
+    """吊销当前请求携带的 token。返回是否真的吊销了。
+
+    老 token 无 `jti` claim 时无法定位 → 返回 False（logout 仍算成功，客户端
+    丢弃 token 即可；这类 token 会在 8h TTL 内自然失效）。
+    """
+    token = _extract_token(request, None)
+    if not token:
+        return False
+    payload = decode_access_token(token)
+    if not payload:
+        return False
+    jti = payload.get("jti")
+    if not jti:
+        return False
+    revoke_token(str(jti), int(payload.get("exp") or 0), str(payload.get("sub") or ""))
+    prune_revoked_tokens()
+    return True
 
 
 # ─── FastAPI 依赖 ─────────────────────────────────────────────────────────────
@@ -162,6 +234,8 @@ def get_current_user_optional(
         return None
     payload = decode_access_token(token)
     if not payload:
+        return None
+    if is_token_revoked(payload.get("jti")):
         return None
     user = user_store.get(payload.get("sub", ""))
     if user is None:
