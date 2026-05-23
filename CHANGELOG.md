@@ -8,6 +8,7 @@
 - **JobInfo 三字段补全** —— `owner_user_id / project_id / target_run_id` 落 model + jobs.py submit + API caller(tasks/workflows/workflow_runs)+ scheduler(`owner_user_id="system"`)。authz 不变,数据模型卫生 + 后续 audit 直接读字段
 - **RunLimits.query_timeout_seconds** —— 单任务覆盖全局 DB 超时。ContextVar + runner `with query_timeout_override(...)` 包,fetch_rows / iter_rows / fetch_column_details 三处自动取这个值。慢但合法的 ETL 可提到 1800s,日常 preview 任务可缩到 60s
 - **mid-run 磁盘水位检查** —— `resource_guard.check_disk_critical()` + `DiskWatermarkExceeded`。runner 双 streaming 分支每写 5000 行查一次,达 critical 主动 raise + `_cleanup_partial_parquet` rmtree 临时 run 目录避免半成品累积
+- **per-run 磁盘配额** —— `RunLimits.run_disk_quota_mb`(None=无限);`check_run_quota(run_dir, quota_mb)` 累计 run_dir/** 字节折 MB;超额抛 `RunQuotaExceeded(DiskWatermarkExceeded)`(子类共享 cleanup 路径);runner mid-run 检查跟主机水位走同一 `_check_mid_run_disk` 入口
 
 ## [0.2.0] - 2026-05-23
 

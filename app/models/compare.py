@@ -44,6 +44,10 @@ class RunLimits(BaseModel):
     # MySQL 走 SQL 会话路径,Oracle / DM 走 connection.callTimeout 路径,
     # 详见 docs/DB_STATEMENT_TIMEOUT.md。
     query_timeout_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    # Phase 13: 单 run 磁盘配额(MB);None = 无限。streaming compare 每 5000 行
+    # 查一次 run_dir 字节累计,超额 raise RunQuotaExceeded + cleanup 临时目录
+    # 防止半成品堆积。仅 parquet 路径生效(json 单文件 finalize 时才落盘)。
+    run_disk_quota_mb: int | None = Field(default=None, ge=1, le=1_048_576)
 
 
 # 字段惯例：

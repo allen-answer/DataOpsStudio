@@ -14,7 +14,12 @@ from app.compare.engine import (
     compare_sorted_row_iterators,
 )
 from app.dbclients.factory import query_timeout_override
-from app.services.resource_guard import DiskWatermarkExceeded, check_disk_critical
+from app.services.resource_guard import (
+    DiskWatermarkExceeded,
+    RunQuotaExceeded,
+    check_disk_critical,
+    check_run_quota,
+)
 from app.compare.result_writer import (
     JsonResultWriter,
     ParquetResultWriter,
@@ -223,12 +228,7 @@ def _run_task_inner(
                     tgt_count += 1
                 rows_written += 1
                 if rows_written % _DISK_WATERMARK_CHECK_INTERVAL == 0:
-                    critical, reason = check_disk_critical()
-                    if critical:
-                        raise DiskWatermarkExceeded(
-                            f"mid-run 磁盘水位达 critical:{reason} "
-                            f"(已写 {rows_written} 行,主动中止防止把盘写爆)"
-                        )
+                    _check_mid_run_disk(writer, task, rows_written)
         except DiskWatermarkExceeded:
             _cleanup_partial_parquet(writer)
             raise
@@ -248,12 +248,7 @@ def _run_task_inner(
                 writer.write_bucket_row(bucket, row)
                 rows_written += 1
                 if rows_written % _DISK_WATERMARK_CHECK_INTERVAL == 0:
-                    critical, reason = check_disk_critical()
-                    if critical:
-                        raise DiskWatermarkExceeded(
-                            f"mid-run 磁盘水位达 critical:{reason} "
-                            f"(已写 {rows_written} 行,主动中止防止把盘写爆)"
-                        )
+                    _check_mid_run_disk(writer, task, rows_written)
         except DiskWatermarkExceeded:
             _cleanup_partial_parquet(writer)
             raise
@@ -296,6 +291,29 @@ def _run_task_inner(
             for name, rows in manifest.samples.items()
         },
     )
+
+
+def _check_mid_run_disk(writer: ResultWriter, task: CompareTask, rows_written: int) -> None:
+    """每 _DISK_WATERMARK_CHECK_INTERVAL 行调一次:主机磁盘水位 + 单 run 配额。
+
+    都属于 mid-run 中止 —— `DiskWatermarkExceeded` / `RunQuotaExceeded` 走同一
+    cleanup 路径(caller `except DiskWatermarkExceeded` 一并接住)。
+    """
+    critical, reason = check_disk_critical()
+    if critical:
+        raise DiskWatermarkExceeded(
+            f"mid-run 磁盘水位达 critical:{reason} "
+            f"(已写 {rows_written} 行,主动中止防止把盘写爆)"
+        )
+    run_dir = getattr(writer, "run_dir", None)
+    over_quota, quota_reason = check_run_quota(
+        run_dir, task.limits.run_disk_quota_mb,
+    )
+    if over_quota:
+        raise RunQuotaExceeded(
+            f"mid-run 单 run 配额超额:{quota_reason} "
+            f"(已写 {rows_written} 行,主动中止防止单 run 吃光配额)"
+        )
 
 
 def _cleanup_partial_parquet(writer: ResultWriter) -> None:

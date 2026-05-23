@@ -174,6 +174,15 @@ class DiskWatermarkExceeded(RuntimeError):
     """
 
 
+class RunQuotaExceeded(DiskWatermarkExceeded):
+    """单 run 落盘字节超过 task.limits.run_disk_quota_mb 配额。
+
+    继承 DiskWatermarkExceeded —— caller 用 `except DiskWatermarkExceeded` 能
+    一并接住两种 mid-run 中止(主机磁盘 + 单 run 配额),走同一条 cleanup 路径。
+    上层区分时再 `isinstance` 判断。
+    """
+
+
 def check_disk_critical(
     config: "GuardConfig | None" = None,
 ) -> tuple[bool, str | None]:
@@ -196,6 +205,38 @@ def check_disk_critical(
         return True, (
             f"磁盘使用率 {usage_pct:.1f}% 高于阈值 {cfg.results_max_disk_usage_pct}% "
             f"(DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT)"
+        )
+    return False, None
+
+
+def check_run_quota(
+    run_dir: "Path | None", quota_mb: int | None,
+) -> tuple[bool, str | None]:
+    """mid-run 用:单 run 落盘字节是否超过 task.limits.run_disk_quota_mb?
+
+    `quota_mb=None` → 无限制,直接返 `(False, None)`(老 task 默认行为)。
+    `run_dir=None` 或不存在 → 写入还没落到目录(early phase),返 `(False, None)`。
+
+    把 `run_dir/**` 累计字节折成 MB,> quota_mb 时返 `(True, reason)`。文件
+    系统调用失败(权限 / race)吞掉返健康值,绝不因测量失败误拦真查询。
+    """
+    if quota_mb is None or quota_mb <= 0:
+        return False, None
+    if run_dir is None:
+        return False, None
+    try:
+        if not run_dir.exists():
+            return False, None
+        total_bytes = sum(
+            f.stat().st_size for f in run_dir.rglob("*") if f.is_file()
+        )
+    except (OSError, ValueError):
+        return False, None
+    total_mb = total_bytes / (1024 ** 2)
+    if total_mb > quota_mb:
+        return True, (
+            f"该 run 已落盘 {total_mb:.1f}MB 超出配额 {quota_mb}MB "
+            f"(task.limits.run_disk_quota_mb)"
         )
     return False, None
 

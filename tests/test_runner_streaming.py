@@ -236,6 +236,86 @@ def test_stream_compare_passes_when_disk_healthy(isolated_storage, monkeypatch):
     assert result.summary.same == 20  # 正常跑完
 
 
+def test_stream_compare_aborts_on_run_quota_exceeded(isolated_storage, monkeypatch):
+    """task.limits.run_disk_quota_mb=1 + 实际落盘超过 → RunQuotaExceeded +
+    清理临时目录"""
+    src = [{"id": i, "v": f"long_value_string_{i}_padding_for_size"} for i in range(50)]
+    tgt = list(src)
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+    monkeypatch.setattr(runner_module, "_DISK_WATERMARK_CHECK_INTERVAL", 5)
+    # 主机磁盘 healthy(确保是 run quota 触发而非 host watermark)
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (200.0, 30.0),
+    )
+    # 让 check_run_quota 返 True(模拟超 quota,不依赖具体字节)
+    # 注意:patch runner 自己 namespace 里 import 进来的引用,而不是 resource_guard
+    # 的源 —— runner 用 `from ... import check_run_quota` 拿了独立绑定
+    monkeypatch.setattr(
+        "app.services.runner.check_run_quota",
+        lambda run_dir, quota_mb: (True, f"模拟超额 quota_mb={quota_mb}"),
+    )
+
+    # 构造带 run_disk_quota_mb=1 的 task
+    from app.models import CompareTaskCreate, RunLimits
+    payload = CompareTaskCreate(
+        name="quota-test",
+        source_kind="sql", target_kind="sql",
+        source_id="ds-x", target_id="ds-x",
+        sql_mode="double",
+        source_sql="SELECT id FROM t ORDER BY id",
+        target_sql="SELECT id FROM t ORDER BY id",
+        key_columns=["id"],
+        limits=RunLimits(
+            stream_compare=True,
+            result_format="parquet",
+            run_disk_quota_mb=1,  # 1MB 配额
+        ),
+    )
+    task_id = task_store.create(payload).id
+
+    from app.services.runner import run_task
+    from app.services.resource_guard import RunQuotaExceeded, DiskWatermarkExceeded
+
+    with pytest.raises(RunQuotaExceeded) as exc_info:
+        run_task(task_id)
+
+    # RunQuotaExceeded 是 DiskWatermarkExceeded 子类(走同 cleanup 路径)
+    assert isinstance(exc_info.value, DiskWatermarkExceeded)
+    assert "配额" in str(exc_info.value)
+
+    # cleanup 应删临时 parquet run 目录(跳 fixture 自带的两个固定子目录)
+    results_dir = isolated_storage["results"]
+    skip_names = {"uploads", "workflow_runs"}
+    leftover = [
+        p for p in results_dir.iterdir()
+        if p.is_dir() and p.name not in skip_names
+    ]
+    assert leftover == [], f"RunQuotaExceeded 后应无残留 run 目录,实有:{leftover}"
+
+
+def test_stream_compare_no_quota_no_check(isolated_storage, monkeypatch):
+    """run_disk_quota_mb=None(默认)→ check_run_quota 直接 short-circuit 返 False,
+    不影响正常 run"""
+    src = [{"id": i, "v": f"x{i}"} for i in range(20)]
+    tgt = list(src)
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+    monkeypatch.setattr(runner_module, "_DISK_WATERMARK_CHECK_INTERVAL", 5)
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (200.0, 30.0),  # healthy
+    )
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)  # 默认 quota=None
+    from app.services.runner import run_task
+    result = run_task(task_id)
+    assert result.summary.same == 20  # quota=None 不影响正常完成
+
+
 def test_json_stream_compare_still_uses_iterators(isolated_storage, monkeypatch):
     """result_format=json + stream_compare=True 仍走 compare_sorted_row_iterators
     攒完整 dict（不能切到 events 路径，因为 JsonResultWriter 需要整 dict）。"""

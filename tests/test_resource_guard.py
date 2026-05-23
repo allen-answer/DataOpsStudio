@@ -12,8 +12,10 @@ from app.services.resource_guard import (
     GuardDecision,
     HostSnapshot,
     QueueState,
+    RunQuotaExceeded,
     TaskShape,
     check_disk_critical,
+    check_run_quota,
     decision_detail,
     evaluate,
     guard_compare_run,
@@ -388,3 +390,62 @@ def test_disk_watermark_exceeded_is_runtime_error():
     assert issubclass(DiskWatermarkExceeded, RuntimeError)
     exc = DiskWatermarkExceeded("test message")
     assert str(exc) == "test message"
+
+
+# ─── per-run 配额 check_run_quota ─────────────────────────────────────────
+
+
+def test_run_quota_exceeded_is_disk_watermark_subclass():
+    """caller 的 try/except DiskWatermarkExceeded 必须能接住 RunQuotaExceeded ——
+    走同一条 cleanup 路径"""
+    assert issubclass(RunQuotaExceeded, DiskWatermarkExceeded)
+    assert issubclass(RunQuotaExceeded, RuntimeError)
+
+
+def test_check_run_quota_none_means_unlimited(tmp_path):
+    """quota=None 永远 OK(老 task / 无显式配额)"""
+    (tmp_path / "data.parquet").write_bytes(b"x" * 1024 * 1024)  # 1MB
+    over, reason = check_run_quota(tmp_path, None)
+    assert over is False
+    assert reason is None
+
+
+def test_check_run_quota_under_quota(tmp_path):
+    """落盘 1MB,配额 10MB → 不超"""
+    (tmp_path / "data.parquet").write_bytes(b"x" * 1024 * 1024)
+    over, reason = check_run_quota(tmp_path, 10)
+    assert over is False
+    assert reason is None
+
+
+def test_check_run_quota_over_quota(tmp_path):
+    """落盘 3MB,配额 1MB → 超(message 含 MB 数字 + 配额值)"""
+    (tmp_path / "data.parquet").write_bytes(b"x" * 3 * 1024 * 1024)
+    over, reason = check_run_quota(tmp_path, 1)
+    assert over is True
+    assert "3.0MB" in reason
+    assert "1MB" in reason
+
+
+def test_check_run_quota_nested_files_summed(tmp_path):
+    """run_dir 嵌套子目录的文件也算进总额"""
+    (tmp_path / "only_source.parquet").write_bytes(b"x" * 1024 * 1024)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "diff.parquet").write_bytes(b"y" * 1024 * 1024)
+    over, reason = check_run_quota(tmp_path, 1)
+    # 1MB + 1MB = 2MB > 1MB 配额
+    assert over is True
+
+
+def test_check_run_quota_missing_dir_is_healthy(tmp_path):
+    """run_dir 不存在(write 前 early phase)→ 不超"""
+    missing = tmp_path / "missing"
+    over, reason = check_run_quota(missing, 10)
+    assert over is False
+
+
+def test_check_run_quota_none_run_dir_is_healthy():
+    """run_dir=None(json writer 没 run_dir 属性)→ 不超"""
+    over, reason = check_run_quota(None, 10)
+    assert over is False
