@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from app.models import LoginRequest, LoginResponse, OkResponse, User, UserCreate, UserUpdate
 from app.services.auth import (
     create_access_token,
+    ensure_recent_auth,
     find_user_by_username,
     get_current_user,
     hash_password,
@@ -158,7 +159,13 @@ def update_user(
 
 
 @router.delete("/api/users/{user_id}", response_model=OkResponse)
-def delete_user(user_id: str, current: User = Depends(require_role("admin"))):
+def delete_user(
+    user_id: str,
+    request: Request,
+    current: User = Depends(require_role("admin")),
+):
+    """删除用户 —— admin only + step-up（300s）。不可撤销动作必须有近期认证。"""
+    ensure_recent_auth(request, max_age=300)
     if current.id == user_id:
         raise HTTPException(status_code=400, detail="不能删除当前登录的账号")
     target = user_store.get(user_id)

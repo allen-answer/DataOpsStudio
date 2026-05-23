@@ -23,7 +23,9 @@
 - `app/api/auth.py`：
   - `POST /api/auth/verify-password` body `{password}` —— 验密码 → 签新 token。
 - 已挂的敏感端点：
-  - `GET /config/export?include_passwords=true`
+  - `GET /config/export?include_passwords=true`（导出含密码配置）
+  - `POST /config/import`（覆盖式导入 datasources + tasks）
+  - `DELETE /api/users/{user_id}`（不可逆删除用户）
 
 ## 前端
 
@@ -31,10 +33,21 @@
 `step_up_required` → prompt 密码 → verify-password → 写新 token →
 `_doExportFetch` 重试一次。
 
+通用 helper `frontend/.../utils/stepUpRetry.ts`：
+
+```ts
+await withStepUpRetry(() => apiJson(`/api/users/${id}`, 'DELETE'))
+```
+
+- 已接入：`UserManagementView.deleteUser`。
+- 未接入：`AIConfigView` 的 AI key 保存（后端已 gate 在 PUT /api/lineage/ai/config
+  之外没挂；该端点 admin 偶尔用，被 403 后手动重登可接受，留后续）。
+
 ## 后续
 
-- 把更多敏感端点挂上 `ensure_recent_auth`：`POST /config/import`、
-  `DELETE /api/users/{id}`、`POST /api/lineage/ai/config`（AI 密钥）等。
+- AI 密钥保存端点（`PUT /api/lineage/ai/config`）后端 gate + `AIConfigView` 接
+  `withStepUpRetry`。本切片暂未挂。
 - 把 `window.prompt` 换成正式 modal 组件，更好的 UX。
 - 跟 [token 吊销](./SESSION_HARDENING.md) / refresh rotation（未做）配合：
   每次 verify-password 同时吊销老 jti，杜绝并发会话错乱。
+- `AppTopBar.exportConfig` 用 `withStepUpRetry` 重写一次，去掉内联的重试代码。

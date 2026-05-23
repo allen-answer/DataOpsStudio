@@ -5,6 +5,7 @@ import { Plus, Trash2, RefreshCw, Save, X } from 'lucide-vue-next'
 import { apiGet, apiJson } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useNoticeStore } from '../../stores/notice'
+import { withStepUpRetry } from '../../utils/stepUpRetry'
 
 type Role = 'viewer' | 'editor' | 'admin'
 
@@ -126,11 +127,19 @@ async function deleteUser(user: UserItem): Promise<void> {
   }
   if (!confirm(`确认删除用户 ${user.username}？此操作不可撤销。`)) return
   try {
-    await apiJson(`/api/users/${user.id}`, 'DELETE')
+    // 该端点已挂 step-up；近 300s 没认证 → step_up_required → helper prompt
+    // 密码 + verify-password + 换新 token + 重试一次
+    await withStepUpRetry(() => apiJson(`/api/users/${user.id}`, 'DELETE'))
     noticeStore.setNotice(`用户 ${user.username} 已删除`)
     await reload()
   } catch (err: any) {
-    noticeStore.setNotice(`删除失败：${err?.message || err}`)
+    const msg = String(err?.message || err)
+    if (msg === 'step_up_cancelled') return
+    if (msg === 'step_up_verify_failed') {
+      noticeStore.setNotice('密码错误，删除取消')
+      return
+    }
+    noticeStore.setNotice(`删除失败：${msg}`)
   }
 }
 

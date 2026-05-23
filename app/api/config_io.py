@@ -39,7 +39,16 @@ def config_export(
 
 
 @router.post("/config/import")
-def config_import(config_file: UploadFile = File(...), _: object = Depends(require_role("admin"))):
+def config_import(
+    request: Request,
+    config_file: UploadFile = File(...),
+    _: object = Depends(require_role("admin")),
+):
+    """批量导入 datasources + tasks（覆盖式）—— admin only + step-up（300s）。
+
+    导入会覆盖已有配置，影响面比单对象 create 大，跟含密码导出同级敏感。
+    """
+    ensure_recent_auth(request, max_age=300)
     if not config_file.filename or Path(config_file.filename).suffix.lower() != ".json":
         raise HTTPException(status_code=400, detail="Only .json config files are supported")
     try:

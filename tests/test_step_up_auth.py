@@ -86,6 +86,50 @@ def test_export_no_passwords_old_token_still_passes(client):
     assert resp.json()["passwords_included"] is False
 
 
+def test_config_import_fresh_login_passes(client):
+    import json as _json
+    from io import BytesIO
+    body = _json.dumps({"datasources": [], "tasks": []}).encode()
+    resp = client.post(
+        "/config/import",
+        files={"config_file": ("config.json", BytesIO(body), "application/json")},
+        follow_redirects=False,
+    )
+    # 303 redirect 是 success（端点跳回 /spa?config_imported=1）；关键是 != 403/401
+    assert resp.status_code in (200, 303)
+
+
+def test_config_import_old_token_triggers_step_up(client):
+    import json as _json
+    from io import BytesIO
+    old = _old_admin_token(secs_ago=600)
+    body = _json.dumps({"datasources": [], "tasks": []}).encode()
+    resp = client.post(
+        "/config/import",
+        files={"config_file": ("config.json", BytesIO(body), "application/json")},
+        headers={"Authorization": f"Bearer {old}"},
+    )
+    assert resp.status_code == 403
+    assert "step_up_required" in str(resp.json().get("detail") or "")
+
+
+def test_delete_user_fresh_login_passes(client):
+    editor = find_user_by_username("editor")
+    resp = client.delete(f"/api/users/{editor.id}")
+    assert resp.status_code == 200
+
+
+def test_delete_user_old_token_triggers_step_up(client):
+    editor = find_user_by_username("editor")
+    old = _old_admin_token(secs_ago=600)
+    resp = client.delete(
+        f"/api/users/{editor.id}",
+        headers={"Authorization": f"Bearer {old}"},
+    )
+    assert resp.status_code == 403
+    assert "step_up_required" in str(resp.json().get("detail") or "")
+
+
 def test_step_up_then_retry_export_succeeds(client):
     """完整流程：老 token 含密码导出 403 → verify-password 拿新 token → 重试 200。"""
     old = _old_admin_token(secs_ago=600)
