@@ -189,6 +189,7 @@ _COUNTERS_HISTOGRAMS = [
     ai_usage_calls_total,
     ai_usage_tokens_total,
     guard_decisions_total,
+    auth_rate_limit_hits_total,
 ]
 
 
@@ -208,5 +209,6 @@ __all__ = [
     "ai_usage_calls_total",
     "ai_usage_tokens_total",
     "guard_decisions_total",
+    "auth_rate_limit_hits_total",
     "render_prometheus",
 ]
