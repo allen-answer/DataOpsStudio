@@ -31,6 +31,11 @@ services:
     container_name: dataops-studio
     environment:
       LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/dmssl:/usr/local/lib/python3.12/site-packages/dmpython.libs
+      # Access JWT 30 分钟 + refresh rotation —— 默认 8h 配合长 refresh 等于
+      # 没 refresh,token 一年不到期一次。短 TTL + 静默 refresh 才是 OAuth2
+      # 设计本意（RFC 6749 §1.5）—— XSS / 中间人捞到 token 也只有 30 分钟窗口。
+      DATAOPS_JWT_TTL_SECONDS: "1800"
+      # Refresh TTL 默认 7 天不动 —— 太短=每周强制重登,太长=被盗后续命太久
     ports:
       - "8010:8010"
     volumes:
