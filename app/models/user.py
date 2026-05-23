@@ -24,6 +24,11 @@ class User(BaseModel):
     role: UserRole = "viewer"
     display_name: str = ""
     created_at: str = ""
+    # MFA (TOTP)：mfa_secret_encrypted 由 secret_crypto 加密落盘；空 = 未 enroll。
+    # enroll 后落 secret 但 mfa_enabled=False；verify 成功才置 True。
+    # API 出去强制脱敏（_redact），别让 secret 走出去。
+    mfa_secret_encrypted: str = Field(default="", repr=False)
+    mfa_enabled: bool = False
 
     model_config = ConfigDict(extra="ignore")
 
@@ -50,10 +55,18 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
+    """登录响应 —— 兼容 MFA 两步流。
+
+    无 MFA / MFA 通过：`access_token`、`user` 都有。
+    需 MFA：`mfa_required=True` + `mfa_token`（5 分钟 challenge token）
+    取代正式 token；客户端提交 OTP 到 `/api/auth/mfa/challenge` 换正式 token。
+    """
+    access_token: str = ""
     token_type: str = "bearer"
-    expires_in: int  # seconds
-    user: User
+    expires_in: int = 0  # seconds
+    user: User | None = None
+    mfa_required: bool = False
+    mfa_token: str = ""  # 仅 mfa_required=True 时填充
 
 
 class Project(BaseModel):

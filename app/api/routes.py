@@ -18,6 +18,7 @@ from app.api import (
     history,
     lineage,
     lineage_graph,
+    mfa,
     projects,
     runs,
     scenarios,
@@ -37,6 +38,7 @@ router = APIRouter()
 # 路由匹配按"先注册先匹配"+"具体路径优先"）。
 router.include_router(system.router)
 router.include_router(auth.router)
+router.include_router(mfa.router)
 router.include_router(projects.router)
 router.include_router(datasources.router)
 router.include_router(tasks.router)

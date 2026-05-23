@@ -10,6 +10,7 @@ sqlglot>=26.0
 pyyaml>=6.0  # config/lineage_group_rules.yml 解析；JSON 格式仍可用，YAML 仅在文件后缀是 .yml/.yaml 时需要
 bcrypt>=4.0  # 用户口令 hash（直接用 bcrypt 库，passlib 1.7.4 + bcrypt 5.x 兼容性差）
 python-jose[cryptography]>=3.3  # JWT 编解码
+pyotp>=2.9  # TOTP / MFA 第二因子（admin 二步验证）
 pytest>=8.0
 httpx>=0.27   # TestClient 依赖：starlette.testclient 通过 httpx 驱动
 APScheduler>=3.10

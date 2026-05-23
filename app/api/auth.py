@@ -43,8 +43,53 @@ def login(payload: LoginRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
         )
+    # MFA 已启用 → 不直接签 access token，先发 5min mfa_challenge token，
+    # 客户端跳 OTP 输入界面提交到 /api/auth/mfa/challenge 换正式 token。
+    if user.mfa_enabled:
+        from app.services.mfa import issue_mfa_challenge_token
+
+        mfa_token, mfa_ttl = issue_mfa_challenge_token(user.id)
+        logger.info("auth login mfa_required user_id=%s username=%s", user.id, user.username)
+        return LoginResponse(mfa_required=True, mfa_token=mfa_token, expires_in=mfa_ttl)
+
     token, ttl = create_access_token(user)
     logger.info("auth login user_id=%s username=%s role=%s", user.id, user.username, user.role)
+    return LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=ttl,
+        user=_redact(user),
+    )
+
+
+@router.post("/api/auth/mfa/challenge", response_model=LoginResponse)
+def mfa_challenge(payload: dict = Body(...)):
+    """MFA 两步流的第二步：用 login 返回的 mfa_token + 6 位 OTP 换正式 access token。
+
+    anon 端点（用户还没拿到 access token，不能挂 get_current_user）。靠 mfa_token
+    自身签名 + purpose=mfa_challenge claim + 5 分钟 exp 防滥用。
+    """
+    from app.services.mfa import (
+        decrypt_mfa_secret,
+        verify_mfa_challenge_token,
+        verify_totp,
+    )
+
+    mfa_token = str(payload.get("mfa_token") or "")
+    code = str(payload.get("code") or "").strip()
+    if not mfa_token or not code:
+        raise HTTPException(status_code=400, detail="mfa_token / code 不能为空")
+    user_id = verify_mfa_challenge_token(mfa_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="mfa_token 无效或已过期，请重新登录")
+    user = user_store.get(user_id)
+    if user is None or not user.mfa_enabled:
+        raise HTTPException(status_code=401, detail="用户不存在或 MFA 已关闭")
+    secret = decrypt_mfa_secret(user.mfa_secret_encrypted)
+    if not verify_totp(secret, code):
+        raise HTTPException(status_code=401, detail="OTP 验证失败")
+    token, ttl = create_access_token(user)
+    logger.info("auth mfa challenge ok user_id=%s username=%s", user.id, user.username)
     return LoginResponse(
         access_token=token,
         token_type="bearer",
