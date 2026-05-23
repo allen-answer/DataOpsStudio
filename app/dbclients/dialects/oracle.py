@@ -31,6 +31,54 @@ class OracleDialect(Dialect):
         except (AttributeError, TypeError):
             return False
 
+    def estimate_rows_from_explain(self, conn: Any, sql: str) -> int | None:
+        # Oracle/DM 走 `EXPLAIN PLAN SET STATEMENT_ID='X' FOR <sql>` 两步:
+        # 1. EXPLAIN PLAN 把 plan 写进 SYS.PLAN_TABLE(全用户共享表),用 statement_id
+        #    隔离并发(多个 preflight 同时跑不会污染彼此)
+        # 2. SELECT MAX(cardinality) FROM PLAN_TABLE WHERE statement_id=...
+        #    cardinality 是优化器估算的输出行数,跟 MySQL `rows` 列同义
+        # 3. DELETE 清理本次 STATEMENT_ID 的所有行(防 PLAN_TABLE 累积膨胀)
+        #
+        # 失败任一步返 None,caller 安全降级。EXPLAIN PLAN 本身不消耗 DML quota,
+        # 不会进 redo log。多数 Oracle DB 有默认 PLAN_TABLE_$;早版本需 DBA 建
+        # —— 错那种环境就 fallback None。
+        # statement_id 我们自己生成,纯 hex(uuid.uuid4().hex 只含 0-9a-f)+ 固
+        # 定前缀,SQL 注入面=0 —— 直接内联,避免不同 driver(cx_Oracle/oracledb
+        # vs dmPython)对 bind 语法的差异(:name / :1 / ?)
+        import uuid
+        statement_id = f"dataops_preflight_{uuid.uuid4().hex[:16]}"
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql}")
+            cursor.execute(
+                f"SELECT MAX(cardinality) FROM PLAN_TABLE WHERE statement_id = '{statement_id}'"
+            )
+            row = cursor.fetchone()
+            estimated = row[0] if row else None
+            if estimated is None:
+                return None
+            try:
+                return int(estimated)
+            except (TypeError, ValueError):
+                return None
+        except Exception:
+            return None
+        finally:
+            # cleanup: 删自己 statement_id 的 PLAN_TABLE 行(吞掉失败,避免淹没原始错)
+            if cursor is not None:
+                try:
+                    cursor.execute(
+                        f"DELETE FROM PLAN_TABLE WHERE statement_id = '{statement_id}'"
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
     def connect(self, source: DataSource, module_name: str) -> Any:
         # oracledb / cx_Oracle 都接 user/password/dsn 三参数；dsn 优先用
         # extra.dsn（让用户自己写 TNS / Easy Connect），否则按 host:port/service 拼

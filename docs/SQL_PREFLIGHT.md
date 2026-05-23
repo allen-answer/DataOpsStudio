@@ -82,20 +82,20 @@ blocking 时,额外调 `dialect.estimate_rows_from_explain(conn, sql)` 看 plan
 | 方言 | 路径 | 状态 |
 |---|---|---|
 | MySQL | `EXPLAIN <sql>` → `rows` 列取 max | ✅ |
-| Oracle / DM | `EXPLAIN PLAN FOR ...; SELECT FROM PLAN_TABLE` 两步 | 留口(返 None) |
+| Oracle | `EXPLAIN PLAN SET STATEMENT_ID='...' FOR <sql>` + `SELECT MAX(cardinality) FROM PLAN_TABLE WHERE statement_id='...'` + DELETE 清理 | ✅ |
+| DM | 继承 OracleDialect 自动支持(DM PLAN_TABLE 协议跟 Oracle 一致) | ✅ |
 | DB2 | `db2expln` / EXPLAIN mode | 留口(返 None) |
+
+**Oracle/DM 实现细节**:用 `STATEMENT_ID='dataops_preflight_<uuid hex>'` 隔离并发(多个 preflight 同时跑互不污染)。`cardinality` 是优化器估算输出行数,跟 MySQL `rows` 列同义,取 max 同样的逻辑。`finally` 块 DELETE 清理本次 statement_id 行 + commit,防 PLAN_TABLE 累积膨胀。DELETE 失败吞掉(避免淹没原始错)。
+
+**当前调用面**:`POST /api/sql/preflight` 端点已接入 —— body 加 `run_explain=true&datasource_id=<id>` 即走 EXPLAIN 路径。datasource_id 校验走 `require_datasource_access`(404/403 语义跟其它直接接 datasource_id 端点一致)。连接错误 / driver 没装 / EXPLAIN 内部异常都 fallback 纯静态 + 200,**不让 preflight 整体崩**。
 
 **为什么取 max 不是 sum**:MySQL EXPLAIN 每个 join 步骤单独一行,rows 列是该步
 过滤后行数(不累乘)。sum 会高估,last 会漏 broadcast。取 max 接近「最坏单步代价」
 更贴近真实风险信号。
 
-**当前调用面**:`assess_with_explain` 是公开 API,目前没有 endpoint / runner 自动
-调用 —— 留给后续切片决定何时上线(同 `resource_guard`/`sql_preflight` dry-run →
-enforce 推进节奏)。
-
 ## 未覆盖（后续切片）
 
-- 前端 Workbench 运行前调用 + 风险弹窗。
-- Oracle / DM / DB2 的 `estimate_rows_from_explain` 实现。
-- API endpoint `/api/sql/preflight` 加 `run_explain=true&datasource_id=...` 参数。
+- 前端 Workbench 运行前 UI 接 `run_explain=true&datasource_id=` 触发 + 风险弹窗。
+- DB2 的 `estimate_rows_from_explain` 实现(`db2expln` / `EXPLAIN MODE EXPLAIN`)。
 - LOB/BLOB 大字段、谓词函数包裹等需要 schema 知识的规则。

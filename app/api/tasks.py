@@ -29,10 +29,10 @@ from app.models import (
 )
 from app.services.auth import get_current_user, require_role
 from app.services.jobs import submit_task_run
-from app.services.repositories import task_store
+from app.services.repositories import datasource_store, task_store
 from app.services.resource_guard import decision_detail, guard_compare_run
 from app.services.runner import build_reader, run_task
-from app.services.sql_preflight import SQLPreflightDecision, assess_sql
+from app.services.sql_preflight import SQLPreflightDecision, assess_sql, assess_with_explain
 from app.utils.sql_guard import validate_readonly_sql
 
 
@@ -209,8 +209,14 @@ def sql_preflight_api(
 ) -> SQLPreflightDecision:
     """对比 SQL 运行前静态体检（advisory，不连库、不拦）。Workbench 点运行前调用。
 
-    body: `{sql, dialect?, key_columns?, mode?, max_rows?, stream_compare?}`。
+    body: `{sql, dialect?, key_columns?, mode?, max_rows?, stream_compare?,
+            run_explain?, datasource_id?}`。
     路由挂在 tasks 模块下 —— preflight 紧贴 run，Workbench 同处调用。
+
+    `run_explain=true` + `datasource_id` 时额外走 dialect.estimate_rows_from_explain
+    (MySQL: EXPLAIN ..., Oracle/DM: EXPLAIN PLAN FOR ...),plan 估算超
+    `max_rows × 10` 加 explain_rows_high warn finding。**advisory only**,
+    不阻塞真任务;EXPLAIN 失败 / 不支持 / 不传 datasource_id 安全降级到纯静态。
     """
     payload = payload or {}
     sql = str(payload.get("sql") or "")
@@ -227,13 +233,54 @@ def sql_preflight_api(
         max_rows = int(payload.get("max_rows") or 100_000)
     except (TypeError, ValueError):
         max_rows = 100_000
+    stream_compare = bool(payload.get("stream_compare"))
+    dialect_field = str(payload.get("dialect") or "")
+
+    # EXPLAIN 路径(opt-in via run_explain + datasource_id)
+    run_explain = bool(payload.get("run_explain"))
+    datasource_id = str(payload.get("datasource_id") or "").strip()
+    if run_explain and datasource_id:
+        # require_datasource_access 一次完成「存在性 + project 权限」校验,
+        # 返回 DataSource 对象避免重复 store.get
+        ds = require_datasource_access(current, datasource_id, detail="无权对该数据源跑 EXPLAIN")
+        # dialect 优先用 datasource 真实 db_type;caller body 里 dialect 字段
+        # 仅在没 datasource 时用,这里 datasource 在场以它为准
+        dialect_name = ds.db_type.value
+        from app.dbclients import factory as _factory
+        from app.dbclients import pool as _pool
+        from app.dbclients.drivers import first_available_module
+        module_name = first_available_module(ds.db_type)
+        if not module_name:
+            # 驱动没装 → 安全降级走纯静态
+            return assess_sql(
+                sql=sql, dialect=dialect_field or dialect_name, key_columns=key_columns,
+                mode=mode, max_rows=max_rows, stream_compare=stream_compare,
+            )
+        try:
+            with _pool.borrow(ds, lambda: _factory._connect(ds, module_name)) as conn:
+                return assess_with_explain(
+                    sql=sql,
+                    dialect_name=dialect_name,
+                    conn=conn,
+                    key_columns=key_columns,
+                    mode=mode,
+                    max_rows=max_rows,
+                    stream_compare=stream_compare,
+                )
+        except Exception:
+            # 连不上 / EXPLAIN 内部异常 —— 安全降级到纯静态,不让 preflight 整体崩
+            return assess_sql(
+                sql=sql, dialect=dialect_field or dialect_name, key_columns=key_columns,
+                mode=mode, max_rows=max_rows, stream_compare=stream_compare,
+            )
+
     return assess_sql(
         sql=sql,
-        dialect=str(payload.get("dialect") or ""),
+        dialect=dialect_field,
         key_columns=key_columns,
         mode=mode,
         max_rows=max_rows,
-        stream_compare=bool(payload.get("stream_compare")),
+        stream_compare=stream_compare,
     )
 
 

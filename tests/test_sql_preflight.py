@@ -234,6 +234,56 @@ def test_preflight_endpoint_requires_login(client_anon):
     assert resp.status_code == 401
 
 
+def test_preflight_endpoint_run_explain_without_datasource_skips(client):
+    """run_explain=true 但 datasource_id 缺/空 → 静默降级到纯静态(不走 EXPLAIN)"""
+    resp = client.post("/api/sql/preflight", json={
+        "sql": "SELECT id FROM users WHERE id > 0",
+        "run_explain": True,
+        # 没 datasource_id
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["explain_used"] is False
+
+
+def test_preflight_endpoint_run_explain_bad_datasource_404(client):
+    """run_explain=true + 不存在的 datasource_id → 404"""
+    resp = client.post("/api/sql/preflight", json={
+        "sql": "SELECT id FROM users",
+        "run_explain": True,
+        "datasource_id": "ds-does-not-exist",
+    })
+    assert resp.status_code == 404
+
+
+def test_preflight_endpoint_run_explain_safe_degrades_on_driver_missing(client, isolated_storage):
+    """run_explain=true + 真实 datasource(MySQL 但驱动连不上)→ 静默降级,
+    返 200 + explain_used=False(不让 preflight 整体崩)"""
+    from app.models import DataSourceCreate, DatabaseType
+    from app.services.repositories import datasource_store
+
+    ds = datasource_store.create(DataSourceCreate(
+        name="explain-test-ds",
+        db_type=DatabaseType.MYSQL,
+        host="nonexistent.invalid",
+        port=3306,
+        database="test",
+        username="u",
+        password="p",
+    ))
+    resp = client.post("/api/sql/preflight", json={
+        "sql": "SELECT id FROM users WHERE id > 0",
+        "run_explain": True,
+        "datasource_id": ds.id,
+    })
+    # 连不上 nonexistent.invalid:3306 → assess_with_explain 报错 → fallback 纯静态
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["explain_used"] is False
+    # 静态本身没 finding(clean SQL)
+    assert body["blocking"] is False
+
+
 # ─── run-time enforce（_preflight_or_raise）────────────────────────────────
 
 
@@ -476,11 +526,166 @@ def test_mysql_dialect_estimate_rows_no_rows_column():
     assert result is None
 
 
-def test_oracle_dm_db2_estimate_rows_return_none():
-    """非 MySQL 方言基类默认返 None,留后续切片"""
+def test_db2_estimate_rows_returns_none():
+    """DB2 仍是文档化缺口(没 PLAN_TABLE 等价物可用,留后续切片)"""
     from app.dbclients.dialects import get_dialect
     from app.models import DatabaseType
-    for db_type in (DatabaseType.ORACLE, DatabaseType.DM, DatabaseType.DB2):
-        d = get_dialect(db_type)
-        # 不模拟真实 conn —— 这些方言不支持,基类直接 return None,不调 cursor
-        assert d.estimate_rows_from_explain(conn=None, sql="SELECT 1") is None
+    d = get_dialect(DatabaseType.DB2)
+    # 不模拟真实 conn —— 基类直接 return None,不调 cursor
+    assert d.estimate_rows_from_explain(conn=None, sql="SELECT 1") is None
+
+
+# ─── Oracle / DM EXPLAIN PLAN 路径 ──────────────────────────────────────────
+
+
+class _FakeOracleCursor:
+    """模拟 oracledb / cx_Oracle / dmPython cursor —— 两步 EXPLAIN PLAN +
+    SELECT cardinality FROM PLAN_TABLE 流程"""
+    def __init__(self, max_cardinality, raise_on_explain=False, raise_on_select=False):
+        self._max = max_cardinality
+        self._raise_explain = raise_on_explain
+        self._raise_select = raise_on_select
+        self.executed: list[str] = []
+        self._next_result = None
+        self.deleted = False
+
+    def execute(self, sql: str):
+        self.executed.append(sql)
+        if sql.startswith("EXPLAIN PLAN"):
+            if self._raise_explain:
+                raise RuntimeError("simulated EXPLAIN PLAN failure")
+            self._next_result = None
+            return
+        if sql.startswith("SELECT MAX(cardinality)"):
+            if self._raise_select:
+                raise RuntimeError("simulated SELECT failure")
+            self._next_result = (self._max,)
+            return
+        if sql.startswith("DELETE FROM PLAN_TABLE"):
+            self.deleted = True
+            self._next_result = None
+            return
+
+    def fetchone(self):
+        return self._next_result
+
+    def close(self):
+        pass
+
+
+class _FakeOracleConn:
+    def __init__(self, cursor):
+        self._c = cursor
+        self.committed = False
+
+    def cursor(self):
+        return self._c
+
+    def commit(self):
+        self.committed = True
+
+
+def test_oracle_estimate_rows_basic():
+    """正常路径:EXPLAIN PLAN → SELECT MAX(cardinality) → 返 int"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.ORACLE)
+    cursor = _FakeOracleCursor(max_cardinality=5_000_000)
+    conn = _FakeOracleConn(cursor)
+    result = d.estimate_rows_from_explain(conn, "SELECT * FROM dual")
+    assert result == 5_000_000
+    # 应该跑了三条 SQL:EXPLAIN + SELECT + DELETE
+    assert len(cursor.executed) == 3
+    assert cursor.executed[0].startswith("EXPLAIN PLAN")
+    assert "FOR SELECT * FROM dual" in cursor.executed[0]
+    assert "dataops_preflight_" in cursor.executed[0]
+    assert cursor.executed[1].startswith("SELECT MAX(cardinality)")
+    assert cursor.executed[2].startswith("DELETE FROM PLAN_TABLE")
+    # cleanup commit 必须发
+    assert cursor.deleted is True
+    assert conn.committed is True
+
+
+def test_oracle_estimate_rows_statement_id_isolated():
+    """每次 call 用 unique statement_id —— 防并发 preflight 互相污染"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.ORACLE)
+    ids: list[str] = []
+    for _ in range(3):
+        cursor = _FakeOracleCursor(max_cardinality=100)
+        d.estimate_rows_from_explain(_FakeOracleConn(cursor), "SELECT 1 FROM dual")
+        # 从 EXPLAIN PLAN SQL 抽 statement_id
+        explain_sql = cursor.executed[0]
+        sid = explain_sql.split("'")[1]
+        ids.append(sid)
+    # 三次必须三个不同 id
+    assert len(set(ids)) == 3
+    for sid in ids:
+        assert sid.startswith("dataops_preflight_")
+        # 后 16 hex 字符 = 64-bit 唯一性,够防并发
+        suffix = sid.replace("dataops_preflight_", "")
+        assert len(suffix) == 16
+        assert all(c in "0123456789abcdef" for c in suffix)
+
+
+def test_oracle_estimate_rows_explain_failure_returns_none():
+    """EXPLAIN PLAN 抛错(语法错 / 表不存在 / 权限)→ 返 None"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.ORACLE)
+    cursor = _FakeOracleCursor(max_cardinality=100, raise_on_explain=True)
+    conn = _FakeOracleConn(cursor)
+    result = d.estimate_rows_from_explain(conn, "SELECT * FROM nonexistent")
+    assert result is None
+    # cleanup 仍尝试(吞掉)—— deleted 标志可能 False 因为 cursor 抛错时早退
+
+
+def test_oracle_estimate_rows_null_cardinality_returns_none():
+    """PLAN_TABLE 没行 / cardinality null → 返 None,不当 0 算"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.ORACLE)
+    cursor = _FakeOracleCursor(max_cardinality=None)
+    conn = _FakeOracleConn(cursor)
+    assert d.estimate_rows_from_explain(conn, "SELECT 1 FROM dual") is None
+
+
+def test_dm_inherits_oracle_estimate_rows():
+    """DM 继承 OracleDialect.estimate_rows_from_explain,自动支持"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.DM)
+    cursor = _FakeOracleCursor(max_cardinality=8_000_000)
+    conn = _FakeOracleConn(cursor)
+    result = d.estimate_rows_from_explain(conn, "SELECT * FROM dual")
+    assert result == 8_000_000
+
+
+def test_assess_with_explain_oracle_dialect():
+    """assess_with_explain 走 Oracle 方言名 → 调 OracleDialect 实现"""
+    from app.services import sql_preflight
+    cursor = _FakeOracleCursor(max_cardinality=50_000_000)
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM tbl WHERE id > 100 ORDER BY id",
+        dialect_name="Oracle",  # 跟 DatabaseType.ORACLE.value 一致
+        conn=_FakeOracleConn(cursor),
+        max_rows=100_000,
+    )
+    assert decision.explain_used is True
+    assert "explain_rows_high" in _codes(decision)
+
+
+def test_assess_with_explain_dm_dialect_lowercase():
+    """case-insensitive 反查:dialect_name='dm' 也能找到 DatabaseType.DM"""
+    from app.services import sql_preflight
+    cursor = _FakeOracleCursor(max_cardinality=200_000)
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM tbl WHERE id > 100",
+        dialect_name="dm",
+        conn=_FakeOracleConn(cursor),
+        max_rows=100_000,
+    )
+    assert decision.explain_used is True
+    # 200K vs threshold 1M(max_rows × 10)—— 不超
+    assert "explain_rows_high" not in _codes(decision)

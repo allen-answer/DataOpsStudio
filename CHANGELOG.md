@@ -11,7 +11,9 @@
 - **per-run 磁盘配额** —— `RunLimits.run_disk_quota_mb`(None=无限);`check_run_quota(run_dir, quota_mb)` 累计 run_dir/** 字节折 MB;超额抛 `RunQuotaExceeded(DiskWatermarkExceeded)`(子类共享 cleanup 路径);runner mid-run 检查跟主机水位走同一 `_check_mid_run_disk` 入口
 - **DB2 语句超时** —— `Db2Dialect.apply_call_timeout` 走 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)` 连接级 option。ibm_db 不在 build 默认装 → 返 False 安全降级。方言矩阵收尾(MySQL / Oracle / DM / DB2 全 ✅)
 - **typecheck 技术债清零确认** —— `npm run typecheck` / `build` / `vitest` 全绿,CLAUDE.md 陈旧记录修正(此前已被 `c1c4616` 修完,文档没同步)
-- **sql_preflight EXPLAIN 集成(MySQL)** —— `Dialect.estimate_rows_from_explain(conn, sql) -> int | None` 给静态体检加 plan 估算。MysqlDialect 跑 `EXPLAIN <sql>` 取 `rows` 列 max(避免 sum 高估 / last 漏 fan-out)。`sql_preflight.assess_with_explain` 静态不阻塞时调,估算超 `max_rows × 10` 加 warn finding。Oracle/DM/DB2 留口返 None。API endpoint 集成留后续切片(同 dry-run → enforce 节奏)
+- **sql_preflight EXPLAIN 集成(MySQL)** —— `Dialect.estimate_rows_from_explain(conn, sql) -> int | None` 给静态体检加 plan 估算。MysqlDialect 跑 `EXPLAIN <sql>` 取 `rows` 列 max(避免 sum 高估 / last 漏 fan-out)。`sql_preflight.assess_with_explain` 静态不阻塞时调,估算超 `max_rows × 10` 加 warn finding。DB2 留口返 None
+- **EXPLAIN 扩 Oracle / DM** —— `OracleDialect.estimate_rows_from_explain` 走 `EXPLAIN PLAN SET STATEMENT_ID='...' FOR <sql>` + `SELECT MAX(cardinality) FROM PLAN_TABLE WHERE statement_id='...'` 两步,`finally` DELETE + commit 清理防 PLAN_TABLE 累积膨胀。statement_id 用 uuid hex 隔离并发。DM 继承自动支持
+- **`/api/sql/preflight` 接 EXPLAIN** —— body 加 `run_explain=true&datasource_id=<id>` 即走 EXPLAIN 路径。`require_datasource_access` 一次完成存在性 + project 权限校验。连接错误 / driver 没装 / EXPLAIN 异常都 fallback 纯静态 + 200,不让 preflight 整体崩
 
 ## [0.2.0] - 2026-05-23
 
