@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ChevronRight, Search, FileDown, ShieldAlert, LogOut, Languages, User as UserIcon } from 'lucide-vue-next'
+import { ChevronRight, Search, FileDown, ShieldAlert, ShieldCheck, LogOut, Languages, User as UserIcon } from 'lucide-vue-next'
 import CommandPalette from '../components/CommandPalette.vue'
 import NotificationPopover from '../components/NotificationPopover.vue'
 import { useAuthStore } from '../stores/auth'
@@ -236,6 +236,14 @@ const computedCrumbs = computed(() => {
             <p class="text-xs font-bold text-slate-800">{{ authStore.user.display_name || authStore.user.username }}</p>
             <p class="muted text-[10px]">{{ authStore.user.username }} · {{ authStore.user.role }}</p>
           </div>
+          <router-link
+            to="/account/security"
+            class="flex w-full items-center gap-2 border-b border-slate-100 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+            @click="userMenuOpen = false"
+          >
+            <ShieldCheck class="h-3.5 w-3.5" />
+            账号安全 / MFA
+          </router-link>
           <button
             class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             @click="userMenuOpen = false; authStore.logout()"

@@ -27,6 +27,17 @@ const password = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
+// MFA 两步流：login 返 mfa_required=true 时切到 'mfa' 步,显示 OTP 输入
+const step = ref<'password' | 'mfa'>('password')
+const mfaToken = ref('')
+const mfaCode = ref('')
+
+function _redirectAfterLogin(): void {
+  notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
+  const redirect = (route.query.redirect as string) || '/datasources'
+  router.push(redirect)
+}
+
 async function onSubmit(): Promise<void> {
   if (!username.value || !password.value) {
     errorMsg.value = t('login.usernameRequired')
@@ -35,15 +46,46 @@ async function onSubmit(): Promise<void> {
   submitting.value = true
   errorMsg.value = ''
   try {
-    await auth.login(username.value, password.value)
-    notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
-    const redirect = (route.query.redirect as string) || '/datasources'
-    router.push(redirect)
+    const resp = await auth.login(username.value, password.value)
+    if (resp.mfa_required && resp.mfa_token) {
+      // 进 MFA 第二步;access_token 还没拿到（store.login 已经过滤了不写）
+      mfaToken.value = resp.mfa_token
+      mfaCode.value = ''
+      step.value = 'mfa'
+      return
+    }
+    _redirectAfterLogin()
   } catch (error: any) {
     errorMsg.value = error?.message || t('login.error')
   } finally {
     submitting.value = false
   }
+}
+
+async function onSubmitMfa(): Promise<void> {
+  const code = mfaCode.value.trim()
+  if (code.length < 6) {
+    errorMsg.value = '请输入 6 位 OTP'
+    return
+  }
+  submitting.value = true
+  errorMsg.value = ''
+  try {
+    await auth.mfaChallenge(mfaToken.value, code)
+    _redirectAfterLogin()
+  } catch (error: any) {
+    errorMsg.value = error?.message || 'OTP 验证失败'
+    mfaCode.value = ''
+  } finally {
+    submitting.value = false
+  }
+}
+
+function backToPassword(): void {
+  step.value = 'password'
+  mfaToken.value = ''
+  mfaCode.value = ''
+  errorMsg.value = ''
 }
 </script>
 
@@ -137,7 +179,9 @@ async function onSubmit(): Promise<void> {
       </section>
 
       <main class="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 sm:px-6 lg:bg-white">
+        <!-- 第一步：账号密码 -->
         <form
+          v-if="step === 'password'"
           class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/70 sm:p-8"
           @submit.prevent="onSubmit"
         >
@@ -207,6 +251,63 @@ async function onSubmit(): Promise<void> {
             首次启动默认账号 <code class="font-mono font-semibold text-slate-700">admin / admin</code>
             ，登录后请到「用户管理」修改密码
           </div>
+        </form>
+
+        <!-- 第二步：MFA OTP（仅 user.mfa_enabled 时触发） -->
+        <form
+          v-else
+          class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/70 sm:p-8"
+          @submit.prevent="onSubmitMfa"
+        >
+          <div class="mb-6 flex items-start gap-3">
+            <div class="grid h-10 w-10 place-items-center rounded-xl bg-primary-light text-primary shadow-md shadow-primary/15">
+              <ShieldCheck class="h-5 w-5" />
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-bold uppercase tracking-wider text-primary">Two-Factor Authentication</p>
+              <h2 class="mt-1 text-2xl font-bold text-slate-950">二步验证</h2>
+              <p class="mt-1 text-sm text-slate-500">打开 TOTP app（Google Authenticator / Authy 等）,输入 6 位当前码。</p>
+            </div>
+          </div>
+
+          <label class="block">
+            <span class="mb-1.5 block text-xs font-bold text-slate-600">6 位 OTP</span>
+            <input
+              v-model="mfaCode"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              autocomplete="one-time-code"
+              autofocus
+              placeholder="000000"
+              class="h-12 w-full rounded-xl border-slate-200 bg-slate-50 text-center font-mono text-lg tracking-[0.5em] transition focus:border-primary focus:bg-white focus:ring-primary/20"
+            >
+          </label>
+
+          <div
+            v-if="errorMsg"
+            class="mt-4 flex items-start gap-2 rounded-xl border border-status-error/20 bg-status-error-bg px-3 py-2.5 text-xs text-status-error"
+          >
+            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{{ errorMsg }}</span>
+          </div>
+
+          <button
+            type="submit"
+            class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            :disabled="submitting || mfaCode.length < 6"
+          >
+            {{ submitting ? '验证中…' : '验证并登录' }}
+          </button>
+
+          <button
+            type="button"
+            class="mt-3 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-slate-500 hover:text-slate-800"
+            :disabled="submitting"
+            @click="backToPassword"
+          >
+            ← 返回输入密码
+          </button>
         </form>
       </main>
     </div>

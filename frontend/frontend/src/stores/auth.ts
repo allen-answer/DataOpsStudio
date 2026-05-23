@@ -98,6 +98,21 @@ export const useAuthStore = defineStore('auth', () => {
     return data
   }
 
+  /** MFA 两步流第二步：login 返 mfa_required=true 后调本方法。
+   * 服务端验完 OTP 返跟 login 一样形态的 LoginResponse,在此写 token + user。 */
+  async function mfaChallenge(mfaToken: string, code: string): Promise<LoginResponse> {
+    const data = await apiJson<LoginResponse>(
+      '/api/auth/mfa/challenge', 'POST', { mfa_token: mfaToken, code },
+    )
+    if (data.access_token) {
+      token.value = data.access_token
+      user.value = data.user
+      refreshToken.value = data.refresh_token || ''
+      _persist()
+    }
+    return data
+  }
+
   function logout(): void {
     // 服务端吊销 token —— fire-and-forget。apiJson 起 fetch 时同步读
     // localStorage 拼 Authorization 头，所以即便下一行立刻清本地，请求仍带
@@ -133,6 +148,6 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     token, refreshToken, user,
     isLoggedIn, isAdmin, isEditor,
-    login, logout, refreshMe,
+    login, logout, refreshMe, mfaChallenge,
   }
 })

@@ -37,6 +37,9 @@ const routes = [
   { path: '/batch-lineage', name: 'batch-lineage', component: () => import('../views/LineageWorkbenchView.vue') },
   { path: '/history',       name: 'history',       component: () => import('../views/HistoryView.vue') },
 
+  // 账号安全 / MFA —— 所有登录用户都能进（自己管自己的 MFA）
+  { path: '/account/security', name: 'account-security', component: () => import('../views/account/SecurityView.vue') },
+
   // Phase 10 #4：表资产详情页 —— 反向查找谁引用此表
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
   { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
