@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 
 from app.models import LoginRequest, LoginResponse, OkResponse, User, UserCreate, UserUpdate
 from app.services.auth import (
@@ -55,6 +55,29 @@ def login(payload: LoginRequest):
 @router.get("/api/auth/me", response_model=User)
 def me(current: User = Depends(get_current_user)):
     return _redact(current)
+
+
+@router.post("/api/auth/verify-password", response_model=LoginResponse)
+def verify_password_api(
+    payload: dict = Body(...),
+    current: User = Depends(get_current_user),
+):
+    """Step-up：验当前用户密码 → 签发新 token（iat 刷新）。
+
+    前端在敏感端点 403 step_up_required 时调本端点拿到新 token，写回
+    localStorage 后重试原请求。密码错 → 401。
+    """
+    password = str(payload.get("password") or "")
+    if not password or not verify_password(password, current.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="密码错误")
+    token, ttl = create_access_token(current)
+    logger.info("auth step-up verify ok user_id=%s username=%s", current.id, current.username)
+    return LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=ttl,
+        user=_redact(current),
+    )
 
 
 @router.post("/api/auth/logout", response_model=OkResponse)

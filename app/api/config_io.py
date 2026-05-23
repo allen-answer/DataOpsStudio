@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.services.auth import require_role
+from app.services.auth import ensure_recent_auth, require_role
 
 # 注意：业务侧服务在 app.services.config_io，本模块在 app.api.config_io；
 # import 路径不同但模块名相同——别 from .services import config_io，要走完整路径。
@@ -21,9 +21,19 @@ router = APIRouter()
 
 
 @router.get("/config/export")
-def config_export(include_passwords: bool = False, _: object = Depends(require_role("admin"))):
+def config_export(
+    request: Request,
+    include_passwords: bool = False,
+    _: object = Depends(require_role("admin")),
+):
     """导出 datasources + tasks。默认密码脱敏；显式 ?include_passwords=true
-    才把数据源明文密码写进去（用户备份场景）。admin only —— 含敏感配置。"""
+    才把数据源明文密码写进去（用户备份场景）。admin only —— 含敏感配置。
+
+    `include_passwords=true` 额外触发 step-up：当前 token `iat` 超 300s →
+    403 step_up_required，前端 prompt 密码 + verify-password 换新 token 重试。
+    """
+    if include_passwords:
+        ensure_recent_auth(request, max_age=300)
     path = export_config(include_passwords=include_passwords)
     return FileResponse(path, filename=path.name)
 

@@ -186,6 +186,35 @@ def prune_revoked_tokens() -> int:
         return cur.rowcount
 
 
+def ensure_recent_auth(request: Request, *, max_age: int = 300) -> None:
+    """Step-up：当前 token 的 `iat` 必须在 max_age 秒内，否则 403。
+
+    `iat` 是登录时签发 / verify-password 成功重发的「最近认证时间戳」——
+    敏感操作（含密码导出 / 用户删除 / 等）调本 helper 强制用户在窗口内
+    重新输入过密码。stateless，不依赖额外表。
+
+    403 detail 以 `step_up_required` 起头 —— 前端据此触发密码 prompt + 重试。
+    """
+    token = _extract_token(request, None)
+    payload = decode_access_token(token) if token else None
+    if not payload:
+        # 通常上游 get_current_user 已挡 401；这里再保一次防漏
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登录或 token 无效",
+        )
+    iat = int(payload.get("iat") or 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    if now - iat > max_age:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"step_up_required: 此操作需要重新输入密码确认"
+                f"（最近一次认证已超过 {max_age} 秒）"
+            ),
+        )
+
+
 def revoke_active_token(request: Request) -> bool:
     """吊销当前请求携带的 token。返回是否真的吊销了。
 

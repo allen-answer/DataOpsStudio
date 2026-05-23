@@ -28,20 +28,51 @@ const route = useRoute()
 
 // 配置导出：不能用 <a href="/config/export"> —— 浏览器导航不带 Authorization
 // 头，而端点是 admin-only 必 401。走 fetch + Bearer token + blob 触发下载。
+// 含密码导出还会触发 step-up：服务端检 token.iat 超 300s → 403 step_up_required，
+// 这里 prompt 密码 + verify-password 换新 token 后自动重试。
+function _doExportFetch(includePasswords) {
+  const url = `/config/export${includePasswords ? '?include_passwords=true' : ''}`
+  const token = localStorage.getItem('dataops.token') || ''
+  return fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+}
+
 async function exportConfig(includePasswords) {
   if (includePasswords && !window.confirm('导出文件将包含明文数据库密码。仅自用备份请确认；不要分享或提交到代码仓库。')) {
     return
   }
-  const url = `/config/export${includePasswords ? '?include_passwords=true' : ''}`
-  const token = localStorage.getItem('dataops.token') || ''
   let resp
   try {
-    resp = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    resp = await _doExportFetch(includePasswords)
   } catch (err) {
     window.alert(`导出失败：${(err && err.message) || err}`)
     return
+  }
+  // step-up：含密码导出超 300s 未认证 → 服务端 403 step_up_required
+  if (resp.status === 403) {
+    const detail = await resp.clone().text().catch(() => '')
+    if (/step_up_required/.test(detail)) {
+      const pw = window.prompt('该操作需要重新输入密码确认：')
+      if (!pw) return
+      const verify = await fetch('/api/auth/verify-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('dataops.token') || ''}`,
+        },
+        body: JSON.stringify({ password: pw }),
+      })
+      if (!verify.ok) {
+        window.alert('密码错误，请重新点击导出再试一次')
+        return
+      }
+      const data = await verify.json()
+      // api.ts 每次读 localStorage 拼 Authorization 头 —— 写完即生效；
+      // 顶栏 UI 只用 authStore.user 显示，不读 token，无需同步 store
+      localStorage.setItem('dataops.token', data.access_token)
+      resp = await _doExportFetch(includePasswords)
+    }
   }
   if (!resp.ok) {
     const msg = resp.status === 401 ? '登录已失效，请重新登录'
