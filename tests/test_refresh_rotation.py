@@ -241,3 +241,82 @@ def test_logout_revokes_refresh_chain(client):
     # 老 refresh 不能再换新 access
     resp = client.post("/api/auth/refresh", json={"refresh_token": refresh})
     assert resp.status_code == 401
+
+
+# ─── HttpOnly cookie 路径 ──────────────────────────────────────────────────
+
+
+def test_login_sets_httponly_refresh_cookie(client_anon):
+    """login 成功 → Set-Cookie 含 dataops_refresh + HttpOnly + SameSite=strict。"""
+    resp = client_anon.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin"},
+    )
+    assert resp.status_code == 200
+    set_cookie = resp.headers.get("set-cookie") or ""
+    assert "dataops_refresh=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=strict" in set_cookie
+    assert "Path=/" in set_cookie
+    # TestClient http://testserver,Secure 不该开（否则浏览器不送）
+    assert "Secure" not in set_cookie
+    # cookie value 跟 body 的 refresh_token 一致
+    body = resp.json()
+    expected = body["refresh_token"]
+    assert f"dataops_refresh={expected}" in set_cookie
+
+
+def test_refresh_via_cookie_only_no_body_succeeds(client_anon):
+    """前端走 HttpOnly cookie 路径:body 空,refresh 仅靠 cookie。"""
+    login = client_anon.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin"},
+    )
+    # TestClient 自动持久 cookie,下一个请求会带上
+    assert "dataops_refresh" in login.cookies or "dataops_refresh" in login.headers.get("set-cookie", "")
+    # body 空 dict —— 全靠 cookie
+    resp = client_anon.post("/api/auth/refresh", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["access_token"]
+    assert body["refresh_token"]  # 新 refresh token
+
+
+def test_logout_clears_refresh_cookie(client_anon):
+    login = client_anon.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin"},
+    )
+    assert login.status_code == 200
+    # 用 access token 登出
+    token = login.json()["access_token"]
+    logout = client_anon.post(
+        "/api/auth/logout", headers={"Authorization": f"Bearer {token}"},
+    )
+    assert logout.status_code == 200
+    # logout 响应必须 Set-Cookie 清掉 refresh(max-age=0)
+    sc = logout.headers.get("set-cookie") or ""
+    assert "dataops_refresh=" in sc
+    assert "Max-Age=0" in sc
+
+
+def test_refresh_body_takes_precedence_over_cookie(client_anon, isolated_storage):
+    """body 显式提供 refresh_token 时优先于 cookie —— 保证 reuse detection 仍按
+    body 携带的那条走完整 rotation/reuse 语义(避免 cookie shadow 掉显式调用)。"""
+    login = client_anon.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin"},
+    ).json()
+    refresh_a = login["refresh_token"]
+    # client_anon.cookies 已含 refresh_a;rotation 用 body 显式给 → 拿 refresh_b
+    rotated = client_anon.post(
+        "/api/auth/refresh", json={"refresh_token": refresh_a},
+    )
+    assert rotated.status_code == 200
+    refresh_b = rotated.json()["refresh_token"]
+    # 重用 refresh_a(body 显式),cookie 已是 refresh_b 也不该 shadow → reuse 检出 401
+    reuse = client_anon.post(
+        "/api/auth/refresh", json={"refresh_token": refresh_a},
+    )
+    assert reuse.status_code == 401
+    # refresh_b 也被连带 revoke
+    after = client_anon.post(
+        "/api/auth/refresh", json={"refresh_token": refresh_b},
+    )
+    assert after.status_code == 401

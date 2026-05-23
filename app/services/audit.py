@@ -134,6 +134,77 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def record_auth_event(
+    event: str,
+    *,
+    username: str = "",
+    user_id: str = "",
+    method: str = "POST",
+    path: str = "",
+    status_code: int = 200,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """显式写一条 auth-related 审计事件。
+
+    用法:在 /login、/refresh、/mfa/*、/logout 等关键路径里调,记下:
+      - login_success / login_failure(username + 原因)
+      - mfa_enroll / mfa_verify / mfa_disable / mfa_regenerate_codes
+      - mfa_challenge_success / mfa_challenge_failure
+      - refresh_rotation / refresh_reuse_detected
+      - logout
+      - rate_limit_hit
+
+    跟中间件 AuditLogMiddleware 互补:中间件按 HTTP 维度记 path/method/status,
+    auth 失败时拿不到 user;本 helper 显式把 username 和事件语义写进 audit_logs
+    的 `resource` / `extra` 字段。
+
+    event 字符串建模到 `resource` 列 + `extra` JSON 字段;查询时 admin 按
+    `resource='auth_event'` 过滤即可见 auth 全套时间线。
+    """
+    extra_dict = dict(extra or {})
+    extra_dict["event"] = event
+    entry = AuditLogEntry(
+        ts=datetime.now().isoformat(timespec="seconds"),
+        user_id=user_id,
+        username=username,
+        method=method,
+        path=path or f"/api/auth/{event}",
+        resource_type="auth_event",
+        resource_id=event,
+        status_code=status_code,
+    )
+    try:
+        from app.api._error_handler import request_id_ctx
+        rid = request_id_ctx.get() or ""
+    except Exception:
+        rid = ""
+    # SQLite + jsonl 双写,extra 走 SQLite 的 extra column
+    try:
+        with sqlite_store.connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_logs (ts, user_id, username, method, path, status, "
+                "request_id, resource, resource_id, project_id, extra) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    entry.ts, entry.user_id, entry.username, entry.method,
+                    entry.path, entry.status_code,
+                    rid, entry.resource_type, entry.resource_id, "",
+                    json.dumps(extra_dict, ensure_ascii=False),
+                ),
+            )
+    except Exception:
+        logger.exception("审计 auth event 写 SQLite 失败 event=%s", event)
+    try:
+        AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_LOG_FILE.open("a", encoding="utf-8") as f:
+            line = entry.model_dump()
+            line["request_id"] = rid
+            line["extra"] = extra_dict
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.exception("审计 auth event 写 jsonl 失败 event=%s", event)
+
+
 def read_recent_logs(limit: int = 200) -> list[dict[str, Any]]:
     """倒序读最近 N 条。用于 GET /api/audit-logs。
 

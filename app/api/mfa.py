@@ -63,6 +63,8 @@ def mfa_enroll(
         )
     secret = generate_secret()
     update_user_mfa(current.id, secret_encrypted=encrypt_mfa_secret(secret), enabled=False)
+    from app.services.audit import record_auth_event
+    record_auth_event("mfa_enroll", username=current.username, user_id=current.id)
     logger.info("mfa enroll user_id=%s username=%s", current.id, current.username)
     return {
         "secret": secret,
@@ -104,6 +106,12 @@ def mfa_verify(
         update_user_mfa(current.id, enabled=True, recovery_codes_hashed=hashed_codes)
     else:
         update_user_mfa(current.id, enabled=True)
+    from app.services.audit import record_auth_event
+    record_auth_event(
+        "mfa_verify_success" if not first_time_enable else "mfa_enable",
+        username=current.username, user_id=current.id,
+        extra={"first_time": first_time_enable},
+    )
     logger.info(
         "mfa enabled user_id=%s username=%s first_time=%s",
         current.id, current.username, first_time_enable,
@@ -133,6 +141,11 @@ def mfa_regenerate_recovery_codes(
         raise HTTPException(status_code=401, detail="OTP 验证失败")
     plain_codes, hashed_codes = generate_recovery_codes()
     update_user_mfa(current.id, recovery_codes_hashed=hashed_codes)
+    from app.services.audit import record_auth_event
+    record_auth_event(
+        "mfa_regenerate_recovery_codes",
+        username=current.username, user_id=current.id,
+    )
     logger.info(
         "mfa regenerate recovery codes user_id=%s username=%s",
         current.id, current.username,
@@ -164,5 +177,7 @@ def mfa_disable(
     update_user_mfa(
         current.id, secret_encrypted="", enabled=False, recovery_codes_hashed=[],
     )
+    from app.services.audit import record_auth_event
+    record_auth_event("mfa_disable", username=current.username, user_id=current.id)
     logger.info("mfa disabled user_id=%s username=%s", current.id, current.username)
     return OkResponse(ok=True)

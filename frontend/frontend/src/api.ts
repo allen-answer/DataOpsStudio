@@ -5,8 +5,12 @@
 // S4.A：迁 .ts。给 apiGet / apiJson / apiForm 加泛型 T，调用方写
 //   `await apiGet<User>('/api/auth/me')` 直接拿 User 类型，不用 store 内 `as T`
 // 没标的话默认 unknown（比 any 安全），强迫 caller 显式断言或检查。
+//
+// HttpOnly cookie 切换:refresh token 不再落 localStorage,改由后端 Set-Cookie
+// (HttpOnly+Secure+SameSite=strict),浏览器自动附带到 /api/auth/refresh。JS 读
+// 不到 → XSS 偷不走。REFRESH_KEY 仅保留清理用途(老版本残留)。
 const TOKEN_KEY = 'dataops.token'
-const REFRESH_KEY = 'dataops.refresh'
+const REFRESH_KEY = 'dataops.refresh'  // legacy:仅用于清理旧 localStorage
 const PROJECT_KEY = 'dataops.project_id'
 
 // 命中这些 path 时自动追加 ?project_id=<当前项目>，让列表/首屏 bootstrap
@@ -104,30 +108,28 @@ let _refreshInFlight: Promise<boolean> | null = null
 async function _attemptRefresh(): Promise<boolean> {
   if (_refreshInFlight) return _refreshInFlight
   _refreshInFlight = (async (): Promise<boolean> => {
-    const refresh = localStorage.getItem(REFRESH_KEY) || ''
-    if (!refresh) return false
     try {
+      // HttpOnly cookie 自动附带,body 为空 —— JS 既读不到也无需主动塞。
+      // 同源请求默认带 cookie,但 credentials: 'include' 是 same-origin 时
+      // 仍生效的(deprecated but harmless),写明意图避免后续接 CDN/跨域再忘
       const resp = await fetch(_versionPath('/api/auth/refresh'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refresh }),
+        credentials: 'include',
+        body: JSON.stringify({}),
       })
       if (!resp.ok) {
-        // refresh 失败（exp / revoked / reuse 检出）—— 清两个 token 走标准 401
+        // refresh 失败 —— 清 access token + 清残留的老 refresh localStorage 项
         localStorage.removeItem(TOKEN_KEY)
         localStorage.removeItem(REFRESH_KEY)
         return false
       }
       const data = await resp.json() as {
         access_token?: string
-        refresh_token?: string
         user?: unknown
       }
       if (!data.access_token) return false
       localStorage.setItem(TOKEN_KEY, data.access_token)
-      if (data.refresh_token) {
-        localStorage.setItem(REFRESH_KEY, data.refresh_token)
-      }
       // user 也顺手更新（refresh 端点返回完整 user）
       if (data.user) {
         localStorage.setItem('dataops.user', JSON.stringify(data.user))

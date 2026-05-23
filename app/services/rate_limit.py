@@ -93,9 +93,14 @@ login_user_limiter = RateLimiter(_USER_LIMIT_PER_MIN, _WINDOW_SECONDS)
 
 
 def reset_all_limiters() -> None:
-    """测试间 fixture 用 —— 把所有 limiter 状态清空,避免互相串话。"""
-    login_ip_limiter.reset()
-    login_user_limiter.reset()
+    """测试间 fixture 用 —— 把所有 limiter 状态清空 + 用默认 env limits 重建实例。
+
+    必须重建是因为某些测试会临时把 module-level `login_ip_limiter` 替换成更小
+    阈值,reset() 只清状态不还原 limit。这里强制重建一遍,让阈值也回到默认。
+    """
+    global login_ip_limiter, login_user_limiter
+    login_ip_limiter = RateLimiter(_LOGIN_LIMIT_PER_MIN, _WINDOW_SECONDS)
+    login_user_limiter = RateLimiter(_USER_LIMIT_PER_MIN, _WINDOW_SECONDS)
 
 
 def client_ip_from_request(request: Request) -> str:
@@ -153,7 +158,7 @@ def check_auth_rate_limit(
 
 
 def _record_hit(endpoint: str, key_type: str, ip: str, username: str | None) -> None:
-    """限速命中时打指标 + 日志。"""
+    """限速命中时打指标 + audit log + stderr 日志。"""
     try:
         from app.services.metrics import auth_rate_limit_hits_total
 
@@ -163,6 +168,22 @@ def _record_hit(endpoint: str, key_type: str, ip: str, username: str | None) -> 
     # 日志脱敏:IP 留前两段（"192.168.x.x"）/ username 留 prefix
     masked_ip = _mask_ip(ip)
     masked_user = _mask_username(username)
+    # audit log:管理员查 /api/audit-logs 直接看到 attack 时序
+    try:
+        from app.services.audit import record_auth_event
+
+        record_auth_event(
+            "rate_limit_hit",
+            username=username or "",
+            status_code=429,
+            extra={
+                "endpoint": endpoint,
+                "key_type": key_type,
+                "ip_masked": masked_ip,
+            },
+        )
+    except Exception:  # noqa: BLE001 —— audit 失败不阻塞 429 响应
+        pass
     logger.warning(
         "auth rate limit hit endpoint=%s key_type=%s ip=%s username=%s",
         endpoint, key_type, masked_ip, masked_user,

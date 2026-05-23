@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 
 from app.models import LoginRequest, LoginResponse, OkResponse, User, UserCreate, UserUpdate
 from app.services.auth import (
@@ -32,6 +32,64 @@ from app.services.auth import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ─── HttpOnly cookie 支持 ────────────────────────────────────────────────────
+#
+# refresh token 之前由前端落 localStorage（key `dataops.refresh`），XSS 漏洞
+# 命中时可被读走 → 攻击者拿到 refresh 即可无限续 access token。换成 HttpOnly
+# cookie 之后 JS 无法读 → XSS 拿不到 refresh。
+#
+# Cookie 属性策略:
+# - HttpOnly:JS 无法读(防 XSS 偷)
+# - Secure:仅 HTTPS 发送(自签 HTTPS 也成立);TestClient (http://) 时
+#   按 request scheme 关闭,否则 httpx 不会附带
+# - SameSite=strict:浏览器仅在同站请求时附带(防 CSRF);refresh 是核心动作,
+#   不该在跨站场景被自动调
+# - Path=/:简单,同 origin 任何请求都带。SameSite + HttpOnly 已经够防;细粒度
+#   path 受版本化别名 /api/v1/auth/refresh 影响,易出 bug
+# - Max-Age:跟 refresh TTL 一致;过期自然失效
+_REFRESH_COOKIE_NAME = "dataops_refresh"
+
+
+def _is_secure_request(request: Request) -> bool:
+    """判 cookie Secure 属性该开还是关。
+
+    生产 HTTPS → 开;TestClient `http://testserver` → 关(否则 httpx 不附带,
+    cookie-based refresh 用例假阴)。
+    """
+    return request.url.scheme == "https"
+
+
+def _set_refresh_cookie(response: Response, request: Request, token: str, ttl: int) -> None:
+    """登录 / refresh / mfa-challenge 签新 refresh token 时,同步落 HttpOnly cookie。
+
+    `ttl<=0`(env 关 refresh 机制) → 不种 cookie。
+    """
+    if not token or ttl <= 0:
+        return
+    response.set_cookie(
+        key=_REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=ttl,
+        httponly=True,
+        secure=_is_secure_request(request),
+        samesite="strict",
+        path="/",
+    )
+
+
+def _clear_refresh_cookie(response: Response, request: Request) -> None:
+    """logout / refresh 失败时清掉 cookie —— max_age=0 让浏览器立即丢弃。"""
+    response.set_cookie(
+        key=_REFRESH_COOKIE_NAME,
+        value="",
+        max_age=0,
+        httponly=True,
+        secure=_is_secure_request(request),
+        samesite="strict",
+        path="/",
+    )
 
 
 def _check_rate_limit_or_429(
@@ -57,11 +115,19 @@ def _check_rate_limit_or_429(
 
 
 @router.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest, request: Request):
+def login(payload: LoginRequest, request: Request, response: Response):
+    from app.services.audit import record_auth_event
+
     _check_rate_limit_or_429(request, username=payload.username, endpoint="login")
     user = find_user_by_username(payload.username)
     if user is None or not verify_password(payload.password, user.password_hash):
         # 用户不存在 / 密码不对都返 401，不暴露哪种
+        record_auth_event(
+            "login_failure",
+            username=payload.username,
+            status_code=401,
+            extra={"reason": "bad_credentials"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
@@ -72,6 +138,9 @@ def login(payload: LoginRequest, request: Request):
         from app.services.mfa import issue_mfa_challenge_token
 
         mfa_token, mfa_ttl = issue_mfa_challenge_token(user.id)
+        record_auth_event(
+            "login_mfa_required", username=user.username, user_id=user.id,
+        )
         logger.info("auth login mfa_required user_id=%s username=%s", user.id, user.username)
         return LoginResponse(mfa_required=True, mfa_token=mfa_token, expires_in=mfa_ttl)
 
@@ -79,6 +148,11 @@ def login(payload: LoginRequest, request: Request):
     from app.services.refresh import issue_refresh_token
 
     refresh_tok, _, refresh_ttl = issue_refresh_token(user.id)
+    _set_refresh_cookie(response, request, refresh_tok, refresh_ttl)
+    record_auth_event(
+        "login_success", username=user.username, user_id=user.id,
+        extra={"role": user.role},
+    )
     logger.info("auth login user_id=%s username=%s role=%s", user.id, user.username, user.role)
     return LoginResponse(
         access_token=token,
@@ -91,7 +165,7 @@ def login(payload: LoginRequest, request: Request):
 
 
 @router.post("/api/auth/refresh", response_model=LoginResponse)
-def refresh_token_endpoint(request: Request, payload: dict = Body(...)):
+def refresh_token_endpoint(request: Request, response: Response, payload: dict = Body(default={})):
     """OAuth2 风格 rotation：用老 refresh token 换新 access + 新 refresh。
 
     重放检测：若 refresh token 已被 rotation 替换过又被用 → 视为盗用,整条
@@ -100,11 +174,22 @@ def refresh_token_endpoint(request: Request, payload: dict = Body(...)):
     from app.services.refresh import rotate_refresh_token
 
     _check_rate_limit_or_429(request, endpoint="refresh")
-    old = str(payload.get("refresh_token") or "")
+    # 取 refresh token 优先级:body 显式给(CLI / 向后兼容) > HttpOnly cookie(浏览器默认)。
+    # 显式优先于隐式 —— 关键场景:同 client 既有 cookie 又显式带 body 测重用检测,
+    # 必须按 body 那条走完整 rotation/reuse 语义。
+    old = str(payload.get("refresh_token") or "") or request.cookies.get(_REFRESH_COOKIE_NAME) or ""
     if not old:
         raise HTTPException(status_code=400, detail="refresh_token 不能为空")
     rotated = rotate_refresh_token(old)
     if rotated is None:
+        # raise HTTPException 会让 FastAPI 丢弃 response 对象,Set-Cookie 不会出。
+        # 不强清浏览器 cookie:用户下次登录成功时新 cookie 自然覆盖;期间多 401
+        # 不影响安全(服务端 chain 已 revoke)
+        from app.services.audit import record_auth_event
+        record_auth_event(
+            "refresh_failure", status_code=401,
+            extra={"reason": "invalid_or_expired_or_reused"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="refresh token 无效或已过期，请重新登录",
@@ -114,6 +199,9 @@ def refresh_token_endpoint(request: Request, payload: dict = Body(...)):
     if user is None:
         raise HTTPException(status_code=401, detail="用户不存在")
     access, access_ttl = create_access_token(user)
+    _set_refresh_cookie(response, request, new_refresh, refresh_ttl)
+    from app.services.audit import record_auth_event
+    record_auth_event("refresh_rotation", username=user.username, user_id=user.id)
     logger.info("auth refresh rotation user_id=%s username=%s", user.id, user.username)
     return LoginResponse(
         access_token=access,
@@ -126,7 +214,7 @@ def refresh_token_endpoint(request: Request, payload: dict = Body(...)):
 
 
 @router.post("/api/auth/mfa/challenge", response_model=LoginResponse)
-def mfa_challenge(request: Request, payload: dict = Body(...)):
+def mfa_challenge(request: Request, response: Response, payload: dict = Body(...)):
     """MFA 两步流的第二步：用 login 返的 mfa_token + (6 位 OTP **或** recovery code)
     换正式 access token。
 
@@ -156,8 +244,14 @@ def mfa_challenge(request: Request, payload: dict = Body(...)):
     user = user_store.get(user_id)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=401, detail="用户不存在或 MFA 已关闭")
+    from app.services.audit import record_auth_event
+
     if recovery_code:
         if not verify_and_consume_recovery_code(user.id, recovery_code):
+            record_auth_event(
+                "mfa_challenge_failure", username=user.username, user_id=user.id,
+                status_code=401, extra={"factor": "recovery_code"},
+            )
             raise HTTPException(status_code=401, detail="恢复码无效或已用过")
         logger.warning(
             "auth mfa challenge via recovery_code user_id=%s username=%s",
@@ -166,11 +260,20 @@ def mfa_challenge(request: Request, payload: dict = Body(...)):
     else:
         secret = decrypt_mfa_secret(user.mfa_secret_encrypted)
         if not verify_totp(secret, code):
+            record_auth_event(
+                "mfa_challenge_failure", username=user.username, user_id=user.id,
+                status_code=401, extra={"factor": "totp"},
+            )
             raise HTTPException(status_code=401, detail="OTP 验证失败")
     token, ttl = create_access_token(user)
     from app.services.refresh import issue_refresh_token
 
     refresh_tok, _, refresh_ttl = issue_refresh_token(user.id)
+    _set_refresh_cookie(response, request, refresh_tok, refresh_ttl)
+    record_auth_event(
+        "mfa_challenge_success", username=user.username, user_id=user.id,
+        extra={"factor": "recovery_code" if recovery_code else "totp"},
+    )
     logger.info("auth mfa challenge ok user_id=%s username=%s", user.id, user.username)
     return LoginResponse(
         access_token=token,
@@ -200,11 +303,16 @@ def verify_password_api(
 
     rate limit:挂登录同一组 IP 限速(已登录用户 step-up 高频是异常行为)。
     """
+    from app.services.audit import record_auth_event
     _check_rate_limit_or_429(request, username=current.username, endpoint="verify_password")
     password = str(payload.get("password") or "")
     if not password or not verify_password(password, current.password_hash):
+        record_auth_event(
+            "step_up_failure", username=current.username, user_id=current.id, status_code=401,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="密码错误")
     token, ttl = create_access_token(current)
+    record_auth_event("step_up_success", username=current.username, user_id=current.id)
     logger.info("auth step-up verify ok user_id=%s username=%s", current.id, current.username)
     return LoginResponse(
         access_token=token,
@@ -215,7 +323,7 @@ def verify_password_api(
 
 
 @router.post("/api/auth/logout", response_model=OkResponse)
-def logout(request: Request, current: User = Depends(get_current_user)):
+def logout(request: Request, response: Response, current: User = Depends(get_current_user)):
     """登出：把当前 token 写进服务端吊销表，立即失效（不必等自然 exp）。
 
     幂等 —— 总返回 ok=True。老 token（无 jti）无法定位吊销，客户端丢弃即可，
@@ -227,6 +335,10 @@ def logout(request: Request, current: User = Depends(get_current_user)):
     from app.services.refresh import revoke_refresh_chain
 
     revoke_refresh_chain(current.id)
+    # 同步清掉 HttpOnly refresh cookie —— 浏览器立即丢弃,下次请求不再带过来
+    _clear_refresh_cookie(response, request)
+    from app.services.audit import record_auth_event
+    record_auth_event("logout", username=current.username, user_id=current.id)
     logger.info("auth logout user_id=%s username=%s", current.id, current.username)
     return OkResponse(ok=True)
 

@@ -42,7 +42,9 @@ export interface LoginResponse {
 
 
 const TOKEN_KEY = 'dataops.token'
-const REFRESH_KEY = 'dataops.refresh'
+// HttpOnly cookie 改造后 refresh token 不再落 localStorage(防 XSS 偷)。
+// 这个 key 保留是为了在 store 启动 / 登出时清掉残留的老版本数据。
+const LEGACY_REFRESH_KEY = 'dataops.refresh'
 const USER_KEY = 'dataops.user'
 
 
@@ -58,8 +60,11 @@ function _readUser(): User | null {
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string>(localStorage.getItem(TOKEN_KEY) || '')
-  const refreshToken = ref<string>(localStorage.getItem(REFRESH_KEY) || '')
   const user = ref<User | null>(_readUser())
+  // 启动一次性清掉老版本的 refresh localStorage(HttpOnly cookie 接管后无用残留)
+  if (localStorage.getItem(LEGACY_REFRESH_KEY)) {
+    localStorage.removeItem(LEGACY_REFRESH_KEY)
+  }
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
@@ -72,11 +77,6 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem(TOKEN_KEY, token.value)
     } else {
       localStorage.removeItem(TOKEN_KEY)
-    }
-    if (refreshToken.value) {
-      localStorage.setItem(REFRESH_KEY, refreshToken.value)
-    } else {
-      localStorage.removeItem(REFRESH_KEY)
     }
     if (user.value) {
       localStorage.setItem(USER_KEY, JSON.stringify(user.value))
@@ -92,7 +92,8 @@ export const useAuthStore = defineStore('auth', () => {
     if (data.access_token) {
       token.value = data.access_token
       user.value = data.user
-      refreshToken.value = data.refresh_token || ''
+      // refresh token 现已经由 HttpOnly cookie 接管,response body 里的
+      // data.refresh_token 字段保留是为兼容老前端 / CLI,本 store 不再读
       _persist()
     }
     return data
@@ -121,7 +122,6 @@ export const useAuthStore = defineStore('auth', () => {
     if (data.access_token) {
       token.value = data.access_token
       user.value = data.user
-      refreshToken.value = data.refresh_token || ''
       _persist()
     }
     return data
@@ -136,9 +136,11 @@ export const useAuthStore = defineStore('auth', () => {
       apiJson('/api/auth/logout', 'POST').catch(() => {})
     }
     token.value = ''
-    refreshToken.value = ''
     user.value = null
     _persist()
+    // logout 端点已经 Set-Cookie max-age=0 清掉浏览器 refresh cookie;
+    // 这里同步清掉残留的老 localStorage refresh(若有)
+    localStorage.removeItem(LEGACY_REFRESH_KEY)
     // 让 hash router 跳到 login —— 这里不 import router 避免循环
     if (typeof window !== 'undefined') {
       window.location.hash = '#/login'
@@ -160,7 +162,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    token, refreshToken, user,
+    token, user,
     isLoggedIn, isAdmin, isEditor,
     login, logout, refreshMe, mfaChallenge,
   }
