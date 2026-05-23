@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useHistoryStore } from '../stores/history'
 import { useNoticeStore } from '../stores/notice'
-import { downloadResultFile } from '../utils/download'
+import { downloadResultFile, downloadSignedRunFile } from '../utils/download'
 
 const { state } = useBootstrapStore()
 
@@ -126,8 +126,9 @@ onMounted(() => { loadHistory() })
                 <td class="px-3 py-3 text-right align-top font-mono tabular-nums">{{ item.target_rows }}</td>
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
-                    <!-- legacy json runs：runner 同步落 xlsx → 直链下载 -->
-                    <button v-if="item.excel_filename && item.format !== 'parquet'" type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.excel_filename)">Excel</button>
+                    <!-- compare runs：走签名 token 下载（POST /downloads → GET /api/downloads/{token}）
+                         比 /results/* 直链更紧：token 5 分钟有效 -->
+                    <button v-if="item.excel_filename && item.format !== 'parquet'" type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadSignedRunFile(item.run_id, 'excel')">Excel</button>
                     <!-- parquet runs：没有同步 xlsx，触发异步导出 + poll + 下载 -->
                     <button
                       v-else-if="item.format === 'parquet'"
@@ -135,7 +136,7 @@ onMounted(() => { loadHistory() })
                       :disabled="exportingRuns.has(item.run_id)"
                       @click="exportRunExcel(item.run_id)"
                     >{{ exportingRuns.has(item.run_id) ? '导出中…' : 'Excel' }}</button>
-                    <button type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.result_filename)">JSON</button>
+                    <button type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadSignedRunFile(item.run_id, 'result')">JSON</button>
                   </span>
                 </td>
                 <td class="px-3 py-3 text-center align-top">
