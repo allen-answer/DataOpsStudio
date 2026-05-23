@@ -3,13 +3,17 @@ dry-run vs enforce。`evaluate()` 是纯函数，host/queue/config 全注入，�
 """
 from __future__ import annotations
 
+import pytest
+
 from app.models import CompareTask, RunLimits
 from app.services.resource_guard import (
+    DiskWatermarkExceeded,
     GuardConfig,
     GuardDecision,
     HostSnapshot,
     QueueState,
     TaskShape,
+    check_disk_critical,
     decision_detail,
     evaluate,
     guard_compare_run,
@@ -324,3 +328,63 @@ def test_run_async_endpoint_denies_huge_task_when_enforced(client, monkeypatch):
     task = _seed_huge_json_task()
     resp = client.post(f"/api/tasks/{task.id}/run-async")
     assert resp.status_code == 429
+
+
+# ─── Phase 13:check_disk_critical mid-run 水位 ──────────────────────────────
+
+
+def test_check_disk_critical_healthy(monkeypatch):
+    """剩余 / 使用率都在阈值内 → critical=False"""
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (200.0, 30.0),  # 200GB free, 30% used
+    )
+    critical, reason = check_disk_critical()
+    assert critical is False
+    assert reason is None
+
+
+def test_check_disk_critical_free_below_threshold(monkeypatch):
+    monkeypatch.setenv("DATAOPS_RESULTS_MIN_FREE_GB", "10")
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (3.5, 40.0),  # 3.5GB < 10GB threshold
+    )
+    critical, reason = check_disk_critical()
+    assert critical is True
+    assert "3.50GB" in reason
+    assert "10" in reason
+
+
+def test_check_disk_critical_usage_above_threshold(monkeypatch):
+    monkeypatch.setenv("DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT", "85")
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (100.0, 92.5),  # 92.5% > 85% threshold
+    )
+    critical, reason = check_disk_critical()
+    assert critical is True
+    assert "92.5%" in reason
+    assert "85" in reason
+
+
+def test_check_disk_critical_free_takes_priority(monkeypatch):
+    """剩余空间是更紧迫的信号(可能比使用率%先到红线 —— 大盘小数据场景),
+    所以优先返"""
+    monkeypatch.setenv("DATAOPS_RESULTS_MIN_FREE_GB", "10")
+    monkeypatch.setenv("DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT", "85")
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (5.0, 90.0),  # 两个阈值都过 → free 先报
+    )
+    critical, reason = check_disk_critical()
+    assert critical is True
+    assert "剩余" in reason and "5.00GB" in reason
+
+
+def test_disk_watermark_exceeded_is_runtime_error():
+    # caller(runner)用 try/except DiskWatermarkExceeded 包流式循环 ——
+    # 必须是 RuntimeError 子类,不能是 BaseException(让 generic except 抓到)
+    assert issubclass(DiskWatermarkExceeded, RuntimeError)
+    exc = DiskWatermarkExceeded("test message")
+    assert str(exc) == "test message"

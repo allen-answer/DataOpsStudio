@@ -35,7 +35,13 @@ class JobCancelled(RuntimeError):
     pass
 
 
-def submit_task_run(task_id: str, max_retries: int | None = None) -> dict[str, Any]:
+def submit_task_run(
+    task_id: str,
+    max_retries: int | None = None,
+    *,
+    owner_user_id: str = "",
+    project_id: str = "",
+) -> dict[str, Any]:
     cleanup_jobs()
     job_id = uuid4().hex
     now = datetime.now()
@@ -56,6 +62,9 @@ def submit_task_run(task_id: str, max_retries: int | None = None) -> dict[str, A
             "result": None,
             "error": "",
             "cancel_requested": False,
+            "owner_user_id": owner_user_id,
+            "project_id": project_id,
+            "target_run_id": "",
         },
     )
     future = _executor.submit(_run_job, job_id, task_id)
@@ -71,6 +80,9 @@ def submit_workflow_run(
     from_node_id: str | None = None,
     max_retries: int | None = None,
     trigger: str = "manual",
+    *,
+    owner_user_id: str = "",
+    project_id: str = "",
 ) -> dict[str, Any]:
     cleanup_jobs()
     job_id = uuid4().hex
@@ -92,6 +104,9 @@ def submit_workflow_run(
         "result": None,
         "error": "",
         "cancel_requested": False,
+        "owner_user_id": owner_user_id,
+        "project_id": project_id,
+        "target_run_id": "",
     }
     if resume_from is not None and from_node_id:
         job_record["resumed_from"] = {
@@ -235,6 +250,7 @@ def _run_job(job_id: str, task_id: str) -> None:
                     message="success",
                     result=result.model_dump(mode="json"),
                     retry_count=retry_count,
+                    target_run_id=getattr(result, "run_id", "") or "",
                 )
                 return
             except JobCancelled:
@@ -325,6 +341,7 @@ def _run_workflow_job(
                         message="success",
                         result=result,
                         retry_count=retry_count,
+                        target_run_id=getattr(run, "run_id", "") or "",
                     )
                     return
                 if retry_count < max_retries and not _is_cancel_requested(job_id):
@@ -413,7 +430,8 @@ def _persist_jobs() -> None:
                 str(job.get("status") or "pending"),
                 str(job.get("task_id") or ""),
                 str(job.get("workflow_id") or ""),
-                str(job.get("run_id") or ""),
+                # Phase 13:target_run_id 是新规范字段;老 record 退到 run_id
+                str(job.get("target_run_id") or job.get("run_id") or ""),
                 str(job.get("started_at") or job.get("created_at") or ""),
                 str(job.get("finished_at") or ""),
                 1 if job.get("cancel_requested") else 0,
@@ -498,6 +516,11 @@ def _load_jobs_from_disk() -> None:
         job.setdefault("expires_at", "")
         job.setdefault("retry_count", 0)
         job.setdefault("max_retries", 0)
+        # Phase 13:老 job 没 owner / project / target_run_id 字段,补默认空串
+        # 让 JobInfo 反序列化通过 + authz lookup 仍走 task/workflow 反查路径
+        job.setdefault("owner_user_id", "")
+        job.setdefault("project_id", "")
+        job.setdefault("target_run_id", job.get("run_id") or "")
         _jobs[job_id] = job
     cleanup_jobs()
 

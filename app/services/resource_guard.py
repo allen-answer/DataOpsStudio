@@ -165,6 +165,41 @@ def host_snapshot() -> HostSnapshot:
     )
 
 
+class DiskWatermarkExceeded(RuntimeError):
+    """mid-run 磁盘水位检查触发 —— 把当前 run 的 streaming 写入主动中止。
+
+    `evaluate` 是 admission control(任务进入前看一次磁盘),长 run 跑到一半
+    把盘写爆是空档。runner 在 streaming compare 循环每 N 行查一次,达 critical
+    raise 这个,caller 捕获后 cleanup 临时目录避免半成品累积。
+    """
+
+
+def check_disk_critical(
+    config: "GuardConfig | None" = None,
+) -> tuple[bool, str | None]:
+    """mid-run 用:磁盘是否处于 critical(应中止写入)?
+
+    Critical = 剩余 < `results_min_free_gb` 或 使用率 > `results_max_disk_usage_pct`,
+    阈值同 admission control(guard.evaluate)。返回 `(critical, reason)`:
+    `(True, "磁盘剩余 ... < ...")` 让 caller 抛 `DiskWatermarkExceeded`。
+
+    `config=None` 时每次从 env 读 —— 改 env 后无需重启。
+    """
+    cfg = config or GuardConfig.from_env()
+    free_gb, usage_pct = _disk_stats()
+    if free_gb < cfg.results_min_free_gb:
+        return True, (
+            f"磁盘剩余 {free_gb:.2f}GB 低于阈值 {cfg.results_min_free_gb}GB "
+            f"(DATAOPS_RESULTS_MIN_FREE_GB)"
+        )
+    if usage_pct > cfg.results_max_disk_usage_pct:
+        return True, (
+            f"磁盘使用率 {usage_pct:.1f}% 高于阈值 {cfg.results_max_disk_usage_pct}% "
+            f"(DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT)"
+        )
+    return False, None
+
+
 def _disk_stats() -> tuple[float, float]:
     """results 盘剩余 GB + 使用率%。测不出来时报健康值，绝不因测量失败误拦。"""
     for path in (RESULTS_DIR, RESULTS_DIR.parent, Path.cwd()):

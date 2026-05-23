@@ -248,6 +248,12 @@ class JobInfo(BaseModel):
     cancel_requested: bool = False
     # 局部重跑场景下记录起源（前端可据此显示 "局部重跑自 run X · from node Y"）
     resumed_from: dict[str, str] | None = None
+    # Phase 13:job 出处归属(authz 之前靠 task/workflow lookup 反查,这些字段
+    # 把归属落在 job 自身,让 audit / 告警 / debug 直接读)。submit 时落,后续不动。
+    # 老 job 没这字段读出空串(SQLite JSON 加载 + setdefault 兜底),向后兼容。
+    owner_user_id: str = ""  # 触发 job 的用户 id;系统调度("scheduler")亦合法
+    project_id: str = ""     # job 归属项目(从 task.project_id / workflow.project_id 落)
+    target_run_id: str = ""  # 跑完后填:compare 是 CompareResult.run_id;workflow 是 WorkflowRun.run_id
 
 
 class WorkflowRunSummary(BaseModel):

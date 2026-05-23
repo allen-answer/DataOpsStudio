@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import NamedTuple
 from typing import Any
 
@@ -121,7 +123,7 @@ def _fetch_with_dbapi(
         except Exception as exc:
             raise DbClientError(f"create cursor failed: {exc}") from exc
 
-        _apply_statement_timeout(cursor, db_type)
+        _apply_statement_timeout(cursor, db_type, connection)
         try:
             cursor.execute(sql)
         except Exception as exc:
@@ -171,7 +173,7 @@ def fetch_column_details(source: DataSource, sql: str) -> QueryColumns:
         cursor = None
         try:
             cursor = connection.cursor()
-            _apply_statement_timeout(cursor, source.db_type)
+            _apply_statement_timeout(cursor, source.db_type, connection)
             try:
                 cursor.execute(sql)
             except Exception as exc:
@@ -222,9 +224,36 @@ def _connect(source: DataSource, module_name: str) -> Any:
     return get_dialect(source.db_type).connect(source, module_name)
 
 
+# Phase 13: 单任务超时覆盖。runner 在 run_task 入口 push 该任务的
+# query_timeout_seconds(若 limits 显式设了),fetch_rows / iter_rows 路径下查询
+# 执行前由 _statement_timeout_seconds() 优先读 ContextVar,否则 fallback env。
+# 用 ContextVar 而非传参,避免 fetch_rows / iter_rows / fetch_column_details
+# 三个对外 API 签名都加 limits 参数。
+_query_timeout_override: ContextVar[float | None] = ContextVar(
+    "_query_timeout_override", default=None,
+)
+
+
+@contextmanager
+def query_timeout_override(seconds: float | None):
+    """runner 进入 task 时调:`with query_timeout_override(task.limits.query_timeout_seconds): ...`。
+
+    None / 负值 → 不设覆盖(等同于走 env 默认);0 → 显式关闭超时;>0 → 用该值。
+    """
+    token = _query_timeout_override.set(seconds)
+    try:
+        yield
+    finally:
+        _query_timeout_override.reset(token)
+
+
 def _statement_timeout_seconds() -> float:
-    """语句超时秒数。env `DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS`，默认 900（15
-    分钟）；`<= 0` 关闭。每次查询读一遍 —— 改 env 后无需重启即生效。"""
+    """语句超时秒数。优先 ContextVar(单任务覆盖);否则 env
+    `DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS`,默认 900(15 分钟);`<= 0` 关闭。
+    每次查询读一遍 —— 改 env 后无需重启即生效。"""
+    override = _query_timeout_override.get()
+    if override is not None:
+        return float(override) if override > 0 else 0.0
     try:
         value = float(os.getenv("DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS", "900"))
     except (TypeError, ValueError):
@@ -232,18 +261,41 @@ def _statement_timeout_seconds() -> float:
     return value if value > 0 else 0.0
 
 
-def _apply_statement_timeout(cursor: Any, db_type: Any) -> None:
+def _apply_statement_timeout(cursor: Any, db_type: Any, connection: Any = None) -> None:
     """查询执行前 best-effort 下发会话语句超时 —— 防慢查询长期占住 DB 连接。
 
-    失败只记 warning，绝不让真查询陪葬：MariaDB / 老版本 / 不支持的方言下发
-    会报错，超时是安全网而非查询的前置条件，吞掉即可。
+    两路径:
+    - **连接属性路径**(Oracle / DM via oracledb / dmPython `conn.callTimeout`)
+      作用于该连接所有后续 round-trip
+    - **会话 SQL 路径**(MySQL `SET SESSION MAX_EXECUTION_TIME`)cursor 级下发
+
+    优先试连接属性,失败 / 不支持时 fallback 到 SQL 路径。失败只记 warning,
+    绝不让真查询陪葬:MariaDB / 老版本 / 不支持的方言下发会报错,超时是安全
+    网而非查询的前置条件,吞掉即可。
+
+    `connection=None` 时直接走 SQL 路径(向后兼容旧 caller / 单测路径)。
     """
     seconds = _statement_timeout_seconds()
     if seconds <= 0:
         return
     try:
-        timeout_sql = get_dialect(db_type).statement_timeout_sql(seconds)
+        dialect = get_dialect(db_type)
     except Exception:  # noqa: BLE001 —— 取不到 dialect 不该影响查询
+        return
+    # Path A: 连接属性(Oracle / DM)
+    if connection is not None:
+        try:
+            if dialect.apply_call_timeout(connection, seconds):
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "apply call timeout failed (db_type=%s): %s",
+                getattr(db_type, "value", db_type), exc,
+            )
+    # Path B: 会话 SQL(MySQL)
+    try:
+        timeout_sql = dialect.statement_timeout_sql(seconds)
+    except Exception:  # noqa: BLE001
         return
     if not timeout_sql:
         return
@@ -268,7 +320,7 @@ def _iter_with_dbapi(
     fetched = 0
     try:
         cursor = connection.cursor()
-        _apply_statement_timeout(cursor, db_type)
+        _apply_statement_timeout(cursor, db_type, connection)
         cursor.execute(sql)
         columns = uniquify_columns([desc[0] for desc in cursor.description or []])
         batch_size = max(1, int(chunk_size or 5000))

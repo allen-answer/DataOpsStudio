@@ -176,6 +176,66 @@ def test_stream_compare_parquet_diff_only_source_only_target_parquet_readable(
 # ─── 其它路径不回归 ─────────────────────────────────────────────────────────
 
 
+# ─── Phase 13:mid-run 磁盘水位中止 ─────────────────────────────────────────
+
+
+def test_stream_compare_aborts_on_mid_run_disk_critical(isolated_storage, monkeypatch):
+    """模拟跑到一半磁盘到红线 —— runner 主动 raise DiskWatermarkExceeded,
+    清理临时 parquet run 目录,不让半成品累积。"""
+    src = [{"id": i, "v": f"x{i}"} for i in range(50)]
+    tgt = list(src)
+    _patch_readers(monkeypatch, src, tgt)
+
+    # 1. 把水位检查间隔降到 5(默认 5000),让小测试数据也能触发
+    from app.services import runner as runner_module
+    monkeypatch.setattr(runner_module, "_DISK_WATERMARK_CHECK_INTERVAL", 5)
+
+    # 2. 让 _disk_stats 报 critical(剩余远低于阈值)
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (0.5, 30.0),  # 0.5GB < 默认 5GB 阈值
+    )
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+
+    from app.services.runner import run_task
+    from app.services.resource_guard import DiskWatermarkExceeded
+
+    with pytest.raises(DiskWatermarkExceeded) as exc_info:
+        run_task(task_id)
+
+    assert "磁盘" in str(exc_info.value)
+    # 临时 run 目录应被 cleanup_partial_parquet 删掉(没残留垃圾)
+    # —— run_id 是事后才知道的,通过 results 目录扫确认没遗留子目录
+    # (跳过 fixture 自带的 uploads / workflow_runs 两个固定子目录)
+    results_dir = isolated_storage["results"]
+    skip_names = {"uploads", "workflow_runs"}
+    leftover = [
+        p for p in results_dir.iterdir()
+        if p.is_dir() and p.name not in skip_names
+    ]
+    assert leftover == [], f"DiskWatermarkExceeded 后应无残留 run 目录,实有:{leftover}"
+
+
+def test_stream_compare_passes_when_disk_healthy(isolated_storage, monkeypatch):
+    """healthy disk + 低 interval —— 不应触发,正常完成"""
+    src = [{"id": i, "v": f"x{i}"} for i in range(20)]
+    tgt = list(src)
+    _patch_readers(monkeypatch, src, tgt)
+
+    from app.services import runner as runner_module
+    monkeypatch.setattr(runner_module, "_DISK_WATERMARK_CHECK_INTERVAL", 5)
+    monkeypatch.setattr(
+        "app.services.resource_guard._disk_stats",
+        lambda: (200.0, 30.0),  # healthy
+    )
+
+    task_id = _make_task(result_format="parquet", stream_compare=True)
+    from app.services.runner import run_task
+    result = run_task(task_id)
+    assert result.summary.same == 20  # 正常跑完
+
+
 def test_json_stream_compare_still_uses_iterators(isolated_storage, monkeypatch):
     """result_format=json + stream_compare=True 仍走 compare_sorted_row_iterators
     攒完整 dict（不能切到 events 路径，因为 JsonResultWriter 需要整 dict）。"""

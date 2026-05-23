@@ -13,6 +13,8 @@ from app.compare.engine import (
     compare_sorted_row_events,
     compare_sorted_row_iterators,
 )
+from app.dbclients.factory import query_timeout_override
+from app.services.resource_guard import DiskWatermarkExceeded, check_disk_critical
 from app.compare.result_writer import (
     JsonResultWriter,
     ParquetResultWriter,
@@ -23,6 +25,11 @@ from app.compare.result_writer import (
 
 _BUCKET_NAMES: tuple[str, ...] = ("only_source", "only_target", "diff", "same")
 _SAMPLE_ROWS_PER_BUCKET = 20
+
+# Phase 13: streaming compare 每写 N 行查一次磁盘水位 —— admission control
+# 只在任务进入时查一次,长 run 跑到一半把盘写爆是空档。命中阈值就抛
+# `DiskWatermarkExceeded`,caller(此文件下方)cleanup 临时 parquet 目录后再 raise。
+_DISK_WATERMARK_CHECK_INTERVAL = 5000
 from app.models import CompareResult, CompareSummary, CompareTask, SourceKind, SqlMode
 from app.readers import CsvReader, ExcelReader, ParquetReader, RowReader, SqlReader
 from app.services.compare_schema import build_schema_report
@@ -42,6 +49,19 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     if task is None:
         raise KeyError(f"Task not found: {task_id}")
 
+    # Phase 13:单任务 query_timeout 覆盖。task.limits.query_timeout_seconds 显
+    # 式设了就 push 进 ContextVar,下游 fetch_rows / iter_rows 路径自动取这个
+    # 值而非全局 env。None / 不设 → 走 env 默认(行为不变)。
+    with query_timeout_override(task.limits.query_timeout_seconds):
+        return _run_task_inner(task, started_at, start, status_callback)
+
+
+def _run_task_inner(
+    task: CompareTask,
+    started_at: datetime,
+    start: float,
+    status_callback: Any | None,
+) -> CompareResult:
     logger.info(
         "task start task_id=%s task_name=%s source_id=%s target_id=%s sql_mode=%s keys=%s",
         task.id,
@@ -191,14 +211,27 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
         assert source_rows_iter is not None and target_rows_iter is not None
         src_count = 0
         tgt_count = 0
-        for bucket, row in compare_sorted_row_events(
-            source_rows_iter, target_rows_iter, task.key_columns, task.rules,
-        ):
-            writer.write_bucket_row(bucket, row)
-            if bucket in ("only_source", "diff", "same"):
-                src_count += 1
-            if bucket in ("only_target", "diff", "same"):
-                tgt_count += 1
+        rows_written = 0
+        try:
+            for bucket, row in compare_sorted_row_events(
+                source_rows_iter, target_rows_iter, task.key_columns, task.rules,
+            ):
+                writer.write_bucket_row(bucket, row)
+                if bucket in ("only_source", "diff", "same"):
+                    src_count += 1
+                if bucket in ("only_target", "diff", "same"):
+                    tgt_count += 1
+                rows_written += 1
+                if rows_written % _DISK_WATERMARK_CHECK_INTERVAL == 0:
+                    critical, reason = check_disk_critical()
+                    if critical:
+                        raise DiskWatermarkExceeded(
+                            f"mid-run 磁盘水位达 critical:{reason} "
+                            f"(已写 {rows_written} 行,主动中止防止把盘写爆)"
+                        )
+        except DiskWatermarkExceeded:
+            _cleanup_partial_parquet(writer)
+            raise
         source_rows_count = src_count
         target_rows_count = tgt_count
         # 回填 payload 让 ParquetResultWriter.finalize 写正确 envelope 字段
@@ -207,10 +240,23 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
     elif use_streaming_writer:
         _notify(status_callback, "comparing", "执行流式对比 + 增量落 parquet")
         assert source_rows is not None and target_rows is not None
-        for bucket, row in compare_rows_streaming(
-            source_rows, target_rows, task.key_columns, task.rules,
-        ):
-            writer.write_bucket_row(bucket, row)
+        rows_written = 0
+        try:
+            for bucket, row in compare_rows_streaming(
+                source_rows, target_rows, task.key_columns, task.rules,
+            ):
+                writer.write_bucket_row(bucket, row)
+                rows_written += 1
+                if rows_written % _DISK_WATERMARK_CHECK_INTERVAL == 0:
+                    critical, reason = check_disk_critical()
+                    if critical:
+                        raise DiskWatermarkExceeded(
+                            f"mid-run 磁盘水位达 critical:{reason} "
+                            f"(已写 {rows_written} 行,主动中止防止把盘写爆)"
+                        )
+        except DiskWatermarkExceeded:
+            _cleanup_partial_parquet(writer)
+            raise
     else:
         # json 模式或 parquet+stream_compare（已被上面分支接管）—— 走 buckets dict
         assert buckets is not None
@@ -250,6 +296,24 @@ def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
             for name, rows in manifest.samples.items()
         },
     )
+
+
+def _cleanup_partial_parquet(writer: ResultWriter) -> None:
+    """mid-run 磁盘水位中止时:把 ParquetResultWriter 的临时 run 目录 rmtree。
+
+    JsonResultWriter 不在 streaming 路径里(本切片只覆盖两个 parquet 流式分支),
+    所以仅检查 `run_dir` 属性存在即清理。删失败不抛(防 cleanup 报错掩盖原始
+    DiskWatermarkExceeded)。
+    """
+    run_dir = getattr(writer, "run_dir", None)
+    if run_dir is None:
+        return
+    try:
+        import shutil
+        shutil.rmtree(run_dir, ignore_errors=True)
+        logger.warning("cleaned up partial parquet run dir=%s after disk watermark abort", run_dir)
+    except Exception:
+        logger.exception("failed to cleanup partial parquet run dir=%s", run_dir)
 
 
 def build_reader(task: CompareTask, side: str) -> RowReader:

@@ -21,6 +21,16 @@ class OracleDialect(Dialect):
     def connection_test_sql(self) -> str:
         return "select 1 as ok from dual"
 
+    def apply_call_timeout(self, conn: Any, seconds: float) -> bool:
+        # oracledb / cx_Oracle Connection.callTimeout —— 单位毫秒，作用于所有
+        # 后续 round-trip(execute / fetch)，超过即驱动抛 DPI-1067。dmPython 也
+        # 基于 DB-API，多数版本兼容；不兼容会 AttributeError，由 caller 吞掉。
+        try:
+            conn.callTimeout = int(seconds * 1000)
+            return True
+        except (AttributeError, TypeError):
+            return False
+
     def connect(self, source: DataSource, module_name: str) -> Any:
         # oracledb / cx_Oracle 都接 user/password/dsn 三参数；dsn 优先用
         # extra.dsn（让用户自己写 TNS / Easy Connect），否则按 host:port/service 拼

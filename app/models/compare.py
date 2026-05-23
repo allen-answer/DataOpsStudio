@@ -38,6 +38,12 @@ class RunLimits(BaseModel):
     persist_same_bucket: bool = False
     # 仅在 result_format="parquet" 时生效：meta.json 里每桶 sample 行数
     same_sample_rows: int = Field(default=100, ge=0, le=10_000)
+    # Phase 13: 单任务 DB 语句超时覆盖(秒);None = 用全局 env
+    # `DATAOPS_DB_STATEMENT_TIMEOUT_SECONDS`(默认 900)。慢但合法的 ETL 可提到
+    # 1800,日常 preview 任务可缩到 60。<=0 时 caller 视作"不超时"(谨慎)。
+    # MySQL 走 SQL 会话路径,Oracle / DM 走 connection.callTimeout 路径,
+    # 详见 docs/DB_STATEMENT_TIMEOUT.md。
+    query_timeout_seconds: int | None = Field(default=None, ge=0, le=86_400)
 
 
 # 字段惯例：

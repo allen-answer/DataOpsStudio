@@ -216,7 +216,13 @@ def run_workflow_async_api(
     authorize_workflow_compare_tasks(workflow, current)
     payload = payload or {}
     variables = coerce_string_dict(payload.get("variables"))
-    return submit_workflow_run(workflow_id, variables, max_retries=payload.get("max_retries"))
+    return submit_workflow_run(
+        workflow_id,
+        variables,
+        max_retries=payload.get("max_retries"),
+        owner_user_id=current.id,
+        project_id=workflow.project_id or "",
+    )
 
 
 @router.get("/api/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])

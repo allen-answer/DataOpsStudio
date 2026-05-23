@@ -357,6 +357,8 @@ def _run_scheduled_workflow(workflow_id: str) -> None:
             {},
             max_retries=DEFAULT_MAX_RETRIES,
             trigger="schedule",
+            owner_user_id="system",
+            project_id=workflow.project_id or "",
         )
         with _lock:
             entry = _entry_for(workflow, datetime.now())
@@ -435,6 +437,8 @@ def _fallback_tick(now: datetime | None = None) -> dict[str, Any]:
                             {},
                             max_retries=DEFAULT_MAX_RETRIES,
                             trigger="schedule",
+                            owner_user_id="system",
+                            project_id=workflow.project_id or "",
                         )
                         entry.last_run_at = _iso(now)
                         entry.last_job_id = str(job.get("job_id") or "")
@@ -504,6 +508,8 @@ def _tick_sensors() -> list[dict[str, Any]]:
                     {},
                     max_retries=DEFAULT_MAX_RETRIES,
                     trigger=f"sensor:{sensor.get('type', 'unknown')}",
+                    owner_user_id="system",
+                    project_id=workflow.project_id or "",
                 )
                 submitted.append({
                     "workflow_id": workflow.id,
@@ -694,6 +700,8 @@ def _evaluate_sensor_and_maybe_submit(workflow: Workflow, sensor: dict[str, Any]
         {},
         max_retries=DEFAULT_MAX_RETRIES,
         trigger="sensor",
+        owner_user_id="system",
+        project_id=workflow.project_id or "",
     )
     with _lock:
         entry.last_triggered_at = _iso(now)

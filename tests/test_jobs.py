@@ -114,3 +114,82 @@ def test_job_info_model_accepts_compare_kind():
 
     assert job.kind == "compare"
     assert job.stage == "querying_source"
+
+
+# ─── Phase 13:JobInfo 三字段补全(owner / project / target_run_id)───────────
+
+
+class _FakeResultWithRunId:
+    """有真 `run_id` 属性(jobs._run_job getattr 抓取)+ model_dump 返还。"""
+
+    def __init__(self, run_id: str, task_id: str) -> None:
+        self.run_id = run_id
+        self._payload = {"run_id": run_id, "task_id": task_id}
+
+    def model_dump(self, mode="json"):
+        return dict(self._payload)
+
+
+def test_submit_task_run_captures_owner_and_project(monkeypatch, isolated_storage):
+    """submit_task_run 接收 owner_user_id + project_id,落 job dict 供 audit / authz 直接读"""
+    def fake_run_task(task_id, status_callback=None):
+        return _FakeResultWithRunId("run-xyz", task_id)
+    monkeypatch.setattr(jobs, "run_task", fake_run_task)
+
+    job = jobs.submit_task_run(
+        "task-42",
+        owner_user_id="user-7",
+        project_id="proj-9",
+    )
+    final = _wait_for_terminal(job["job_id"])
+
+    assert final["owner_user_id"] == "user-7"
+    assert final["project_id"] == "proj-9"
+    # success 分支应填 target_run_id(从 result.run_id 抓)
+    assert final["target_run_id"] == "run-xyz"
+
+
+def test_submit_task_run_defaults_blank_owner_when_not_passed(monkeypatch, isolated_storage):
+    """老 caller(scheduler 外 / 测试)不传 owner/project,字段默认空串向后兼容"""
+    def fake_run_task(task_id, status_callback=None):
+        return _FakeResultWithRunId("run-abc", task_id)
+    monkeypatch.setattr(jobs, "run_task", fake_run_task)
+
+    job = jobs.submit_task_run("task-1")
+    final = _wait_for_terminal(job["job_id"])
+
+    assert final["owner_user_id"] == ""
+    assert final["project_id"] == ""
+    assert final["target_run_id"] == "run-abc"
+
+
+def test_job_info_model_has_new_fields():
+    from app.models import JobInfo
+    job = JobInfo.model_validate(
+        {
+            "job_id": "j2",
+            "kind": "compare",
+            "status": "success",
+            "owner_user_id": "u-1",
+            "project_id": "p-1",
+            "target_run_id": "r-1",
+        }
+    )
+    assert job.owner_user_id == "u-1"
+    assert job.project_id == "p-1"
+    assert job.target_run_id == "r-1"
+
+
+def test_job_info_model_new_fields_default_empty():
+    """老 job dict 不带新字段 → JobInfo 反序列化默认空串(向后兼容关键)"""
+    from app.models import JobInfo
+    job = JobInfo.model_validate(
+        {
+            "job_id": "j3",
+            "kind": "workflow",
+            "status": "queued",
+        }
+    )
+    assert job.owner_user_id == ""
+    assert job.project_id == ""
+    assert job.target_run_id == ""

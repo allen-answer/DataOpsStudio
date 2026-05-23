@@ -57,10 +57,21 @@ class Dialect(ABC):
         在每次查询执行前由 `factory._apply_statement_timeout` best-effort 下发
         —— 防止一条慢查询长期占住数据库连接。`seconds` 由 caller 保证 > 0。
 
-        默认返回 None（不支持）。MySQL 子类覆盖。Oracle / DM 的语句超时不是
-        一条 SQL 能搞定的（需驱动 call timeout / Resource Manager），留作缺口。
+        默认返回 None（不支持）。MySQL 子类覆盖。Oracle / DM 走驱动连接属性路径
+        （`apply_call_timeout`），不再用 SQL。
         """
         return None
+
+    def apply_call_timeout(self, conn: Any, seconds: float) -> bool:
+        """driver 连接属性级 round-trip 超时；不支持返回 False。
+
+        优先于 `statement_timeout_sql` 被 `factory._apply_statement_timeout`
+        调用。返回 True 表示已生效（caller 跳过 SQL fallback），False 表示
+        驱动不支持该属性。
+
+        默认 False。Oracle / DM 子类覆盖（设 `conn.callTimeout = ms`）。
+        """
+        return False
 
     @abstractmethod
     def connect(self, source: DataSource, module_name: str) -> Any:

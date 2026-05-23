@@ -194,7 +194,12 @@ def run_task_async_api(
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
     _guard_or_raise(task, allow_queue=True)
     _preflight_or_raise(task)
-    return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
+    return submit_task_run(
+        task_id,
+        max_retries=(payload or {}).get("max_retries"),
+        owner_user_id=current.id,
+        project_id=task.project_id or "",
+    )
 
 
 @router.post("/api/sql/preflight", response_model=SQLPreflightDecision)

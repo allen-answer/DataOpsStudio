@@ -76,7 +76,7 @@ def delete_workflow_run_api(run_id: str, _: object = Depends(require_role("edito
 def rerun_workflow_run_api(
     run_id: str,
     payload: dict[str, object] | None = Body(None),
-    _: object = Depends(require_role("editor")),
+    current: object = Depends(require_role("editor")),
 ):
     """从指定节点重跑：上次 run 的 from_node_id 及其所有传递下游重新执行；
     其他节点（必然是 from_node 的祖先 + 旁支）若上次 success 则复用 output.
@@ -136,4 +136,6 @@ def rerun_workflow_run_api(
         from_node_id=from_node_id,
         max_retries=payload.get("max_retries"),
         trigger="rerun",
+        owner_user_id=getattr(current, "id", "") or "",
+        project_id=workflow.project_id or "",
     )

@@ -171,8 +171,11 @@ def test_scheduler_tick_fires_workflow_on_file_sensor(isolated_storage, tmp_path
     workflow = workflow_store.create(_to_create(workflow_payload))
 
     submitted: list[dict] = []
-    def fake_submit(workflow_id, variables, *, max_retries=0, trigger=""):
-        submitted.append({"workflow_id": workflow_id, "trigger": trigger})
+    def fake_submit(workflow_id, variables, *, max_retries=0, trigger="", **kwargs):
+        # Phase 13:实际 submit_workflow_run 接 owner_user_id / project_id 等
+        # 新 kwarg —— fake_submit 必须 **kwargs 收口,否则 TypeError 被 scheduler
+        # 内的 try/except 吞掉,看起来"没触发"。
+        submitted.append({"workflow_id": workflow_id, "trigger": trigger, **kwargs})
         return {"job_id": f"job-{len(submitted)}", "status": "queued"}
     monkeypatch.setattr("app.services.scheduler.submit_workflow_run", fake_submit)
 
