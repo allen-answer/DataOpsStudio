@@ -67,6 +67,11 @@ class LoginResponse(BaseModel):
     user: User | None = None
     mfa_required: bool = False
     mfa_token: str = ""  # 仅 mfa_required=True 时填充
+    # refresh rotation：登录 / refresh / mfa challenge 成功时同步签发长期 refresh
+    # token；前端把它存进 localStorage 单独 key,access 401 时调 /api/auth/refresh
+    # 拿新对。env DATAOPS_REFRESH_TTL_SECONDS=0 关 refresh 时本字段恒空。
+    refresh_token: str = ""
+    refresh_expires_in: int = 0
 
 
 class Project(BaseModel):

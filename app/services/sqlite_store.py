@@ -153,6 +153,21 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             user_id TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS revoked_tokens_exp_idx ON revoked_tokens(exp);
+
+        -- 安全加固：refresh token 表（refresh rotation）。
+        -- login 同时签短 access (30min~8h) + 长 refresh (7d)；POST /api/auth/refresh
+        -- 拿老 refresh 换新 access+refresh 对，老 refresh 标 replaced_by=新jti。
+        -- 重放检测：若 replaced_by 非空的 token 再被用 → 视为盗用，整条链 revoke。
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            jti TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            exp INTEGER NOT NULL,                -- refresh JWT 自身过期时间戳
+            issued_at TEXT NOT NULL DEFAULT '',
+            replaced_by TEXT,                    -- 已被 rotation 替换的新 jti；NULL = 当前 active
+            revoked_at TEXT                      -- 显式 revoke 时间；非 NULL = 已失效（logout / 重放检出）
+        );
+        CREATE INDEX IF NOT EXISTS refresh_tokens_user_idx ON refresh_tokens(user_id);
+        CREATE INDEX IF NOT EXISTS refresh_tokens_exp_idx ON refresh_tokens(exp);
     """)
 
 

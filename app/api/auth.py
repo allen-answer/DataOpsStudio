@@ -53,12 +53,51 @@ def login(payload: LoginRequest):
         return LoginResponse(mfa_required=True, mfa_token=mfa_token, expires_in=mfa_ttl)
 
     token, ttl = create_access_token(user)
+    from app.services.refresh import issue_refresh_token
+
+    refresh_tok, _, refresh_ttl = issue_refresh_token(user.id)
     logger.info("auth login user_id=%s username=%s role=%s", user.id, user.username, user.role)
     return LoginResponse(
         access_token=token,
         token_type="bearer",
         expires_in=ttl,
         user=_redact(user),
+        refresh_token=refresh_tok,
+        refresh_expires_in=refresh_ttl,
+    )
+
+
+@router.post("/api/auth/refresh", response_model=LoginResponse)
+def refresh_token_endpoint(payload: dict = Body(...)):
+    """OAuth2 风格 rotation：用老 refresh token 换新 access + 新 refresh。
+
+    重放检测：若 refresh token 已被 rotation 替换过又被用 → 视为盗用,整条
+    用户 refresh 链 revoke + 返 401,强制重新登录。
+    """
+    from app.services.refresh import rotate_refresh_token
+
+    old = str(payload.get("refresh_token") or "")
+    if not old:
+        raise HTTPException(status_code=400, detail="refresh_token 不能为空")
+    rotated = rotate_refresh_token(old)
+    if rotated is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token 无效或已过期，请重新登录",
+        )
+    user_id, new_refresh, _new_jti, refresh_ttl = rotated
+    user = user_store.get(user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    access, access_ttl = create_access_token(user)
+    logger.info("auth refresh rotation user_id=%s username=%s", user.id, user.username)
+    return LoginResponse(
+        access_token=access,
+        token_type="bearer",
+        expires_in=access_ttl,
+        user=_redact(user),
+        refresh_token=new_refresh,
+        refresh_expires_in=refresh_ttl,
     )
 
 
@@ -89,12 +128,17 @@ def mfa_challenge(payload: dict = Body(...)):
     if not verify_totp(secret, code):
         raise HTTPException(status_code=401, detail="OTP 验证失败")
     token, ttl = create_access_token(user)
+    from app.services.refresh import issue_refresh_token
+
+    refresh_tok, _, refresh_ttl = issue_refresh_token(user.id)
     logger.info("auth mfa challenge ok user_id=%s username=%s", user.id, user.username)
     return LoginResponse(
         access_token=token,
         token_type="bearer",
         expires_in=ttl,
         user=_redact(user),
+        refresh_token=refresh_tok,
+        refresh_expires_in=refresh_ttl,
     )
 
 
@@ -134,6 +178,11 @@ def logout(request: Request, current: User = Depends(get_current_user)):
     会在 TTL 内自然失效。
     """
     revoke_active_token(request)
+    # refresh rotation：同时 revoke 用户所有 active refresh 链 —— 不光 access
+    # 失效,refresh 也不能再换新 access
+    from app.services.refresh import revoke_refresh_chain
+
+    revoke_refresh_chain(current.id)
     logger.info("auth logout user_id=%s username=%s", current.id, current.username)
     return OkResponse(ok=True)
 
