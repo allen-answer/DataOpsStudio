@@ -6,6 +6,7 @@
 //   `await apiGet<User>('/api/auth/me')` 直接拿 User 类型，不用 store 内 `as T`
 // 没标的话默认 unknown（比 any 安全），强迫 caller 显式断言或检查。
 const TOKEN_KEY = 'dataops.token'
+const REFRESH_KEY = 'dataops.refresh'
 const PROJECT_KEY = 'dataops.project_id'
 
 // 命中这些 path 时自动追加 ?project_id=<当前项目>，让列表/首屏 bootstrap
@@ -83,8 +84,70 @@ function _handleAuthFailure(response: Response): void {
   const hash = window.location.hash || ''
   if (hash.startsWith('#/login')) return
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(REFRESH_KEY)
   localStorage.removeItem('dataops.user')
   window.location.hash = '#/login'
+}
+
+
+// ─── refresh rotation 401 自动重试 ─────────────────────────────────────────
+// 任何 apiGet/apiJson/apiForm 拿到 401（且不是 /api/auth/refresh 本身）就：
+//   1. 用 localStorage 里的 refresh token 调 POST /api/auth/refresh
+//   2. 成功 → 写回新 access + 新 refresh,原请求重试一次（带新 Authorization）
+//   3. 失败 → 标准 401 流（_handleAuthFailure 清 token 跳 login）
+//
+// in-flight 锁：多个并发 401 共用一次 refresh 调用,避免重放检测把多次同时
+// rotate 错杀成「重放」。
+let _refreshInFlight: Promise<boolean> | null = null
+
+
+async function _attemptRefresh(): Promise<boolean> {
+  if (_refreshInFlight) return _refreshInFlight
+  _refreshInFlight = (async (): Promise<boolean> => {
+    const refresh = localStorage.getItem(REFRESH_KEY) || ''
+    if (!refresh) return false
+    try {
+      const resp = await fetch(_versionPath('/api/auth/refresh'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refresh }),
+      })
+      if (!resp.ok) {
+        // refresh 失败（exp / revoked / reuse 检出）—— 清两个 token 走标准 401
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(REFRESH_KEY)
+        return false
+      }
+      const data = await resp.json() as {
+        access_token?: string
+        refresh_token?: string
+        user?: unknown
+      }
+      if (!data.access_token) return false
+      localStorage.setItem(TOKEN_KEY, data.access_token)
+      if (data.refresh_token) {
+        localStorage.setItem(REFRESH_KEY, data.refresh_token)
+      }
+      // user 也顺手更新（refresh 端点返回完整 user）
+      if (data.user) {
+        localStorage.setItem('dataops.user', JSON.stringify(data.user))
+      }
+      return true
+    } catch {
+      return false
+    }
+  })()
+  try {
+    return await _refreshInFlight
+  } finally {
+    _refreshInFlight = null
+  }
+}
+
+
+function _isRefreshEndpoint(url: string): boolean {
+  // 不要 refresh 端点自己 401 时再 refresh（无限递归）
+  return url.includes('/api/auth/refresh')
 }
 
 // AI 错误翻译 hook：5xx 或长错误时异步调 /api/ai/translate-error。
@@ -166,9 +229,15 @@ async function _maybeTranslateError(
 }
 
 /** GET /api/...，自动 versioning + project_id 注入 + Bearer token。
- * 调用方传 T 拿强类型；不传默认 unknown。 */
+ * 调用方传 T 拿强类型；不传默认 unknown。
+ * 401 + 非 refresh 端点 → 自动用 refresh token 续一次再重试。 */
 export const apiGet = async <T = unknown>(url: string): Promise<T> => {
-  const response = await fetch(withProjectQuery(url), { headers: { ...authHeaders() } })
+  let response = await fetch(withProjectQuery(url), { headers: { ...authHeaders() } })
+  if (response.status === 401 && !_isRefreshEndpoint(url)) {
+    if (await _attemptRefresh()) {
+      response = await fetch(withProjectQuery(url), { headers: { ...authHeaders() } })
+    }
+  }
   if (!response.ok) {
     _handleAuthFailure(response)
     const message = await parseError(response)
@@ -184,11 +253,15 @@ export const apiJson = async <T = unknown>(
   method: HttpMethod,
   payload?: unknown,
 ): Promise<T> => {
-  const response = await fetch(_versionPath(url), {
+  const _fire = () => fetch(_versionPath(url), {
     method,
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: payload === undefined ? undefined : JSON.stringify(payload),
   })
+  let response = await _fire()
+  if (response.status === 401 && !_isRefreshEndpoint(url)) {
+    if (await _attemptRefresh()) response = await _fire()
+  }
   if (!response.ok) {
     _handleAuthFailure(response)
     const message = await parseError(response)
@@ -200,11 +273,15 @@ export const apiJson = async <T = unknown>(
 
 /** multipart/form-data POST。FormData body，无 Content-Type header（浏览器自填 boundary）。 */
 export const apiForm = async <T = unknown>(url: string, formData: FormData): Promise<T> => {
-  const response = await fetch(_versionPath(url), {
+  const _fire = () => fetch(_versionPath(url), {
     method: 'POST',
     headers: { ...authHeaders() },
     body: formData,
   })
+  let response = await _fire()
+  if (response.status === 401 && !_isRefreshEndpoint(url)) {
+    if (await _attemptRefresh()) response = await _fire()
+  }
   if (!response.ok) {
     _handleAuthFailure(response)
     const message = await parseError(response)

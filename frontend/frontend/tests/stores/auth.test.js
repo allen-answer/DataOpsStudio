@@ -20,19 +20,40 @@ describe('useAuthStore', () => {
     expect(store.isEditor).toBe(false)
   })
 
-  it('login 成功后 token / user 落 localStorage + isAdmin 生效', async () => {
+  it('login 成功后 token / refresh / user 落 localStorage + isAdmin 生效', async () => {
     apiJson.mockResolvedValueOnce({
       access_token: 'tok-abc',
+      refresh_token: 'refresh-xyz',
       user: { username: 'admin', role: 'admin' },
     })
     const store = useAuthStore()
     await store.login('admin', 'admin')
     expect(store.token).toBe('tok-abc')
+    expect(store.refreshToken).toBe('refresh-xyz')
     expect(store.isLoggedIn).toBe(true)
     expect(store.isAdmin).toBe(true)
     expect(store.isEditor).toBe(true)  // admin 也算 editor
     expect(localStorage.getItem('dataops.token')).toBe('tok-abc')
+    expect(localStorage.getItem('dataops.refresh')).toBe('refresh-xyz')
     expect(JSON.parse(localStorage.getItem('dataops.user'))).toMatchObject({ username: 'admin' })
+  })
+
+  it('MFA 启用：login 返 mfa_required → 不写 token,等 challenge 端点完成', async () => {
+    apiJson.mockResolvedValueOnce({
+      access_token: '',
+      user: null,
+      mfa_required: true,
+      mfa_token: 'mfa-challenge-xyz',
+      expires_in: 300,
+    })
+    const store = useAuthStore()
+    const resp = await store.login('admin', 'admin')
+    expect(resp.mfa_required).toBe(true)
+    expect(resp.mfa_token).toBe('mfa-challenge-xyz')
+    // 关键：access 没写,用户得调 /mfa/challenge 完成第二步才算登录
+    expect(store.token).toBe('')
+    expect(store.isLoggedIn).toBe(false)
+    expect(localStorage.getItem('dataops.token')).toBeNull()
   })
 
   it('editor 角色：isEditor=true 但 isAdmin=false', async () => {
@@ -58,9 +79,10 @@ describe('useAuthStore', () => {
     expect(store.isLoggedIn).toBe(true)
   })
 
-  it('logout 清空 token / user / localStorage', async () => {
+  it('logout 清空 token / refresh / user / localStorage', async () => {
     apiJson.mockResolvedValueOnce({
       access_token: 'tok',
+      refresh_token: 'refresh-y',
       user: { username: 'admin', role: 'admin' },
     })
     // logout 还会 fire-and-forget 调 POST /api/auth/logout 服务端吊销 token
@@ -68,12 +90,15 @@ describe('useAuthStore', () => {
     const store = useAuthStore()
     await store.login('admin', 'admin')
     expect(store.isLoggedIn).toBe(true)
+    expect(store.refreshToken).toBe('refresh-y')
     store.logout()
     expect(apiJson).toHaveBeenCalledWith('/api/auth/logout', 'POST')
     expect(store.token).toBe('')
+    expect(store.refreshToken).toBe('')
     expect(store.user).toBeNull()
     expect(store.isLoggedIn).toBe(false)
     expect(localStorage.getItem('dataops.token')).toBeNull()
+    expect(localStorage.getItem('dataops.refresh')).toBeNull()
     expect(localStorage.getItem('dataops.user')).toBeNull()
   })
 

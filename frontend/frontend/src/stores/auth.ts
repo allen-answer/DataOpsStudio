@@ -22,15 +22,27 @@ import type { ApiUser, ApiUserRole } from '../types/api'
 export type UserRole = ApiUserRole              // 'admin' | 'editor' | 'viewer'
 export type User = ApiUser
 
-// LoginResponse 没有对应 Pydantic model（后端 inline dict），保留手写
+// LoginResponse 跟着后端 LoginResponse 一起扩 —— refresh rotation + MFA 两步
+// 让它从「access only」变成兼容多种返回形态：
+//  - 正常：access_token + refresh_token + user
+//  - MFA 启用：mfa_required=true + mfa_token（无 access/user）
 export interface LoginResponse {
   access_token: string
   token_type: string
-  user: User
+  expires_in?: number
+  user: User | null
+  // refresh rotation：长期 refresh token,access 401 时由 api.ts 自动换新对
+  refresh_token?: string
+  refresh_expires_in?: number
+  // MFA 两步流：login 验密码后若 user.mfa_enabled,返 mfa_required=true + mfa_token
+  // 前端跳 OTP 输入 → POST /api/auth/mfa/challenge {mfa_token, code} 换正式 token
+  mfa_required?: boolean
+  mfa_token?: string
 }
 
 
 const TOKEN_KEY = 'dataops.token'
+const REFRESH_KEY = 'dataops.refresh'
 const USER_KEY = 'dataops.user'
 
 
@@ -46,6 +58,7 @@ function _readUser(): User | null {
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string>(localStorage.getItem(TOKEN_KEY) || '')
+  const refreshToken = ref<string>(localStorage.getItem(REFRESH_KEY) || '')
   const user = ref<User | null>(_readUser())
 
   const isLoggedIn = computed(() => !!token.value)
@@ -60,6 +73,11 @@ export const useAuthStore = defineStore('auth', () => {
     } else {
       localStorage.removeItem(TOKEN_KEY)
     }
+    if (refreshToken.value) {
+      localStorage.setItem(REFRESH_KEY, refreshToken.value)
+    } else {
+      localStorage.removeItem(REFRESH_KEY)
+    }
     if (user.value) {
       localStorage.setItem(USER_KEY, JSON.stringify(user.value))
     } else {
@@ -69,9 +87,14 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(username: string, password: string): Promise<LoginResponse> {
     const data = await apiJson<LoginResponse>('/api/auth/login', 'POST', { username, password })
-    token.value = data.access_token
-    user.value = data.user
-    _persist()
+    // MFA 启用时 access_token 是空字符串、user 是 null,本 store 不写 token；
+    // 调用方（LoginView）看 data.mfa_required 决定跳 OTP 输入或正常登录完成
+    if (data.access_token) {
+      token.value = data.access_token
+      user.value = data.user
+      refreshToken.value = data.refresh_token || ''
+      _persist()
+    }
     return data
   }
 
@@ -84,6 +107,7 @@ export const useAuthStore = defineStore('auth', () => {
       apiJson('/api/auth/logout', 'POST').catch(() => {})
     }
     token.value = ''
+    refreshToken.value = ''
     user.value = null
     _persist()
     // 让 hash router 跳到 login —— 这里不 import router 避免循环
@@ -107,7 +131,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    token, user,
+    token, refreshToken, user,
     isLoggedIn, isAdmin, isEditor,
     login, logout, refreshMe,
   }
