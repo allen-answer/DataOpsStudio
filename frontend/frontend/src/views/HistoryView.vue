@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useHistoryStore } from '../stores/history'
 import { useNoticeStore } from '../stores/notice'
+import { downloadResultFile } from '../utils/download'
 
 const { state } = useBootstrapStore()
 
@@ -126,7 +127,7 @@ onMounted(() => { loadHistory() })
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
                     <!-- legacy json runs：runner 同步落 xlsx → 直链下载 -->
-                    <a v-if="item.excel_filename && item.format !== 'parquet'" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <button v-if="item.excel_filename && item.format !== 'parquet'" type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.excel_filename)">Excel</button>
                     <!-- parquet runs：没有同步 xlsx，触发异步导出 + poll + 下载 -->
                     <button
                       v-else-if="item.format === 'parquet'"
@@ -134,7 +135,7 @@ onMounted(() => { loadHistory() })
                       :disabled="exportingRuns.has(item.run_id)"
                       @click="exportRunExcel(item.run_id)"
                     >{{ exportingRuns.has(item.run_id) ? '导出中…' : 'Excel' }}</button>
-                    <a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a>
+                    <button type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.result_filename)">JSON</button>
                   </span>
                 </td>
                 <td class="px-3 py-3 text-center align-top">
@@ -187,7 +188,7 @@ onMounted(() => { loadHistory() })
                 <td class="px-3 py-3 align-top">
                   <span class="flex flex-wrap gap-2">
                     <!-- legacy json runs：runner 同步落 xlsx → 直链下载 -->
-                    <a v-if="item.excel_filename && item.format !== 'parquet'" class="font-semibold text-blue-600" :href="`/results/${item.excel_filename}`">Excel</a>
+                    <button v-if="item.excel_filename && item.format !== 'parquet'" type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.excel_filename)">Excel</button>
                     <!-- parquet runs：没有同步 xlsx，触发异步导出 + poll + 下载 -->
                     <button
                       v-else-if="item.format === 'parquet'"
@@ -195,7 +196,7 @@ onMounted(() => { loadHistory() })
                       :disabled="exportingRuns.has(item.run_id)"
                       @click="exportRunExcel(item.run_id)"
                     >{{ exportingRuns.has(item.run_id) ? '导出中…' : 'Excel' }}</button>
-                    <a class="font-semibold text-blue-600" :href="`/results/${item.result_filename}`">JSON</a>
+                    <button type="button" class="font-semibold text-blue-600 hover:underline" @click="downloadResultFile(item.result_filename)">JSON</button>
                   </span>
                 </td>
                 <td class="px-3 py-3 text-center align-top">

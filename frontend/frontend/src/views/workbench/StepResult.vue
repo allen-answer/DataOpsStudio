@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { Play, Square, Download, Inbox, AlertCircle, CheckCircle2 } from 'lucide-vue-next'
 import { useTaskStore } from '../../stores/task'
 import { useNoticeStore } from '../../stores/notice'
+import { downloadResultFile } from '../../utils/download'
 
 // compareBuckets 之前在 App.vue 是常量；S2.B 收口后直接在这里 inline，
 // 不值得为了 4 个对象再起一个 store。如果别处也要用，再抽 constants 模块。
@@ -106,12 +107,12 @@ const cardClass = (tone) => ({
           <p class="muted text-[11px]">{{ $t('workbench.result.hint') }}</p>
         </div>
         <div class="flex gap-2">
-          <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${compareResult.excel_filename}`">
+          <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(compareResult.excel_filename)">
             <Download class="h-3.5 w-3.5" /> Excel
-          </a>
-          <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${compareResult.result_filename}`">
+          </button>
+          <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(compareResult.result_filename)">
             <Download class="h-3.5 w-3.5" /> JSON
-          </a>
+          </button>
         </div>
       </div>
 

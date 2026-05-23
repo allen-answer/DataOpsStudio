@@ -5,6 +5,7 @@ import { Sparkles } from 'lucide-vue-next'
 import SchemaPanel from '../components/SchemaPanel.vue'
 import LineageReportView from './LineageReportView.vue'
 import { useBatchStore } from '../stores/batch'
+import { downloadResultFile } from '../utils/download'
 
 const batchStore = useBatchStore()
 const { batch } = batchStore                           // reactive
@@ -62,8 +63,8 @@ const report = computed(() => batch.result?.report || null)
     <div v-if="batch.exports?.excel_filename" class="card flex flex-wrap items-center justify-between gap-3">
       <span class="muted text-xs">分析完成，可下载完整报告：</span>
       <div class="flex gap-2">
-        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batch.exports.excel_filename}`">下载 Excel</a>
-        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batch.exports.json_filename}`">下载 JSON</a>
+        <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(batch.exports.excel_filename)">下载 Excel</button>
+        <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(batch.exports.json_filename)">下载 JSON</button>
       </div>
     </div>
 

@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { nodeStatusMeta } from '../../mock/workflow_meta'
 import { useNoticeStore } from '../../stores/notice'
+import { downloadResultFile } from '../../utils/download'
 
 // 单个节点详情面板（运行视图右侧 main pane）。父传 node + 该节点的事件 +
 // run/workflow id；重跑动作以 emit 回去，由父决定调哪个 API。
@@ -142,10 +143,10 @@ const levelClass = (level) => ({ INFO: 'text-slate-700', WARN: 'text-amber-700',
                 <span v-if="art.size_bytes"> · {{ formatBytes(art.size_bytes) }}</span>
               </p>
             </div>
-            <a :href="`/results/${art.relative_path}`" target="_blank"
+            <button type="button" @click="downloadResultFile(art.relative_path)"
                class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-2.5 text-[11px] font-semibold text-white transition hover:bg-emerald-700">
               ⬇ 下载
-            </a>
+            </button>
           </li>
         </ul>
       </div>
@@ -170,18 +171,16 @@ const levelClass = (level) => ({ INFO: 'text-slate-700', WARN: 'text-amber-700',
             <span v-if="node.output.task_name">任务 <span class="font-mono text-slate-700">{{ node.output.task_name }}</span></span>
           </div>
           <div v-if="node.output.excel_filename || node.output.result_filename" class="mt-2 flex flex-wrap gap-2">
-            <a v-if="node.output.excel_filename"
-               :href="`/results/${node.output.excel_filename}`"
-               target="_blank"
+            <button v-if="node.output.excel_filename" type="button"
+               @click="downloadResultFile(node.output.excel_filename)"
                class="inline-flex h-7 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-100">
               ⬇ Excel 结果
-            </a>
-            <a v-if="node.output.result_filename"
-               :href="`/results/${node.output.result_filename}`"
-               target="_blank"
+            </button>
+            <button v-if="node.output.result_filename" type="button"
+               @click="downloadResultFile(node.output.result_filename)"
                class="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">
               ⬇ JSON
-            </a>
+            </button>
           </div>
           <!-- samples 预览（最多 5 行） -->
           <div v-if="compareSamplePreview(node.output)" class="mt-3 rounded-lg border border-slate-200">

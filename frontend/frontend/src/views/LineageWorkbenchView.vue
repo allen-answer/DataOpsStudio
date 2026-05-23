@@ -8,6 +8,7 @@ import LineageReportView from './LineageReportView.vue'
 import { apiGet } from '../api'
 import { useLineageStore } from '../stores/lineage'
 import { useBatchStore } from '../stores/batch'
+import { downloadResultFile } from '../utils/download'
 
 type ModeId = 'paste' | 'file' | 'multi' | 'zip'
 type Pipeline = 'single' | 'batch'
@@ -310,8 +311,8 @@ function onZipChange(e: Event): void {
     <div v-if="!isSinglePipeline && batchExports?.excel_filename" class="card flex flex-wrap items-center justify-between gap-3">
       <span class="muted text-xs">分析完成，可下载完整报告：</span>
       <div class="flex gap-2">
-        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batchExports.excel_filename}`">下载 Excel</a>
-        <a class="btn btn-outline h-9 gap-1.5 px-3 text-xs" :href="`/results/${batchExports.json_filename}`">下载 JSON</a>
+        <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(batchExports.excel_filename)">下载 Excel</button>
+        <button type="button" class="btn btn-outline h-9 gap-1.5 px-3 text-xs" @click="downloadResultFile(batchExports.json_filename)">下载 JSON</button>
       </div>
     </div>
 
