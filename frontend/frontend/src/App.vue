@@ -5,6 +5,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from './layouts/AppShell.vue'
+import PasswordPromptModal from './components/PasswordPromptModal.vue'
 import { useNoticeStore } from './stores/notice'
 import { useDatasourceStore } from './stores/datasource'
 import { useTaskStore } from './stores/task'
@@ -94,4 +95,6 @@ onUnmounted(() => {
       <router-view />
     </div>
   </AppShell>
+  <!-- step-up 全局密码 modal —— 挂这里让任何 view / helper 都能弹 -->
+  <PasswordPromptModal />
 </template>

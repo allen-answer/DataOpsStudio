@@ -14,6 +14,7 @@
  *  - "step_up_verify_failed" —— 密码错
  */
 import { apiJson } from '../api'
+import { promptPassword } from '../composables/usePasswordPrompt'
 
 const TOKEN_KEY = 'dataops.token'
 
@@ -25,7 +26,9 @@ export async function withStepUpRetry<T>(op: () => Promise<T>): Promise<T> {
     if (!msg.startsWith('step_up_required:')) {
       throw err
     }
-    const pw = window.prompt('该操作需要重新输入密码确认：')
+    // 走全局 modal（PasswordPromptModal 挂在 App.vue 顶层）—— 比 window.prompt
+    // UX 好,且某些浏览器（Chrome 推 deprecation）会块 window.prompt
+    const pw = await promptPassword('该操作需要重新输入密码确认 —— 验证成功后会自动重试。')
     if (!pw) {
       throw new Error('step_up_cancelled')
     }

@@ -7,6 +7,7 @@ import CommandPalette from '../components/CommandPalette.vue'
 import NotificationPopover from '../components/NotificationPopover.vue'
 import { useAuthStore } from '../stores/auth'
 import { setLocale, SUPPORTED_LOCALES } from '../i18n'
+import { withStepUpRetry } from '../utils/stepUpRetry'
 
 const authStore = useAuthStore()
 const userMenuOpen = ref(false)
@@ -27,15 +28,28 @@ const props = defineProps({
 const route = useRoute()
 
 // 配置导出：不能用 <a href="/config/export"> —— 浏览器导航不带 Authorization
-// 头，而端点是 admin-only 必 401。走 fetch + Bearer token + blob 触发下载。
-// 含密码导出还会触发 step-up：服务端检 token.iat 超 300s → 403 step_up_required，
-// 这里 prompt 密码 + verify-password 换新 token 后自动重试。
-function _doExportFetch(includePasswords) {
+// 头,端点 admin-only 必 401。走 fetch + Bearer + blob 触发下载;含密码导出
+// 还要 step-up（300s 内重新输密码）—— 用 withStepUpRetry 统一处理重试。
+async function _doExportFetch(includePasswords) {
   const url = `/config/export${includePasswords ? '?include_passwords=true' : ''}`
   const token = localStorage.getItem('dataops.token') || ''
-  return fetch(url, {
+  const resp = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
+  // 把 403 step_up_required 转成 throw，让 withStepUpRetry 看 message
+  // 起头 step_up_required 就 prompt 密码 → verify → swap → 重试本函数
+  if (resp.status === 403) {
+    const text = await resp.clone().text().catch(() => '')
+    if (/step_up_required/.test(text)) {
+      let detail = 'step_up_required: 需要重新认证'
+      try {
+        const body = JSON.parse(text)
+        if (body?.detail) detail = body.detail
+      } catch {}
+      throw new Error(detail)
+    }
+  }
+  return resp
 }
 
 async function exportConfig(includePasswords) {
@@ -44,35 +58,16 @@ async function exportConfig(includePasswords) {
   }
   let resp
   try {
-    resp = await _doExportFetch(includePasswords)
+    resp = await withStepUpRetry(() => _doExportFetch(includePasswords))
   } catch (err) {
-    window.alert(`导出失败：${(err && err.message) || err}`)
-    return
-  }
-  // step-up：含密码导出超 300s 未认证 → 服务端 403 step_up_required
-  if (resp.status === 403) {
-    const detail = await resp.clone().text().catch(() => '')
-    if (/step_up_required/.test(detail)) {
-      const pw = window.prompt('该操作需要重新输入密码确认：')
-      if (!pw) return
-      const verify = await fetch('/api/auth/verify-password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('dataops.token') || ''}`,
-        },
-        body: JSON.stringify({ password: pw }),
-      })
-      if (!verify.ok) {
-        window.alert('密码错误，请重新点击导出再试一次')
-        return
-      }
-      const data = await verify.json()
-      // api.ts 每次读 localStorage 拼 Authorization 头 —— 写完即生效；
-      // 顶栏 UI 只用 authStore.user 显示，不读 token，无需同步 store
-      localStorage.setItem('dataops.token', data.access_token)
-      resp = await _doExportFetch(includePasswords)
+    const msg = String(err?.message || err)
+    if (msg === 'step_up_cancelled') return
+    if (msg === 'step_up_verify_failed') {
+      window.alert('密码错误，导出已取消')
+      return
     }
+    window.alert(`导出失败：${msg}`)
+    return
   }
   if (!resp.ok) {
     const msg = resp.status === 401 ? '登录已失效，请重新登录'
