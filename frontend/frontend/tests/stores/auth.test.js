@@ -63,10 +63,13 @@ describe('useAuthStore', () => {
       access_token: 'tok',
       user: { username: 'admin', role: 'admin' },
     })
+    // logout 还会 fire-and-forget 调 POST /api/auth/logout 服务端吊销 token
+    apiJson.mockResolvedValueOnce({ ok: true })
     const store = useAuthStore()
     await store.login('admin', 'admin')
     expect(store.isLoggedIn).toBe(true)
     store.logout()
+    expect(apiJson).toHaveBeenCalledWith('/api/auth/logout', 'POST')
     expect(store.token).toBe('')
     expect(store.user).toBeNull()
     expect(store.isLoggedIn).toBe(false)

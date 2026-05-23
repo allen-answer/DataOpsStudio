@@ -76,6 +76,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout(): void {
+    // 服务端吊销 token —— fire-and-forget。apiJson 起 fetch 时同步读
+    // localStorage 拼 Authorization 头，所以即便下一行立刻清本地，请求仍带
+    // 着有效 token 发出去，服务器把 jti 写进 revoked_tokens 表。失败不阻塞
+    // 登出（token 已坏 / 网络断时本地清掉跳 login 即可）。
+    if (token.value) {
+      apiJson('/api/auth/logout', 'POST').catch(() => {})
+    }
     token.value = ''
     user.value = null
     _persist()
