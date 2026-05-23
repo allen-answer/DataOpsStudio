@@ -103,30 +103,45 @@ def refresh_token_endpoint(payload: dict = Body(...)):
 
 @router.post("/api/auth/mfa/challenge", response_model=LoginResponse)
 def mfa_challenge(payload: dict = Body(...)):
-    """MFA 两步流的第二步：用 login 返回的 mfa_token + 6 位 OTP 换正式 access token。
+    """MFA 两步流的第二步：用 login 返的 mfa_token + (6 位 OTP **或** recovery code)
+    换正式 access token。
 
-    anon 端点（用户还没拿到 access token，不能挂 get_current_user）。靠 mfa_token
+    `code` 字段为 TOTP（6 位数字）;`recovery_code` 字段为一次性后备码（10
+    字符 alphanumeric,可含 `-` 分隔符）。两者必有一。Recovery code 验过即从
+    用户 codes list 删除（single-use）。
+
+    anon 端点（用户还没拿到 access token,不能挂 get_current_user）。靠 mfa_token
     自身签名 + purpose=mfa_challenge claim + 5 分钟 exp 防滥用。
     """
     from app.services.mfa import (
         decrypt_mfa_secret,
+        verify_and_consume_recovery_code,
         verify_mfa_challenge_token,
         verify_totp,
     )
 
     mfa_token = str(payload.get("mfa_token") or "")
     code = str(payload.get("code") or "").strip()
-    if not mfa_token or not code:
-        raise HTTPException(status_code=400, detail="mfa_token / code 不能为空")
+    recovery_code = str(payload.get("recovery_code") or "").strip()
+    if not mfa_token or (not code and not recovery_code):
+        raise HTTPException(status_code=400, detail="mfa_token + (code 或 recovery_code) 不能为空")
     user_id = verify_mfa_challenge_token(mfa_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="mfa_token 无效或已过期，请重新登录")
     user = user_store.get(user_id)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=401, detail="用户不存在或 MFA 已关闭")
-    secret = decrypt_mfa_secret(user.mfa_secret_encrypted)
-    if not verify_totp(secret, code):
-        raise HTTPException(status_code=401, detail="OTP 验证失败")
+    if recovery_code:
+        if not verify_and_consume_recovery_code(user.id, recovery_code):
+            raise HTTPException(status_code=401, detail="恢复码无效或已用过")
+        logger.warning(
+            "auth mfa challenge via recovery_code user_id=%s username=%s",
+            user.id, user.username,
+        )
+    else:
+        secret = decrypt_mfa_secret(user.mfa_secret_encrypted)
+        if not verify_totp(secret, code):
+            raise HTTPException(status_code=401, detail="OTP 验证失败")
     token, ttl = create_access_token(user)
     from app.services.refresh import issue_refresh_token
 

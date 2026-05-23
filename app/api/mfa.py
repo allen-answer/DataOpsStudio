@@ -15,8 +15,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from app.models import OkResponse, User
 from app.services.auth import ensure_recent_auth, get_current_user, user_store
 from app.services.mfa import (
+    count_recovery_codes,
     decrypt_mfa_secret,
     encrypt_mfa_secret,
+    generate_recovery_codes,
     generate_secret,
     provisioning_uri,
     update_user_mfa,
@@ -36,6 +38,8 @@ def mfa_status(current: User = Depends(get_current_user)):
         # enrolled: secret 已生成（但用户可能还没 verify）；用来让 UI 区分
         # 「全新」vs「半路放弃了 enroll，回头再来」两种状态
         "enrolled": bool(current.mfa_secret_encrypted),
+        # 剩余 recovery code 数 —— UI 显示「N/10 还能用」,低于阈值提示重新生成
+        "recovery_codes_remaining": count_recovery_codes(current.id),
     }
 
 
@@ -68,13 +72,16 @@ def mfa_enroll(
     }
 
 
-@router.post("/api/auth/mfa/verify", response_model=OkResponse)
+@router.post("/api/auth/mfa/verify")
 def mfa_verify(
     request: Request,
     payload: dict = Body(...),
     current: User = Depends(get_current_user),
 ):
     """验 6 位 OTP 并启用 MFA。enroll 后必须调一次本端点才算开启。
+
+    成功时生成 10 个 recovery codes（首次启用 MFA 才生成；重新 verify 已启用
+    账号不动 codes）—— 明文一次性返,客户端必须当场保存。
 
     step-up：跟 enroll 同。
     """
@@ -89,9 +96,48 @@ def mfa_verify(
     secret = decrypt_mfa_secret(fresh.mfa_secret_encrypted)
     if not verify_totp(secret, code):
         raise HTTPException(status_code=401, detail="OTP 验证失败 —— 检查时间同步 / 输入位数")
-    update_user_mfa(current.id, enabled=True)
-    logger.info("mfa enabled user_id=%s username=%s", current.id, current.username)
-    return OkResponse(ok=True)
+    # 首次启用才生成 codes —— 已启用的用户重 verify 不重置 codes
+    first_time_enable = not fresh.mfa_enabled
+    plain_codes: list[str] = []
+    if first_time_enable:
+        plain_codes, hashed_codes = generate_recovery_codes()
+        update_user_mfa(current.id, enabled=True, recovery_codes_hashed=hashed_codes)
+    else:
+        update_user_mfa(current.id, enabled=True)
+    logger.info(
+        "mfa enabled user_id=%s username=%s first_time=%s",
+        current.id, current.username, first_time_enable,
+    )
+    return {"ok": True, "recovery_codes": plain_codes}
+
+
+@router.post("/api/auth/mfa/recovery-codes/regenerate")
+def mfa_regenerate_recovery_codes(
+    request: Request,
+    payload: dict = Body(...),
+    current: User = Depends(get_current_user),
+):
+    """重新生成 10 个 recovery codes —— 老的全失效。
+
+    要求 step-up（300s）+ 当前 OTP —— 防 token 被盗后偷换 codes 锁死用户。
+    """
+    ensure_recent_auth(request, max_age=300)
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="code 不能为空")
+    fresh = user_store.get(current.id)
+    if fresh is None or not fresh.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA 未开启")
+    secret = decrypt_mfa_secret(fresh.mfa_secret_encrypted)
+    if not verify_totp(secret, code):
+        raise HTTPException(status_code=401, detail="OTP 验证失败")
+    plain_codes, hashed_codes = generate_recovery_codes()
+    update_user_mfa(current.id, recovery_codes_hashed=hashed_codes)
+    logger.info(
+        "mfa regenerate recovery codes user_id=%s username=%s",
+        current.id, current.username,
+    )
+    return {"ok": True, "recovery_codes": plain_codes}
 
 
 @router.post("/api/auth/mfa/disable", response_model=OkResponse)
@@ -114,6 +160,9 @@ def mfa_disable(
     secret = decrypt_mfa_secret(fresh.mfa_secret_encrypted)
     if not verify_totp(secret, code):
         raise HTTPException(status_code=401, detail="OTP 验证失败,disable 已取消")
-    update_user_mfa(current.id, secret_encrypted="", enabled=False)
+    # disable 时清掉 recovery codes —— 它们绑死在旧 secret 上,留着没意义
+    update_user_mfa(
+        current.id, secret_encrypted="", enabled=False, recovery_codes_hashed=[],
+    )
     logger.info("mfa disabled user_id=%s username=%s", current.id, current.username)
     return OkResponse(ok=True)

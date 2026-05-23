@@ -239,8 +239,12 @@ def revoke_active_token(request: Request) -> bool:
 
 
 def _redact(user: User) -> User:
-    """API 出去脱敏：password_hash + mfa_secret_encrypted 清空。"""
-    return user.model_copy(update={"password_hash": "", "mfa_secret_encrypted": ""})
+    """API 出去脱敏：password_hash + mfa_secret_encrypted + recovery code 哈希都清空。"""
+    return user.model_copy(update={
+        "password_hash": "",
+        "mfa_secret_encrypted": "",
+        "mfa_recovery_codes_hashed": [],
+    })
 
 
 def _extract_token(request: Request, oauth_token: str | None) -> str | None:

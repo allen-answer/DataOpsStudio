@@ -29,6 +29,10 @@ class User(BaseModel):
     # API 出去强制脱敏（_redact），别让 secret 走出去。
     mfa_secret_encrypted: str = Field(default="", repr=False)
     mfa_enabled: bool = False
+    # Recovery codes：用户启用 MFA 时生成 10 个一次性码,bcrypt hash 落盘。
+    # 用户丢手机时输 1 个进系统改 MFA。验过即从 list 删除（single-use）。
+    # API 出去 _redact 清空（哈希也算 secret —— 防字典攻击）。
+    mfa_recovery_codes_hashed: list[str] = Field(default_factory=list, repr=False)
 
     model_config = ConfigDict(extra="ignore")
 
