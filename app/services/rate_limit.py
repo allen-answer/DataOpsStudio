@@ -157,7 +157,7 @@ def _record_hit(endpoint: str, key_type: str, ip: str, username: str | None) -> 
     try:
         from app.services.metrics import auth_rate_limit_hits_total
 
-        auth_rate_limit_hits_total.inc(labels={"endpoint": endpoint, "key_type": key_type})
+        auth_rate_limit_hits_total.inc(endpoint=endpoint, key_type=key_type)
     except Exception:  # noqa: BLE001 —— metrics 失败不阻塞主路径
         pass
     # 日志脱敏:IP 留前两段（"192.168.x.x"）/ username 留 prefix
