@@ -25,6 +25,42 @@ class MysqlDialect(Dialect):
         # factory 的 best-effort 包装吞掉（记 warning，不影响真查询）。
         return f"SET SESSION MAX_EXECUTION_TIME={int(seconds * 1000)}"
 
+    def estimate_rows_from_explain(self, conn, sql: str) -> int | None:
+        # MySQL `EXPLAIN <sql>` 返回 plan 行,每行有 `rows` 列(估算扫描行数)。
+        # join 多表时每个 driving table 一行 —— 单步骤 rows 是该步过滤后行数,
+        # 不是累乘的最终输出。取 max 作为「最坏单步代价」估算更接近真实风险:
+        # 选 sum 会高估,选 last 会漏 join broadcast 的 fan-out。
+        # 失败(SQL 已被 sql_preflight 静态拦的不该到这,但 driver 偶发也得防)
+        # 返 None,让 caller try/except 兜底,不阻塞真查询。
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"EXPLAIN {sql}")
+            cols = [d[0].lower() if d and d[0] else "" for d in cursor.description or []]
+            if "rows" not in cols:
+                return None
+            idx = cols.index("rows")
+            max_rows = 0
+            for row in cursor.fetchall():
+                val = row[idx]
+                if val is None:
+                    continue
+                try:
+                    n = int(val)
+                except (TypeError, ValueError):
+                    continue
+                if n > max_rows:
+                    max_rows = n
+            return max_rows
+        except Exception:
+            return None
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
     def connect(self, source: DataSource, module_name: str) -> Any:
         # pymysql 和 MySQLdb 的 connect() 签名不一样：
         # - pymysql：user/password/database + read_timeout/write_timeout

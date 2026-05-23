@@ -71,8 +71,31 @@ block → high；仅 warn → medium；无 → low。`blocking = 有任一 block
 跟 [resource_guard](./RESOURCE_GUARD.md) 同样的 dry-run → enforce 推进节奏。
 配套观察期默认走 advisory，确认无误伤再切 enforce。
 
+## EXPLAIN 集成(Phase 13 #7)
+
+`assess_with_explain(sql, dialect_name, conn, max_rows, ...)` 在静态体检不
+blocking 时,额外调 `dialect.estimate_rows_from_explain(conn, sql)` 看 plan
+估算。估算超 `max_rows × 10` 加 `explain_rows_high` warn finding(`risk_level`
+从 low 升 medium)。失败 / 不支持安全降级(`explain_used=False` + 原 decision 返回)。
+
+**方言矩阵**:
+| 方言 | 路径 | 状态 |
+|---|---|---|
+| MySQL | `EXPLAIN <sql>` → `rows` 列取 max | ✅ |
+| Oracle / DM | `EXPLAIN PLAN FOR ...; SELECT FROM PLAN_TABLE` 两步 | 留口(返 None) |
+| DB2 | `db2expln` / EXPLAIN mode | 留口(返 None) |
+
+**为什么取 max 不是 sum**:MySQL EXPLAIN 每个 join 步骤单独一行,rows 列是该步
+过滤后行数(不累乘)。sum 会高估,last 会漏 broadcast。取 max 接近「最坏单步代价」
+更贴近真实风险信号。
+
+**当前调用面**:`assess_with_explain` 是公开 API,目前没有 endpoint / runner 自动
+调用 —— 留给后续切片决定何时上线(同 `resource_guard`/`sql_preflight` dry-run →
+enforce 推进节奏)。
+
 ## 未覆盖（后续切片）
 
 - 前端 Workbench 运行前调用 + 风险弹窗。
-- EXPLAIN Broker（连只读账号 / 影子库做计划评估）—— `explain_used` 字段已预留。
+- Oracle / DM / DB2 的 `estimate_rows_from_explain` 实现。
+- API endpoint `/api/sql/preflight` 加 `run_explain=true&datasource_id=...` 参数。
 - LOB/BLOB 大字段、谓词函数包裹等需要 schema 知识的规则。

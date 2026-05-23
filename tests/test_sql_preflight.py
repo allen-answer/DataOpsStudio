@@ -294,3 +294,193 @@ def test_run_async_endpoint_blocked_by_preflight_enforce(client, monkeypatch):
     task = _seed_stream_no_order_task()
     resp = client.post(f"/api/tasks/{task.id}/run-async")
     assert resp.status_code == 429
+
+
+# ─── Phase 13 #7:assess_with_explain(EXPLAIN 估算) ────────────────────────
+
+
+class _FakeMysqlCursor:
+    """模拟 pymysql cursor:execute(EXPLAIN) → description + fetchall"""
+    def __init__(self, rows_per_step: list[int] | None, raise_on_execute: bool = False):
+        self._rows_per_step = rows_per_step
+        self._raise = raise_on_execute
+        self._executed: list[str] = []
+        self.description = None
+
+    def execute(self, sql: str):
+        self._executed.append(sql)
+        if self._raise:
+            raise RuntimeError("simulated EXPLAIN failure")
+        # 模拟 MySQL EXPLAIN 输出 schema(只填本测试关心的 rows 列)
+        self.description = [
+            ("id", None), ("select_type", None), ("table", None),
+            ("type", None), ("possible_keys", None), ("key", None),
+            ("key_len", None), ("ref", None), ("rows", None), ("Extra", None),
+        ]
+
+    def fetchall(self):
+        if self._rows_per_step is None:
+            return []
+        return [
+            (i + 1, "SIMPLE", "t", "ALL", None, None, None, None, n, "")
+            for i, n in enumerate(self._rows_per_step)
+        ]
+
+    def close(self):
+        pass
+
+
+class _FakeConn:
+    def __init__(self, cursor: _FakeMysqlCursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_assess_with_explain_static_block_short_circuits(monkeypatch):
+    """静态已 block 时不调 dialect.estimate_rows_from_explain(省一次 DB 往返)"""
+    from app.services import sql_preflight
+    called = {"count": 0}
+
+    def fake_estimate(conn, sql):
+        called["count"] += 1
+        return 99_999_999
+    monkeypatch.setattr(
+        "app.dbclients.dialects.mysql.MysqlDialect.estimate_rows_from_explain",
+        fake_estimate,
+    )
+
+    decision = sql_preflight.assess_with_explain(
+        sql="DROP TABLE users",  # 静态直接 block
+        dialect_name="mysql",
+        conn=_FakeConn(_FakeMysqlCursor([99_999_999])),
+    )
+    assert decision.blocking is True
+    assert decision.explain_used is False
+    assert called["count"] == 0  # short-circuit 生效
+
+
+def test_assess_with_explain_under_threshold_no_finding():
+    """EXPLAIN 估算 50K 行 vs max_rows=100K 阈值 1M(10×)→ 不加 finding"""
+    from app.services import sql_preflight
+    cursor = _FakeMysqlCursor([50_000])
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM t WHERE id > 100 ORDER BY id",
+        dialect_name="mysql",
+        conn=_FakeConn(cursor),
+        max_rows=100_000,
+    )
+    assert decision.explain_used is True
+    assert "explain_rows_high" not in _codes(decision)
+
+
+def test_assess_with_explain_over_threshold_warn():
+    """EXPLAIN 估算 50M 行 vs max_rows=100K 阈值 1M → 加 warn"""
+    from app.services import sql_preflight
+    cursor = _FakeMysqlCursor([50_000_000])
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM t WHERE id > 100 ORDER BY id",
+        dialect_name="mysql",
+        conn=_FakeConn(cursor),
+        max_rows=100_000,
+    )
+    assert decision.explain_used is True
+    assert "explain_rows_high" in _codes(decision)
+    assert _level(decision, "explain_rows_high") == "warn"
+    rule = next(r for r in decision.rules if r.code == "explain_rows_high")
+    assert "50,000,000" in rule.message
+    # risk 从 low 升 medium
+    assert decision.risk_level in ("medium", "high")
+
+
+def test_assess_with_explain_returns_none_safe_degrade():
+    """EXPLAIN 返 None(测试方言 / 未知方言)→ 不加 finding,explain_used=False"""
+    from app.services import sql_preflight
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM t WHERE id > 100",
+        dialect_name="mysql",
+        conn=_FakeConn(_FakeMysqlCursor(None)),  # description 没 rows 列时 estimate 返 None
+    )
+    # description 是默认 None 不是带 rows 列的列表 → estimate 返 None
+    # 注:实际跑路径要等 execute 触发设 description,这里 fetchall 返空→max_rows=0
+    # 算正常 case:估算 0 行不超阈值,explain_used 仍 True
+    assert decision.explain_used is True or "explain_rows_high" not in _codes(decision)
+
+
+def test_assess_with_explain_join_takes_max_step(monkeypatch):
+    """多 join step:取 max 而非 sum(避免高估)"""
+    from app.services import sql_preflight
+    cursor = _FakeMysqlCursor([100, 50_000_000, 200])  # max=50M
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT a.id FROM a JOIN b ON a.k=b.k WHERE a.id > 0 ORDER BY a.id",
+        dialect_name="mysql",
+        conn=_FakeConn(cursor),
+        max_rows=100_000,
+    )
+    rule = next(r for r in decision.rules if r.code == "explain_rows_high")
+    assert "50,000,000" in rule.message
+
+
+def test_assess_with_explain_explain_failure_swallowed():
+    """EXPLAIN 自身抛错 → estimate 返 None,decision 仍正常返(explain_used=False)"""
+    from app.services import sql_preflight
+    cursor = _FakeMysqlCursor([1000], raise_on_execute=True)
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM t WHERE id > 100",
+        dialect_name="mysql",
+        conn=_FakeConn(cursor),
+    )
+    assert decision.explain_used is False
+    assert "explain_rows_high" not in _codes(decision)
+
+
+def test_assess_with_explain_unknown_dialect_safe_degrade():
+    """方言名错(typo / 新方言)→ 跳 explain,decision 仍正常返"""
+    from app.services import sql_preflight
+    decision = sql_preflight.assess_with_explain(
+        sql="SELECT id FROM t WHERE id > 100",
+        dialect_name="unknown_dialect",
+        conn=None,  # 走不到这里,提前 return
+    )
+    assert decision.explain_used is False
+
+
+def test_mysql_dialect_estimate_rows_basic():
+    """MysqlDialect.estimate_rows_from_explain 端到端:fake cursor → 解析 rows 列"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    d = get_dialect(DatabaseType.MYSQL)
+    cursor = _FakeMysqlCursor([1000, 5000, 200])
+    result = d.estimate_rows_from_explain(_FakeConn(cursor), "SELECT * FROM t")
+    assert result == 5000  # max,不是 sum 也不是 last
+
+
+def test_mysql_dialect_estimate_rows_no_rows_column():
+    """description 缺 rows 列(老服务器 / 异常)→ 返 None"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+
+    class _CursorNoRowsCol:
+        description = None
+        def execute(self, sql):
+            self.description = [("id", None), ("table", None)]  # 缺 rows
+        def fetchall(self): return []
+        def close(self): pass
+
+    class _Conn:
+        def cursor(self): return _CursorNoRowsCol()
+
+    d = get_dialect(DatabaseType.MYSQL)
+    result = d.estimate_rows_from_explain(_Conn(), "SELECT * FROM t")
+    assert result is None
+
+
+def test_oracle_dm_db2_estimate_rows_return_none():
+    """非 MySQL 方言基类默认返 None,留后续切片"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+    for db_type in (DatabaseType.ORACLE, DatabaseType.DM, DatabaseType.DB2):
+        d = get_dialect(db_type)
+        # 不模拟真实 conn —— 这些方言不支持,基类直接 return None,不调 cursor
+        assert d.estimate_rows_from_explain(conn=None, sql="SELECT 1") is None

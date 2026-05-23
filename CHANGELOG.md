@@ -11,6 +11,7 @@
 - **per-run 磁盘配额** —— `RunLimits.run_disk_quota_mb`(None=无限);`check_run_quota(run_dir, quota_mb)` 累计 run_dir/** 字节折 MB;超额抛 `RunQuotaExceeded(DiskWatermarkExceeded)`(子类共享 cleanup 路径);runner mid-run 检查跟主机水位走同一 `_check_mid_run_disk` 入口
 - **DB2 语句超时** —— `Db2Dialect.apply_call_timeout` 走 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)` 连接级 option。ibm_db 不在 build 默认装 → 返 False 安全降级。方言矩阵收尾(MySQL / Oracle / DM / DB2 全 ✅)
 - **typecheck 技术债清零确认** —— `npm run typecheck` / `build` / `vitest` 全绿,CLAUDE.md 陈旧记录修正(此前已被 `c1c4616` 修完,文档没同步)
+- **sql_preflight EXPLAIN 集成(MySQL)** —— `Dialect.estimate_rows_from_explain(conn, sql) -> int | None` 给静态体检加 plan 估算。MysqlDialect 跑 `EXPLAIN <sql>` 取 `rows` 列 max(避免 sum 高估 / last 漏 fan-out)。`sql_preflight.assess_with_explain` 静态不阻塞时调,估算超 `max_rows × 10` 加 warn finding。Oracle/DM/DB2 留口返 None。API endpoint 集成留后续切片(同 dry-run → enforce 节奏)
 
 ## [0.2.0] - 2026-05-23
 

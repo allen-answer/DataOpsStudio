@@ -73,6 +73,18 @@ class Dialect(ABC):
         """
         return False
 
+    def estimate_rows_from_explain(self, conn: Any, sql: str) -> int | None:
+        """走 driver EXPLAIN 估算 SQL 返回行数;不支持的方言返 None。
+
+        给 `sql_preflight.assess_with_explain` 用:任务下发前看 plan 估算,
+        发现超 `max_rows × 10` 加 warn finding。**不阻塞**真查询(EXPLAIN
+        失败 / 不支持都不该让真任务跑不起来),caller 用 try/except 兜底。
+
+        默认返 None(不支持)。MySQL 子类实现 —— Oracle / DM 走 `EXPLAIN PLAN
+        FOR ...; SELECT FROM PLAN_TABLE` 两步,DB2 走 explain mode,留后续切片。
+        """
+        return None
+
     @abstractmethod
     def connect(self, source: DataSource, module_name: str) -> Any:
         """新建一个 DB 连接对象。

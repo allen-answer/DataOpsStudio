@@ -157,6 +157,83 @@ def assess_sql(
     return _decide(dialect, rules, parsed)
 
 
+# 估算 SQL 返回行数超过 `max_rows × _EXPLAIN_OVERFLOW_MULT` 时加 warn finding —— 阈值含义:
+# "比 max_rows 大一个数量级"。MySQL EXPLAIN `rows` 列是估算,不精确,所以宁可松一点
+# 也别给正常查询误报;真危险的全表扫描会比 max_rows 高 100×~1000× 远超阈值。
+_EXPLAIN_OVERFLOW_MULT = 10
+
+
+def assess_with_explain(
+    *,
+    sql: str,
+    dialect_name: str,
+    conn,
+    key_columns: list[str] | None = None,
+    mode: Mode = "compare",
+    max_rows: int = 100_000,
+    stream_compare: bool = False,
+) -> SQLPreflightDecision:
+    """先静态体检,再(若不阻塞)走 dialect.estimate_rows_from_explain 看 plan 估算。
+
+    估算 > `max_rows × 10` 加 warn finding(code=`explain_rows_high`)。EXPLAIN
+    本身失败 / 方言不支持 / 返 None 都安全降级(decision.explain_used=False),
+    **不阻塞**真任务。
+
+    `conn` 是 driver 裸连接(`pool.borrow` 给的同款),caller 自管 release —— 本
+    函数只借用 cursor 不动 conn 生命周期。`dialect_name` 是 DatabaseType.value,
+    取 dialect 走 `get_dialect(DatabaseType(dialect_name))`。
+    """
+    decision = assess_sql(
+        sql=sql,
+        dialect=dialect_name,
+        key_columns=key_columns,
+        mode=mode,
+        max_rows=max_rows,
+        stream_compare=stream_compare,
+    )
+    if decision.blocking:
+        # 静态已 block,不必再请 DB 跑 EXPLAIN
+        return decision
+    try:
+        from app.dbclients.dialects import get_dialect
+        from app.models import DatabaseType
+        # DatabaseType.value 用混合大小写("MySQL"/"Oracle"/"DM"/"DB2"),
+        # 但调用方常传小写("mysql")。case-insensitive 反查避免 ValueError。
+        db_type = next(
+            (d for d in DatabaseType if d.value.lower() == dialect_name.lower()),
+            None,
+        )
+        if db_type is None:
+            return decision
+        dialect = get_dialect(db_type)
+    except (ValueError, KeyError, AttributeError):
+        return decision
+    try:
+        estimated = dialect.estimate_rows_from_explain(conn, sql)
+    except Exception:
+        # caller 仍想用 decision —— EXPLAIN 失败不该让 preflight 整个崩
+        return decision
+    if estimated is None:
+        return decision
+    decision = decision.model_copy(update={"explain_used": True})
+    threshold = max_rows * _EXPLAIN_OVERFLOW_MULT
+    if estimated > threshold:
+        new_rule = PreflightRuleResult(
+            code="explain_rows_high",
+            level="warn",
+            message=(
+                f"EXPLAIN 估算返回 {estimated:,} 行,超 max_rows × {_EXPLAIN_OVERFLOW_MULT} "
+                f"({threshold:,})"
+            ),
+            suggestion="加更严格 WHERE / 走分区裁剪,或上调 max_rows 已知大任务",
+        )
+        # 静态规则在前,EXPLAIN 在后(让前端按出现顺序展示)
+        new_rules = list(decision.rules) + [new_rule]
+        risk = "medium" if decision.risk_level == "low" else decision.risk_level
+        decision = decision.model_copy(update={"rules": new_rules, "risk_level": risk})
+    return decision
+
+
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 
