@@ -120,6 +120,11 @@ def isolated_storage(tmp_path, monkeypatch):
     assets_svc.invalidate_column_edge_index_cache()
     wf_history.invalidate_run_payloads_cache()
 
+    # 7. auth rate limiter —— 跨测试 in-memory deque 不清会让前面测试的命中
+    #    把后面测试的窗口提前打满（同一进程同一 limiter 实例）
+    from app.services import rate_limit as rate_limit_svc
+    rate_limit_svc.reset_all_limiters()
+
     yield {
         "cfg": cfg,
         "results": results,

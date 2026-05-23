@@ -34,8 +34,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _check_rate_limit_or_429(
+    request: Request, *, username: str | None = None, endpoint: str = "login",
+) -> None:
+    """命中 → raise 429 + Retry-After header;过了不动。env 关闭时 no-op。"""
+    from app.services.rate_limit import check_auth_rate_limit
+
+    rl = check_auth_rate_limit(request, username=username, endpoint=endpoint)
+    if rl is not None and not rl.allowed:
+        retry = max(1, int(rl.retry_after) + 1)
+        # detail 区分 ip / user 两档 —— 让用户清楚为啥被拦(用户名被全网刷 vs
+        # 自己输错太多次)
+        if rl.key_type == "user":
+            msg = f"该账号尝试过于频繁,请 {retry} 秒后重试"
+        else:
+            msg = f"登录尝试过于频繁,请 {retry} 秒后重试"
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=msg,
+            headers={"Retry-After": str(retry)},
+        )
+
+
 @router.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, request: Request):
+    _check_rate_limit_or_429(request, username=payload.username, endpoint="login")
     user = find_user_by_username(payload.username)
     if user is None or not verify_password(payload.password, user.password_hash):
         # 用户不存在 / 密码不对都返 401，不暴露哪种
@@ -68,7 +91,7 @@ def login(payload: LoginRequest):
 
 
 @router.post("/api/auth/refresh", response_model=LoginResponse)
-def refresh_token_endpoint(payload: dict = Body(...)):
+def refresh_token_endpoint(request: Request, payload: dict = Body(...)):
     """OAuth2 风格 rotation：用老 refresh token 换新 access + 新 refresh。
 
     重放检测：若 refresh token 已被 rotation 替换过又被用 → 视为盗用,整条
@@ -76,6 +99,7 @@ def refresh_token_endpoint(payload: dict = Body(...)):
     """
     from app.services.refresh import rotate_refresh_token
 
+    _check_rate_limit_or_429(request, endpoint="refresh")
     old = str(payload.get("refresh_token") or "")
     if not old:
         raise HTTPException(status_code=400, detail="refresh_token 不能为空")
@@ -102,7 +126,7 @@ def refresh_token_endpoint(payload: dict = Body(...)):
 
 
 @router.post("/api/auth/mfa/challenge", response_model=LoginResponse)
-def mfa_challenge(payload: dict = Body(...)):
+def mfa_challenge(request: Request, payload: dict = Body(...)):
     """MFA 两步流的第二步：用 login 返的 mfa_token + (6 位 OTP **或** recovery code)
     换正式 access token。
 
@@ -120,6 +144,7 @@ def mfa_challenge(payload: dict = Body(...)):
         verify_totp,
     )
 
+    _check_rate_limit_or_429(request, endpoint="mfa_challenge")
     mfa_token = str(payload.get("mfa_token") or "")
     code = str(payload.get("code") or "").strip()
     recovery_code = str(payload.get("recovery_code") or "").strip()
@@ -164,6 +189,7 @@ def me(current: User = Depends(get_current_user)):
 
 @router.post("/api/auth/verify-password", response_model=LoginResponse)
 def verify_password_api(
+    request: Request,
     payload: dict = Body(...),
     current: User = Depends(get_current_user),
 ):
@@ -171,7 +197,10 @@ def verify_password_api(
 
     前端在敏感端点 403 step_up_required 时调本端点拿到新 token，写回
     localStorage 后重试原请求。密码错 → 401。
+
+    rate limit:挂登录同一组 IP 限速(已登录用户 step-up 高频是异常行为)。
     """
+    _check_rate_limit_or_429(request, username=current.username, endpoint="verify_password")
     password = str(payload.get("password") or "")
     if not password or not verify_password(password, current.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="密码错误")

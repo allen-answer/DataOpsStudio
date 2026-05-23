@@ -144,6 +144,11 @@ guard_decisions_total = Counter(
     "resource_guard decisions by decision (allow/queue/deny) and primary reason code",
     ["decision", "reason"],
 )
+auth_rate_limit_hits_total = Counter(
+    "auth_rate_limit_hits_total",
+    "Auth endpoint rate limit hits by endpoint and key type (ip / user)",
+    ["endpoint", "key_type"],
+)
 
 
 def _lineage_table_count() -> int:
