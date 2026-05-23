@@ -526,13 +526,73 @@ def test_mysql_dialect_estimate_rows_no_rows_column():
     assert result is None
 
 
-def test_db2_estimate_rows_returns_none():
-    """DB2 仍是文档化缺口(没 PLAN_TABLE 等价物可用,留后续切片)"""
+def test_db2_estimate_rows_no_explain_tables_returns_none():
+    """DB2 EXPLAIN tables 没建(默认场景)→ cursor.execute 抛 SQL0204N,
+    返 None 安全降级"""
     from app.dbclients.dialects import get_dialect
     from app.models import DatabaseType
+
+    class _FakeCursorMissing:
+        def __init__(self):
+            self.executed = []
+        def execute(self, sql):
+            self.executed.append(sql)
+            if "EXPLAIN_STREAM" in sql or "EXPLAIN PLAN" in sql:
+                raise RuntimeError("SQL0204N EXPLAIN_STREAM is undefined")
+        def close(self): pass
+
+    class _Conn:
+        def cursor(self): return _FakeCursorMissing()
+
     d = get_dialect(DatabaseType.DB2)
-    # 不模拟真实 conn —— 基类直接 return None,不调 cursor
-    assert d.estimate_rows_from_explain(conn=None, sql="SELECT 1") is None
+    assert d.estimate_rows_from_explain(_Conn(), "SELECT * FROM dual") is None
+
+
+def test_db2_estimate_rows_basic():
+    """DB2 EXPLAIN tables 建好 → 返 MAX(STREAM_COUNT)"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+
+    class _FakeDB2Cursor:
+        def __init__(self):
+            self.executed = []
+            self._next_result = None
+        def execute(self, sql):
+            self.executed.append(sql)
+            if sql.startswith("EXPLAIN PLAN FOR"):
+                self._next_result = None
+            elif "SELECT MAX(STREAM_COUNT)" in sql:
+                self._next_result = (1_234_567,)
+        def fetchone(self):
+            return self._next_result
+        def close(self): pass
+
+    class _Conn:
+        def cursor(self): return _FakeDB2Cursor()
+
+    d = get_dialect(DatabaseType.DB2)
+    result = d.estimate_rows_from_explain(_Conn(), "SELECT * FROM t")
+    assert result == 1_234_567
+
+
+def test_db2_estimate_rows_null_returns_none():
+    """STREAM_COUNT 返 None(EXPLAIN 跑了但表为空)→ 返 None"""
+    from app.dbclients.dialects import get_dialect
+    from app.models import DatabaseType
+
+    class _FakeNullCursor:
+        def __init__(self): self._next = None
+        def execute(self, sql):
+            if "MAX(STREAM_COUNT)" in sql:
+                self._next = (None,)
+        def fetchone(self): return self._next
+        def close(self): pass
+
+    class _Conn:
+        def cursor(self): return _FakeNullCursor()
+
+    d = get_dialect(DatabaseType.DB2)
+    assert d.estimate_rows_from_explain(_Conn(), "SELECT 1 FROM t") is None
 
 
 # ─── Oracle / DM EXPLAIN PLAN 路径 ──────────────────────────────────────────

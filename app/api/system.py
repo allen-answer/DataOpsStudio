@@ -16,7 +16,7 @@ from app.api._authz import (
 from app.dbclients.drivers import detect_drivers
 from app.models import BootstrapResponse, DatabaseType, DriverInfo, SqlMode, User
 from app.services.auth import get_current_user
-from app.services.download_token import verify_download_token
+from app.services.download_token import consume_download_nonce, verify_download_token
 from app.services.history import list_result_history
 from app.services.history_exporter import AVAILABLE_HISTORY_SHEETS
 from app.services.repositories import datasource_store, task_store, workflow_store, workflow_template_store
@@ -126,6 +126,11 @@ def download_via_token(token: str, current: User = Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="下载链接无效或已过期")
     if not can_access_project(current, str(payload.get("project_id") or "")):
         raise HTTPException(status_code=403, detail="无权下载该结果文件")
+    # Phase 14:一次性消费 nonce。同一 token 第二次访问返 410 Gone(防截获重放)
+    jti = str(payload.get("jti") or "")
+    exp = int(payload.get("exp") or 0)
+    if not consume_download_nonce(jti, exp=exp, user_id=str(payload.get("sub") or "")):
+        raise HTTPException(status_code=410, detail="下载链接已使用过,请重新申请")
     rel = str(payload.get("rel") or "")
     path = (RESULTS_DIR / rel).resolve()
     if RESULTS_DIR.resolve() not in path.parents or not path.exists():

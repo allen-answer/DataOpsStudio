@@ -1,7 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { CheckCircle2, AlertCircle, AlertTriangle, Database, FileSpreadsheet, ArrowRight, Play, Square, Save, Copy, Trash2, MoreHorizontal, ChevronDown } from 'lucide-vue-next'
+import { CheckCircle2, AlertCircle, AlertTriangle, Database, FileSpreadsheet, ArrowRight, Play, Square, Save, Copy, Trash2, MoreHorizontal, ChevronDown, Microscope } from 'lucide-vue-next'
+import { apiJson } from '../../api'
 import { useBootstrapStore } from '../../stores/bootstrap'
 import { useTaskStore } from '../../stores/task'
 
@@ -16,6 +17,61 @@ const {
 const {
   saveTask, runTask, runAsync, cancelAsync, copyTask, deleteTask,
 } = taskStore
+
+// Phase 14:🔬 估算 plan 按钮 —— SQL datasource 时调 /api/sql/preflight?run_explain=true
+// 看 EXPLAIN 估算 + 静态规则;Excel / CSV / Parquet 源跳过(没 SQL plan)
+const explainLoading = ref(false)
+const explainResult = ref(null)   // SQLPreflightDecision | null
+const explainError = ref('')
+
+const canRunExplain = computed(() =>
+  taskDraft.source_kind === 'sql' && !!taskDraft.source_id && !!taskDraft.source_sql?.trim()
+)
+
+async function runExplainPreview() {
+  if (!canRunExplain.value) return
+  explainLoading.value = true
+  explainError.value = ''
+  explainResult.value = null
+  try {
+    explainResult.value = await apiJson('/api/sql/preflight', 'POST', {
+      sql: taskDraft.source_sql,
+      datasource_id: taskDraft.source_id,
+      run_explain: true,
+      key_columns: taskDraft.key_columns,
+      max_rows: taskDraft.limits?.max_rows ?? 100000,
+      stream_compare: !!taskDraft.limits?.stream_compare,
+    })
+  } catch (err) {
+    explainError.value = (err && err.message) || String(err)
+  } finally {
+    explainLoading.value = false
+  }
+}
+
+const explainSummary = computed(() => {
+  if (!explainResult.value) return null
+  const d = explainResult.value
+  const ruleCount = (d.rules || []).length
+  const blockCount = (d.rules || []).filter(r => r.level === 'block').length
+  const warnCount = (d.rules || []).filter(r => r.level === 'warn').length
+  return {
+    explainUsed: !!d.explain_used,
+    risk: d.risk_level || 'low',
+    blocking: !!d.blocking,
+    ruleCount,
+    blockCount,
+    warnCount,
+    rules: d.rules || [],
+  }
+})
+
+const riskPillClass = computed(() => {
+  const r = explainSummary.value?.risk
+  if (r === 'critical' || r === 'high') return 'status-error'
+  if (r === 'medium') return 'status-warning'
+  return 'status-success'
+})
 
 const errorIssues = computed(() => taskValidationIssues.value.filter(i => i.level === 'error'))
 
@@ -174,6 +230,37 @@ const lastRun = computed(() => {
         </div>
       </div>
 
+      <!-- Phase 14:EXPLAIN 估算结果 -->
+      <div v-if="explainSummary" class="rounded-lg border border-primary-light bg-primary-light/40 p-3 text-xs">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="flex items-center gap-1 font-semibold text-primary">
+            <Microscope class="h-3.5 w-3.5" />
+            Plan 估算
+          </span>
+          <span class="status-badge" :class="riskPillClass">{{ explainSummary.risk }}</span>
+        </div>
+        <p class="mb-1 text-[11px] text-slate-600">
+          {{ explainSummary.explainUsed ? '✓ EXPLAIN 已采样' : '⚠ EXPLAIN 未生效(走纯静态)' }}
+          · {{ explainSummary.blockCount }} block / {{ explainSummary.warnCount }} warn
+        </p>
+        <ul v-if="explainSummary.rules.length" class="space-y-1 text-[11px]">
+          <li v-for="(r, i) in explainSummary.rules" :key="i" class="flex items-start gap-1.5">
+            <span class="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full"
+                  :class="r.level === 'block' ? 'bg-status-error'
+                          : r.level === 'warn' ? 'bg-status-warning'
+                          : 'bg-status-info'" />
+            <div class="min-w-0">
+              <div class="font-semibold text-slate-700">{{ r.code }}</div>
+              <div class="text-slate-600">{{ r.message }}</div>
+              <div v-if="r.suggestion" class="muted text-[10px]">💡 {{ r.suggestion }}</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+      <div v-if="explainError" class="rounded-lg border border-status-error-bg bg-status-error-bg/40 p-3 text-xs text-status-error">
+        <AlertTriangle class="mr-1 inline h-3 w-3" /> {{ explainError }}
+      </div>
+
       <!-- 异步任务状态 -->
       <div v-if="asyncJob" class="rounded-lg border border-status-info-bg bg-status-info-bg/30 p-3 text-xs">
         <div class="mb-1 flex items-center gap-1.5 text-status-info">
@@ -214,6 +301,14 @@ const lastRun = computed(() => {
         <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': showMore }" />
       </button>
       <div v-if="showMore" class="space-y-1.5">
+        <button
+          class="btn btn-outline h-9 w-full text-xs"
+          :disabled="!canRunExplain || explainLoading"
+          :title="!canRunExplain ? '需要 SQL 源 + 已选数据源' : '调 EXPLAIN 估算 plan 行数(advisory,不真跑)'"
+          @click="runExplainPreview"
+        >
+          <Microscope class="h-3.5 w-3.5" /> {{ explainLoading ? '估算中...' : '🔬 估算 plan' }}
+        </button>
         <button
           class="btn btn-outline h-9 w-full text-xs"
           :disabled="!isSavedTask || !canSaveTask"

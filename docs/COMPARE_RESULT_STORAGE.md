@@ -326,11 +326,11 @@ def load_run_result(run_id: str):
      parquet 文件 `read_table().to_pylist()` 把整桶载入内存。endpoint 不带
      `max_rows`，所以默认走兜底；RunLimits.export_max_rows 默认 50_000 给到
      非空值，相当于内存峰值 ≈ 50k rows × 字段宽度。
-   - **未做（留 slice F+）**：streaming Excel 写出（openpyxl write_only）+
-     completion 通知（webhook / 企微）+ 多 run 合并异步导出（`/history/export`
-     当前仍同步）。本切片 Excel 写出仍走 openpyxl 普通模式 —— 内存上限通过
-     `max_rows` 兜底控制，但要进一步降到 O(batch_size) 量级得 write_only +
-     行级流式喂入。
+   - **✅ streaming Excel 已落地**(`write_excel_streaming` + `_write_excel_streaming_for_parquet`):
+     parquet run 走 openpyxl `Workbook(write_only=True)` 行级 append,内存 ≈
+     O(batch_size × col_width)。legacy json 仍走老 `write_excel`(但 resource_guard
+     已拦 json + 大 max_rows 组合)。**留 backlog**:completion 通知(webhook / 企微)
+     + 多 run 合并异步导出。
 6. **切片 F**（拆分 step）：参考 `docs/STREAMING_COMPARE_WRITER.md`。
    - **F.1** ✅：`compare/engine.compare_rows_streaming` 生成器，yield
      `("bucket", row)` 事件；`compare_rows` 改成 streaming 的薄包装，行为
@@ -342,9 +342,8 @@ def load_run_result(run_id: str):
      时走 streaming events → writer，不持完整 buckets dict；样本采集在
      event 循环里维护 `samples_buffer`，每桶头 20 行。`summary` 改从
      `manifest.bucket_counts` 取（writer 自己 count）。
-   - **F.4**（未做）：Excel `write_only` 流式写出 —— 当前 `write_excel`
-     仍是 openpyxl 普通模式，内存上限被 `max_rows` 兜底控制但 ≈
-     O(max_rows × col_width)。继续降到 O(batch × col_width) 留独立 PR。
+   - **F.4 ✅**:`write_excel_streaming(Workbook(write_only=True))` 行级 append +
+     `excel_export.py:185` parquet 路径已切。内存 ≈ O(batch × col_width)。
    - **F-hardening** ✅：`/api/runs/{job_id}` + `/cancel` 加 `_gate_job_access`
      按 kind 反查项目归属（compare/task → task；workflow → workflow；
      excel_export → 复用 compare_result_project_id），孤儿 job 回落仅

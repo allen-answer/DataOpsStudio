@@ -60,12 +60,20 @@ POST /api/auth/mfa/challenge {mfa_token, code}
 - **`valid_window=1`**：允许 30s 时钟漂移；超过 30s 的 OTP 拒绝。
 - **TOTP 不是 HOTP**：基于时间，没 counter 同步问题；丢失设备只能 disable + 重新 enroll。
 
-## 未做（recovery codes）
+## Recovery codes(v0.2.0 已交付)
 
-掉手机 + 没绑别的设备 = 进不去。**MVP 没生成 recovery codes**。补丁路径：
-admin 直接编辑 `users.json` 把 `mfa_secret_encrypted` 和 `mfa_enabled` 清掉 +
-`user_store.invalidate_cache()`。或者后续切片加 recovery code（enroll 时生成 10
-个一次性码，store hashed，OTP 失败时可走 recovery 路径）。
+掉手机 + 没绑别的设备 = 进不去。**verify 启用 MFA 时自动生成 10 个 recovery
+code**(格式 `XXXXX-XXXXX`,bcrypt 哈希落 `mfa_recovery_codes_hashed`),登录
+两步流支持 OTP 或 recovery 路径,recovery 码单用一次后从列表 pop。
+
+API:
+- `POST /api/auth/mfa/verify` 首次返 `{ok: true, recovery_codes: [10 个]}`(后续
+  verify 返空 list);UI 用黄色 KeyRound 卡显示 + 复制 + 下载 .txt
+- `POST /api/auth/mfa/recovery-codes/regenerate`(step-up + OTP)重新生成
+- `POST /api/auth/mfa/challenge` body 接 `code`(OTP)或 `recovery_code`(后备)
+- `GET /api/auth/mfa/status` 多 `recovery_codes_remaining` 计数
+
+详见 [project-security-hardening memory](../../memory/project_security_hardening.md) + commits `fcc34eb` / `4b81528`。
 
 ## API 总览
 

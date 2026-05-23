@@ -16,6 +16,49 @@ class Db2Dialect(Dialect):
     def connection_test_sql(self) -> str:
         return "select 1 as ok from sysibm.sysdummy1"
 
+    def estimate_rows_from_explain(self, conn: Any, sql: str) -> int | None:
+        # DB2 走 `EXPLAIN PLAN FOR <sql>` 写 EXPLAIN_STATEMENT/EXPLAIN_OPERATOR
+        # 表(默认 schema 同当前用户),取 EXPLAIN_OPERATOR.TOTAL_COST 估算行数;
+        # 但 TOTAL_COST 是优化器单位(timerons)不是行数 —— 用 STREAM_COUNT
+        # (operator 间输出 stream 行数估算)更接近 MySQL/Oracle 的 "rows" 语义。
+        #
+        # 需要 EXPLAIN tables 已建(`db2 -tvf $DB2HOME/sqllib/misc/EXPLAIN.DDL`)。
+        # 没建会 SQL0204N → return None 安全降级,不阻塞真查询。
+        #
+        # ibm_db 不在 build 默认装 → 直接走 cursor.execute 路径(driver 模块由
+        # caller pool.borrow 时 import 好,这里只用 cursor)。
+        import uuid
+        token = f"DATAOPS_PF_{uuid.uuid4().hex[:16].upper()}"
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            # SET CURRENT EXPLAIN MODE 旧 EXPLAIN tables 直接 EXPLAIN PLAN FOR
+            cursor.execute(f"EXPLAIN PLAN FOR {sql}")
+            # EXPLAIN_OPERATOR.STREAM_COUNT 是 operator 间传输的预估行数
+            # 取整个 plan 中 max stream count(同 MySQL/Oracle 的 max-row-step 逻辑)
+            cursor.execute(
+                "SELECT MAX(STREAM_COUNT) FROM EXPLAIN_STREAM "
+                "WHERE EXPLAIN_REQUESTER = CURRENT_USER "
+                "AND EXPLAIN_TIME = (SELECT MAX(EXPLAIN_TIME) FROM EXPLAIN_STREAM "
+                "WHERE EXPLAIN_REQUESTER = CURRENT_USER)"
+            )
+            row = cursor.fetchone()
+            estimated = row[0] if row else None
+            if estimated is None:
+                return None
+            try:
+                return int(estimated)
+            except (TypeError, ValueError):
+                return None
+        except Exception:
+            return None
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
     def apply_call_timeout(self, conn: Any, seconds: float) -> bool:
         # DB2 走 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)`
         # —— 1 表示连接级选项,影响该连接所有后续 cursor.execute。

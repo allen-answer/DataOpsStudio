@@ -11,6 +11,11 @@ on:
   # 时没有 tag context，version 会回退成 "dev"（GITHUB_REF_NAME 是 branch 名）。
   workflow_dispatch:
 
+permissions:
+  contents: write       # softprops/action-gh-release 上传产物
+  id-token: write       # Phase 14: artifact attestation 需 OIDC
+  attestations: write   # Phase 14: actions/attest-build-provenance
+
 jobs:
   build-windows-offline:
     name: Build DataOpsStudio-win-offline-{version}.zip
@@ -38,6 +43,14 @@ jobs:
         shell: pwsh
         run: |
           .\scripts\build_offline_windows.ps1 -Version ${{ steps.version.outputs.version }}
+
+      # Phase 14: 给 release 产物加来源证明 ——通过 SLSA-style attestation 让下载
+      # 者能验证「这个 zip 真的是这个 commit / 这个 workflow 跑出来的」
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: DataOpsStudio-win-offline-${{ steps.version.outputs.version }}.zip
 
       # workflow_dispatch 触发时没 tag，跳过上传（artifact 留在 Actions run 里供查）
       - name: Upload to GitHub Release

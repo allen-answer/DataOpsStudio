@@ -20,8 +20,11 @@ POST /api/auth/login {username, password}
     }
 ```
 
-前端把 `access_token` 留在 localStorage 当主凭据；`refresh_token` 单独存（
-也在 localStorage，但读取路径不同，给将来切 secure HttpOnly cookie 留口子）。
+前端把 `access_token` 留在 localStorage 当主凭据;`refresh_token` 现在**走
+HttpOnly + Secure + SameSite=Strict cookie**(commit `da93c24`),XSS 偷不到,
+浏览器自动附带到 `/api/auth/refresh`,前端不持有 / 不读 / 不写 refresh。
+nginx 终端 TLS 场景靠 `X-Forwarded-Proto` 判断 Secure 标志(`eef7e9e`)。
+首次升级时一次性 `localStorage.removeItem(LEGACY_REFRESH_KEY)` 迁移老用户。
 
 ### access 过期 → 用 refresh 换新对
 

@@ -146,11 +146,23 @@ def export_run_excel_api(
 # ─── 切片 P1：签名下载 token ────────────────────────────────────────────────
 
 
+_BUCKET_KIND_MAP = {
+    "bucket_only_source": "only_source.parquet",
+    "bucket_only_target": "only_target.parquet",
+    "bucket_diff": "diff.parquet",
+    "bucket_same": "same.parquet",
+}
+
+
 def _resolve_run_file(run_id: str, kind: str) -> str:
     """把 (run_id, kind) 解析成相对 RESULTS_DIR 的文件路径。文件不存在 → 404。
 
     走 `run_result` 模块的 RESULTS_DIR / detect_format —— 不在本模块顶层
     绑 RESULTS_DIR，避免又多一处要测试 monkeypatch 的路径引用。
+
+    Phase 14 起 kind 多 4 个值:bucket_only_source / bucket_only_target /
+    bucket_diff / bucket_same —— 指向 parquet 桶文件,仅 parquet run 支持
+    (legacy json 单文件无单桶概念,400)。
     """
     from app.services import run_result
 
@@ -165,8 +177,15 @@ def _resolve_run_file(run_id: str, kind: str) -> str:
             results_dir / run_id / "meta.json" if fmt == "parquet"
             else results_dir / f"{run_id}.json"
         )
+    elif kind in _BUCKET_KIND_MAP:
+        if fmt != "parquet":
+            raise HTTPException(status_code=400, detail=f"{kind} 仅 parquet run 支持")
+        path = results_dir / run_id / _BUCKET_KIND_MAP[kind]
     else:
-        raise HTTPException(status_code=400, detail="kind 必须是 result 或 excel")
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind 必须是 result / excel / {' / '.join(_BUCKET_KIND_MAP)}",
+        )
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"该 run 没有可下载的 {kind} 文件")
     return path.relative_to(results_dir).as_posix()

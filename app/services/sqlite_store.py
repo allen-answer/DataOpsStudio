@@ -168,6 +168,18 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS refresh_tokens_user_idx ON refresh_tokens(user_id);
         CREATE INDEX IF NOT EXISTS refresh_tokens_exp_idx ON refresh_tokens(exp);
+
+        -- Phase 14:下载 token 一次性消费 nonce 表。issue_download_token 给每个
+        -- token 带 uuid jti,GET /api/downloads/<token> 先调 consume_download_nonce
+        -- (jti) —— 第一次返 True 即标已消费,第二次起返 False 让 endpoint 410 Gone。
+        -- 防止 token 在 TTL 内被截获重复下载(尤其是大 parquet 桶 / Excel)。
+        CREATE TABLE IF NOT EXISTS download_nonces (
+            jti TEXT PRIMARY KEY,
+            consumed_at TEXT NOT NULL,
+            exp INTEGER NOT NULL,               -- token 自身 exp(prune 用)
+            user_id TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS download_nonces_exp_idx ON download_nonces(exp);
     """)
 
 

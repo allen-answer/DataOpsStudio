@@ -107,8 +107,19 @@ def fill_scenario(
 
     config = _ai_config()
     provider_name = (config.provider or "off").lower()
+    # Phase 14: provider=off 时走 Faker locale fallback —— 仍能给 column_values
+    # 填业务样本,不再被 LLM 卡死。table_descriptions 跟 distribution 没 Faker
+    # 等价物,这两个仍需 provider 在场。
     if provider_name in {"off", "disabled", "none", ""}:
-        return scenario, FillReport(ok=False, skipped_reason="AI provider 未启用")
+        if "column_values" in fill_scope:
+            return _fill_via_faker(scenario, fill_scope)
+        return scenario, FillReport(
+            ok=False,
+            skipped_reason=(
+                "AI provider 未启用;Faker fallback 只支持 column_values,"
+                "table_descriptions / column_distributions 需 provider 在场"
+            ),
+        )
 
     # 深拷贝，避免改原 scenario
     filled = scenario.model_copy(deep=True)
@@ -172,6 +183,47 @@ def fill_scenario(
                 logger.warning("ai_filler description failed table=%s: %s", table.name, exc)
                 report.errors.append(f"{table.name}: {exc}")
 
+    return filled, report
+
+
+# ─── Phase 14: Faker locale fallback ───────────────────────────────────────
+
+
+def _fill_via_faker(
+    scenario: Scenario,
+    fill_scope: set[str],
+) -> tuple[Scenario, FillReport]:
+    """provider=off 时的 Faker fallback —— 给 realistic 列从 Faker 抽业务样本。"""
+    from app.scenarios.faker_fallback import detect_locale_from_scenario, generate_faker_values
+
+    filled = scenario.model_copy(deep=True)
+    report = FillReport(ok=True, calls=0, skipped_reason="使用 Faker fallback(provider=off)")
+    all_tables = {t.name: t for t in filled.tables}
+    locale = detect_locale_from_scenario(filled)
+
+    for table in filled.tables:
+        for col in _columns_to_fill(table, all_tables):
+            if col.values:
+                continue
+            values = generate_faker_values(
+                col.name,
+                col_type=col.type or "",
+                n=25,
+                locale=locale,
+                # 用 (scenario.id, table, col) 推 seed,让同 scenario 复现
+                seed=hash(f"{filled.id}.{table.name}.{col.name}") & 0xFFFF_FFFF,
+            )
+            if values is None:
+                # Faker 不在 build 里,degrade to original behavior
+                report.errors.append(f"{table.name}.{col.name}: faker not installed")
+                continue
+            if values:
+                # values 可能是 datetime.date / int / str 混合 —— coerce 到 str
+                col.values = [str(v) for v in values]
+                report.filled_columns.append(f"{table.name}.{col.name}")
+    if not report.filled_columns and not report.errors:
+        report.ok = False
+        report.skipped_reason = "Faker fallback 跑了但没列匹配上"
     return filled, report
 
 

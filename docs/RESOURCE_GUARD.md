@@ -72,9 +72,28 @@ runner 之前评估 allow / queue / deny，避免 OOM、磁盘打满、队列雪
 `decision`（allow/queue/deny）和首要原因码计数。dry-run 阶段据此判断阈值是否
 合理。
 
-## 未覆盖（后续切片）
+## ✅ Phase 13 + v0.2.0 落地
 
-- `user_cap` 按用户的并发配额 —— 需 job 记录 owner_user_id，留给「job owner
-  硬化」切片（`project_cap` / `datasource_cap` 已落地，靠 job→task 反查）。
-- `/api/runs/{id}/export-excel` 端点接入。
-- DB statement timeout、API 限流中间件、审计事件管道。
+- **JobInfo 三字段补全**(Phase 13 #2):`owner_user_id` / `project_id` /
+  `target_run_id` 字段就位,scheduler 触发用 `owner_user_id="system"`
+- **mid-run 磁盘水位**(Phase 13 #4):`check_disk_critical` + 5000 行间隔检
+  + `_cleanup_partial_parquet`,临时 run 目录不残留半成品
+- **per-run 磁盘配额**(Phase 13 #5):`RunLimits.run_disk_quota_mb` +
+  `check_run_quota` + `RunQuotaExceeded(DiskWatermarkExceeded)` 子类共享 cleanup
+- **per-project 跨 run 配额**(Phase 13 #11):`check_project_quota` 扫
+  `results/` 折成 per-project 累积 MB,超 `DATAOPS_PROJECT_DISK_QUOTA_MB` 拦
+- **DB 语句超时**(Phase 13 #1):MySQL `SET SESSION MAX_EXECUTION_TIME` /
+  Oracle/DM `conn.callTimeout` / DB2 `ibm_db.set_option`,详见 [DB_STATEMENT_TIMEOUT.md](./DB_STATEMENT_TIMEOUT.md)
+- **API 限流**(v0.2.0):`services/rate_limit.py` 滑窗 + per-IP 10/min +
+  per-username 5/min + 429 Retry-After
+- **审计事件管道**(v0.2.0):`record_auth_event` 写 SQLite + jsonl,
+  `resource_type=auth_event` 覆盖 login / refresh / mfa / step_up / rate_limit
+- **`/api/runs/{id}/export-excel` 异步**(Phase 10 完成):`excel_export.submit_excel_export`
+  ThreadPoolExecutor + JobInfo `kind=excel_export`
+- **user_cap per-user 配额**(Phase 14):`DATAOPS_MAX_JOBS_PER_USER=1` 默认,
+  靠 JobInfo.owner_user_id 直接 cap 不再依赖 task lookup
+
+## 后续
+
+- per-project user-cap 二维交叉(同项目下每用户配额)—— 真出现误用再加
+- DB2 / 其它 RDBMS 的 query timeout 走驱动属性(目前 ibm_db.set_option 已接)

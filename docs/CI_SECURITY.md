@@ -34,8 +34,17 @@ critical CVE 就真正卡合并 —— 「先 fail on critical 再收紧」的�
   私有仓库无 GitHub Advanced Security 时那种 workflow 会让 CI 变红；default
   setup 走设置开关更稳。
 
-## 未覆盖（后续）
+## ✅ Phase 14 落地
 
-- artifact attestation（给 release 产物加来源证明）—— 接 `release.yml`。
-- SBOM（CycloneDX / SPDX）生成。
-- `dependency-review-action`（PR 上拦新引入的漏洞依赖）。
+- **artifact attestation** —— `release.yml` 接 `actions/attest-build-provenance@v2`,
+  给 Windows offline zip 加 SLSA-style 来源证明(release tag 触发时签发,
+  workflow_dispatch 不签)。下载者用 `gh attestation verify` 能验证「这个
+  zip 真是这个 commit 跑出来的」
+- **SBOM(CycloneDX)** —— `ci.yml` 新增 `sbom` job(push 到 main 时跑):
+  - backend 走 `cyclonedx-bom`(`cyclonedx-py requirements`)从 requirements.txt
+  - frontend 走 `@cyclonedx/cyclonedx-npm` 从 package-lock.json
+  - 两份 JSON 上传 artifact 保留 90 天(够审计期)
+- **dependency-review-action** —— `ci.yml` 新增 `dependency-review` job(PR
+  触发):拦 PR diff 新引入的 high/critical CVE 依赖,避免「补 fix 顺手塞 vulnerable
+  lib」。跟 `dependency-audit` job 互补 —— audit 看 requirements.txt 当前的依赖
+  状态,dependency-review 看 PR diff 引入了什么

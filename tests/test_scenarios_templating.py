@@ -154,3 +154,83 @@ def test_recorder_lineage_script_no_template_no_metadata(isolated_storage):
     assert run["ok"] is True
     assert "variables_substituted" not in run
     assert "variables_missing" not in run
+
+
+# ─── Phase 14 追加:{% if var %} ... {% endif %} 条件分支 ────────────────────
+
+
+def test_if_condition_truthy_keeps_body():
+    r = render_template(
+        "SELECT id FROM t {% if where_clause %}WHERE id > 0{% endif %}",
+        {"where_clause": True},
+    )
+    assert r.text == "SELECT id FROM t WHERE id > 0"
+    assert "where_clause" in r.conditions_evaluated
+
+
+def test_if_condition_falsy_strips_body():
+    r = render_template(
+        "SELECT id FROM t {% if where_clause %}WHERE id > 0{% endif %}",
+        {"where_clause": False},
+    )
+    assert r.text == "SELECT id FROM t "
+
+
+def test_if_condition_undefined_strips_body():
+    """变量未定义 → 视为 false 删段,同时记 missing"""
+    r = render_template(
+        "SELECT id {% if filter_flag %}WHERE x=1{% endif %}",
+        {},
+    )
+    assert r.text == "SELECT id "
+    assert "filter_flag" in r.missing
+
+
+def test_if_condition_with_nested_variable():
+    """if 体内的 {{var}} 在 if 求真后才参与变量替换"""
+    r = render_template(
+        "SELECT id {% if has_filter %}WHERE id > {{min_id}}{% endif %}",
+        {"has_filter": True, "min_id": 100},
+    )
+    assert r.text == "SELECT id WHERE id > 100"
+    assert "min_id" in r.substituted
+
+
+def test_if_condition_falsy_does_not_substitute_inner_var():
+    """if 求假时,内部 {{var}} 跟段一起删 → 不报 missing"""
+    r = render_template(
+        "SELECT id {% if has_filter %}WHERE id > {{min_id}}{% endif %}",
+        {"has_filter": False},
+    )
+    assert r.text == "SELECT id "
+    # min_id 在被删段里,不该出现在 missing
+    assert "min_id" not in r.missing
+
+
+def test_if_condition_zero_is_falsy():
+    """{{flag}} 设 0 → 算 false(Python truthy 语义,跟 yml 里 `flag: 0` 直观)"""
+    r = render_template(
+        "{% if flag %}ON{% endif %}",
+        {"flag": 0},
+    )
+    assert r.text == ""
+
+
+def test_if_condition_empty_string_is_falsy():
+    r = render_template("{% if v %}YES{% endif %}", {"v": ""})
+    assert r.text == ""
+
+
+def test_if_condition_with_string_truthy():
+    r = render_template("{% if v %}YES{% endif %}", {"v": "anything"})
+    assert r.text == "YES"
+
+
+def test_multiple_if_blocks():
+    """多个独立 if 块(不嵌套)各自独立 evaluate"""
+    r = render_template(
+        "{% if a %}A{% endif %}-{% if b %}B{% endif %}",
+        {"a": True, "b": False},
+    )
+    assert r.text == "A-"
+    assert set(r.conditions_evaluated) == {"a", "b"}

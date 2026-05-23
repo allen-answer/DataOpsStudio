@@ -44,7 +44,6 @@ await withStepUpRetry(() => apiJson(`/api/users/${id}`, 'DELETE'))
 
 ## 后续
 
-- 把 `window.prompt` 换成正式 modal 组件，更好的 UX。
-- 跟 [token 吊销](./SESSION_HARDENING.md) / refresh rotation（未做）配合：
-  每次 verify-password 同时吊销老 jti，杜绝并发会话错乱。
-- `AppTopBar.exportConfig` 用 `withStepUpRetry` 重写一次，去掉内联的重试代码。
+- ✅ **`PasswordPromptModal` + `usePasswordPrompt`** 已替代 `window.prompt`(更好 UX,挂在 `App.vue` 顶层)
+- ✅ **refresh rotation 已落地**(`92bd4b3`)+ `da93c24` 移到 HttpOnly cookie
+- `AppTopBar.exportConfig` 用 `withStepUpRetry` 重写收口(已部分接入)。

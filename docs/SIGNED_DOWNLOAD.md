@@ -35,12 +35,17 @@ JWT 风格（HMAC-SHA256）。claims：`purpose=download` / `run_id` / `rel`
 - 解析后路径必须在 `RESULTS_DIR` 之下 → 防 path traversal。
 - 后缀必须是 `.json` / `.xlsx` / `.parquet`。
 
-## 未覆盖（后续切片）
+## ✅ 已落地
 
-- **前端接入**：HistoryView / 批量导出等现仍直接拼 `/results/<path>`，应改为
-  先 `POST .../downloads` 再用 `download_url`。
-- **一次性消费**：现在 token 在 TTL 内可重复使用；如需一次性，加一张 nonce
-  消费表（同 `revoked_tokens` 套路）。
-- **锁死 `/results/*`**：现 `/results/*` 仍按路径 + 项目权限放行（兼容）；前端
-  全切签名 URL 后可把它收紧为仅内部调用。
-- 单个 parquet 桶文件下载（现 `kind` 仅 `result` / `excel`）。
+- **前端接入**(`36b49a0`):HistoryView / StepResult / 13 处 `/results/*` 直链
+  全切 `fetch+blob` + 签名 URL(`utils/download.downloadResultFile` /
+  `downloadSignedRunFile`)
+- **一次性消费 nonce**(Phase 14):`consumed_tokens` 表 + `consume_signed_token`
+  helper,token 首次使用即标记,二次提交返 410 Gone
+- **单 parquet 桶下载**(Phase 14):`kind` 多两个值 —— `bucket_only_source` /
+  `bucket_only_target` / `bucket_diff` / `bucket_same`,直接给 parquet 文件链接
+
+## 后续
+
+- 锁死 `/results/*` 收紧为仅内部 —— 现路径 + 项目权限放行(兼容老路径),
+  等前端全切签名 URL 后可把这条端点关闭(目前已收紧到只允许签名 token 通过)

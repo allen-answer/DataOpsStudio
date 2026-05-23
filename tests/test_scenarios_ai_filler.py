@@ -58,7 +58,9 @@ def test_fill_no_ai_fill_scope_skips(isolated_storage):
     assert filled is s  # 没改
 
 
-def test_fill_provider_off_returns_unchanged(ai_provider_off):
+def test_fill_provider_off_falls_back_to_faker(ai_provider_off):
+    """Phase 14:provider=off + fill=column_values → 走 Faker locale fallback,
+    跟之前直接 skip 的行为变了 —— 仍生成业务样本而不是返 unchanged"""
     s = _scenario(
         ai={"provider": "${default}", "fill": ["column_values"]},
         tables=[{
@@ -67,6 +69,24 @@ def test_fill_provider_off_returns_unchanged(ai_provider_off):
         }],
     )
     filled, report = fill_scenario(s)
+    assert report.ok is True
+    assert "Faker fallback" in report.skipped_reason
+    # Faker 给 unmapped 列(DECIMAL)走类型嗅探,填 int 样本
+    col = filled.tables[0].columns[0]
+    assert col.values, "Faker fallback 应给该列填了样本"
+
+
+def test_fill_provider_off_only_descriptions_still_skips(ai_provider_off):
+    """provider=off + 只配 table_descriptions 不含 column_values → 仍 skip
+    (Faker 没 description / distribution 等价物)"""
+    s = _scenario(
+        ai={"provider": "${default}", "fill": ["table_descriptions"]},
+        tables=[{
+            "name": "t", "role": "source", "rows": 10,
+            "columns": [{"name": "x", "type": "DECIMAL", "gen": "realistic"}],
+        }],
+    )
+    _, report = fill_scenario(s)
     assert report.ok is False
     assert "未启用" in report.skipped_reason
 
@@ -330,11 +350,14 @@ def test_ai_fill_endpoint_returns_filled_scenario(client_with_scenarios, ai_prov
 
 
 def test_ai_fill_endpoint_provider_off_returns_200(client_with_scenarios, ai_provider_off):
+    """Phase 14:provider=off 时 endpoint 仍返 200,走 Faker fallback。orders-recon-mvp
+    scenario 配了 column_values → 应被 Faker 填(不是之前的 skip)"""
     r = client_with_scenarios.post("/api/scenarios/orders-recon-mvp/ai-fill")
     assert r.status_code == 200
     body = r.json()
-    assert body["report"]["ok"] is False
-    assert "未启用" in body["report"]["skipped_reason"]
+    # column_values 在 fill 配置里 → Faker fallback 跑通
+    assert body["report"]["ok"] is True
+    assert "Faker fallback" in body["report"]["skipped_reason"]
 
 
 def test_ai_fill_endpoint_scenario_not_found(client_with_scenarios):
@@ -383,3 +406,118 @@ def test_materialize_without_ai_fill_skips_filler(client_with_scenarios, monkeyp
     assert r.status_code == 200, r.text
     body = r.json()
     assert "ai_fill" not in body
+
+
+# ─── Phase 14: Faker locale fallback ────────────────────────────────────────
+
+
+def _faker_scenario(domain_vertical: str = "电商") -> Scenario:
+    """构造带 ai.fill=column_values + Faker 友好列名的 scenario"""
+    return Scenario.model_validate({
+        "id": "faker-test",
+        "name": "faker test",
+        "domain": {"vertical": domain_vertical},
+        "ai": {"fill": ["column_values"]},
+        "dialect": "mysql",
+        "tables": [{
+            "name": "customers",
+            "role": "source",
+            "rows": 100,
+            "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence"},
+                {"name": "user_name", "type": "VARCHAR(100)", "gen": "realistic"},
+                {"name": "email", "type": "VARCHAR(255)", "gen": "realistic"},
+                {"name": "city", "type": "VARCHAR(50)", "gen": "realistic"},
+            ],
+        }],
+    })
+
+
+def test_faker_fallback_when_provider_off(monkeypatch):
+    """provider=off + fill=column_values → 走 Faker fallback,填业务样本不是 LLM"""
+    from app.scenarios.ai_filler import fill_scenario
+    from app.services import lineage_ai as ai_module
+
+    monkeypatch.setattr(ai_module, "_config",
+                        lambda: type("c", (), {"provider": "off"})())
+
+    scenario = _faker_scenario()
+    filled, report = fill_scenario(scenario)
+
+    assert report.ok is True
+    assert "Faker fallback" in report.skipped_reason
+    # 3 个 realistic 列(user_name / email / city)应都被填
+    assert len(report.filled_columns) == 3
+    # 拿到的 values 都是 list[str] 非空
+    cust = filled.tables[0]
+    for col in cust.columns:
+        if col.gen == "realistic":
+            assert col.values, f"{col.name} 应被 Faker 填了"
+            assert all(isinstance(v, str) for v in col.values)
+
+
+def test_faker_fallback_locale_zh_cn():
+    """domain.vertical=电商 → 推断 zh_CN locale → 拿到中文姓名"""
+    from app.scenarios.faker_fallback import (
+        detect_locale_from_scenario,
+        generate_faker_values,
+    )
+    scenario = _faker_scenario(domain_vertical="电商")
+    assert detect_locale_from_scenario(scenario) == "zh_CN"
+    values = generate_faker_values("user_name", n=10, locale="zh_CN", seed=42)
+    assert values is not None
+    assert len(values) >= 1
+    # 中文姓名应含至少一个 CJK 字符
+    sample = str(values[0])
+    assert any("一" <= c <= "鿿" for c in sample)
+
+
+def test_faker_fallback_locale_default_en():
+    """无中文 vertical → 默认 en_US"""
+    from app.scenarios.faker_fallback import detect_locale_from_scenario
+    scenario = _faker_scenario(domain_vertical="general saas")
+    assert detect_locale_from_scenario(scenario) == "en_US"
+
+
+def test_faker_fallback_unmapped_column_uses_type():
+    """列名匹配不上 Faker mapping → 走类型嗅探兜底"""
+    from app.scenarios.faker_fallback import generate_faker_values
+    values = generate_faker_values(
+        "obscure_metric_xyz", col_type="DECIMAL(10,2)", n=5, locale="en_US", seed=1,
+    )
+    assert values is not None
+    # 类型嗅探给数值
+    assert all(isinstance(v, int) for v in values)
+
+
+def test_faker_fallback_seed_reproducible():
+    """同 seed + 同输入 → 同输出"""
+    from app.scenarios.faker_fallback import generate_faker_values
+    a = generate_faker_values("user_name", n=5, locale="zh_CN", seed=42)
+    b = generate_faker_values("user_name", n=5, locale="zh_CN", seed=42)
+    assert a == b
+
+
+def test_faker_fallback_provider_off_table_descriptions_warns(monkeypatch):
+    """provider=off + 只配 table_descriptions(没 column_values)→ 仍 skip,
+    因为 Faker 没 description 等价物"""
+    from app.scenarios.ai_filler import fill_scenario
+    from app.services import lineage_ai as ai_module
+
+    monkeypatch.setattr(ai_module, "_config",
+                        lambda: type("c", (), {"provider": "off"})())
+
+    scenario = Scenario.model_validate({
+        "id": "fck-test",
+        "name": "test",
+        "domain": {"vertical": "电商"},
+        "ai": {"fill": ["table_descriptions"]},  # 没 column_values
+        "dialect": "mysql",
+        "tables": [{
+            "name": "t1", "role": "source", "rows": 1,
+            "columns": [{"name": "id", "type": "INT", "gen": "sequence"}],
+        }],
+    })
+    _, report = fill_scenario(scenario)
+    assert report.ok is False
+    assert "Faker fallback 只支持 column_values" in report.skipped_reason

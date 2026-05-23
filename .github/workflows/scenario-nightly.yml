@@ -4,19 +4,18 @@
 # 一遍一键链（fill → generate → materialize → record → run → verify），用
 # run-all 返回的 `.ok` 判定。任一 scenario fail → job 红。
 #
-# 触发：默认仅 workflow_dispatch（手动）。确认 demo-db 在你的环境起得来后，
-# 取消下面 schedule 注释即可变每晚自动跑。
+# 触发：workflow_dispatch(手动)+ 每晚 UTC 18:00 (≈ 北京次日 02:00) 自动。
 #
 # 跟 ci.yml 的 `scenario-lint` step 的分工：
 #   - scenario-lint  纯静态、不连库、每次 push/PR 都跑（快、必跑）
-#   - 本 workflow    真落库 + 真对比 + 真校验（慢、按需 / 夜间）
+#   - 本 workflow    真落库 + 真对比 + 真校验（慢、夜间自动 + 按需手动）
 
 name: Scenario Nightly Regression
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 18 * * *"   # 每天 UTC 18:00 ≈ 北京时间次日 02:00
+  schedule:
+    - cron: "0 18 * * *"   # 每天 UTC 18:00 ≈ 北京时间次日 02:00
 
 jobs:
   scenario-regression:

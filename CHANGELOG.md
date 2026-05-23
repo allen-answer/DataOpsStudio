@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 🧹 Phase 14 · backlog 清零(P2/P3 + 8 处陈旧 doc 同步)
+
+- **8 处陈旧 doc 同步** —— MFA/SESSION_HARDENING/STEP_UP_AUTH/REFRESH_ROTATION/COMPARE_RESULT_STORAGE/RESOURCE_GUARD/SIGNED_DOWNLOAD/CLAUDE.md 把 "未做" 段改成 ✅ 已落地的真实状态
+- **scenario-nightly.yml schedule 转正** —— 每天 UTC 18:00 自动跑 scenario 回归(`cron: "0 18 * * *"`)
+- **resource_guard per-user cap** —— `DATAOPS_MAX_JOBS_PER_USER=1` 默认 + `JobInfo.owner_user_id` 维度;`active_compare_owner_ids` helper;system / 空 owner 跳过
+- **per-project 跨 run 配额** —— `DATAOPS_PROJECT_DISK_QUOTA_MB`(0=无限);`_project_disk_usage_mb` 扫 results/ 折成 per-project 累积 MB,超限 deny
+- **DB2 estimate_rows_from_explain** —— `EXPLAIN PLAN FOR <sql>` + `SELECT MAX(STREAM_COUNT) FROM EXPLAIN_STREAM`(ibm_db 不在 build 时返 None);方言矩阵 4/4 ✅
+- **签名下载一次性 nonce** —— `download_nonces` SQLite 表 + `consume_download_nonce(jti)`;同 token 第二次访问 410 Gone(防截获重放);老 token 无 jti 兼容直接放行
+- **签名下载单 parquet 桶 kind** —— `bucket_only_source / bucket_only_target / bucket_diff / bucket_same` 4 个 kind,直接拿桶 parquet 文件签名链接
+- **CI security 三件套** —— `release.yml` `actions/attest-build-provenance@v2` 给 Windows offline zip 加 SLSA-style 来源证明 + `ci.yml` SBOM job(CycloneDX,backend `cyclonedx-bom` / frontend `@cyclonedx/cyclonedx-npm`,90 天 retention)+ `dependency-review-action` PR 拦 high/critical CVE
+- **lineage_script 模板变量条件分支** —— `templating.py` 加 `{% if var %}...{% endif %}`(不嵌套 / 不 else / 不比较运算符,YAGNI),Python truthy 语义(`""` / `0` / `False` / `None` / 未定义都 false),`RenderedSql.conditions_evaluated` 多一栏
+- **AI filler v3 Faker locale fallback** —— `faker>=24.0` + `app/scenarios/faker_fallback.py`,provider=off 时仍能给 `column_values` 填业务样本(`detect_locale_from_scenario` 推断 zh_CN/en_US;curated `column_name → faker method` mapping 25 条;`table_descriptions` / `column_distributions` 仍需 provider 在场)
+- **`/api/sql/preflight` 前端 Workbench UI** —— `WorkbenchSummary.vue` 多 `🔬 估算 plan` 按钮(在「更多操作」折叠区,SQL 源 + 已选 ds 时启用),调 `run_explain=true&datasource_id=` + 紫色卡片渲染 risk 徽章 + 规则列表 + suggestion;safe degrade 时 banner 提示
+
 ### 🛡 Phase 13 · 可用性收尾(deep-research 报告剩余项)
 
 - **Oracle / DM 语句超时** —— `Dialect.apply_call_timeout(conn, sec)` 走 `connection.callTimeout` 毫秒;factory `_apply_statement_timeout` 双路径派发(连接属性优先,SQL fallback)。补 docs/DB_STATEMENT_TIMEOUT.md 方言矩阵

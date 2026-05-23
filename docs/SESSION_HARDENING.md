@@ -25,17 +25,19 @@
 
 ## 现状与缺口
 
-已具备：
+**v0.2.0 全部落地 + Phase 13 + 后续**:
 
-- token TTL（`DATAOPS_JWT_TTL_SECONDS`，默认 8 小时）。
-- JWT 算法已显式 pin（`algorithms=[HS256]`，无 `alg=none` 混淆攻击面）。
-- **token 吊销 / 真 logout**（本切片）。
+- token TTL —— `DATAOPS_JWT_TTL_SECONDS` 默认 `1800`(30 分钟,云端 docker-compose env)
+- JWT 算法显式 pin(`algorithms=[HS256]`)
+- token 吊销 / 真 logout(`a4e86e7` + `19fb7c7` 前端接入)
+- **refresh token + rotation + reuse detection**(`92bd4b3`):OAuth2 风格,replay 整链 revoke
+- **HttpOnly + Secure + SameSite=Strict cookie 存 refresh**(`da93c24`):XSS 偷不到
+- **敏感操作再认证(step-up)**(`8057309` + 后续):300s 窗口 + verify-password +
+  `withStepUpRetry` helper,覆盖含密码导出 / 配置导入 / 删用户 / AI 密钥保存
+- **MFA (TOTP)** + recovery codes(`7f6478d` + `fcc34eb` + `4b81528`):enroll/verify/
+  disable + 登录两步流 + 10 个一次性 recovery codes,详见 [MFA.md](./MFA.md)
+- **Rate limit**(`5a8605a`):per-IP 10/min + per-username 5/min 滑窗 + 429 + Retry-After
+- **Audit log enrich**(`da93c24`):login_success/failure / refresh / mfa_* /
+  step_up_* / rate_limit_hit / logout 全套
 
-仍未做（后续切片 / 文档评审 P1 目标态）：
-
-- **refresh token + rotation**：现在是单一 access token，无刷新机制。
-- **缩短 access token TTL**：8 小时偏长，目标态约 30 分钟（需配合 refresh）。
-- **敏感操作再认证**：下载发放 / 权限变更 / 密钥查看等高危操作前再验一次。
-- **MFA**：管理员 / break-glass 强制多因子。
-- **前端接入**：Workbench / 顶栏的「退出登录」应调 `POST /api/auth/logout`
-  （现仅前端丢 token）。
+整套 auth 防御栈现状见 [project-security-hardening memory](../../memory/project_security_hardening.md)。

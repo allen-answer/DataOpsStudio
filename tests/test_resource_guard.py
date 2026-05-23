@@ -384,6 +384,106 @@ def test_check_disk_critical_free_takes_priority(monkeypatch):
     assert "剩余" in reason and "5.00GB" in reason
 
 
+# ─── Phase 14:per-user cap ─────────────────────────────────────────────────
+
+
+def test_per_user_cap_no_owner_id_skipped():
+    """owner_user_id='' → 跳 user_cap 检查(向后兼容老 caller)"""
+    decision = evaluate(
+        _shape(owner_user_id=""),
+        host=_host(), queue=_queue(per_user_running=5),
+        config=GuardConfig(max_jobs_per_user=1),
+    )
+    assert "user_cap" not in {r.code for r in decision.reasons}
+
+
+def test_per_user_cap_system_owner_skipped():
+    """scheduler 触发 owner_user_id='system' → 跳 user_cap(不算用户)"""
+    decision = evaluate(
+        _shape(owner_user_id="system"),
+        host=_host(), queue=_queue(per_user_running=5),
+        config=GuardConfig(max_jobs_per_user=1),
+    )
+    assert "user_cap" not in {r.code for r in decision.reasons}
+
+
+def test_per_user_cap_queues_when_over():
+    """owner_user_id 给了 + per_user_running 达上限 → queue 类 user_cap"""
+    decision = evaluate(
+        _shape(owner_user_id="user-7"),
+        host=_host(), queue=_queue(per_user_running=2),
+        config=GuardConfig(max_jobs_per_user=1),
+    )
+    assert decision.decision == "queue"
+    assert "user_cap" in {r.code for r in decision.reasons}
+
+
+def test_per_user_cap_allows_when_under():
+    decision = evaluate(
+        _shape(owner_user_id="user-7"),
+        host=_host(), queue=_queue(per_user_running=0),
+        config=GuardConfig(max_jobs_per_user=1),
+    )
+    assert decision.decision == "allow"
+
+
+# ─── Phase 14:per-project disk quota ───────────────────────────────────────
+
+
+def test_project_disk_quota_zero_means_unlimited():
+    """quota_mb=0 → 跳过该 check(默认行为)"""
+    decision = evaluate(
+        _shape(project_id="proj-1"),
+        host=_host(), queue=_queue(project_disk_used_mb=999_999.0),
+        config=GuardConfig(project_disk_quota_mb=0),
+    )
+    assert "project_disk_quota" not in {r.code for r in decision.reasons}
+
+
+def test_project_disk_quota_denies_when_over():
+    """累积已落盘超配额 → deny(不是 queue,因为不是并发问题,清理才解决)"""
+    decision = evaluate(
+        _shape(project_id="proj-1"),
+        host=_host(), queue=_queue(project_disk_used_mb=15_000.0),
+        config=GuardConfig(project_disk_quota_mb=10_000),
+    )
+    assert decision.decision == "deny"
+    assert "project_disk_quota" in {r.code for r in decision.reasons}
+
+
+def test_project_disk_quota_no_project_id_skipped():
+    """project_id='' → 跳 quota 检查(不属于任何项目的 task)"""
+    decision = evaluate(
+        _shape(project_id=""),
+        host=_host(), queue=_queue(project_disk_used_mb=99_999.0),
+        config=GuardConfig(project_disk_quota_mb=100),
+    )
+    assert "project_disk_quota" not in {r.code for r in decision.reasons}
+
+
+def test_active_compare_owner_ids_helper(isolated_storage):
+    """jobs.active_compare_owner_ids 返活跃 compare jobs 的 owner_user_id 列表"""
+    from app.services import jobs as jobs_module
+    jobs_module._jobs["j1"] = {
+        "job_id": "j1", "kind": "compare", "status": "running",
+        "owner_user_id": "user-7", "task_id": "t1",
+    }
+    jobs_module._jobs["j2"] = {
+        "job_id": "j2", "kind": "compare", "status": "running",
+        "owner_user_id": "user-7", "task_id": "t2",
+    }
+    jobs_module._jobs["j3"] = {
+        "job_id": "j3", "kind": "compare", "status": "success",  # terminal
+        "owner_user_id": "user-7", "task_id": "t3",
+    }
+    jobs_module._jobs["j4"] = {
+        "job_id": "j4", "kind": "excel_export", "status": "running",  # 不算 compare
+        "owner_user_id": "user-8", "task_id": "",
+    }
+    owners = jobs_module.active_compare_owner_ids()
+    assert sorted(owners) == ["user-7", "user-7"]
+
+
 def test_disk_watermark_exceeded_is_runtime_error():
     # caller(runner)用 try/except DiskWatermarkExceeded 包流式循环 ——
     # 必须是 RuntimeError 子类,不能是 BaseException(让 generic except 抓到)

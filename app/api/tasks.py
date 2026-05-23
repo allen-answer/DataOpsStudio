@@ -70,13 +70,20 @@ def _preflight_or_raise(task: CompareTask) -> None:
         )
 
 
-def _guard_or_raise(task: CompareTask, *, allow_queue: bool) -> None:
+def _guard_or_raise(
+    task: CompareTask,
+    *,
+    allow_queue: bool,
+    owner_user_id: str = "",
+) -> None:
     """resource_guard 准入检查。dry-run（DATAOPS_GUARD_ENFORCE=false）只记不拦。
 
     enforce 模式下 deny → 429；queue 在异步路径放行（自然进 executor 队列），
     在同步路径拒绝并建议改后台执行（同步 run 不排队）。
+
+    Phase 14:caller 传 owner_user_id 让 per-user cap 生效。
     """
-    decision = guard_compare_run(task)
+    decision = guard_compare_run(task, owner_user_id=owner_user_id)
     if not decision.enforced:
         return
     if decision.decision == "deny":
@@ -172,7 +179,7 @@ def run_task_api(task_id: str, current: User = Depends(require_role("editor"))):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
-    _guard_or_raise(task, allow_queue=False)
+    _guard_or_raise(task, allow_queue=False, owner_user_id=current.id)
     _preflight_or_raise(task)
     try:
         return run_task(task_id)
@@ -192,7 +199,7 @@ def run_task_async_api(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
-    _guard_or_raise(task, allow_queue=True)
+    _guard_or_raise(task, allow_queue=True, owner_user_id=current.id)
     _preflight_or_raise(task)
     return submit_task_run(
         task_id,

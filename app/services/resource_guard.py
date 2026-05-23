@@ -62,14 +62,17 @@ class QueueState(BaseModel):
     compare_running: int = 0
     export_running: int = 0
     queue_depth: int = 0
-    # 相对当前任务的 scope：与它同项目 / 同数据源的活跃对比作业数。
+    # 相对当前任务的 scope：与它同项目 / 同数据源 / 同 owner 的活跃对比作业数。
     per_project_running: int = 0
     per_datasource_running: int = 0
+    per_user_running: int = 0  # Phase 14: owner_user_id 维度
+    project_disk_used_mb: float = 0.0  # Phase 14: 当前 project 累积已落盘 MB
 
 
 class TaskShape(BaseModel):
     task_id: str
     project_id: str = ""
+    owner_user_id: str = ""  # Phase 14: 给 user_cap 用,scheduler 触发可填 "system"
     kind: str = "compare"
     max_rows: int
     result_format: Literal["json", "parquet"] = "json"
@@ -104,6 +107,8 @@ class GuardConfig:
     max_export_jobs: int = 1
     max_jobs_per_project: int = 2
     max_queries_per_datasource: int = 2
+    max_jobs_per_user: int = 1  # Phase 14: per-user 并发上限(1 = 同用户串行)
+    project_disk_quota_mb: int = 0  # Phase 14: per-project 累积配额(MB);0=无限
     guard_queue_max: int = 50
     results_min_free_gb: float = 5.0
     results_max_disk_usage_pct: float = 85.0
@@ -120,6 +125,8 @@ class GuardConfig:
             max_export_jobs=_env_int("DATAOPS_MAX_EXPORT_JOBS", 1),
             max_jobs_per_project=_env_int("DATAOPS_MAX_JOBS_PER_PROJECT", 2),
             max_queries_per_datasource=_env_int("DATAOPS_MAX_QUERIES_PER_DATASOURCE", 2),
+            max_jobs_per_user=_env_int("DATAOPS_MAX_JOBS_PER_USER", 1),
+            project_disk_quota_mb=_env_int("DATAOPS_PROJECT_DISK_QUOTA_MB", 0),
             guard_queue_max=_env_int("DATAOPS_GUARD_QUEUE_MAX", 50),
             results_min_free_gb=_env_float("DATAOPS_RESULTS_MIN_FREE_GB", 5.0),
             results_max_disk_usage_pct=_env_float("DATAOPS_RESULTS_MAX_DISK_USAGE_PERCENT", 85.0),
@@ -277,10 +284,16 @@ def queue_snapshot(
     *,
     project_id: str = "",
     datasource_ids: tuple[str, ...] = (),
+    owner_user_id: str = "",
 ) -> QueueState:
-    """采当前队列状态。给了 project_id / datasource_ids 时，额外算「与之同
-    项目 / 同数据源」的活跃对比作业数 —— 反查每个活跃 job 的 task。"""
-    from app.services.jobs import active_compare_task_ids, active_job_counts
+    """采当前队列状态。给了 project_id / datasource_ids / owner_user_id 时,
+    额外算「与之同项目 / 同数据源 / 同 owner」的活跃对比作业数 —— 反查每个
+    活跃 job 的 task。"""
+    from app.services.jobs import (
+        active_compare_owner_ids,
+        active_compare_task_ids,
+        active_job_counts,
+    )
 
     counts = active_job_counts()
     ds_set = {d for d in datasource_ids if d}
@@ -297,13 +310,59 @@ def queue_snapshot(
                 per_project += 1
             if ds_set and ({task.source_id, task.target_id} & ds_set):
                 per_datasource += 1
+    per_user = 0
+    if owner_user_id:
+        per_user = sum(1 for o in active_compare_owner_ids() if o == owner_user_id)
+    project_disk_mb = 0.0
+    if project_id:
+        project_disk_mb = _project_disk_usage_mb(project_id)
     return QueueState(
         compare_running=counts["compare_running"],
         export_running=counts["export_running"],
         queue_depth=counts["active_total"],
         per_project_running=per_project,
         per_datasource_running=per_datasource,
+        per_user_running=per_user,
+        project_disk_used_mb=project_disk_mb,
     )
+
+
+def _project_disk_usage_mb(project_id: str) -> float:
+    """扫 results/ 下所有 run(json 单文件 + parquet 目录)对应 task → 反查
+    project_id 累积字节折成 MB。Phase 14 per-project 配额用。
+
+    实现成本说明:reservation per file 走 stat() —— results 目录 100 个 run /
+    每个 ~50 文件 ≈ 5000 次 stat,在 SSD 上 < 50ms。caller 在 guard.evaluate
+    入口调一次,不在 hot loop,可接受。失败吞掉返 0(measurement 失败不该误拦)。
+    """
+    try:
+        from app.services.repositories import task_store
+
+        # 建 task_id → project_id 索引
+        task_to_proj: dict[str, str] = {
+            t.id: (t.project_id or "") for t in task_store.list()
+        }
+        total_bytes = 0
+        # results/<run_id>.json 形态:run_id 前缀是 task_id;parquet 也用同 prefix
+        for entry in RESULTS_DIR.iterdir():
+            run_id = entry.name
+            # 老 run 用 task_id_<uuid>;Phase 12 起 run_id 用时间戳格式,跟 task
+            # 解耦 → 这种 run 无法反查 project,跳过(配额 best-effort 不强求 100%)
+            task_id = run_id.split("_")[0] if "_" in run_id else run_id
+            if task_to_proj.get(task_id) != project_id:
+                continue
+            try:
+                if entry.is_file():
+                    total_bytes += entry.stat().st_size
+                elif entry.is_dir():
+                    total_bytes += sum(
+                        f.stat().st_size for f in entry.rglob("*") if f.is_file()
+                    )
+            except (OSError, ValueError):
+                continue
+        return round(total_bytes / (1024 ** 2), 2)
+    except Exception:
+        return 0.0
 
 
 # ─── 决策（纯函数）──────────────────────────────────────────────────────────
@@ -405,6 +464,34 @@ def evaluate(
             ),
             field="per_datasource_running", actual=str(queue.per_datasource_running),
         ))
+    # Phase 14 per-user cap:owner_user_id 显式给了才检查;空 owner 当系统兼容
+    # (老 task 默认行为不变),scheduler 触发的 system owner 不参与该约束
+    if shape.owner_user_id and shape.owner_user_id != "system" and queue.per_user_running >= config.max_jobs_per_user:
+        enqueue.append(GuardReason(
+            code="user_cap", severity="medium",
+            message=(
+                f"当前用户已有 {queue.per_user_running} 个对比作业在运行"
+                f"（上限 {config.max_jobs_per_user}),任务排队"
+            ),
+            field="per_user_running", actual=str(queue.per_user_running),
+        ))
+    # Phase 14 per-project 累积配额:project_disk_quota_mb=0 视作无限
+    if (
+        config.project_disk_quota_mb > 0
+        and shape.project_id
+        and queue.project_disk_used_mb >= config.project_disk_quota_mb
+    ):
+        deny.append(GuardReason(
+            code="project_disk_quota", severity="high",
+            message=(
+                f"项目 {shape.project_id} 已落盘 {queue.project_disk_used_mb}MB,"
+                f"超出配额 {config.project_disk_quota_mb}MB"
+                f"(DATAOPS_PROJECT_DISK_QUOTA_MB)"
+            ),
+            field="project_disk_used_mb",
+            actual=f"{queue.project_disk_used_mb}MB",
+            expected=f"<={config.project_disk_quota_mb}MB",
+        ))
 
     if deny:
         decision: Decision = "deny"
@@ -443,6 +530,8 @@ _SUGGESTION_BY_CODE: dict[str, str] = {
     "export_cap": "前序导出作业完成后会自动开始",
     "project_cap": "本项目前序对比作业完成后会自动开始",
     "datasource_cap": "该数据源前序查询完成后会自动开始",
+    "user_cap": "本用户前序对比作业完成后会自动开始",
+    "project_disk_quota": "清理本项目历史结果或调高 DATAOPS_PROJECT_DISK_QUOTA_MB 后重试",
 }
 
 
@@ -458,11 +547,17 @@ def _suggestions(reasons: list[GuardReason]) -> list[str]:
 # ─── 端点入口 ────────────────────────────────────────────────────────────────
 
 
-def task_shape(task: CompareTask, *, kind: str = "compare") -> TaskShape:
+def task_shape(
+    task: CompareTask,
+    *,
+    kind: str = "compare",
+    owner_user_id: str = "",
+) -> TaskShape:
     limits = task.limits
     return TaskShape(
         task_id=task.id,
         project_id=task.project_id or "",
+        owner_user_id=owner_user_id,
         kind=kind,
         max_rows=limits.max_rows,
         result_format=limits.result_format,
@@ -472,18 +567,26 @@ def task_shape(task: CompareTask, *, kind: str = "compare") -> TaskShape:
     )
 
 
-def guard_compare_run(task: CompareTask, *, kind: str = "compare") -> GuardDecision:
+def guard_compare_run(
+    task: CompareTask,
+    *,
+    kind: str = "compare",
+    owner_user_id: str = "",
+) -> GuardDecision:
     """端点入口：现采主机/队列快照 + 读 env，评估并打指标、记日志。
 
     返回 `GuardDecision`；调用方据 `.enforced` + `.decision` 决定是否拦。
+    Phase 14:caller 可以传 `owner_user_id` 让 per-user cap 生效;不传默认 ""
+    跳过该约束(向后兼容)。
     """
     config = GuardConfig.from_env()
     decision = evaluate(
-        task_shape(task, kind=kind),
+        task_shape(task, kind=kind, owner_user_id=owner_user_id),
         host=host_snapshot(),
         queue=queue_snapshot(
             project_id=task.project_id or "",
             datasource_ids=(task.source_id, task.target_id),
+            owner_user_id=owner_user_id,
         ),
         config=config,
     )

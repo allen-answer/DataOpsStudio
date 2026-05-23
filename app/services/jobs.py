@@ -199,6 +199,20 @@ def active_compare_task_ids() -> list[str]:
     ]
 
 
+def active_compare_owner_ids() -> list[str]:
+    """Phase 14:活跃 compare 作业的 owner_user_id 列表 —— 供 resource_guard
+    算 per-user 并发。同一 user 多次提交会重复出现。系统触发(scheduler /
+    sensor)的 owner_user_id='system',跟真实用户 id 不冲突。"""
+    with _lock:
+        jobs = list(_jobs.values())
+    return [
+        str(job.get("owner_user_id") or "")
+        for job in jobs
+        if job.get("status") not in _TERMINAL_STATUSES
+        and (job.get("kind") or "") in ("compare", "task")
+    ]
+
+
 def cleanup_jobs(ttl_seconds: int | None = None, now: datetime | None = None) -> int:
     ttl = DEFAULT_JOB_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
     if ttl <= 0:
