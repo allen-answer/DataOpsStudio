@@ -31,6 +31,9 @@ const errorMsg = ref('')
 const step = ref<'password' | 'mfa'>('password')
 const mfaToken = ref('')
 const mfaCode = ref('')
+// MFA 子模式:totp(6 位 OTP) / recovery(10 字符后备码) —— 丢手机走 recovery
+const mfaMode = ref<'totp' | 'recovery'>('totp')
+const recoveryCode = ref('')
 
 function _redirectAfterLogin(): void {
   notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
@@ -63,28 +66,57 @@ async function onSubmit(): Promise<void> {
 }
 
 async function onSubmitMfa(): Promise<void> {
-  const code = mfaCode.value.trim()
-  if (code.length < 6) {
-    errorMsg.value = '请输入 6 位 OTP'
-    return
+  if (mfaMode.value === 'totp') {
+    const code = mfaCode.value.trim()
+    if (code.length < 6) {
+      errorMsg.value = '请输入 6 位 OTP'
+      return
+    }
+    submitting.value = true
+    errorMsg.value = ''
+    try {
+      await auth.mfaChallenge(mfaToken.value, { code })
+      _redirectAfterLogin()
+    } catch (error: any) {
+      errorMsg.value = error?.message || 'OTP 验证失败'
+      mfaCode.value = ''
+    } finally {
+      submitting.value = false
+    }
+  } else {
+    // recovery 模式 —— 后端会 normalize,这里只做粗校验
+    const raw = recoveryCode.value.trim()
+    if (raw.replace(/[\s-]/g, '').length < 8) {
+      errorMsg.value = '请输入完整的恢复码'
+      return
+    }
+    submitting.value = true
+    errorMsg.value = ''
+    try {
+      await auth.mfaChallenge(mfaToken.value, { recoveryCode: raw })
+      _redirectAfterLogin()
+    } catch (error: any) {
+      errorMsg.value = error?.message || '恢复码无效'
+      recoveryCode.value = ''
+    } finally {
+      submitting.value = false
+    }
   }
-  submitting.value = true
+}
+
+function toggleMfaMode(): void {
+  mfaMode.value = mfaMode.value === 'totp' ? 'recovery' : 'totp'
+  mfaCode.value = ''
+  recoveryCode.value = ''
   errorMsg.value = ''
-  try {
-    await auth.mfaChallenge(mfaToken.value, code)
-    _redirectAfterLogin()
-  } catch (error: any) {
-    errorMsg.value = error?.message || 'OTP 验证失败'
-    mfaCode.value = ''
-  } finally {
-    submitting.value = false
-  }
 }
 
 function backToPassword(): void {
   step.value = 'password'
   mfaToken.value = ''
   mfaCode.value = ''
+  recoveryCode.value = ''
+  mfaMode.value = 'totp'
   errorMsg.value = ''
 }
 </script>
@@ -266,11 +298,13 @@ function backToPassword(): void {
             <div class="flex-1 min-w-0">
               <p class="text-xs font-bold uppercase tracking-wider text-primary">Two-Factor Authentication</p>
               <h2 class="mt-1 text-2xl font-bold text-slate-950">二步验证</h2>
-              <p class="mt-1 text-sm text-slate-500">打开 TOTP app（Google Authenticator / Authy 等）,输入 6 位当前码。</p>
+              <p v-if="mfaMode === 'totp'" class="mt-1 text-sm text-slate-500">打开 TOTP app（Google Authenticator / Authy 等）,输入 6 位当前码。</p>
+              <p v-else class="mt-1 text-sm text-slate-500">输入启用 MFA 时保存的一次性恢复码 —— 单次有效。</p>
             </div>
           </div>
 
-          <label class="block">
+          <!-- TOTP 模式 -->
+          <label v-if="mfaMode === 'totp'" class="block">
             <span class="mb-1.5 block text-xs font-bold text-slate-600">6 位 OTP</span>
             <input
               v-model="mfaCode"
@@ -284,6 +318,21 @@ function backToPassword(): void {
             >
           </label>
 
+          <!-- 恢复码模式 -->
+          <label v-else class="block">
+            <span class="mb-1.5 block text-xs font-bold text-slate-600">恢复码</span>
+            <input
+              v-model="recoveryCode"
+              type="text"
+              autocomplete="off"
+              autocapitalize="characters"
+              autofocus
+              placeholder="ABCDE-FGHJK"
+              class="h-12 w-full rounded-xl border-slate-200 bg-slate-50 text-center font-mono text-base uppercase tracking-[0.25em] transition focus:border-primary focus:bg-white focus:ring-primary/20"
+            >
+            <span class="mt-1.5 block text-[10px] text-slate-400">分隔符可省 · 大小写不限 · 用过即失效</span>
+          </label>
+
           <div
             v-if="errorMsg"
             class="mt-4 flex items-start gap-2 rounded-xl border border-status-error/20 bg-status-error-bg px-3 py-2.5 text-xs text-status-error"
@@ -295,14 +344,23 @@ function backToPassword(): void {
           <button
             type="submit"
             class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-            :disabled="submitting || mfaCode.length < 6"
+            :disabled="submitting || (mfaMode === 'totp' ? mfaCode.length < 6 : recoveryCode.replace(/[\s-]/g, '').length < 8)"
           >
             {{ submitting ? '验证中…' : '验证并登录' }}
           </button>
 
           <button
             type="button"
-            class="mt-3 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-slate-500 hover:text-slate-800"
+            class="mt-3 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-primary hover:text-primary-hover hover:underline"
+            :disabled="submitting"
+            @click="toggleMfaMode"
+          >
+            {{ mfaMode === 'totp' ? '丢手机了?用恢复码登录' : '← 改用 TOTP app' }}
+          </button>
+
+          <button
+            type="button"
+            class="mt-2 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-slate-500 hover:text-slate-800"
             :disabled="submitting"
             @click="backToPassword"
           >

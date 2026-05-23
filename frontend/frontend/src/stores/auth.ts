@@ -99,11 +99,25 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /** MFA 两步流第二步：login 返 mfa_required=true 后调本方法。
-   * 服务端验完 OTP 返跟 login 一样形态的 LoginResponse,在此写 token + user。 */
-  async function mfaChallenge(mfaToken: string, code: string): Promise<LoginResponse> {
-    const data = await apiJson<LoginResponse>(
-      '/api/auth/mfa/challenge', 'POST', { mfa_token: mfaToken, code },
-    )
+   *
+   * 接受 6 位 OTP **或** recovery code(丢手机兜底):
+   *  - mfaChallenge(mfaToken, '123456')        → 走 TOTP
+   *  - mfaChallenge(mfaToken, { code: '...' }) → 走 TOTP(显式形式)
+   *  - mfaChallenge(mfaToken, { recoveryCode: 'ABCDE-FGHJK' }) → 走恢复码
+   *
+   * 服务端验完返跟 login 一样形态的 LoginResponse,在此写 token + user。 */
+  async function mfaChallenge(
+    mfaToken: string,
+    codeOrOpts: string | { code?: string; recoveryCode?: string },
+  ): Promise<LoginResponse> {
+    const body: Record<string, string> = { mfa_token: mfaToken }
+    if (typeof codeOrOpts === 'string') {
+      body.code = codeOrOpts
+    } else {
+      if (codeOrOpts.code) body.code = codeOrOpts.code
+      if (codeOrOpts.recoveryCode) body.recovery_code = codeOrOpts.recoveryCode
+    }
+    const data = await apiJson<LoginResponse>('/api/auth/mfa/challenge', 'POST', body)
     if (data.access_token) {
       token.value = data.access_token
       user.value = data.user
