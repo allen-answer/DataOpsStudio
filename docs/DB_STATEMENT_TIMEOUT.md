@@ -35,7 +35,7 @@ caller 没给 connection 时直接走 (2)(向后兼容老路径)。
 | MySQL | SQL `SET SESSION MAX_EXECUTION_TIME=<ms>` | `max_execution_time` 毫秒,只作用于只读 SELECT —— 正好是本系统所有查询的形态 |
 | Oracle | 属性 `conn.callTimeout=<ms>` | oracledb / cx_Oracle round-trip 级超时,超过即驱动抛 DPI-1067。**全 round-trip 生效**(execute / fetch 都计时) |
 | DM | 属性 `conn.callTimeout=<ms>`(继承 Oracle) | dmPython 多数版本兼容 oracledb 属性接口;不兼容时 setattr AttributeError 被吞 —— 行为退化为「无超时」与上线前一致 |
-| DB2 | 无 | 缺口。ibm_db / ibm_db_dbi 暂未抽象,需后续切片(`SET CURRENT QUERY OPTIMIZATION` / driver `set_option` 都可探索) |
+| DB2 | 属性 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)` | ibm_db 连接级 option(`1` = SQL_ATTR_CONNECTION 类),作用于该连接所有后续 cursor.execute。**ibm_db 不在 build 默认装** —— `import ibm_db` 抛 ImportError 时返 False 安全降级,行为退化为「无超时」与本切片前一致 |
 
 > MariaDB 走 pymysql 但不认 `MAX_EXECUTION_TIME`（它用 `max_statement_time`）。
 > 下发会失败，由 best-effort 包装吞掉 —— MariaDB 数据源行为不变。
@@ -55,8 +55,8 @@ caller 没给 connection 时直接走 (2)(向后兼容老路径)。
 
 ## 未覆盖（后续切片）
 
-- DB2 的语句超时(`ibm_db.set_option` / `ibm_db_dbi` 路径未抽象,待真实需求出现再补)。
 - preview 与 compare 分别用不同超时预算(现所有查询共用一个值)。Phase 13
-  `RunLimits.query_timeout_seconds` 切片会让单任务能覆盖全局默认。
+  `RunLimits.query_timeout_seconds` 已让单任务覆盖全局默认 —— 未来可让 preview
+  endpoint 也独立设。
 - 数据库侧账号级硬限制（`max_execution_time` 全局默认、Resource Manager
   consumer group）—— 那是 DBA 侧配置，不在应用代码内。

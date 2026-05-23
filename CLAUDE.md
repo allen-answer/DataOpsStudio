@@ -436,7 +436,7 @@ curl -X POST /api/scenarios/orders-recon-mvp/run-all \
 
 **Phase 12 全部交付，无剩余 enhancement。** 长期 backlog：AI filler v3 接 Faker locale / lineage_script 模板变量做条件分支 / 把 scenario-nightly.yml 的 schedule 取消注释转正。
 
-**已知技术债（非 Phase 12）**：`ci.yml` 的 `frontend-build` job 跑 `npm run typecheck`，目前 `WorkflowRunView` / `WorkflowTemplateView` / `WorkflowView` 三个 view 有遗留 TS 报错（`Property 'xxx' does not exist on type 'never'` 之类），切片 17 顺手修了 `ScenarioSandboxView` 的一处（`renderSql` 引用未定义的 `selected`）。其余三个 view 的 typecheck 错误待单独收口。
+**前端 typecheck**：`ci.yml` 的 `frontend-build` job 跑 `npm run typecheck`。当前 **0 红**(`c1c4616` P0.5 收尾把 14 个 view 全清，157 → 0；Phase 12 切片 17 顺手修了 `ScenarioSandboxView` 一处 `renderSql` 引用未定义 `selected`；2026-05-23 重测 typecheck/build/vitest 全绿)。新增 view 时仍要保持 typecheck 绿。
 
 **通用未做**：
 

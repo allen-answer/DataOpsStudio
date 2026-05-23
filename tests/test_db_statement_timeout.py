@@ -93,6 +93,70 @@ def test_mysql_apply_call_timeout_returns_false_by_default():
     assert conn.callTimeout is None  # 没碰
 
 
+# ─── DB2 apply_call_timeout(ibm_db.set_option 路径)───────────────────────
+
+
+class _FakeDb2Conn:
+    """模拟 ibm_db_dbi.Connection —— `.conn_handler` 暴露底层 ibm_db handle"""
+    def __init__(self, has_handle: bool = True) -> None:
+        if has_handle:
+            self.conn_handler = object()
+
+
+def _fake_ibm_db_module(record: list[tuple] | None = None, fail: bool = False):
+    """构造能被 monkeypatch 注进 sys.modules 的 ibm_db stub"""
+    import sys, types
+    mod = types.ModuleType("ibm_db")
+    mod.SQL_ATTR_QUERY_TIMEOUT = 2638  # ibm_db 实际常量值,放进来仅为可读
+
+    def set_option(handle, options, kind):
+        if fail:
+            raise RuntimeError("simulated ibm_db.set_option failure")
+        if record is not None:
+            record.append((handle, dict(options), kind))
+
+    mod.set_option = set_option
+    return mod
+
+
+def test_db2_apply_call_timeout_no_ibm_db_returns_false(monkeypatch):
+    """build 默认不装 ibm_db → import 抛 ImportError → 返 False(安全降级)"""
+    import sys
+    monkeypatch.setitem(sys.modules, "ibm_db", None)  # None → import raises ImportError
+    conn = _FakeDb2Conn()
+    assert get_dialect(DatabaseType.DB2).apply_call_timeout(conn, 900) is False
+
+
+def test_db2_apply_call_timeout_success(monkeypatch):
+    """ibm_db 装上 + conn 有 conn_handler → set_option 被调,返 True"""
+    import sys
+    record: list[tuple] = []
+    monkeypatch.setitem(sys.modules, "ibm_db", _fake_ibm_db_module(record))
+    conn = _FakeDb2Conn()
+    assert get_dialect(DatabaseType.DB2).apply_call_timeout(conn, 300) is True
+    assert len(record) == 1
+    handle, options, kind = record[0]
+    assert handle is conn.conn_handler
+    assert options == {2638: 300}  # SQL_ATTR_QUERY_TIMEOUT: 300s
+    assert kind == 1  # connection-level
+
+
+def test_db2_apply_call_timeout_no_handle_returns_false(monkeypatch):
+    """conn 没 conn_handler / conn_handle 属性(不兼容版本)→ 返 False"""
+    import sys
+    monkeypatch.setitem(sys.modules, "ibm_db", _fake_ibm_db_module())
+    conn = _FakeDb2Conn(has_handle=False)
+    assert get_dialect(DatabaseType.DB2).apply_call_timeout(conn, 900) is False
+
+
+def test_db2_apply_call_timeout_set_option_failure_swallowed(monkeypatch):
+    """set_option 抛错 → 返 False,不影响真查询"""
+    import sys
+    monkeypatch.setitem(sys.modules, "ibm_db", _fake_ibm_db_module(fail=True))
+    conn = _FakeDb2Conn()
+    assert get_dialect(DatabaseType.DB2).apply_call_timeout(conn, 900) is False
+
+
 # ─── _statement_timeout_seconds（env 解析）──────────────────────────────────
 
 

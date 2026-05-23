@@ -9,6 +9,8 @@
 - **RunLimits.query_timeout_seconds** —— 单任务覆盖全局 DB 超时。ContextVar + runner `with query_timeout_override(...)` 包,fetch_rows / iter_rows / fetch_column_details 三处自动取这个值。慢但合法的 ETL 可提到 1800s,日常 preview 任务可缩到 60s
 - **mid-run 磁盘水位检查** —— `resource_guard.check_disk_critical()` + `DiskWatermarkExceeded`。runner 双 streaming 分支每写 5000 行查一次,达 critical 主动 raise + `_cleanup_partial_parquet` rmtree 临时 run 目录避免半成品累积
 - **per-run 磁盘配额** —— `RunLimits.run_disk_quota_mb`(None=无限);`check_run_quota(run_dir, quota_mb)` 累计 run_dir/** 字节折 MB;超额抛 `RunQuotaExceeded(DiskWatermarkExceeded)`(子类共享 cleanup 路径);runner mid-run 检查跟主机水位走同一 `_check_mid_run_disk` 入口
+- **DB2 语句超时** —— `Db2Dialect.apply_call_timeout` 走 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)` 连接级 option。ibm_db 不在 build 默认装 → 返 False 安全降级。方言矩阵收尾(MySQL / Oracle / DM / DB2 全 ✅)
+- **typecheck 技术债清零确认** —— `npm run typecheck` / `build` / `vitest` 全绿,CLAUDE.md 陈旧记录修正(此前已被 `c1c4616` 修完,文档没同步)
 
 ## [0.2.0] - 2026-05-23
 
