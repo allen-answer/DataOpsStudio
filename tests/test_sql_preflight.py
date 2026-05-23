@@ -4,6 +4,11 @@
 """
 from __future__ import annotations
 
+import pytest
+from fastapi import HTTPException
+
+from app.api.tasks import _preflight_or_raise
+from app.models import CompareTask, CompareTaskCreate, RunLimits, SourceKind, SqlMode
 from app.services.sql_preflight import SQLPreflightDecision, assess_sql
 
 
@@ -227,3 +232,65 @@ def test_preflight_endpoint_key_columns_as_string(client):
 def test_preflight_endpoint_requires_login(client_anon):
     resp = client_anon.post("/api/sql/preflight", json={"sql": "SELECT 1"})
     assert resp.status_code == 401
+
+
+# ─── run-time enforce（_preflight_or_raise）────────────────────────────────
+
+
+def _stream_no_order_task() -> CompareTask:
+    return CompareTask(
+        id="t", name="t", source_id="ds", target_id="ds",
+        source_sql="SELECT id, name FROM users WHERE id > 0",  # 缺 ORDER BY
+        key_columns=["id"],
+        limits=RunLimits(stream_compare=True, result_format="parquet"),
+    )
+
+
+def test_preflight_or_raise_enforces_block(monkeypatch):
+    monkeypatch.setenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", "true")
+    with pytest.raises(HTTPException) as exc:
+        _preflight_or_raise(_stream_no_order_task())
+    assert exc.value.status_code == 429
+    assert "静态体检" in str(exc.value.detail)
+
+
+def test_preflight_or_raise_dry_run_skips(monkeypatch):
+    monkeypatch.delenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", raising=False)
+    # 即便有 block 规则命中，dry-run 下不抛
+    _preflight_or_raise(_stream_no_order_task())
+
+
+def test_preflight_or_raise_skips_non_sql_source(monkeypatch):
+    monkeypatch.setenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", "true")
+    task = CompareTask(
+        id="t", name="t",
+        source_kind=SourceKind.EXCEL, source_excel_path="x.xlsx",
+        target_kind=SourceKind.EXCEL, target_excel_path="y.xlsx",
+        sql_mode=SqlMode.DOUBLE,
+        key_columns=["id"],
+    )
+    _preflight_or_raise(task)  # 没 SQL 可查 → 不抛
+
+
+def _seed_stream_no_order_task() -> CompareTask:
+    from app.services.repositories import task_store
+    return task_store.create(CompareTaskCreate(
+        name="stream-no-order", source_id="ds", target_id="ds",
+        source_sql="SELECT id, name FROM users WHERE id > 0",
+        key_columns=["id"],
+        limits=RunLimits(stream_compare=True, result_format="parquet"),
+    ))
+
+
+def test_run_endpoint_blocked_by_preflight_enforce(client, monkeypatch):
+    monkeypatch.setenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", "true")
+    task = _seed_stream_no_order_task()
+    resp = client.post(f"/api/tasks/{task.id}/run")
+    assert resp.status_code == 429
+
+
+def test_run_async_endpoint_blocked_by_preflight_enforce(client, monkeypatch):
+    monkeypatch.setenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", "true")
+    task = _seed_stream_no_order_task()
+    resp = client.post(f"/api/tasks/{task.id}/run-async")
+    assert resp.status_code == 429

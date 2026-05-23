@@ -59,10 +59,20 @@ block → high；仅 warn → medium；无 → low。`blocking = 有任一 block
 端点是 **advisory** —— 只返回体检结果，不拦运行。Workbench 应在点「运行」
 前调用并展示风险；高危 SQL 由用户决定是否继续。
 
+## 在 run / run-async 强制 block 规则
+
+除 advisory 端点外，`/api/tasks/{id}/run` 与 `/run-async` 内置 enforce 通道：
+
+- `DATAOPS_SQL_PREFLIGHT_ENFORCE=false`（默认）：dry-run，不查不拦。
+- `DATAOPS_SQL_PREFLIGHT_ENFORCE=true`：每次运行前对 source / target SQL 都
+  跑一遍 `assess_sql`，**任一侧 `blocking=True` → 429**（详情含具体 block
+  规则消息）。Excel / CSV / Parquet 源跳过。
+
+跟 [resource_guard](./RESOURCE_GUARD.md) 同样的 dry-run → enforce 推进节奏。
+配套观察期默认走 advisory，确认无误伤再切 enforce。
+
 ## 未覆盖（后续切片）
 
 - 前端 Workbench 运行前调用 + 风险弹窗。
-- 在 `run` / `run-async` 端点强制 `block` 级规则（同 resource_guard 的
-  dry-run → enforce 推进）。
 - EXPLAIN Broker（连只读账号 / 影子库做计划评估）—— `explain_used` 字段已预留。
 - LOB/BLOB 大字段、谓词函数包裹等需要 schema 知识的规则。

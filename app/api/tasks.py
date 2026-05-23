@@ -5,6 +5,8 @@ mutation / run / preview 校验用户对任务所在项目有权。
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.api._authz import (
@@ -36,6 +38,36 @@ from app.utils.sql_guard import validate_readonly_sql
 
 # router 级默认：viewer 也要登录。mutation / run / preview 单独升级 editor。
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _preflight_or_raise(task: CompareTask) -> None:
+    """sql_preflight enforce 模式下：block 级规则命中即 429。dry-run 跳过。
+
+    `DATAOPS_SQL_PREFLIGHT_ENFORCE=true` 才强制；默认 false（advisory）。Excel /
+    CSV / Parquet 源没 SQL 可查，跳过。
+    """
+    if os.getenv("DATAOPS_SQL_PREFLIGHT_ENFORCE", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    keys = list(task.key_columns or [])
+    messages: list[str] = []
+    for side, sql, kind in (
+        ("source", task.source_sql, task.source_kind),
+        ("target", task.target_sql if task.sql_mode == SqlMode.DOUBLE else "", task.target_kind),
+    ):
+        if kind != SourceKind.SQL or not sql:
+            continue
+        decision = assess_sql(
+            sql=sql, dialect="", key_columns=keys, mode="compare",
+            max_rows=task.limits.max_rows, stream_compare=task.limits.stream_compare,
+        )
+        if decision.blocking:
+            block_lines = "; ".join(r.message for r in decision.rules if r.level == "block")
+            messages.append(f"{side} SQL: {block_lines}")
+    if messages:
+        raise HTTPException(
+            status_code=429,
+            detail="SQL 静态体检命中阻断规则：" + " / ".join(messages),
+        )
 
 
 def _guard_or_raise(task: CompareTask, *, allow_queue: bool) -> None:
@@ -141,6 +173,7 @@ def run_task_api(task_id: str, current: User = Depends(require_role("editor"))):
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
     _guard_or_raise(task, allow_queue=False)
+    _preflight_or_raise(task)
     try:
         return run_task(task_id)
     except KeyError as exc:
@@ -160,6 +193,7 @@ def run_task_async_api(
         raise HTTPException(status_code=404, detail="Task not found")
     require_project_access(current, task.project_id, detail="无权运行该项目的对比任务")
     _guard_or_raise(task, allow_queue=True)
+    _preflight_or_raise(task)
     return submit_task_run(task_id, max_retries=(payload or {}).get("max_retries"))
 
 
