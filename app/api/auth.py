@@ -55,9 +55,20 @@ _REFRESH_COOKIE_NAME = "dataops_refresh"
 def _is_secure_request(request: Request) -> bool:
     """判 cookie Secure 属性该开还是关。
 
-    生产 HTTPS → 开;TestClient `http://testserver` → 关(否则 httpx 不附带,
-    cookie-based refresh 用例假阴)。
+    优先看 `X-Forwarded-Proto` header(nginx-rp 终端 TLS 后,后端 request.url.scheme
+    是 http,但 nginx 加 XFP=https 标识原始客户端走的是 HTTPS)。无 XFP 时回退
+    request.url.scheme(直连 dev / TestClient 场景)。
+
+    生产 cloud(nginx HTTPS) → XFP=https → 开;TestClient `http://testserver`
+    无 XFP → scheme=http → 关(否则 httpx 不附带,cookie-based refresh 用例假阴)。
     """
+    xfp = (
+        request.headers.get("x-forwarded-proto")
+        or request.headers.get("X-Forwarded-Proto")
+        or ""
+    ).strip().lower()
+    if xfp:
+        return xfp == "https"
     return request.url.scheme == "https"
 
 
