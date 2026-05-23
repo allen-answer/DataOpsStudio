@@ -1,20 +1,20 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-jinja2>=3.1
-python-multipart>=0.0.9
-pydantic>=2.6
-pandas>=2.2
-openpyxl>=3.1
-pyarrow>=14.0  # ParquetReader 后端；pandas DataFrame 的 parquet IO 也走它
-sqlglot>=26.0
-pyyaml>=6.0  # config/lineage_group_rules.yml 解析；JSON 格式仍可用，YAML 仅在文件后缀是 .yml/.yaml 时需要
-bcrypt>=4.0  # 用户口令 hash（直接用 bcrypt 库，passlib 1.7.4 + bcrypt 5.x 兼容性差）
-python-jose[cryptography]>=3.3  # JWT 编解码
+fastapi>=0.136.1
+uvicorn[standard]>=0.47.0
+jinja2>=3.1.6
+python-multipart>=0.0.29
+pydantic>=2.13.4
+pandas>=3.0.3
+openpyxl>=3.1.5
+pyarrow>=24.0.0  # ParquetReader 后端；pandas DataFrame 的 parquet IO 也走它
+sqlglot>=30.8.0
+pyyaml>=6.0.3  # config/lineage_group_rules.yml 解析；JSON 格式仍可用，YAML 仅在文件后缀是 .yml/.yaml 时需要
+bcrypt>=5.0.0  # 用户口令 hash（直接用 bcrypt 库，passlib 1.7.4 + bcrypt 5.x 兼容性差）
+python-jose[cryptography]>=3.5.0  # JWT 编解码
 pyotp>=2.9  # TOTP / MFA 第二因子（admin 二步验证）
-faker>=24.0  # Phase 14: ai_filler v3 locale-aware fallback(provider=off 时仍能生成业务样本)
-pytest>=8.0
-httpx>=0.27   # TestClient 依赖：starlette.testclient 通过 httpx 驱动
-APScheduler>=3.10
+faker>=40.19.1  # Phase 14: ai_filler v3 locale-aware fallback(provider=off 时仍能生成业务样本)
+pytest>=9.0.3
+httpx>=0.28.1   # TestClient 依赖：starlette.testclient 通过 httpx 驱动
+APScheduler>=3.11.2
 
 # Optional database drivers. Install only the drivers needed by your environment.
 dmPython
