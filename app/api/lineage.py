@@ -1,11 +1,11 @@
 """SQL 血缘分析：单 SQL（JSON / form）+ 多脚本批量分析。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 
 from app.models import LineageAnalyzeResult, LineageBatchAnalyzeResponse, User
 from app.services import lineage_ai, lineage_service
-from app.services.auth import get_current_user, require_role
+from app.services.auth import ensure_recent_auth, get_current_user, require_role
 from app.services.lineage_ai_config import get_public_lineage_ai_config, save_lineage_ai_config
 
 
@@ -26,9 +26,15 @@ def lineage_ai_config_api(_: User = Depends(require_role("admin"))):
 
 @router.put("/api/lineage/ai/config")
 def update_lineage_ai_config_api(
+    request: Request,
     payload: dict[str, object] = Body(...),
     _: User = Depends(require_role("admin")),
 ):
+    """保存 AI 配置（含加密落盘的 API Key）—— admin only + step-up（300s）。
+
+    API Key 是高敏感凭据，跟「含密码导出」「删用户」同级处理。
+    """
+    ensure_recent_auth(request, max_age=300)
     try:
         return save_lineage_ai_config(payload)
     except ValueError as exc:

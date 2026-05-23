@@ -130,6 +130,24 @@ def test_delete_user_old_token_triggers_step_up(client):
     assert "step_up_required" in str(resp.json().get("detail") or "")
 
 
+def test_ai_config_save_fresh_login_passes(client):
+    """admin 刚登录 → PUT /api/lineage/ai/config 直接通过（provider=off 关闭）。"""
+    resp = client.put("/api/lineage/ai/config", json={"provider": "off"})
+    assert resp.status_code == 200
+
+
+def test_ai_config_save_old_token_triggers_step_up(client):
+    """老 token + 保存 AI 配置 → 403 step_up_required（API Key 敏感凭据）。"""
+    old = _old_admin_token(secs_ago=600)
+    resp = client.put(
+        "/api/lineage/ai/config",
+        json={"provider": "off"},
+        headers={"Authorization": f"Bearer {old}"},
+    )
+    assert resp.status_code == 403
+    assert "step_up_required" in str(resp.json().get("detail") or "")
+
+
 def test_step_up_then_retry_export_succeeds(client):
     """完整流程：老 token 含密码导出 403 → verify-password 拿新 token → 重试 200。"""
     old = _old_admin_token(secs_ago=600)

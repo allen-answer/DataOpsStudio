@@ -26,6 +26,7 @@
   - `GET /config/export?include_passwords=true`（导出含密码配置）
   - `POST /config/import`（覆盖式导入 datasources + tasks）
   - `DELETE /api/users/{user_id}`（不可逆删除用户）
+  - `PUT /api/lineage/ai/config`（保存 AI 配置含加密 API Key）
 
 ## 前端
 
@@ -39,14 +40,10 @@
 await withStepUpRetry(() => apiJson(`/api/users/${id}`, 'DELETE'))
 ```
 
-- 已接入：`UserManagementView.deleteUser`。
-- 未接入：`AIConfigView` 的 AI key 保存（后端已 gate 在 PUT /api/lineage/ai/config
-  之外没挂；该端点 admin 偶尔用，被 403 后手动重登可接受，留后续）。
+- 已接入：`UserManagementView.deleteUser`、`AIConfigView.saveConfig`。
 
 ## 后续
 
-- AI 密钥保存端点（`PUT /api/lineage/ai/config`）后端 gate + `AIConfigView` 接
-  `withStepUpRetry`。本切片暂未挂。
 - 把 `window.prompt` 换成正式 modal 组件，更好的 UX。
 - 跟 [token 吊销](./SESSION_HARDENING.md) / refresh rotation（未做）配合：
   每次 verify-password 同时吊销老 jti，杜绝并发会话错乱。

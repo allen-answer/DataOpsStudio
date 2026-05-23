@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { apiGet, apiJson, invalidateAIEnabledCache } from '../../api'
 import { useNoticeStore } from '../../stores/notice'
+import { withStepUpRetry } from '../../utils/stepUpRetry'
 
 interface AIConfigPayload {
   provider?: string
@@ -143,11 +144,23 @@ async function saveConfig(): Promise<void> {
   }
   saving.value = true
   try {
-    hydrate(await apiJson<AIConfigPayload>('/api/lineage/ai/config', 'PUT', payload()))
+    // 端点已挂 step-up；近 300s 没认证 → step_up_required → helper prompt 密码
+    // → verify-password → 换新 token → 重试一次
+    const result = await withStepUpRetry(
+      () => apiJson<AIConfigPayload>('/api/lineage/ai/config', 'PUT', payload()),
+    )
+    hydrate(result)
     invalidateAIEnabledCache()  // provider 改了 → api.js 错误翻译 hook 重新探测
     noticeStore.setNotice('AI 配置已保存，API Key 已加密落盘')
   } catch (err: any) {
-    noticeStore.setNotice(`保存 AI 配置失败：${err?.message || err}`)
+    const msg = String(err?.message || err)
+    if (msg === 'step_up_cancelled') {
+      // 用户在密码 prompt 点了取消，静默退出
+    } else if (msg === 'step_up_verify_failed') {
+      noticeStore.setNotice('密码错误，AI 配置保存已取消')
+    } else {
+      noticeStore.setNotice(`保存 AI 配置失败：${msg}`)
+    }
   } finally {
     saving.value = false
   }
