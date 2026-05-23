@@ -246,9 +246,9 @@ API endpoint 全集（`app/api/scenarios.py` + `slow_sql.py`）：`GET /api/scen
 
 ## 路线图
 
-整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性（已完成）**。
+整体路径：**血缘稳定 → 多来源对比 → 作业流 → 工程治理 → 血缘语义增强 → 领域模型收口 → 平台级血缘架构 + 观测性 → AI 测试沙盒 → 安全加固(v0.2.0) → 可用性收尾(已完成)**。
 
-当前测试基线 **1248 通过 / 0 失败 / 2 skipped**（本地 pytest 全量验证 + 34 个 frontend vitest）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 落地：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests）。**Phase 12 「AI 测试沙盒」18 个 commit 全部交付**：scenario DSL + generator + materializer + recorder + admin UI + slow-sql 规则分析 + AI 复核 + AI filler + regression verifier + 一键链 orchestrator + lineage_script workload + Oracle/DM 方言扩展 + verifier tolerance + SQL 模板变量 + slow-sql Oracle EXPLAIN PLAN + AI filler v2 分布参数 + CI scenario lint + 夜间回归 workflow 模板，详见下方 Phase 12 章节。
+当前测试基线 **1589 通过 / 0 失败 / 1 skipped**（本地 pytest 全量,排除 2 个慢 lineage 集 + 34 个 frontend vitest 全过 + npm typecheck/build 全绿）。Phase 9 + Phase 10 全程交付：领域 schema 集中、AI 包独立、inference 异步化、错误响应统一、全局搜索、服务端 graph query、全局 lineage 索引、资产详情页 + custom aspects + 变更轨迹、字段列表 + 字段血缘热点 + datasource introspection、aspect governance dashboard、lineage 节点徽章、Prometheus `/metrics` + 结构化日志、路由 lazy loading、生产就绪闭环（ErrorBoundary + healthcheck + RUNBOOK）、`/api/v1/` 版本化前缀全部完成。Phase 11 落地：方言模块化 spike（3 commit / 11 tests）、字段血缘多跳追溯 + procedure refresh mode 深化、4 处 unbounded cache 收口（前后端各 2）、trace-compare 后端 MVP（13 tests）。**Phase 12 「AI 测试沙盒」18 个 commit 全部交付**：scenario DSL + generator + materializer + recorder + admin UI + slow-sql 规则分析 + AI 复核 + AI filler + regression verifier + 一键链 orchestrator + lineage_script workload + Oracle/DM 方言扩展 + verifier tolerance + SQL 模板变量 + slow-sql Oracle EXPLAIN PLAN + AI filler v2 分布参数 + CI scenario lint + 夜间回归 workflow 模板，详见下方 Phase 12 章节。**v0.2.0 安全加固 27 commits 收工**:MFA + recovery codes + refresh rotation + reuse detection + rate limit + HttpOnly cookie + audit enrich + 自签 HTTPS 部署。**Phase 13 可用性收尾 6 项 3 commits**:Oracle/DM/DB2 callTimeout + JobInfo 三字段 + RunLimits.query_timeout + mid-run 水位 + per-run 配额,详见 Phase 13 章节。
 
 
 ### 已完成（按方向归类，不是时间线）
@@ -435,6 +435,30 @@ curl -X POST /api/scenarios/orders-recon-mvp/run-all \
 - **切片 18：CI scenario lint + 夜间回归 workflow 模板**（commit 本次）—— `scripts/scenario_lint.py` 纯 Python 静态体检（不连库 / 不调 LLM）：① loader 跑通（DSL 校验）② `generate_scenario()` 内存冒烟，catch 未知 dist kind / 坏 range / anomaly 配错列等运行期才炸的 bug ③ 交叉引用（anomaly.table / derives_from / column_overrides.from / compare_task source·target 都存在）④ workload.sql `{{var}}` 都能在 `scenario.variables` 找到。`lint_scenarios(dir) → LintReport` 纯函数 + `main()` CLI（`--dir` / `--strict` 把 warning 也算失败）。`ci.yml` 的 `backend-tests` job 加 `python scripts/scenario_lint.py --strict` step。`.github/workflows/scenario-nightly.yml` —— DB-backed 夜间回归模板（`workflow_dispatch` 触发 + 注释掉的 `schedule`）：docker compose `--profile demo-db` 起 app + demo MySQL → 登录拿 token → 注册 datasource → 逐个 scenario POST `run-all` 用 `.ok` 判定。+19 tests
 
 **Phase 12 全部交付，无剩余 enhancement。** 长期 backlog：AI filler v3 接 Faker locale / lineage_script 模板变量做条件分支 / 把 scenario-nightly.yml 的 schedule 取消注释转正。
+
+### Phase 13 · 可用性收尾（2026-05-23,3 commits / 6 项）
+
+deep-research 报告(`G:\work\deep-research-report.md`)外审 DataOpsStudio 把「可用性安全」列为最大缺口,要求 7 项 P0/P1 补丁。先做 audit 实情比对 —— **绝大多数已在 `f24dfe7` 那波落地**(只是默认 warn 模式),实际剩余 6 项收口为 Phase 13:
+
+- **切片 1：Oracle / DM 语句超时**(commit `f480418`)—— `Dialect.apply_call_timeout(conn, sec) -> bool` 走 `connection.callTimeout` 毫秒;`OracleDialect` 实现(`conn.callTimeout = int(sec*1000)`,oracledb / cx_Oracle 全支持);`DmDialect` 继承(dmPython 多数版本兼容,setattr 失败 try/except 吞)。`factory._apply_statement_timeout(cursor, db_type, connection=None)` 双路径派发:优先试 `dialect.apply_call_timeout(conn, sec)` 返 True 即生效,失败 fallback SQL 路径(MySQL 走);caller 不传 connection 时直接走 SQL(向后兼容)
+- **切片 2：JobInfo 三字段补全**(commit `f480418`)—— `owner_user_id` / `project_id` / `target_run_id` 落 `JobInfo` model;`jobs.py submit_task_run` / `submit_workflow_run` 加 keyword-only kwarg;4 个 API caller(`tasks.py` / `workflows.py` / `workflow_runs.py` / `scheduler.py`)落字段。`target_run_id` 在 success 分支从 `result.run_id` getattr 抓。authz 不变(仍走 task/workflow lookup),数据模型卫生 + 后续 audit / 告警直接读字段
+- **切片 3：RunLimits.query_timeout_seconds 单任务覆盖**(commit `f480418`)—— `RunLimits` 加可选 `int` 字段(范围 [0, 86400])。`factory.py` ContextVar `_query_timeout_override` + `query_timeout_override(sec)` context manager。`runner.run_task` 入口包 `with query_timeout_override(task.limits.query_timeout_seconds)`,下游 fetch_rows / iter_rows / fetch_column_details 三处自动取这个值而非全局 env。慢但合法的 ETL 提到 1800s,日常 preview 任务缩到 60s
+- **切片 4：mid-run 磁盘水位检查**(commit `f480418`)—— `resource_guard.DiskWatermarkExceeded(RuntimeError)` + `check_disk_critical(config=None) -> tuple[bool, str | None]`。阈值跟 admission control 共享(`RESULTS_MIN_FREE_GB=5` / `RESULTS_MAX_DISK_USAGE_PERCENT=85`),剩余空间优先报。`runner.py` 双 streaming 分支(`use_stream_compare_to_writer` + `use_streaming_writer`)每写 `_DISK_WATERMARK_CHECK_INTERVAL=5000` 行查一次,critical 即 raise + `_cleanup_partial_parquet(writer)` rmtree 临时 run 目录避免半成品累积
+- **切片 5：per-run 磁盘配额**(commit `ef53fe2`)—— `RunLimits.run_disk_quota_mb`(None=无限,范围 1..1048576);`check_run_quota(run_dir, quota_mb)` 累计 `run_dir/**` 字节折 MB。新异常 `RunQuotaExceeded(DiskWatermarkExceeded)` 子类共享 cleanup 路径(caller `except DiskWatermarkExceeded` 一并接住主机水位 + 单 run 配额两种 mid-run 中止)。runner `_check_mid_run_disk(writer, task, rows_written)` 统一入口同时跑两个 check。**per-project 配额**(跨 run 累计)涉及 registry 暂不做
+- **切片 6：DB2 语句超时**(commit `d00b1c3`)—— `Db2Dialect.apply_call_timeout` 走 `ibm_db.set_option(conn_handle, {SQL_ATTR_QUERY_TIMEOUT: sec}, 1)` —— `1` 是 SQL_ATTR_CONNECTION 选项类,影响该连接所有后续 cursor.execute。handle 取 `conn.conn_handler`(老版本)/ `conn_handle`(新版本)。**ibm_db 不在 build 默认装** —— `import ibm_db` ImportError 时返 False 安全降级,行为退化为「无超时」与本切片前一致。方言矩阵 4/4 收尾(MySQL / Oracle / DM / DB2 全 ✅)
+
+**测试覆盖**:`test_db_statement_timeout.py` 30(20 已有 + 6 query_timeout_override + 4 DB2)、`test_jobs.py` 8(5 已有 + 3 owner/project/target_run_id)、`test_resource_guard.py` 43(31 已有 + 5 check_disk_critical + 7 check_run_quota)、`test_runner_streaming.py` 13(9 已有 + 2 mid-run abort + 2 quota integration)、`test_sensors.py` 一处 `fake_submit` 补 `**kwargs`(scheduler 现传 owner_user_id/project_id,旧 fake 签名缺 → TypeError 被 try/except 吞 → 假象"没触发")。全套 backend 1589 passed / 1 skipped。
+
+**ADR 摘录**:
+- 双路径派发用 `apply_call_timeout(conn) -> bool` + `statement_timeout_sql(sec) -> str | None` —— 连接属性优先,SQL fallback。新方言只 override 真正分叉的一个,基类默认实现兜底
+- `RunQuotaExceeded(DiskWatermarkExceeded)` 子类共享 cleanup 路径 —— caller 一个 except 同时接两种 mid-run 中止
+- ContextVar 而非函数传参 —— 避免 fetch_rows / iter_rows / fetch_column_details 三个对外 API 签名都加 limits 参数,任务覆盖透明传到所有 DB 调用
+- `_check_mid_run_disk` 统一入口 —— 两个 streaming 分支共享 watermark + quota 两个 check,减少重复 if 块
+- DB2 ibm_db 不在 build 装 —— ImportError 时 return False 安全降级,不强制装驱动
+
+**云端部署**:三次 bundle 法部署 —— f480418 / ef53fe2 / d00b1c3 各 tick 1 即 healthy,smoke `spa:200 / auth:401` 全绿。具体 IP / SSH / nginx 配置见 memory(per `never_commit_server_login` 硬规则不入 repo)。
+
+**Phase 13 全部交付,无剩余 enhancement。** 长期 backlog:`sql_preflight` 加 EXPLAIN(报告自己说"逐步开")/ per-project 跨 run 配额(registry 设计) / API-worker 分离部署(架构重构,单用户场景过度工程)。
 
 **前端 typecheck**：`ci.yml` 的 `frontend-build` job 跑 `npm run typecheck`。当前 **0 红**(`c1c4616` P0.5 收尾把 14 个 view 全清，157 → 0；Phase 12 切片 17 顺手修了 `ScenarioSandboxView` 一处 `renderSql` 引用未定义 `selected`；2026-05-23 重测 typecheck/build/vitest 全绿)。新增 view 时仍要保持 typecheck 绿。
 
