@@ -15,13 +15,13 @@ import {
   FlaskConical, RefreshCw, Play, ListChecks, Database, Sparkles,
   ShieldCheck, Rocket, Variable, Microscope,
 } from 'lucide-vue-next'
-import { useSandboxStore } from '../stores/sandbox'
+import { useScenarioLabStore } from '../stores/scenarioLab'
 import OperationRiskPanel from '../components/sql/OperationRiskPanel.vue'
 import ImportDialog from './sql-optimize/ImportDialog.vue'
 import ScenarioListPanel from './sql-optimize/ScenarioListPanel.vue'
 import ResultPanels from './sql-optimize/ResultPanels.vue'
 
-const store = useSandboxStore()
+const store = useScenarioLabStore()
 
 // 当前选中 ds(给风险面板用)
 const selectedDs = computed(() => {

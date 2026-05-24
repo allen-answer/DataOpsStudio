@@ -11,12 +11,12 @@
  */
 import { ref, computed } from 'vue'
 import { Database, FileCode, Save, Eye, Copy, AlertTriangle } from 'lucide-vue-next'
-import { useSandboxStore } from '../stores/sandbox'
+import { useSchemaImportStore } from '../stores/schemaImport'
 import { apiJson } from '../api'
 import { useNoticeStore } from '../stores/notice'
 import OperationRiskPanel from '../components/sql/OperationRiskPanel.vue'
 
-const store = useSandboxStore()
+const store = useSchemaImportStore()
 const noticeStore = useNoticeStore()
 
 const datasourceId = ref('')

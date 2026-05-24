@@ -1,16 +1,11 @@
 <script setup lang="ts">
 /**
- * Phase 14 #3 — Operation Risk Panel
+ * Phase 14 #3 (Round 2) — Operation Risk Panel
  *
- * 选中 datasource 后展示其 environment + db_type + 8 个 allow_* flag 状态,
- * 给用户即时风险提示。仅 UX 层提示;后端 operation_policy 才是强制层。
+ * 重构:默认显示业务语义(允许/禁止动作 + 方言说明 + 审计),技术 allow_*
+ * 字段折到「高级展开」让 admin / 排错用。普通用户看默认就够。
  *
- * 用在 /sql-diagnosis(展示 SQL EXPLAIN 风险)和 /scenario-lab(展示写入红线)。
- *
- * Props:
- *   datasource: ApiDataSource | null  当前选中的 ds(null = 未选)
- *   context: 'sql-diagnosis' | 'scenario-lab' | 'schema-import'
- *           决定显示哪些 allow_* 状态 + 哪些禁止项
+ * 仅 UX 层提示;后端 operation_policy 才是强制层。
  */
 import { computed } from 'vue'
 import { AlertTriangle, ShieldCheck, ShieldAlert, Info } from 'lucide-vue-next'
@@ -21,11 +16,7 @@ const props = defineProps<{
   context: 'sql-diagnosis' | 'scenario-lab' | 'schema-import'
 }>()
 
-const env = computed(() => {
-  const e = ((props.datasource as any)?.environment as string) || 'unknown'
-  return e
-})
-
+const env = computed<string>(() => ((props.datasource as any)?.environment as string) || 'unknown')
 const dbType = computed(() => String(props.datasource?.db_type || '').toLowerCase())
 
 const envBadgeClass = computed(() => {
@@ -42,106 +33,126 @@ const envLabel = computed(() => {
   return '⚪ UNKNOWN 未确认环境'
 })
 
-// 用 any 是因为 ApiDataSource 的 allow_* 是后加的可选字段(types/api.ts augment)
 function flag(name: string): boolean {
   return !!(props.datasource as any)?.[name]
 }
 
-// 当前 context 下显示的 allow_* 列表
-const relevantFlags = computed(() => {
+// ─── 业务语义层:此环境本次可做什么 / 不可做什么 ──────────────────────
+
+const allowedActions = computed<string[]>(() => {
+  if (!props.datasource || env.value === 'unknown') return []
+  const list: string[] = []
   if (props.context === 'sql-diagnosis') {
-    const items = [{ key: 'allow_select', label: 'SELECT 查询(读)' }]
-    if (dbType.value === 'mysql') items.push({ key: 'allow_explain', label: 'MySQL EXPLAIN' })
-    else if (dbType.value === 'dm') items.push({ key: 'allow_dm_explain', label: 'DM EXPLAIN' })
-    else if (dbType.value === 'oracle') items.push({ key: 'allow_oracle_plan_table', label: 'Oracle PLAN_TABLE 诊断写入' })
-    return items
+    list.push('静态 SQL 检查(preflight,不连数据库)')
+    list.push('AI 复核(LLM 提示,纯静态)')
+    // 按方言 + flag 决定
+    if (dbType.value === 'mysql' && (env.value === 'sandbox' || flag('allow_explain'))) {
+      list.push('查看执行计划(MySQL EXPLAIN SELECT,纯只读)')
+    }
+    if (dbType.value === 'dm' && (env.value === 'sandbox' || flag('allow_dm_explain') || flag('allow_explain'))) {
+      list.push('查看执行计划(DM EXPLAIN SELECT,纯只读)')
+    }
+    if (dbType.value === 'oracle' && (env.value === 'sandbox' || flag('allow_oracle_plan_table'))) {
+      list.push('查看执行计划(Oracle EXPLAIN PLAN FOR,⚠ 写诊断 PLAN_TABLE)')
+    }
+    list.push('Plan history / Plan diff(本地比对,不连库)')
+  } else if (props.context === 'scenario-lab') {
+    if (env.value === 'sandbox' && flag('allow_scenario_write')) {
+      list.push('造数据(materialize)')
+      list.push('一键全套(run-all)')
+    }
+    if (env.value === 'sandbox' && flag('allow_record_task')) {
+      list.push('建对比任务(record)')
+    }
+    list.push('回归校验(verify,只读)')
+  } else {
+    // schema-import
+    if (env.value === 'sandbox' || flag('allow_schema_import')) {
+      list.push('读 information_schema 元数据生成 yml(纯只读)')
+    }
+    if (env.value === 'sandbox' && flag('allow_schema_save')) {
+      list.push('保存 yml 到 config/scenarios')
+    }
   }
-  if (props.context === 'scenario-lab') {
-    return [
-      { key: 'allow_scenario_write', label: 'materialize / run-all 造数据' },
-      { key: 'allow_record_task', label: 'record:CompareTask 落库' },
-    ]
-  }
-  // schema-import
-  return [
-    { key: 'allow_schema_import', label: '读 information_schema 元数据' },
-    { key: 'allow_schema_save', label: '保存 yml 到 config/scenarios' },
-  ]
+  return list
 })
 
-// 是否在 prod / staging — 显示禁止项 / 红线提示
-const isProductionLike = computed(() => env.value === 'prod' || env.value === 'staging')
-
-// 上下文相关的禁止项文案
-const forbiddenItems = computed(() => {
-  if (!isProductionLike.value) return []
+const forbiddenActions = computed<string[]>(() => {
+  if (!props.datasource) return []
+  if (env.value === 'unknown') {
+    return ['❗ 任何高风险操作都被拒绝 — 请到数据源管理页确认环境标签']
+  }
+  if (env.value === 'sandbox') return []  // sandbox 内部禁止项不展示(降噪)
+  // prod / staging
+  const list: string[] = []
   if (props.context === 'sql-diagnosis') {
-    return [
-      '业务 DML — INSERT / UPDATE / DELETE / MERGE',
-      '业务 DDL — DROP / ALTER / TRUNCATE / CREATE',
-      '事务 / 调用 — CALL / EXEC / BEGIN',
-      'SELECT FOR UPDATE(会加行锁)',
-      'scenario materialize / run-all / record',
-    ]
+    list.push('业务 DML — INSERT / UPDATE / DELETE / MERGE')
+    list.push('业务 DDL — DROP / ALTER / TRUNCATE / CREATE')
+    list.push('事务 / 调用 — CALL / EXEC / BEGIN')
+    list.push('SELECT FOR UPDATE(加行锁)')
+    list.push('scenario 造数据 / record / run-all')
+  } else if (props.context === 'scenario-lab') {
+    list.push('造数据 materialize(无条件拒,即使翻开 allow_scenario_write)')
+    list.push('一键全套 run-all(无条件拒)')
+    list.push('record 落 CompareTask(无条件拒)')
+    list.push('DROP 已存在(无条件拒)')
+  } else {
+    list.push('保存 yml 到 config/scenarios(仅 sandbox 允许)')
   }
-  if (props.context === 'scenario-lab') {
-    return [
-      'scenario materialize 造数据(无条件拒)',
-      'run-all 全套(无条件拒)',
-      'drop_first(无条件拒)',
-      'record 落 CompareTask(无条件拒)',
-    ]
-  }
-  return ['schema yml save(仅 sandbox 允许)']
+  return list
 })
 
-// 方言特殊提示(DM EXPLAIN SELECT / Oracle PLAN_TABLE)
+// 方言说明
 const dialectNote = computed(() => {
-  if (props.context !== 'sql-diagnosis' || !isProductionLike.value) return ''
-  if (dbType.value === 'mysql') {
-    return 'MySQL 使用 EXPLAIN SELECT 查看执行计划,纯只读,不修改业务数据。本操作会记录审计。'
-  }
+  if (props.context !== 'sql-diagnosis') return ''
+  if (env.value !== 'prod' && env.value !== 'staging') return ''
   if (dbType.value === 'dm') {
-    return 'DM 使用 EXPLAIN SELECT 查看执行计划,不修改业务数据,但会消耗优化器资源。本操作会记录审计。'
+    return 'DM 使用 EXPLAIN SELECT 查看执行计划,不修改业务数据,但会消耗优化器资源,并记录审计。'
   }
   if (dbType.value === 'oracle') {
-    return 'Oracle 使用 EXPLAIN PLAN FOR 查看执行计划,会向诊断表 PLAN_TABLE 写一行临时记录(非业务表)。本操作需要 DBA 允许 PLAN_TABLE 诊断写入,并会记录审计。'
+    return 'Oracle 使用 EXPLAIN PLAN FOR 查看执行计划,会写诊断 PLAN_TABLE,不修改业务表,并记录审计。'
+  }
+  if (dbType.value === 'mysql') {
+    return 'MySQL 使用 EXPLAIN SELECT 查看执行计划,纯只读,不修改业务数据,并记录审计。'
   }
   return ''
 })
+
+// 审计说明文案
+const auditNote = computed(() => {
+  if (!props.datasource || env.value === 'unknown') return ''
+  return '所有操作记录审计:user_id / datasource_id / environment / operation / sql_hash(不存完整 SQL) / request_id。'
+})
+
+// 高级展开的技术字段
+const allFlagsList = computed(() => [
+  { key: 'environment_verified', label: 'admin 已确认环境标签' },
+  { key: 'allow_select', label: '普通 SELECT 查询' },
+  { key: 'allow_explain', label: 'MySQL EXPLAIN' },
+  { key: 'allow_dm_explain', label: 'DM EXPLAIN' },
+  { key: 'allow_oracle_plan_table', label: 'Oracle EXPLAIN PLAN + PLAN_TABLE' },
+  { key: 'allow_schema_import', label: 'schema 元数据反查' },
+  { key: 'allow_schema_save', label: '保存 yml 到本地' },
+  { key: 'allow_scenario_write', label: 'scenario 写表数据' },
+  { key: 'allow_record_task', label: 'record:CompareTask 落库' },
+])
 </script>
 
 <template>
   <div v-if="datasource" class="card p-4 space-y-3 border-2" :class="envBadgeClass.split(' ')[2]">
-    <!-- 头部:环境标签 + 基础信息 -->
-    <div class="flex items-center justify-between gap-3 flex-wrap">
-      <div class="flex items-center gap-2">
-        <ShieldCheck v-if="env === 'sandbox'" class="h-5 w-5 text-status-success" />
-        <ShieldAlert v-else-if="env === 'unknown'" class="h-5 w-5 text-status-pending" />
-        <AlertTriangle v-else class="h-5 w-5" :class="env === 'prod' ? 'text-status-error' : 'text-status-warning'" />
-        <span class="font-bold" :class="envBadgeClass.split(' ').slice(0, 2).join(' ')">{{ envLabel }}</span>
-        <span class="text-xs text-slate-500 sql-font">{{ dbType }}</span>
-        <span v-if="(datasource as any).project_id" class="text-xs text-slate-500">
-          · project: {{ (datasource as any).project_id.slice(0, 8) }}…
-        </span>
-        <span
-          v-if="(datasource as any).environment_verified"
-          class="pill bg-slate-100 text-slate-600 text-[10px]"
-          title="admin 已确认此 datasource 的环境标签"
-        >
-          ✓ env verified
-        </span>
-        <span
-          v-else
-          class="pill bg-status-warning-bg text-status-warning text-[10px]"
-          title="此 datasource 环境标签尚未被 admin 确认"
-        >
-          ⚠ env 未确认
-        </span>
-      </div>
+    <!-- 头部:环境标签 + db_type -->
+    <div class="flex items-center gap-2 flex-wrap">
+      <ShieldCheck v-if="env === 'sandbox'" class="h-5 w-5 text-status-success" />
+      <ShieldAlert v-else-if="env === 'unknown'" class="h-5 w-5 text-status-pending" />
+      <AlertTriangle v-else class="h-5 w-5" :class="env === 'prod' ? 'text-status-error' : 'text-status-warning'" />
+      <span class="font-bold" :class="envBadgeClass.split(' ').slice(0, 2).join(' ')">{{ envLabel }}</span>
+      <span class="text-xs text-slate-500 sql-font">{{ dbType }}</span>
+      <span v-if="(datasource as any).project_id" class="text-xs text-slate-500">
+        · project: {{ (datasource as any).project_id.slice(0, 8) }}…
+      </span>
     </div>
 
-    <!-- unknown 环境硬阻止提示 -->
+    <!-- unknown 警告 -->
     <div
       v-if="env === 'unknown'"
       class="rounded p-3 bg-status-pending-bg text-slate-700 text-sm"
@@ -154,43 +165,72 @@ const dialectNote = computed(() => {
       </p>
     </div>
 
-    <!-- 方言特定说明 (DM EXPLAIN SELECT / Oracle PLAN_TABLE) -->
-    <div
-      v-if="dialectNote"
-      class="rounded p-3 text-xs leading-relaxed"
-      :class="env === 'prod' ? 'bg-status-error-bg/50 text-status-error' : 'bg-status-warning-bg/50 text-slate-700'"
-    >
-      <Info class="h-3.5 w-3.5 inline mr-1" />
-      {{ dialectNote }}
-    </div>
-
-    <!-- allow_* 状态网格 -->
-    <div v-if="env !== 'unknown'" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-      <div
-        v-for="f in relevantFlags"
-        :key="f.key"
-        class="flex items-center gap-2 text-xs rounded p-2"
-        :class="flag(f.key)
-          ? 'bg-status-success-bg/40 text-status-success'
-          : 'bg-status-error-bg/40 text-status-error'"
-      >
-        <span class="text-base">{{ flag(f.key) ? '✓' : '✗' }}</span>
-        <span class="font-mono text-[10px] text-slate-500">{{ f.key }}</span>
-        <span class="flex-1">{{ f.label }}</span>
+    <!-- 业务语义层:本次允许 / 本次禁止 -->
+    <div v-if="env !== 'unknown'" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+      <div class="rounded p-3 bg-status-success-bg/30">
+        <div class="font-bold text-status-success text-xs uppercase tracking-wider mb-2">
+          ✓ 本次允许 ({{ allowedActions.length }})
+        </div>
+        <ul v-if="allowedActions.length" class="space-y-1 text-xs text-slate-700">
+          <li v-for="(a, i) in allowedActions" :key="i" class="flex items-start gap-1.5">
+            <span class="text-status-success">•</span>
+            <span>{{ a }}</span>
+          </li>
+        </ul>
+        <p v-else class="text-xs text-slate-500 italic">
+          此 datasource 未开任何对应 allow_* flag — admin 需先翻开
+        </p>
+      </div>
+      <div class="rounded p-3 bg-status-error-bg/30">
+        <div class="font-bold text-status-error text-xs uppercase tracking-wider mb-2">
+          🚫 本次禁止 ({{ forbiddenActions.length }})
+        </div>
+        <ul v-if="forbiddenActions.length" class="space-y-1 text-xs text-slate-700">
+          <li v-for="(a, i) in forbiddenActions" :key="i" class="flex items-start gap-1.5">
+            <span class="text-status-error">×</span>
+            <span>{{ a }}</span>
+          </li>
+        </ul>
+        <p v-else class="text-xs text-slate-500 italic">
+          {{ env === 'sandbox' ? '沙盒环境无产品红线禁止项' : '无' }}
+        </p>
       </div>
     </div>
 
-    <!-- prod/staging 禁止项 -->
-    <details
-      v-if="forbiddenItems.length"
-      class="rounded bg-status-error-bg/30 p-3 text-xs"
+    <!-- 方言说明 -->
+    <div
+      v-if="dialectNote"
+      class="rounded p-3 text-xs leading-relaxed flex items-start gap-2"
+      :class="env === 'prod' ? 'bg-status-error-bg/40 text-slate-700' : 'bg-status-warning-bg/40 text-slate-700'"
     >
-      <summary class="cursor-pointer font-bold text-status-error">
-        🚫 此环境禁止 ({{ forbiddenItems.length }} 项)
+      <Info class="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+      <span>{{ dialectNote }}</span>
+    </div>
+
+    <!-- 审计说明 -->
+    <div v-if="auditNote" class="text-[11px] text-slate-500 leading-relaxed border-t border-slate-100 pt-2">
+      🛡 {{ auditNote }}
+    </div>
+
+    <!-- 高级展开:技术 allow_* 字段 -->
+    <details v-if="env !== 'unknown'" class="text-xs">
+      <summary class="cursor-pointer text-slate-500 hover:text-slate-700 select-none">
+        ⚙ 高级:技术配置详情(admin / 排错用)
       </summary>
-      <ul class="mt-2 space-y-0.5 ml-4 list-disc text-slate-700">
-        <li v-for="(item, i) in forbiddenItems" :key="i">{{ item }}</li>
-      </ul>
+      <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+        <div
+          v-for="f in allFlagsList"
+          :key="f.key"
+          class="flex items-center gap-2 rounded p-1.5"
+          :class="flag(f.key)
+            ? 'bg-status-success-bg/40 text-status-success'
+            : 'bg-slate-50 text-slate-500'"
+        >
+          <span>{{ flag(f.key) ? '✓' : '✗' }}</span>
+          <span class="font-mono text-[10px] text-slate-500">{{ f.key }}</span>
+          <span class="flex-1 text-[11px] text-slate-700">{{ f.label }}</span>
+        </div>
+      </div>
     </details>
   </div>
 

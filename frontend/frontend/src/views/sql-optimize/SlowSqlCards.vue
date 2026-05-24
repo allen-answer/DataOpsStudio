@@ -4,9 +4,9 @@
 import {
   Microscope, AlertCircle, Sparkles,
 } from 'lucide-vue-next'
-import { useSandboxStore } from '../../stores/sandbox'
+import { useScenarioLabStore } from '../../stores/scenarioLab'
 
-const store = useSandboxStore()
+const store = useScenarioLabStore()
 </script>
 
 <template>

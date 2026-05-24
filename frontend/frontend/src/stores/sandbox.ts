@@ -1,11 +1,17 @@
-// SQL 优化沙盒 Pinia store(Phase 14 P2 完整版 view 拆分)。
-//
-// 把 SqlOptimizeView 1689 行里的 state + actions 全收口到这,让 5 个子组件
-// (ScenarioListPanel / StepSchema / StepData / StepSql / StepVerify / SandboxSummary)
-// 共享 reactive state,不用 prop drilling 10 层。
-//
-// 模式跟 stores/task.ts(WorkbenchView 同款)一致:state ref + computed +
-// async actions,setup style,no options API。
+/**
+ * @deprecated Phase 14 #3 Round 2 起,views 和子组件应通过 facade stores
+ * 访问:
+ *   - useSqlDiagnosisStore (stores/sqlDiagnosis.ts) — /sql-diagnosis 用
+ *   - useScenarioLabStore  (stores/scenarioLab.ts)  — /scenario-lab 用
+ *   - useSchemaImportStore (stores/schemaImport.ts) — /schema-import 用
+ *
+ * 本文件仍是 backing — 三个 facade 引用同一份 reactive state 避免双向同步。
+ * 长期目标:把字段真正拆到各 facade,delete 此 file。当前作为过渡保留。
+ *
+ * 历史:Phase 14 P2 把 SqlOptimizeView 1689 行的 state + actions 全收口到这。
+ * Phase 14 #3 Round 1 拆 3 个 view,但 view 还在 import sandbox。
+ * Phase 14 #3 Round 2 引入 facade stores 让 view import 干净。
+ */
 import { computed, ref } from 'vue'
 import { defineStore, storeToRefs } from 'pinia'
 
@@ -84,6 +90,9 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const quickEnrichResult = ref<SlowSqlEnrichResult | null>(null)
   const quickPlanDiff = ref<PlanDiffResult | null>(null)
   const quickPlanHistory = ref<PlanHistoryItem[]>([])
+  // Phase 14 #3 — view 可注入异步 confirm callback (替换 confirm())。
+  // SqlDiagnosisView 在 onMounted 注入 OperationPreviewModal,其它入口走 fallback。
+  const confirmAnalyzePromise = ref<(() => Promise<boolean>) | null>(null)
   const quickError = ref('')
   const quickPlanDiffError = ref('')
 
@@ -97,6 +106,15 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const datasources = computed(() => (bootState.value?.datasources || []) as any[])
   const mysqlDatasources = computed(() =>
     datasources.value.filter((ds: any) => String(ds.db_type || '').toLowerCase().includes('mysql')),
+  )
+  // Phase 14 #3 — /sql-diagnosis 支持 MySQL / DM / Oracle 三方言。
+  // scenario-lab / schema-import 仍只用 mysqlDatasources(materialize 流程
+  // 当前只实现 MySQL 方言)。
+  const diagnosableDatasources = computed(() =>
+    datasources.value.filter((ds: any) => {
+      const t = String(ds.db_type || '').toLowerCase()
+      return t === 'mysql' || t === 'dm' || t === 'oracle'
+    }),
   )
   // Phase 14 #1 合规防御 — 选中 datasource 的 environment
   const selectedDs = computed(() =>
@@ -564,11 +582,19 @@ export const useSandboxStore = defineStore('sandbox', () => {
         console.warn('preflight 调用失败,继续 analyze:', e)
       }
 
-      // Phase 14 #3 — prod / staging 数据源做 EXPLAIN 弹二次确认
-      const ds = (mysqlDatasources.value as any[]).find((d) => d.id === quickDatasourceId.value)
+      // Phase 14 #3 — 任何环境的 EXPLAIN 都走 OperationPreviewModal(/sql-diagnosis
+      // view 在 onMounted 时注入 confirmAnalyzePromise);如果 view 没注入(单元
+      // 测试 / 旧路径)就 fallback 到 confirm()。prod/staging 必须走 modal;
+      // sandbox 也走(用户期望"任何环境都给清晰的影响声明")
+      const ds = (diagnosableDatasources.value as any[]).find((d) => d.id === quickDatasourceId.value)
       const env = ds?.environment || 'unknown'
-      const dbType = String(ds?.db_type || '').toLowerCase()
-      if (env === 'prod' || env === 'staging') {
+      if (confirmAnalyzePromise.value) {
+        const ok = await confirmAnalyzePromise.value()
+        if (!ok) return
+      } else if (env === 'prod' || env === 'staging') {
+        // fallback:没注入 modal callback,退化为 confirm 文案(测试 / 非
+        // /sql-diagnosis 入口走这条)
+        const dbType = String(ds?.db_type || '').toLowerCase()
         let msg = ''
         if (dbType === 'oracle') {
           msg = `即将在 ${env} 环境的 Oracle 数据源上执行 EXPLAIN PLAN FOR,会向诊断表 PLAN_TABLE 写一行临时记录(非业务表)。\n\n本操作不会修改业务数据,但会被记录审计。\n\n是否继续?`
@@ -693,8 +719,10 @@ export const useSandboxStore = defineStore('sandbox', () => {
     quickAnalyzing, quickEnriching, quickPlanDiffLoading,
     quickResult, quickEnrichResult, quickPlanDiff, quickPlanHistory,
     quickError, quickPlanDiffError,
+    confirmAnalyzePromise,
     // derived
-    datasources, mysqlDatasources, validScenarios, brokenScenarios, currentStep,
+    datasources, mysqlDatasources, diagnosableDatasources,
+    validScenarios, brokenScenarios, currentStep,
     selectedDs, selectedDsEnvironment, sandboxWriteLocked,
     // helpers
     isSelected, renderSql, planColumns, statusBadgeClass, statusLabel,

@@ -12,20 +12,40 @@
  */
 import { onMounted, computed, ref } from 'vue'
 import { Microscope, FlaskConical } from 'lucide-vue-next'
-import { useSandboxStore } from '../stores/sandbox'
+import { useSqlDiagnosisStore } from '../stores/sqlDiagnosis'
 import OperationRiskPanel from '../components/sql/OperationRiskPanel.vue'
+import OperationPreviewModal from '../components/sql/OperationPreviewModal.vue'
 import QuickOptimizeMode from './sql-optimize/QuickOptimizeMode.vue'
 
-const store = useSandboxStore()
+const store = useSqlDiagnosisStore()
 
-// 当前选中 ds(给风险面板 + analyze 用)
+// 当前选中 ds — 用 diagnosableDatasources(MySQL/DM/Oracle 全支持)
 const selectedDs = computed(() => {
   const id = store.quickDatasourceId || ''
-  return (store.mysqlDatasources as any[]).find((d: any) => d.id === id) || null
+  return (store.diagnosableDatasources as any[]).find((d: any) => d.id === id) || null
 })
+
+// Phase 14 #3 — OperationPreviewModal Promise-based 状态
+const modalOpen = ref(false)
+let modalResolver: ((v: boolean) => void) | null = null
+
+function requestConfirm(): Promise<boolean> {
+  return new Promise((resolve) => {
+    modalResolver = resolve
+    modalOpen.value = true
+  })
+}
+
+function onModalClose(confirmed: boolean) {
+  modalOpen.value = false
+  modalResolver?.(confirmed)
+  modalResolver = null
+}
 
 onMounted(() => {
   store.loadList()
+  // 注册到 store —— runQuickAnalyze 走 store.confirmAnalyzePromise 拿确认
+  store.confirmAnalyzePromise = requestConfirm
 })
 </script>
 
@@ -55,5 +75,12 @@ onMounted(() => {
 
     <!-- QuickOptimizeMode 包含整个粘 SQL / preflight / analyze / enrich / plan diff 流程 -->
     <QuickOptimizeMode />
+
+    <!-- Operation Preview Modal — analyze 前显示 -->
+    <OperationPreviewModal
+      :open="modalOpen"
+      :datasource="selectedDs"
+      @close="onModalClose"
+    />
   </section>
 </template>

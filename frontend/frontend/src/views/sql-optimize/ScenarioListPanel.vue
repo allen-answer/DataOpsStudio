@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // scenario 列表左栏(Phase 14 P2 拆出)
-import { useSandboxStore } from '../../stores/sandbox'
+import { useScenarioLabStore } from '../../stores/scenarioLab'
 
-const store = useSandboxStore()
+const store = useScenarioLabStore()
 </script>
 
 <template>

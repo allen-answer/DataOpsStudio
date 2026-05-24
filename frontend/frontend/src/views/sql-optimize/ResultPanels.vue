@@ -3,10 +3,10 @@
 import {
   CheckCircle2, Sparkles, ListChecks, ShieldCheck, Rocket, GitBranch,
 } from 'lucide-vue-next'
-import { useSandboxStore } from '../../stores/sandbox'
+import { useScenarioLabStore } from '../../stores/scenarioLab'
 import type { MaterializeTableResult } from '../../types/sandbox'
 
-const store = useSandboxStore()
+const store = useScenarioLabStore()
 </script>
 
 <template>

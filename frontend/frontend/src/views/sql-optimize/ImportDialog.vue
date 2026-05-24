@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // 从 datasource 反向导入 yml 对话框(Phase 14 P1-1 UI + P2 拆出)
 import { Database, AlertCircle, CheckCircle2 } from 'lucide-vue-next'
-import { useSandboxStore } from '../../stores/sandbox'
+import { useSchemaImportStore } from '../../stores/schemaImport'
 
-const store = useSandboxStore()
+const store = useSchemaImportStore()
 </script>
 
 <template>
