@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from app.api.routes import router
 from app.services.scheduler import DEFAULT_ENABLED, start_scheduler, stop_scheduler
@@ -61,7 +63,25 @@ app.add_middleware(MetricsMiddleware)
 # /metrics 端点（独立路由，不挂在 /api 前缀下，遵循 Prometheus 抓取约定）
 from app.api.metrics import router as metrics_router
 app.include_router(metrics_router)
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# Phase 14:custom StaticFiles 子类 —— index.html 强制 no-cache,hash 化的
+# assets/*.js / *.css 用 immutable 长 cache。不这样的话 deploy 后老 index.html
+# 被浏览器缓存住,引用的 hash bundle 文件名变了 → 404 → 用户看到白屏 / 进不去。
+class _SpaStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        resp = await super().get_response(path, scope)
+        # Windows 下 path 用 `\` 分隔,Unix 用 `/`,统一归一化再 check
+        norm = path.replace("\\", "/")
+        # index.html 不缓存:让浏览器每次 revalidate,deploy 后立刻拉新版引用
+        if norm.endswith("index.html") or norm.endswith("/"):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+        elif "/assets/" in norm or norm.startswith("assets/") or "/assets/" in f"/{norm}":
+            # hash 化 immutable 资源:1 年长缓存 + immutable(浏览器永不 revalidate)
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
+app.mount("/static", _SpaStaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(router)
 # Phase 10 后期：API 版本化前缀。所有 /api/X 路由克隆出 /api/v1/X 同义版本，
 # 给前端 / 第三方一个稳定 v1 契约；旧 /api/... 路径继续可用作 deprecation window。

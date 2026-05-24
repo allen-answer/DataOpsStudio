@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 🐛 Phase 14 修缮:多方言索引 introspect + SPA cache header
+
+- **DB2 / Oracle / DM `introspect_indexes`** —— P1-1 之前只 MySQL,现补齐:Oracle/DM 走 `ALL_INDEXES` + `ALL_IND_COLUMNS` join + `ALL_CONSTRAINTS` 二次 query 标 PK;DB2 走 `SYSCAT.INDEXES` + `SYSCAT.INDEXCOLUSE` join,`uniquerule='P'/'U'/'D'` 解析 unique + PK。各方言任一步失败安全降级返 `[]`,不阻塞 yml_importer。7 新测试覆盖三方言 + 失败降级 + 标识符校验
+- **SPA cache-bust 根治** —— `main.py` 加 `_SpaStaticFiles(StaticFiles)` 子类:`index.html` 强制 `no-cache, no-store, must-revalidate`(deploy 后浏览器立刻拉新版);hash 化的 `assets/*.js/.css` 加 `Cache-Control: public, max-age=31536000, immutable`(永不 revalidate)。**解决用户反馈的"deploy 后进不去系统 / 白屏"**(老 index.html 引用已替换 hash bundle → 404)。4 新测试覆盖 index.html / hashed assets / nonexistent
+
 ### 🚀 Phase 14 P0-2 / P0-3 / P1-1 / P1-2 / P2 · SQL 优化沙盒生产化
 
 把 SQL 优化沙盒从「demo / 测试工具」升级成「不连生产做 SQL 性能优化」生产级工作台,5 个切片一气交付。

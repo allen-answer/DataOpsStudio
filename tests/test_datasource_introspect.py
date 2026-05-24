@@ -205,3 +205,159 @@ def test_introspect_endpoint_502_on_db_error(client, fake_mysql_ds, monkeypatch)
     di.invalidate_cache()
     r = client.get(f"/api/assets/introspect/ods.t1?datasource_id={fake_mysql_ds}")
     assert r.status_code == 502
+
+
+# ─── Phase 14 P1-1 完成版:introspect_indexes 多方言 ───────────────────────
+
+
+def test_introspect_indexes_mysql_groups_by_index(fake_mysql_ds, monkeypatch):
+    """MySQL SHOW INDEX 输出按 index 名 group + 按 seq 排 columns + PK 标记"""
+    fake_rows = [
+        {"Key_name": "PRIMARY", "Column_name": "id", "Seq_in_index": 1, "Non_unique": 0},
+        {"Key_name": "idx_status_dt", "Column_name": "status", "Seq_in_index": 1, "Non_unique": 1},
+        {"Key_name": "idx_status_dt", "Column_name": "created_at", "Seq_in_index": 2, "Non_unique": 1},
+    ]
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows",
+                        lambda *a, **k: fake_rows)
+    indexes = di.introspect_indexes(fake_mysql_ds, "orders")
+    assert len(indexes) == 2
+    # PK 在前
+    assert indexes[0]["name"] == "PRIMARY"
+    assert indexes[0]["is_pk"] is True
+    assert indexes[0]["unique"] is True
+    # 复合索引按 seq 排
+    assert indexes[1]["name"] == "idx_status_dt"
+    assert indexes[1]["columns"] == ["status", "created_at"]
+    assert indexes[1]["is_pk"] is False
+    assert indexes[1]["unique"] is False
+
+
+@pytest.fixture
+def fake_oracle_ds(isolated_storage):
+    ds = datasource_store.create(DataSourceCreate(
+        name="prod-oracle", db_type="Oracle",
+        host="db", port=1521, database="ORCL", username="u", password="p",
+    ))
+    return ds.id
+
+
+@pytest.fixture
+def fake_dm_ds(isolated_storage):
+    ds = datasource_store.create(DataSourceCreate(
+        name="prod-dm", db_type="DM",
+        host="db", port=5236, database="DMSERVER", username="u", password="p",
+    ))
+    return ds.id
+
+
+@pytest.fixture
+def fake_db2_ds(isolated_storage):
+    ds = datasource_store.create(DataSourceCreate(
+        name="prod-db2", db_type="DB2",
+        host="db", port=50000, database="SAMPLE", username="u", password="p",
+    ))
+    return ds.id
+
+
+def test_introspect_indexes_oracle_uses_user_indexes(fake_oracle_ds, monkeypatch):
+    """Oracle 走 ALL_INDEXES + ALL_IND_COLUMNS,正确解析 unique + 多列顺序"""
+    calls: list[str] = []
+    def fake_fetch(source, sql, max_rows=None):
+        calls.append(sql)
+        if "ALL_INDEXES" in sql and "ALL_IND_COLUMNS" in sql:
+            return [
+                {"IDX_NAME": "PK_ORDERS", "UNIQUENESS": "UNIQUE",
+                 "COL_NAME": "ID", "COL_POS": 1},
+                {"IDX_NAME": "IDX_STATUS", "UNIQUENESS": "NONUNIQUE",
+                 "COL_NAME": "STATUS", "COL_POS": 1},
+                {"IDX_NAME": "IDX_STATUS", "UNIQUENESS": "NONUNIQUE",
+                 "COL_NAME": "CREATED_AT", "COL_POS": 2},
+            ]
+        if "ALL_CONSTRAINTS" in sql:
+            return [{"INDEX_NAME": "PK_ORDERS"}]
+        return []
+
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows", fake_fetch)
+    indexes = di.introspect_indexes(fake_oracle_ds, "ORDERS")
+    assert len(indexes) == 2
+    pk = next(i for i in indexes if i["is_pk"])
+    assert pk["name"] == "PK_ORDERS"
+    assert pk["unique"] is True
+    composite = next(i for i in indexes if i["name"] == "IDX_STATUS")
+    assert composite["columns"] == ["STATUS", "CREATED_AT"]
+    assert composite["unique"] is False
+    # 验证主查询拼了 ALL_INDEXES join + 二次 PK 查询
+    assert any("ALL_INDEXES" in s and "JOIN ALL_IND_COLUMNS" in s for s in calls)
+    assert any("ALL_CONSTRAINTS" in s for s in calls)
+
+
+def test_introspect_indexes_dm_uses_same_path_as_oracle(fake_dm_ds, monkeypatch):
+    """DM 兼容 Oracle 数据字典视图,走同一条 SQL"""
+    calls: list[str] = []
+    def fake_fetch(source, sql, max_rows=None):
+        calls.append(sql)
+        if "ALL_INDEXES" in sql:
+            return [{"IDX_NAME": "IDX_T1", "UNIQUENESS": "UNIQUE",
+                     "COL_NAME": "C1", "COL_POS": 1}]
+        return []
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows", fake_fetch)
+    indexes = di.introspect_indexes(fake_dm_ds, "T1")
+    assert len(indexes) == 1
+    assert indexes[0]["unique"] is True
+    # DM 跟 Oracle 同一条 SQL
+    assert any("ALL_INDEXES" in s for s in calls)
+
+
+def test_introspect_indexes_db2_uses_syscat(fake_db2_ds, monkeypatch):
+    """DB2 走 SYSCAT.INDEXES + SYSCAT.INDEXCOLUSE,uniquerule 'P' = PK"""
+    def fake_fetch(source, sql, max_rows=None):
+        if "SYSCAT.INDEXES" in sql:
+            return [
+                {"IDX_NAME": "PK_T1", "UNIQUERULE": "P",
+                 "COL_NAME": "ID", "COL_POS": 1},
+                {"IDX_NAME": "IDX_T1_NAME", "UNIQUERULE": "D",
+                 "COL_NAME": "NAME", "COL_POS": 1},
+                {"IDX_NAME": "UQ_T1_EMAIL", "UNIQUERULE": "U",
+                 "COL_NAME": "EMAIL", "COL_POS": 1},
+            ]
+        return []
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows", fake_fetch)
+    indexes = di.introspect_indexes(fake_db2_ds, "T1")
+    assert len(indexes) == 3
+    pk = next(i for i in indexes if i["is_pk"])
+    assert pk["name"] == "PK_T1"
+    assert pk["unique"] is True
+    uq = next(i for i in indexes if i["name"] == "UQ_T1_EMAIL")
+    assert uq["unique"] is True
+    assert uq["is_pk"] is False
+    normal = next(i for i in indexes if i["name"] == "IDX_T1_NAME")
+    assert normal["unique"] is False
+
+
+def test_introspect_indexes_oracle_query_fails_safe_degrade(fake_oracle_ds, monkeypatch):
+    """Oracle 主查询失败 → 返 [],不阻塞 yml_importer"""
+    def fake_fetch(*a, **k):
+        raise RuntimeError("ORA-00942: table or view does not exist")
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows", fake_fetch)
+    assert di.introspect_indexes(fake_oracle_ds, "MISSING_TABLE") == []
+
+
+def test_introspect_indexes_oracle_pk_query_fails_keeps_other_indexes(fake_oracle_ds, monkeypatch):
+    """Oracle PK 二次 query 失败 → 索引列表还在,只是没标 is_pk"""
+    def fake_fetch(source, sql, max_rows=None):
+        if "ALL_INDEXES" in sql:
+            return [{"IDX_NAME": "IDX_T1", "UNIQUENESS": "NONUNIQUE",
+                     "COL_NAME": "C1", "COL_POS": 1}]
+        if "ALL_CONSTRAINTS" in sql:
+            raise RuntimeError("permission denied on ALL_CONSTRAINTS")
+        return []
+    monkeypatch.setattr(di.dbclients_factory, "fetch_rows", fake_fetch)
+    indexes = di.introspect_indexes(fake_oracle_ds, "T1")
+    assert len(indexes) == 1
+    assert indexes[0]["is_pk"] is False  # PK 没标但索引在
+
+
+def test_introspect_indexes_table_validates_identifier(fake_oracle_ds):
+    """表名走 _validate_identifier,防 SQL 注入"""
+    with pytest.raises(ValueError):
+        di.introspect_indexes(fake_oracle_ds, "T1; DROP TABLE foo--")
