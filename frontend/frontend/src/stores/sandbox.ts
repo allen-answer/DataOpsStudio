@@ -98,6 +98,16 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const mysqlDatasources = computed(() =>
     datasources.value.filter((ds: any) => String(ds.db_type || '').toLowerCase().includes('mysql')),
   )
+  // Phase 14 #1 合规防御 — 选中 datasource 的 environment
+  const selectedDs = computed(() =>
+    datasources.value.find((ds: any) => ds.id === datasourceId.value),
+  )
+  const selectedDsEnvironment = computed<string>(() =>
+    (selectedDs.value?.environment as string) || 'sandbox',
+  )
+  const sandboxWriteLocked = computed(() =>
+    !!datasourceId.value && selectedDsEnvironment.value !== 'sandbox',
+  )
   const validScenarios = computed(() => items.value.filter((it) => !it.error))
   const brokenScenarios = computed(() => items.value.filter((it) => !!it.error))
 
@@ -635,6 +645,7 @@ export const useSandboxStore = defineStore('sandbox', () => {
     quickError, quickPlanDiffError,
     // derived
     datasources, mysqlDatasources, validScenarios, brokenScenarios, currentStep,
+    selectedDs, selectedDsEnvironment, sandboxWriteLocked,
     // helpers
     isSelected, renderSql, planColumns, statusBadgeClass, statusLabel,
     verdictBadgeClass, confidenceBadgeClass, anomalyLabel, totalRows,

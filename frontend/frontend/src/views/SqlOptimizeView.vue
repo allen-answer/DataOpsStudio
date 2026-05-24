@@ -221,6 +221,30 @@ onMounted(async () => {
                 <p v-if="!store.mysqlDatasources.length" class="mt-1 text-xs text-status-warning">
                   无可用 MySQL datasource —— 先去「数据源」页加一个。
                 </p>
+                <!-- Phase 14 #1 环境标签 banner -->
+                <div
+                  v-if="store.selectedDsEnvironment && store.selectedDsEnvironment !== 'sandbox'"
+                  class="mt-2 rounded-lg border-2 p-2 text-xs flex items-start gap-2"
+                  :class="store.selectedDsEnvironment === 'prod'
+                    ? 'border-status-error bg-status-error-bg text-status-error'
+                    : 'border-status-warning bg-status-warning-bg text-status-warning'"
+                >
+                  <span class="font-bold">
+                    {{ store.selectedDsEnvironment === 'prod' ? '🔴 PROD' : '🟡 STAGING' }}
+                  </span>
+                  <span>
+                    此 datasource 标签为 <b>{{ store.selectedDsEnvironment }}</b>,
+                    沙盒写入端点(一键全套 / 生成数据 / 建任务)<b>已锁定</b>。
+                    只读分析(🔬 慢 SQL / ✨ AI 复核 / 🛡 校验)不受影响。
+                  </span>
+                </div>
+                <div
+                  v-else-if="store.selectedDsEnvironment === 'sandbox'"
+                  class="mt-2 rounded-lg border border-status-success bg-status-success-bg text-status-success p-2 text-xs flex items-center gap-2"
+                >
+                  <span class="font-bold">🟢 SANDBOX</span>
+                  <span>此 datasource 是沙盒环境,可放心造数据 / 跑模拟流程</span>
+                </div>
               </div>
               <label class="flex items-center gap-2 text-sm pb-1.5">
                 <input type="checkbox" v-model="store.dropFirst" />
@@ -244,25 +268,29 @@ onMounted(async () => {
             <div class="mt-4 flex flex-wrap gap-3">
               <button
                 class="btn btn-primary"
-                :disabled="!store.datasourceId || store.runningAll"
+                :disabled="!store.datasourceId || store.runningAll || store.sandboxWriteLocked"
                 @click="store.runAll"
-                title="fill → generate → materialize → record → run tasks → verify 一气呵成"
+                :title="store.sandboxWriteLocked
+                  ? '此 datasource 是 ' + store.selectedDsEnvironment + ' 环境,造数据已锁定'
+                  : 'fill → generate → materialize → record → run tasks → verify 一气呵成'"
               >
                 <Rocket class="h-4 w-4" :class="{ 'animate-pulse': store.runningAll }" />
                 {{ store.runningAll ? '一键链跑中…' : '🚀 一键全套' }}
               </button>
               <button
                 class="btn btn-outline"
-                :disabled="!store.datasourceId || store.materializing"
+                :disabled="!store.datasourceId || store.materializing || store.sandboxWriteLocked"
                 @click="store.runMaterialize"
+                :title="store.sandboxWriteLocked ? '非 sandbox 环境,造数据已锁定' : ''"
               >
                 <Play class="h-4 w-4" :class="{ 'animate-pulse': store.materializing }" />
                 {{ store.materializing ? '生成中…' : '仅生成数据' }}
               </button>
               <button
                 class="btn btn-outline"
-                :disabled="!store.datasourceId || store.recording"
+                :disabled="!store.datasourceId || store.recording || store.sandboxWriteLocked"
                 @click="store.runRecord"
+                :title="store.sandboxWriteLocked ? '非 sandbox 环境,建任务已锁定' : ''"
               >
                 <ListChecks class="h-4 w-4" />
                 {{ store.recording ? '建任务中…' : '建对比任务' }}

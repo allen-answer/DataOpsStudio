@@ -161,6 +161,85 @@ def test_materialize_scenario_not_found_404(client, populated_scenarios):
     assert r.status_code == 404
 
 
+# ─── Phase 14 #1 合规防御:sandbox-only guard ──────────────────────────────
+
+
+def _create_ds_in_store(name: str, environment: str = "sandbox") -> str:
+    """在 datasource_store 里建一个真 datasource 用于测 guard,返回 id。"""
+    from app.models.datasource import DataSourceCreate
+    from app.models.common import DatabaseType
+    from app.services.repositories import datasource_store
+    payload = DataSourceCreate(
+        name=name, db_type=DatabaseType.MYSQL, host="localhost", port=3306,
+        database="x", username="x", password="x",
+        environment=environment,  # type: ignore[arg-type]
+    )
+    ds = datasource_store.create(payload)
+    return ds.id
+
+
+def test_materialize_rejects_prod_datasource(client, populated_scenarios, monkeypatch):
+    """合规防御:prod 环境 ds → materialize 403 + 中文错误"""
+    ds_id = _create_ds_in_store("prod-mysql", environment="prod")
+    r = client.post(
+        "/api/scenarios/orders-recon-mvp/materialize",
+        json={"datasource_id": ds_id, "drop_first": True},
+    )
+    assert r.status_code == 403, r.text
+    body = r.json()
+    detail = str(body)
+    assert "prod" in detail
+    assert "sandbox" in detail or "造数据" in detail
+
+
+def test_run_all_rejects_staging_datasource(client, populated_scenarios):
+    """staging 也被拦(只放 sandbox)"""
+    ds_id = _create_ds_in_store("staging-mysql", environment="staging")
+    r = client.post(
+        "/api/scenarios/orders-recon-mvp/run-all",
+        json={"datasource_id": ds_id},
+    )
+    assert r.status_code == 403
+
+
+def test_record_rejects_prod_datasource(client, populated_scenarios):
+    """record 也被拦"""
+    ds_id = _create_ds_in_store("prod-rec", environment="prod")
+    r = client.post(
+        "/api/scenarios/orders-recon-mvp/record",
+        json={"datasource_id": ds_id, "project_id": "demo"},
+    )
+    assert r.status_code == 403
+
+
+def test_materialize_passes_sandbox_datasource(client, populated_scenarios, monkeypatch):
+    """sandbox 环境 ds → guard 通过,继续走 materialize 主流程"""
+    ds_id = _create_ds_in_store("sandbox-ok", environment="sandbox")
+
+    def fake_materialize(scenario, data, datasource_id, *, drop_first, batch_size):
+        return {"dialect": "mysql", "schemas_created": [], "tables": [], "warnings": []}
+
+    from app.api import scenarios as api_module
+    monkeypatch.setattr(api_module, "materialize_to_datasource", fake_materialize)
+    r = client.post(
+        "/api/scenarios/orders-recon-mvp/materialize",
+        json={"datasource_id": ds_id},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_verify_endpoint_does_not_guard_env(client, populated_scenarios):
+    """只读路径(verify / analyze)不受 sandbox-only 限制 — 用 prod ds 也能跑"""
+    ds_id = _create_ds_in_store("prod-readonly", environment="prod")
+    # verify 不直接收 datasource_id,但跟环境无关 — 此处主要验证 verify endpoint
+    # 不调用 _enforce_sandbox_only(同 scenario 即可)
+    r = client.get("/api/scenarios/orders-recon-mvp/verify")
+    # verify 默认走 task_store,不依赖 ds_id 直接, 但不应 403
+    assert r.status_code != 403
+    # 用 ds_id 防 unused 警告
+    assert ds_id
+
+
 # ─── POST /api/scenarios/{id}/record ────────────────────────────────────────
 
 

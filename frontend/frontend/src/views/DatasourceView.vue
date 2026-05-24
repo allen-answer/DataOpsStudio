@@ -25,6 +25,34 @@ function projectName(id: string): string {
   const p = projects.value.find(x => x.id === id)
   return p ? p.name : `(已删除 ${id.slice(0, 6)})`
 }
+
+// Phase 14 #1 合规防御 — 环境标签三色徽章 + prod 二次确认
+function envBadgeClass(env?: string): string {
+  if (env === 'prod') return 'bg-status-error-bg text-status-error'
+  if (env === 'staging') return 'bg-status-warning-bg text-status-warning'
+  return 'bg-status-success-bg text-status-success'  // sandbox (default)
+}
+
+function envBadgeTitle(env?: string): string {
+  if (env === 'prod') return '生产环境 — 写入端点(materialize / run-all / record)已锁定'
+  if (env === 'staging') return '预发环境 — 写入端点已锁定'
+  return '沙盒环境 — 可造数据 / 跑模拟流程'
+}
+
+function onEnvChange(draft: { environment?: string }) {
+  // 选 prod 要二次确认(防误点)
+  if (draft.environment === 'prod') {
+    const ok = confirm(
+      '⚠ 你正在把这个数据源标记为「生产环境」。\n\n'
+      + '后续在此 ds 上调用沙盒写入端点(造数据 / 一键全套 / record 落 task)将被 403 拒绝。\n'
+      + '只读分析(🔬 慢 SQL / ✨ AI 复核 / 🛡 校验)不受影响。\n\n'
+      + '确定改成 prod 吗?'
+    )
+    if (!ok) {
+      draft.environment = 'sandbox'  // 回滚
+    }
+  }
+}
 </script>
 
 <template>
@@ -57,6 +85,16 @@ function projectName(id: string): string {
         <input v-model="datasourceDraft.database" class="border-none bg-slate-50" placeholder="数据库 / 服务名">
         <input v-model="datasourceDraft.username" class="border-none bg-slate-50" placeholder="用户名">
         <input v-model="datasourceDraft.password" class="border-none bg-slate-50" type="password" placeholder="密码">
+        <select
+          v-model="(datasourceDraft as any).environment"
+          class="border-none bg-slate-50"
+          title="环境标签:沙盒 = 可造数据 / 跑模拟流程;预发 / 生产 = 写入端点拒绝(防误灌假数据)"
+          @change="onEnvChange(datasourceDraft as any)"
+        >
+          <option value="sandbox">🟢 sandbox 沙盒(可造数据)</option>
+          <option value="staging">🟡 staging 预发(只读)</option>
+          <option value="prod">🔴 prod 生产(只读 / 严禁造数据)</option>
+        </select>
         <button class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="createDatasource">添加数据源</button>
       </div>
     </div>
@@ -80,6 +118,16 @@ function projectName(id: string): string {
               <option value="">全局（无项目）</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
+            <select
+              v-model="(editDraft as any).environment"
+              class="col-span-2 border-none bg-slate-50 px-3 py-2"
+              title="环境标签:沙盒可造数据;预发 / 生产严禁 materialize / record"
+              @change="onEnvChange(editDraft as any)"
+            >
+              <option value="sandbox">🟢 sandbox 沙盒(可造数据)</option>
+              <option value="staging">🟡 staging 预发(只读)</option>
+              <option value="prod">🔴 prod 生产(只读 / 严禁造数据)</option>
+            </select>
           </div>
           <div class="mt-4 flex gap-2 border-t border-slate-100 pt-4">
             <button class="flex-1 rounded-lg bg-blue-600 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="updateDatasource(item.id)">保存</button>
@@ -91,7 +139,14 @@ function projectName(id: string): string {
             <div class="grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-sm font-black text-slate-600">DS</div>
             <span class="rounded bg-green-100 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-green-700">已配置</span>
           </div>
-          <h3 class="mb-1 font-bold text-slate-800">{{ item.name }}</h3>
+          <h3 class="mb-1 font-bold text-slate-800 flex items-center gap-2">
+            {{ item.name }}
+            <span
+              :class="envBadgeClass(item.environment)"
+              class="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider"
+              :title="envBadgeTitle(item.environment)"
+            >{{ item.environment || 'sandbox' }}</span>
+          </h3>
           <p class="sql-font mb-2 text-xs text-slate-400">{{ item.db_type }} · {{ item.host }}:{{ item.port }} {{ item.database }}</p>
           <p class="mb-4 text-[10px] uppercase tracking-wider text-slate-400">项目：{{ projectName(item.project_id) }}</p>
           <div class="flex gap-2 border-t border-slate-100 pt-4">

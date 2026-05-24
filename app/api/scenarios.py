@@ -31,7 +31,53 @@ from app.scenarios.runtime import ScenarioRuntimeError, materialize_to_datasourc
 from app.scenarios.verifier import verify_scenario
 from app.scenarios.yml_importer import import_tables_from_datasource
 from app.services.auth import require_role
+from app.services.repositories import datasource_store
 from app.utils.paths import SCENARIOS_DIR
+
+
+# Phase 14: 合规防御 — 沙盒写入端点必须连 sandbox 环境的 datasource
+# (防 admin 误选生产库 datasource 灌假数据 / 跑模拟 ETL)
+def _enforce_sandbox_only(datasource_id: str, action: str) -> None:
+    """连 prod / staging 跑写入流程直接 403。analyze / verify 等只读端点不调用此 helper。
+
+    ds 不存在时跳过(让下游 materialize/record 自己报真错,避免改 guard 语义
+    破坏现有 mock 风格测试)。
+
+    被拦的访问会显式写一条 audit_logs 事件 `production_access_blocked`,
+    带 datasource_id / environment / action 作为 extra,管理员审计页可按
+    event 字段过滤定位"谁试图在 prod 上跑沙盒写入"。
+    """
+    ds = datasource_store.get(datasource_id)
+    if ds is None:
+        return  # 下游会报 404,不在 guard 这一步报
+    env = getattr(ds, "environment", "sandbox") or "sandbox"
+    if env != "sandbox":
+        # 落审计:中间件捕获到的是 path/status,这里补语义化事件 + 触发上下文
+        try:
+            from app.services.audit import record_auth_event
+            record_auth_event(
+                "production_access_blocked",
+                method="POST",
+                path=f"/api/scenarios/.../{action.split()[0]}",
+                status_code=403,
+                extra={
+                    "datasource_id": datasource_id,
+                    "datasource_name": ds.name,
+                    "environment": env,
+                    "action": action,
+                },
+            )
+        except Exception:
+            pass  # audit 失败不阻塞主流程
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"⚠ 合规拒绝:datasource '{ds.name}' 标签为 environment={env}, "
+                f"不允许执行 {action}(造数据 / record 只允许 environment=sandbox 的 ds)。"
+                f"如确需在此 ds 跑 SQL 优化分析,请走只读路径(🔬 分析 + ✨ AI 复核 + 🛡 校验);"
+                f"若确需 materialize,请到 admin 数据源管理新建一个 sandbox 环境 ds"
+            ),
+        )
 
 
 # Phase 14 P0-1 重定位:editor+ 即可。inner-level authz 仍由各 endpoint 通过
@@ -85,6 +131,7 @@ def materialize_scenario_api(
     payload: MaterializeRequest = Body(...),
 ) -> dict[str, Any]:
     """generate + DDL + INSERT 到 datasource。返回 apply_plan 的 summary。"""
+    _enforce_sandbox_only(payload.datasource_id, "materialize 造数据")
     scenario = _load_or_404(scenario_id)
     ai_fill_report: dict[str, Any] | None = None
     if payload.ai_fill:
@@ -125,6 +172,7 @@ def run_all_scenario_api(
     报告里 ok=true 表示 6 步都成；任一 compare run 失败 / verify 有 fail
     → ok=false（admin / CI 一眼判断）。
     """
+    _enforce_sandbox_only(payload.datasource_id, "run-all 全套(造数据 + record + 跑 task)")
     scenario = _load_or_404(scenario_id)
     report = run_all_pipeline(
         scenario,
@@ -188,6 +236,7 @@ def record_scenario_api(
     payload: RecordRequest = Body(...),
 ) -> dict[str, Any]:
     """workloads → CompareTask 持久化。返回 {tasks, warnings}。"""
+    _enforce_sandbox_only(payload.datasource_id, "record 落库 compare_task")
     scenario = _load_or_404(scenario_id)
     result = record_scenario(
         scenario, payload.datasource_id, project_id=payload.project_id

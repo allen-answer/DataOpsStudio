@@ -51,6 +51,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
     database: '',
     username: '',
     password: '',
+    environment: 'sandbox',  // Phase 14 #1 默认 sandbox 防误把新 ds 标 prod
   })
 
   const editingDatasourceId = ref<string>('')
@@ -58,6 +59,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
     name: '', db_type: 'MySQL', host: '', port: 3306,
     database: '', username: '', password: '',
     project_id: '',
+    environment: 'sandbox',
   })
 
   function startEditDatasource(item: Datasource): void {
@@ -71,6 +73,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
       username: item.username,
       password: '',
       project_id: item.project_id || '',
+      environment: item.environment || 'sandbox',
     })
   }
 
@@ -81,6 +84,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
   function resetDatasourceDraft(): void {
     Object.assign(datasourceDraft, {
       name: '', host: '', database: '', username: '', password: '',
+      environment: 'sandbox',
     })
   }
 

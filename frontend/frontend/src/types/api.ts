@@ -27,8 +27,13 @@ export type ApiUserRole = ApiUser['role']      // 'admin' | 'editor' | 'viewer'
 export type ApiUserCreate = Schemas['UserCreate']
 export type ApiUserUpdate = Schemas['UserUpdate']
 
-export type ApiDataSource = Schemas['DataSource']
-export type ApiDataSourceCreate = Schemas['DataSourceCreate']
+// Phase 14 #1 合规防御:datasource 环境标签 sandbox/staging/prod (默认 sandbox)。
+// 沙盒写入端点(materialize / run-all / record)只允许 sandbox 的 ds,prod/staging
+// 返 403。api-schema.ts 是 auto-generated 的,环境字段在这里手动 augment;下次
+// schema:fetch 重生成时不会丢(merge type)。
+export type DatasourceEnvironment = 'sandbox' | 'staging' | 'prod'
+export type ApiDataSource = Schemas['DataSource'] & { environment?: DatasourceEnvironment }
+export type ApiDataSourceCreate = Schemas['DataSourceCreate'] & { environment?: DatasourceEnvironment }
 
 export type ApiCompareTask = Schemas['CompareTask']
 export type ApiCompareTaskCreate = Schemas['CompareTaskCreate']
