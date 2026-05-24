@@ -39,19 +39,53 @@ function envBadgeTitle(env?: string): string {
   return '沙盒环境 — 可造数据 / 跑模拟流程'
 }
 
-function onEnvChange(draft: { environment?: string }) {
+// Phase 14 #3 Round 3 — 环境预设:选环境时自动填 8 个 allow_* flag。
+// sandbox = 全开 / staging+prod = 全关 / unknown = 全关。
+// 用户可在「高级配置」折叠区手动调单个 flag。
+type DsDraftWithFlags = {
+  environment?: string
+  environment_verified?: boolean
+  allow_select?: boolean
+  allow_explain?: boolean
+  allow_dm_explain?: boolean
+  allow_oracle_plan_table?: boolean
+  allow_schema_import?: boolean
+  allow_schema_save?: boolean
+  allow_scenario_write?: boolean
+  allow_record_task?: boolean
+}
+
+function applyEnvPreset(draft: DsDraftWithFlags, env: string) {
+  // sandbox = 全开;其它环境 = 全关(让用户手动按需勾)
+  const open = env === 'sandbox'
+  draft.allow_select = true   // SELECT 任何环境都开(纯只读基本能力)
+  draft.allow_explain = open
+  draft.allow_dm_explain = open
+  draft.allow_oracle_plan_table = open
+  draft.allow_schema_import = open
+  draft.allow_schema_save = open
+  draft.allow_scenario_write = open
+  draft.allow_record_task = open
+  draft.environment_verified = env !== 'unknown'  // 用户显式选过 = 已验证
+}
+
+function onEnvChange(draft: DsDraftWithFlags) {
   // 选 prod 要二次确认(防误点)
   if (draft.environment === 'prod') {
     const ok = confirm(
       '⚠ 你正在把这个数据源标记为「生产环境」。\n\n'
       + '后续在此 ds 上调用沙盒写入端点(造数据 / 一键全套 / record 落 task)将被 403 拒绝。\n'
-      + '只读分析(🔬 慢 SQL / ✨ AI 复核 / 🛡 校验)不受影响。\n\n'
+      + '只读分析(🔬 慢 SQL / ✨ AI 复核 / 🛡 校验)按 allow_explain / allow_dm_explain / '
+      + 'allow_oracle_plan_table 单独控制 — 默认全关,需要时去「高级配置」打开。\n\n'
       + '确定改成 prod 吗?'
     )
     if (!ok) {
-      draft.environment = 'sandbox'  // 回滚
+      draft.environment = 'sandbox'
+      applyEnvPreset(draft, 'sandbox')
+      return
     }
   }
+  applyEnvPreset(draft, draft.environment || 'sandbox')
 }
 </script>
 
@@ -97,6 +131,26 @@ function onEnvChange(draft: { environment?: string }) {
         </select>
         <button class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700" @click="createDatasource">添加数据源</button>
       </div>
+      <!-- Phase 14 #3 Round 3 — 高级配置折叠 8 个 allow_* flag -->
+      <details class="mt-3 text-xs">
+        <summary class="cursor-pointer text-slate-500 hover:text-slate-700 select-none">
+          ⚙ 高级配置:操作权限 allow_* (按环境预填,可手动微调)
+        </summary>
+        <div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-700">
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_select" /><span>allow_select<br/><span class="text-[10px] text-slate-400">SELECT 查询</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_explain" /><span>allow_explain<br/><span class="text-[10px] text-slate-400">MySQL EXPLAIN</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_dm_explain" /><span>allow_dm_explain<br/><span class="text-[10px] text-slate-400">DM EXPLAIN</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_oracle_plan_table" /><span>allow_oracle_plan_table<br/><span class="text-[10px] text-slate-400">Oracle PLAN_TABLE 诊断写入</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_schema_import" /><span>allow_schema_import<br/><span class="text-[10px] text-slate-400">读 information_schema</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_schema_save" /><span>allow_schema_save<br/><span class="text-[10px] text-slate-400">保存 yml 到本地</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_scenario_write" /><span>allow_scenario_write<br/><span class="text-[10px] text-slate-400">造数据 materialize</span></span></label>
+          <label class="flex items-center gap-1.5"><input type="checkbox" v-model="(datasourceDraft as any).allow_record_task" /><span>allow_record_task<br/><span class="text-[10px] text-slate-400">record CompareTask</span></span></label>
+        </div>
+        <p class="mt-2 text-[11px] text-slate-400 leading-relaxed">
+          💡 选环境时会自动预填:sandbox = 全开,staging / prod = 仅 allow_select 开。
+          可在此手动调整(如 prod 数据源只开 allow_dm_explain 让 DBA 查 plan)。
+        </p>
+      </details>
     </div>
 
     <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
@@ -129,6 +183,22 @@ function onEnvChange(draft: { environment?: string }) {
               <option value="prod">🔴 prod 生产(只读 / 严禁造数据)</option>
             </select>
           </div>
+          <!-- Phase 14 #3 Round 3 — 编辑表单也带高级配置折叠 -->
+          <details class="mt-3 text-xs">
+            <summary class="cursor-pointer text-slate-500 hover:text-slate-700 select-none">
+              ⚙ 高级配置:操作权限 allow_*
+            </summary>
+            <div class="mt-3 grid grid-cols-2 gap-2 text-slate-700">
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_select" /><span>allow_select</span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_explain" /><span>allow_explain<br/><span class="text-[9px] text-slate-400">MySQL EXPLAIN</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_dm_explain" /><span>allow_dm_explain<br/><span class="text-[9px] text-slate-400">DM EXPLAIN</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_oracle_plan_table" /><span>allow_oracle_plan_table<br/><span class="text-[9px] text-slate-400">Oracle PLAN_TABLE</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_schema_import" /><span>allow_schema_import<br/><span class="text-[9px] text-slate-400">读 information_schema</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_schema_save" /><span>allow_schema_save<br/><span class="text-[9px] text-slate-400">保存 yml</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_scenario_write" /><span>allow_scenario_write<br/><span class="text-[9px] text-slate-400">造数据</span></span></label>
+              <label class="flex items-center gap-1.5 text-[11px]"><input type="checkbox" v-model="(editDraft as any).allow_record_task" /><span>allow_record_task<br/><span class="text-[9px] text-slate-400">record task</span></span></label>
+            </div>
+          </details>
           <div class="mt-4 flex gap-2 border-t border-slate-100 pt-4">
             <button class="flex-1 rounded-lg bg-blue-600 py-2 text-xs font-bold text-white transition hover:bg-blue-700" @click="updateDatasource(item.id)">保存</button>
             <button class="flex-1 rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50" @click="cancelEditDatasource">取消</button>
