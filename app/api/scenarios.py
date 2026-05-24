@@ -77,6 +77,56 @@ def list_scenarios_api() -> dict[str, Any]:
     return {"items": list_scenarios()}
 
 
+# Phase 14 #3 Round 6 L — 内置行业模板。必须放在 /{scenario_id} 之前注册,
+# 否则 FastAPI first-match-wins 把 GET /scenarios/templates 当作
+# scenario_id="templates" 吃掉 → _load_or_404("templates") 报 not found
+@router.get("/api/scenarios/templates")
+def list_scenario_templates(
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """内置行业模板列表 — config/scenarios/template-*.example.yml。"""
+    items: list[dict[str, Any]] = []
+    if SCENARIOS_DIR.exists():
+        for p in sorted(SCENARIOS_DIR.glob("template-*.example.yml")):
+            try:
+                sc = load_scenario(p)
+                items.append({
+                    "id": sc.id,
+                    "name": sc.name,
+                    "description": (sc.description or "")[:200],
+                    "dialect": sc.dialect,
+                    "tables_count": len(sc.tables),
+                    "workloads_count": len(sc.workloads),
+                    "file": p.name,
+                })
+            except Exception as exc:
+                items.append({
+                    "file": p.name, "error": str(exc),
+                })
+    return {"items": items}
+
+
+@router.get("/api/scenarios/templates/{template_file}")
+def get_scenario_template(
+    template_file: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """拿单个模板的完整内容(yml 文本 + 解析后的 scenario dict)。
+    白名单约束 template_file 只允许 template-*.example.yml 防路径穿越。
+    """
+    if not re.match(r"^template-[A-Za-z0-9_\-]+\.example\.yml$", template_file):
+        raise HTTPException(status_code=400, detail="模板文件名格式不合法")
+    path = SCENARIOS_DIR / template_file
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"模板 {template_file} 不存在")
+    scenario = load_scenario(path)
+    return {
+        "file": template_file,
+        "yml_text": path.read_text(encoding="utf-8"),
+        "scenario": scenario.model_dump(by_alias=True, exclude_none=True),
+    }
+
+
 @router.get("/api/scenarios/{scenario_id}")
 def get_scenario_api(scenario_id: str) -> dict[str, Any]:
     """读单份 yml，返回完整 model dump（前端拿来渲染表/anomaly/workload 三块）。"""
@@ -458,57 +508,6 @@ def import_from_metadata_csv(
         "tables_count": len(tables),
         "tables": tables,
         "warnings": warnings,
-    }
-
-
-@router.get("/api/scenarios/templates")
-def list_scenario_templates(
-    current: User = Depends(require_role("editor")),
-) -> dict[str, Any]:
-    """Phase 14 #3 Round 6 L — 内置行业模板列表。
-
-    返 config/scenarios/template-*.example.yml 文件的 id / name / description /
-    tables_count / dialect。前端可一键 fetch 模板 yml 文本填充 builder。
-    """
-    items: list[dict[str, Any]] = []
-    if SCENARIOS_DIR.exists():
-        for p in sorted(SCENARIOS_DIR.glob("template-*.example.yml")):
-            try:
-                sc = load_scenario(p)
-                items.append({
-                    "id": sc.id,
-                    "name": sc.name,
-                    "description": (sc.description or "")[:200],
-                    "dialect": sc.dialect,
-                    "tables_count": len(sc.tables),
-                    "workloads_count": len(sc.workloads),
-                    "file": p.name,
-                })
-            except Exception as exc:
-                items.append({
-                    "file": p.name, "error": str(exc),
-                })
-    return {"items": items}
-
-
-@router.get("/api/scenarios/templates/{template_file}")
-def get_scenario_template(
-    template_file: str,
-    current: User = Depends(require_role("editor")),
-) -> dict[str, Any]:
-    """拿单个模板的完整内容(yml 文本 + 解析后的 scenario dict)。
-    template_file 走白名单约束(只允许 template-*.example.yml)。
-    """
-    if not re.match(r"^template-[A-Za-z0-9_\-]+\.example\.yml$", template_file):
-        raise HTTPException(status_code=400, detail="模板文件名格式不合法")
-    path = SCENARIOS_DIR / template_file
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"模板 {template_file} 不存在")
-    scenario = load_scenario(path)
-    return {
-        "file": template_file,
-        "yml_text": path.read_text(encoding="utf-8"),
-        "scenario": scenario.model_dump(by_alias=True, exclude_none=True),
     }
 
 
