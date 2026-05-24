@@ -332,6 +332,186 @@ class SaveYmlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class MetadataCsvRequest(BaseModel):
+    """Phase 14 #3 Round 6 M — metadata csv 上传。
+
+    csv_text 接受两类格式拼接(用空行分隔):
+      段 1:`table,row_count` 表行数
+      段 2:`table,column,ndv,top_5_values,top_5_freq` 列分布
+    """
+    csv_text: str = Field(..., min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.post("/api/scenarios/import-from-metadata")
+def import_from_metadata_csv(
+    payload: MetadataCsvRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """Round 6 M — 从脱敏 metadata csv 反生成 scenario form payload。
+
+    用法:DBA 给你 ANALYZE 风格的统计快照(table 行数 + 列 ndv + top values),
+    你粘 csv 进 builder,系统反推 enum values + distribution + rows → scenario。
+    法规上"统计信息 + 不含行级数据",可以从生产流出。
+
+    返:{tables: [{ name, rows, columns: [{ name, gen, values, distribution }] }, ...]}
+    builder 前端拿这个填 form。
+    """
+    import csv as _csv
+    import io as _io
+
+    text = (payload.csv_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="csv_text 为空")
+
+    # 拆段:空行(只含空白)隔开多段。第一段表行数,第二段列分布(任一缺则跳过)
+    sections: list[list[str]] = [[]]
+    for line in text.splitlines():
+        if not line.strip():
+            if sections[-1]:
+                sections.append([])
+            continue
+        sections[-1].append(line)
+    sections = [s for s in sections if s]
+
+    table_rows: dict[str, int] = {}
+    column_dist: dict[tuple[str, str], dict[str, Any]] = {}
+    warnings: list[str] = []
+
+    for section in sections:
+        reader = _csv.reader(_io.StringIO("\n".join(section)))
+        header = next(reader, None)
+        if not header:
+            continue
+        header_l = [h.strip().lower() for h in header]
+        if "row_count" in header_l and "table" in header_l:
+            # 段 1:table, row_count
+            tidx = header_l.index("table")
+            ridx = header_l.index("row_count")
+            for row in reader:
+                if len(row) <= max(tidx, ridx):
+                    continue
+                try:
+                    table_rows[row[tidx].strip()] = int(row[ridx].strip())
+                except ValueError:
+                    warnings.append(f"行数解析失败: {row}")
+        elif "column" in header_l and "table" in header_l:
+            # 段 2:table, column, ndv, top_5_values, top_5_freq
+            tidx = header_l.index("table")
+            cidx = header_l.index("column")
+            vidx = header_l.index("top_5_values") if "top_5_values" in header_l else -1
+            fidx = header_l.index("top_5_freq") if "top_5_freq" in header_l else -1
+            nidx = header_l.index("ndv") if "ndv" in header_l else -1
+            for row in reader:
+                if len(row) <= max(tidx, cidx):
+                    continue
+                t = row[tidx].strip()
+                c = row[cidx].strip()
+                entry: dict[str, Any] = {}
+                if nidx >= 0 and nidx < len(row):
+                    try:
+                        entry["ndv"] = int(row[nidx])
+                    except ValueError:
+                        pass
+                if vidx >= 0 and vidx < len(row):
+                    entry["values"] = [
+                        v.strip() for v in row[vidx].split("|") if v.strip()
+                    ]
+                if fidx >= 0 and fidx < len(row):
+                    try:
+                        entry["freq"] = [
+                            float(x.strip()) for x in row[fidx].split("|") if x.strip()
+                        ]
+                    except ValueError:
+                        pass
+                column_dist[(t, c)] = entry
+        else:
+            warnings.append(f"未识别的 csv 段(表头不含 table+row_count 也不含 table+column):{header}")
+
+    # 合成 tables 列表
+    tables: list[dict[str, Any]] = []
+    seen_tables = set(table_rows.keys()) | {t for (t, _) in column_dist.keys()}
+    for tname in sorted(seen_tables):
+        cols_for_table = [
+            {"name": c, **column_dist[(t, c)]}
+            for (t, c) in sorted(column_dist.keys()) if t == tname
+        ]
+        # 自动选 gen:ndv 小 + 有 values → enum,否则 realistic
+        for col in cols_for_table:
+            ndv = col.get("ndv") or 0
+            values = col.get("values") or []
+            if values and 0 < ndv <= 20:
+                col["gen"] = "enum"
+            else:
+                col["gen"] = "realistic"
+                # ndv 高的 dropoff values,realistic 不需要
+                if values:
+                    col["sample_values"] = values  # 给 UI 提示
+        tables.append({
+            "name": tname,
+            "role": "source",
+            "rows": table_rows.get(tname, 1000),
+            "columns": cols_for_table,
+        })
+
+    return {
+        "tables_count": len(tables),
+        "tables": tables,
+        "warnings": warnings,
+    }
+
+
+@router.get("/api/scenarios/templates")
+def list_scenario_templates(
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """Phase 14 #3 Round 6 L — 内置行业模板列表。
+
+    返 config/scenarios/template-*.example.yml 文件的 id / name / description /
+    tables_count / dialect。前端可一键 fetch 模板 yml 文本填充 builder。
+    """
+    items: list[dict[str, Any]] = []
+    if SCENARIOS_DIR.exists():
+        for p in sorted(SCENARIOS_DIR.glob("template-*.example.yml")):
+            try:
+                sc = load_scenario(p)
+                items.append({
+                    "id": sc.id,
+                    "name": sc.name,
+                    "description": (sc.description or "")[:200],
+                    "dialect": sc.dialect,
+                    "tables_count": len(sc.tables),
+                    "workloads_count": len(sc.workloads),
+                    "file": p.name,
+                })
+            except Exception as exc:
+                items.append({
+                    "file": p.name, "error": str(exc),
+                })
+    return {"items": items}
+
+
+@router.get("/api/scenarios/templates/{template_file}")
+def get_scenario_template(
+    template_file: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """拿单个模板的完整内容(yml 文本 + 解析后的 scenario dict)。
+    template_file 走白名单约束(只允许 template-*.example.yml)。
+    """
+    if not re.match(r"^template-[A-Za-z0-9_\-]+\.example\.yml$", template_file):
+        raise HTTPException(status_code=400, detail="模板文件名格式不合法")
+    path = SCENARIOS_DIR / template_file
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"模板 {template_file} 不存在")
+    scenario = load_scenario(path)
+    return {
+        "file": template_file,
+        "yml_text": path.read_text(encoding="utf-8"),
+        "scenario": scenario.model_dump(by_alias=True, exclude_none=True),
+    }
+
+
 @router.post("/api/scenarios/save-yml")
 def save_scenario_yml_api(
     payload: SaveYmlRequest = Body(...),

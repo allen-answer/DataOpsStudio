@@ -83,6 +83,10 @@ class ColumnDef(BaseModel):
     fk_distribution: FKDistribution = "uniform"
     fk_zipf_alpha: float = Field(1.2, ge=1.0, le=5.0)
 
+    # Round 6 N — 金融行业 domain generator(优先级高于 dist_params / values)
+    # 取值见 app/scenarios/faker_providers.py:list_providers() 注册的 13 个
+    faker_provider: str = ""
+
 
 class IndexDef(BaseModel):
     model_config = ConfigDict(extra="forbid")

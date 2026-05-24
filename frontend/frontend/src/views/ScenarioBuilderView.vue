@@ -13,11 +13,11 @@
  * advanced 用户可在生成 yml 后手动编辑 .yml 文件加 anomalies / workloads
  * (后续 yml 文本编辑器也可考虑提供)。
  */
-import { computed, reactive } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   FlaskConical, FilePlus2, Save, ChevronLeft, Plus, Trash2, Copy,
-  AlertCircle, CheckCircle2, FileText, ClipboardPaste,
+  AlertCircle, CheckCircle2, FileText, ClipboardPaste, BookTemplate,
 } from 'lucide-vue-next'
 import { useScenarioBuilderStore } from '../stores/scenarioBuilder'
 import { useNoticeStore } from '../stores/notice'
@@ -43,6 +43,7 @@ function parseAndAddFromDdl(idx: number) {
   noticeStore.setNotice(
     `已添加 ${r.added} 列${r.pk_count ? ` (${r.pk_count} 个 PK)` : ''}`
     + `${r.index_count ? ` + ${r.index_count} 个索引` : ''}`
+    + `${(r as any).fk_count ? ` + ${(r as any).fk_count} 个外键` : ''}`
     + `${r.warnings.length ? ` ⚠ ${r.warnings.length} 行未解析` : ''}`,
   )
   if (r.added > 0) {
@@ -75,6 +76,28 @@ const totalColumns = computed(
 const totalRows = computed(
   () => form.tables.reduce((sum, t) => sum + (Number(t.rows) || 0), 0),
 )
+
+// Round 6 L — 模板列表
+const selectedTemplate = computed({
+  get: () => '',
+  set: (v: string) => { if (v) store.loadFromTemplate(v) },
+})
+onMounted(() => { store.loadTemplatesList() })
+
+// Round 6 M — metadata csv 上传(覆盖现有 form.tables)
+const metadataOpen = ref(false)
+const metadataCsv = ref('')
+function toggleMetadataOpen() { metadataOpen.value = !metadataOpen.value }
+async function submitMetadataCsv() {
+  if (!metadataCsv.value.trim()) return
+  if (!confirm('⚠ 这会替换当前 form 里的所有表/列。继续?')) return
+  const ok = await store.importFromMetadataCsv(metadataCsv.value)
+  if (ok) {
+    metadataCsv.value = ''
+    metadataOpen.value = false
+    noticeStore.setNotice('✓ 已从 metadata csv 生成表/列;请补字段类型 + 调 generator')
+  }
+}
 </script>
 
 <template>
@@ -104,9 +127,28 @@ const totalRows = computed(
           </span>
         </p>
       </div>
-      <a href="#/scenario-lab" class="btn btn-outline">
-        <ChevronLeft class="h-4 w-4" /> 取消返回
-      </a>
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-1 text-xs text-slate-600">
+          <BookTemplate class="h-4 w-4 text-primary" />
+          <span>📚 从模板加载:</span>
+          <select
+            :value="selectedTemplate"
+            @change="(e: any) => (selectedTemplate = e.target.value)"
+            class="sql-font text-xs"
+          >
+            <option value="">— 选模板 —</option>
+            <option
+              v-for="t in store.templatesList"
+              :key="t.file"
+              :value="t.file"
+              :title="t.description"
+            >{{ t.name }} ({{ t.tables_count }} 表)</option>
+          </select>
+        </label>
+        <a href="#/scenario-lab" class="btn btn-outline">
+          <ChevronLeft class="h-4 w-4" /> 取消返回
+        </a>
+      </div>
     </div>
 
     <!-- 两列:左表单 + 右实时 yml 预览 -->
@@ -258,6 +300,8 @@ const totalRows = computed(
                 :key="ci"
                 :column="c"
                 :index="ci"
+                :all-tables="form.tables"
+                :current-table-name="t.name"
                 @remove="store.removeColumn(ti, ci)"
               />
               <p v-if="!t.columns.length" class="text-xs text-slate-400 italic">
@@ -286,6 +330,49 @@ const totalRows = computed(
               <p v-if="!t.indexes.length" class="text-[11px] text-slate-400 italic">
                 💡 不加索引 = 测试全表扫场景;加索引验证 plan 走 index range
               </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Round 6 M — metadata csv 上传 -->
+        <div class="card p-4 bg-status-info-bg/20 border-status-info">
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-bold text-status-info flex items-center gap-1.5">
+              📊 从 metadata csv 导入
+              <span class="text-[10px] font-normal text-slate-500 normal-case">
+                — DBA 给的 ANALYZE 风格脱敏快照
+              </span>
+            </div>
+            <button class="text-xs text-primary hover:underline" @click="toggleMetadataOpen">
+              {{ metadataOpen ? '收起' : '展开' }}
+            </button>
+          </div>
+          <div v-if="metadataOpen" class="mt-3 space-y-2">
+            <p class="text-[11px] text-slate-600 leading-relaxed">
+              请 DBA 提供如下脱敏快照(不含行级数据,法规安全),粘贴 csv:
+            </p>
+            <pre class="px-2 py-1 bg-slate-100 text-[10px] rounded">table,row_count
+ods_acc_fundacc,5234560
+ods_ast_nor_acc_fund,5180230
+
+table,column,ndv,top_5_values,top_5_freq
+ods_acc_fundacc,branch_code,312,"1001|1002|1003|8001|9999","0.18|0.15|0.10|0.05|0.02"
+ods_acc_fundacc,source_sys,4,"jzjy|jgkh|rzrq|opt","0.55|0.25|0.15|0.05"</pre>
+            <textarea
+              v-model="metadataCsv"
+              rows="8"
+              class="w-full sql-font text-xs"
+              placeholder="粘贴 metadata csv 文本..."
+            />
+            <div class="flex items-center gap-2">
+              <button
+                class="btn btn-primary text-xs"
+                :disabled="store.importingMetadata || !metadataCsv.trim()"
+                @click="submitMetadataCsv"
+              >
+                {{ store.importingMetadata ? '导入中…' : '生成表 / 列(覆盖)' }}
+              </button>
+              <span v-if="store.metadataError" class="text-xs text-status-error">{{ store.metadataError }}</span>
             </div>
           </div>
         </div>

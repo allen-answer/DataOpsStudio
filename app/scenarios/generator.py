@@ -193,6 +193,13 @@ def _generate_value(
     pool: "_FKPool | None" = None,
     unique_seen: dict[str, set[Any]] | None = None,
 ) -> Any:
+    # Round 6 N — 金融行业 faker provider 优先级最高(覆盖 dist_params / values)
+    if col.faker_provider:
+        from app.scenarios.faker_providers import generate_with_provider
+        v = generate_with_provider(col.faker_provider, rng)
+        if v is not None:
+            return v
+        # provider 未注册 → fallback 到正常 gen 流程
     g = col.gen
     if g == "uuid_short":
         return _uuid_short(rng)

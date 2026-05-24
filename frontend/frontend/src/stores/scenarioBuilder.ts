@@ -16,6 +16,9 @@ import { useNoticeStore } from './notice'
 export type GeneratorKind =
   | 'sequence' | 'uuid_short' | 'random_int' | 'realistic'
   | 'enum' | 'timestamp' | 'constant'
+  | 'foreign_key'
+
+export type FKDistribution = 'uniform' | 'zipf'
 
 export type DistributionKind = 'lognormal' | 'normal' | 'uniform' | 'exponential'
 
@@ -45,6 +48,15 @@ export interface ColumnForm {
   prefix: string              // sequence 前缀
   dist_params_enabled: boolean
   dist_params: DistParamsForm
+  // Round 6 FK 字段(仅 gen=foreign_key 时有效)
+  fk_ref_table: string        // 引用表名(来自 form.tables[].name)
+  fk_ref_column: string       // 引用列名(来自所选表的 columns)
+  fk_match_rate: number       // 0.0 ~ 1.0
+  fk_unique: boolean
+  fk_distribution: FKDistribution
+  fk_zipf_alpha: number
+  // Round 6 N 阶段 — 金融行业 faker provider
+  faker_provider: string      // chinese_id / mobile_phone / fund_acc_no / ... 空 = 不用
 }
 
 export interface IndexForm {
@@ -92,6 +104,13 @@ export function makeEmptyColumn(): ColumnForm {
     prefix: '',
     dist_params_enabled: false,
     dist_params: { kind: 'lognormal', mu: 0, sigma: 1, min: 0 },
+    fk_ref_table: '',
+    fk_ref_column: '',
+    fk_match_rate: 1.0,
+    fk_unique: false,
+    fk_distribution: 'uniform',
+    fk_zipf_alpha: 1.2,
+    faker_provider: '',
   }
 }
 
@@ -211,7 +230,22 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
       case 'constant':
         if (values.length) d.values = values
         break
+      case 'foreign_key':
+        if (c.fk_ref_table && c.fk_ref_column) {
+          d.references = `${c.fk_ref_table}.${c.fk_ref_column}`
+        }
+        if (c.fk_match_rate !== 1.0) d.match_rate = c.fk_match_rate
+        if (c.fk_unique) d.fk_unique = true
+        if (c.fk_distribution !== 'uniform') {
+          d.fk_distribution = c.fk_distribution
+          if (c.fk_distribution === 'zipf' && c.fk_zipf_alpha !== 1.2) {
+            d.fk_zipf_alpha = c.fk_zipf_alpha
+          }
+        }
+        break
     }
+    // Round 6 N — faker_provider 可叠加在 realistic 上(也兼容其它 gen)
+    if (c.faker_provider) d.faker_provider = c.faker_provider
     return d
   }
 
@@ -226,6 +260,79 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
   const ymlPreview = computed(() => dumpYaml(toScenarioDict()))
 
   // ─── save ───────────────────────────────────────────────────────────────
+
+  // Round 6 L — 从内置模板加载
+  const templatesList = ref<Array<{ file: string; id: string; name: string; description: string; tables_count: number; dialect: string }>>([])
+  const loadingTemplates = ref(false)
+
+  async function loadTemplatesList() {
+    loadingTemplates.value = true
+    try {
+      const r = await apiJson<{ items: any[] }>('/api/scenarios/templates', 'GET')
+      templatesList.value = r.items.filter((i: any) => !i.error)
+    } finally {
+      loadingTemplates.value = false
+    }
+  }
+
+  // Round 6 M — 从 metadata csv 导入表/列(给 form 填充)
+  const importingMetadata = ref(false)
+  const metadataError = ref('')
+
+  async function importFromMetadataCsv(csvText: string): Promise<boolean> {
+    metadataError.value = ''
+    importingMetadata.value = true
+    try {
+      const r = await apiJson<{ tables: any[]; warnings: string[]; tables_count: number }>(
+        '/api/scenarios/import-from-metadata', 'POST', { csv_text: csvText },
+      )
+      // 把返回的 tables 转成 TableForm 追加
+      const newTables: TableForm[] = r.tables.map((t: any) => ({
+        name: t.name,
+        role: 'source',
+        rows: t.rows || 1000,
+        columns: (t.columns || []).map((c: any): ColumnForm => {
+          const col = makeEmptyColumn()
+          col.name = c.name || ''
+          col.type = 'VARCHAR(100)'
+          col.gen = c.gen === 'enum' ? 'enum' : 'realistic'
+          if (c.values && c.values.length) col.values_text = c.values.join(', ')
+          if (c.freq && c.freq.length) col.distribution_text = c.freq.join(', ')
+          return col
+        }),
+        indexes: [],
+      }))
+      // 替换 form.tables(覆盖)
+      form.tables = newTables.length ? newTables : [makeEmptyTable()]
+      return true
+    } catch (e: any) {
+      metadataError.value = useNoticeStore().toErrorMessage(e)
+      return false
+    } finally {
+      importingMetadata.value = false
+    }
+  }
+
+  async function loadFromTemplate(templateFile: string) {
+    const noticeStore = useNoticeStore()
+    try {
+      const r = await apiJson<{ scenario: any }>(`/api/scenarios/templates/${templateFile}`, 'GET')
+      const sc = r.scenario
+      // 把 backend dict 翻成 form state
+      form.id = (sc.id || '') + '-copy'  // 防覆盖原 template
+      form.name = sc.name || ''
+      form.description = sc.description || ''
+      form.dialect = sc.dialect || 'mysql'
+      form.seed = sc.seed || 42
+      form.variables = Object.entries(sc.variables || {}).map(([name, value]) => ({
+        name, value: String(value),
+      }))
+      form.tables = (sc.tables || []).map((t: any) => tableDictToForm(t))
+      noticeStore.setNotice(`✓ 已加载模板 ${sc.id};请改 id 后保存`)
+    } catch (e: any) {
+      noticeStore.setNotice('加载模板失败: ' + noticeStore.toErrorMessage(e))
+    }
+  }
 
   async function save(overwrite = false): Promise<boolean> {
     const noticeStore = useNoticeStore()
@@ -267,7 +374,7 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
   //   data_dt VARCHAR(8),
   //   PRIMARY KEY (id)
   // → 3 个 column,id 标 pk + nullable=false
-  function addColumnsFromDdl(tableIdx: number, ddl: string): { added: number; pk_count: number; index_count: number; warnings: string[] } {
+  function addColumnsFromDdl(tableIdx: number, ddl: string): { added: number; pk_count: number; index_count: number; fk_count: number; warnings: string[] } {
     const table = form.tables[tableIdx]
     const parsed = parseDdlColumns(ddl)
     parsed.columns.forEach((c) => {
@@ -292,10 +399,20 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
         unique: idx.unique,
       })
     })
+    // Round 6 — 处理 FOREIGN KEY 声明 → 改对应列 gen=foreign_key + references
+    parsed.foreignKeys.forEach((fk) => {
+      const col = table.columns.find((c) => c.name === fk.column)
+      if (col) {
+        col.gen = 'foreign_key'
+        col.fk_ref_table = fk.ref_table
+        col.fk_ref_column = fk.ref_column
+      }
+    })
     return {
       added: parsed.columns.length,
       pk_count: parsed.pkColumns.length || parsed.columns.filter((c) => c.pk).length,
       index_count: parsed.indexes.length,
+      fk_count: parsed.foreignKeys.length,
       warnings: parsed.warnings,
     }
   }
@@ -318,6 +435,9 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
     addColumn, removeColumn, addColumnsFromDdl,
     addIndex, removeIndex,
     addVariable, removeVariable,
+    templatesList, loadingTemplates,
+    loadTemplatesList, loadFromTemplate,
+    importingMetadata, metadataError, importFromMetadataCsv,
   }
 })
 
@@ -336,10 +456,17 @@ interface ParsedIndex {
   unique: boolean
 }
 
+interface ParsedFK {
+  column: string
+  ref_table: string
+  ref_column: string
+}
+
 interface DdlParseResult {
   columns: ParsedColumn[]
   pkColumns: string[]    // 来自 "PRIMARY KEY (col1, col2)" 独立声明
   indexes: ParsedIndex[]
+  foreignKeys: ParsedFK[] // FOREIGN KEY (col) REFERENCES tbl(col)
   warnings: string[]
 }
 
@@ -354,7 +481,7 @@ interface DdlParseResult {
  */
 function parseDdlColumns(rawText: string): DdlParseResult {
   const result: DdlParseResult = {
-    columns: [], pkColumns: [], indexes: [], warnings: [],
+    columns: [], pkColumns: [], indexes: [], foreignKeys: [], warnings: [],
   }
   let text = rawText.trim()
   if (!text) return result
@@ -394,10 +521,30 @@ function parseDdlColumns(rawText: string): DdlParseResult {
       result.indexes.push({ columns: splitNames(keyMatch[1]), unique: false })
       continue
     }
-    // CONSTRAINT / FOREIGN KEY / CHECK — 给 warning 跳过
+    // FOREIGN KEY (col) REFERENCES table(col) — Round 6 识别
+    const fkMatch = line.match(
+      /^(?:CONSTRAINT\s+\S+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+([`"\[]?[\w.]+[`"\]]?)\s*\(([^)]+)\)/i,
+    )
+    if (fkMatch) {
+      const localCols = splitNames(fkMatch[1])
+      const refTable = fkMatch[2].replace(/^[`"\[]|[`"\]]$/g, '')
+      const refCols = splitNames(fkMatch[3])
+      // 只支持单列 FK(多列复合 FK 较少,P2 再加)
+      if (localCols.length === 1 && refCols.length === 1) {
+        result.foreignKeys.push({
+          column: localCols[0],
+          ref_table: refTable,
+          ref_column: refCols[0],
+        })
+      } else {
+        result.warnings.push(`复合 FK 暂不支持: ${line.slice(0, 60)}…`)
+      }
+      continue
+    }
+    // 其它 CONSTRAINT / CHECK — 给 warning 跳过
     if (
-      upper.startsWith('CONSTRAINT') || upper.startsWith('FOREIGN ')
-      || upper.startsWith('CHECK') || upper.startsWith('FULLTEXT')
+      upper.startsWith('CONSTRAINT') || upper.startsWith('CHECK')
+      || upper.startsWith('FULLTEXT')
     ) {
       result.warnings.push(`跳过不支持的约束: ${line.slice(0, 60)}…`)
       continue
@@ -477,6 +624,63 @@ function pickDefaultGenForType(type: string): GeneratorKind {
 
 
 // ─── utils ────────────────────────────────────────────────────────────────
+
+// Round 6 L — backend scenario dict → 前端 form state(模板加载用)
+function tableDictToForm(t: any): TableForm {
+  return {
+    name: t.name || '',
+    role: t.role || 'source',
+    rows: t.rows || 1000,
+    columns: (t.columns || []).map((c: any) => columnDictToForm(c)),
+    indexes: (t.indexes || []).map((i: any) => ({
+      columns_text: (i.columns || []).join(', '),
+      unique: !!i.unique,
+    })),
+  }
+}
+
+function columnDictToForm(c: any): ColumnForm {
+  const out = makeEmptyColumn()
+  out.name = c.name || ''
+  out.type = c.type || 'VARCHAR(100)'
+  out.pk = !!c.pk
+  out.nullable = c.nullable !== false
+  out.gen = c.gen || 'realistic'
+  if (c.values && Array.isArray(c.values)) out.values_text = c.values.join(', ')
+  if (c.distribution && Array.isArray(c.distribution)) {
+    out.distribution_text = c.distribution.join(', ')
+  }
+  if (c.range && Array.isArray(c.range)) {
+    if (out.gen === 'random_int') {
+      out.range_min = c.range[0] ?? ''
+      out.range_max = c.range[1] ?? ''
+    } else if (out.gen === 'timestamp') {
+      out.ts_start = c.range[0] || ''
+      out.ts_end = c.range[1] || ''
+    }
+  }
+  if (c.zipf !== undefined) out.zipf = c.zipf
+  if (out.gen === 'sequence' && c.values && c.values[0]) out.prefix = String(c.values[0])
+  if (c.dist_params) {
+    out.dist_params_enabled = true
+    Object.assign(out.dist_params, c.dist_params)
+  }
+  // Round 6 FK
+  if (c.references) {
+    const refStr = String(c.references)
+    const idx = refStr.lastIndexOf('.')
+    if (idx > 0) {
+      out.fk_ref_table = refStr.slice(0, idx)
+      out.fk_ref_column = refStr.slice(idx + 1)
+    }
+  }
+  if (c.match_rate !== undefined) out.fk_match_rate = c.match_rate
+  if (c.fk_unique) out.fk_unique = true
+  if (c.fk_distribution) out.fk_distribution = c.fk_distribution
+  if (c.fk_zipf_alpha !== undefined) out.fk_zipf_alpha = c.fk_zipf_alpha
+  if (c.faker_provider) out.faker_provider = c.faker_provider
+  return out
+}
 
 function splitCsv(s: string): string[] {
   return s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean)
