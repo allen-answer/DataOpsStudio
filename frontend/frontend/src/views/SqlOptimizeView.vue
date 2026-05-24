@@ -30,15 +30,19 @@ const STEPS: { id: StepId; label: string; desc: string }[] = [
   { id: 'verify', label: '4. 回归校验',  desc: '改完 SQL 跑回归确认数据没改坏 + 性能改善' },
 ]
 
+// 点 step bar 任一步滚到对应区域。step 1 = scenario 列表(左栏);
+// 2 = datasource picker + action 按钮;3 = workload 列表 + slow-sql 分析;
+// 4 = verify result 卡片。各区域 template 上加 ref,这里 scrollIntoView。
+function jumpToStep(stepId: StepId): void {
+  const el = document.querySelector(`[data-step-anchor="${stepId}"]`)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 onMounted(async () => {
   await store.loadList()
-  if (store.validScenarios.length && !store.selectedId) {
-    const firstId = store.validScenarios[0].id
-    if (firstId) await store.selectScenario(firstId)
-  }
-  if (store.mysqlDatasources.length && !store.datasourceId) {
-    store.datasourceId = (store.mysqlDatasources[0] as any).id
-  }
+  // **不自动选 scenario** —— Phase 14 P2 完整版后让用户主动选,
+  // 否则 currentStep 直接跳 step 2,看起来"第一步选不了"
+  // 同样不自动选 datasource —— 让用户在 step 2 显式选
 })
 </script>
 
@@ -67,19 +71,56 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- Step bar 视觉导航 -->
-    <div class="card p-3 flex items-stretch gap-2 overflow-x-auto">
-      <div
-        v-for="s in STEPS"
-        :key="s.id"
-        class="flex-1 min-w-[180px] rounded-lg border px-3 py-2 transition"
-        :class="store.currentStep === s.id
-          ? 'border-primary bg-primary-light text-primary'
-          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'"
-      >
-        <div class="font-bold text-xs">{{ s.label }}</div>
-        <div class="text-[11px] mt-0.5 leading-snug" :class="store.currentStep === s.id ? '' : 'text-slate-500'">{{ s.desc }}</div>
-        <div v-if="store.currentStep === s.id" class="text-[10px] mt-1 text-primary/80">← 当前步骤</div>
+    <!-- Step bar:点任一步滚到对应区域(高亮 = 当前完成进度推断)-->
+    <div class="card p-3 space-y-2">
+      <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold px-1">
+        优化流程 · 点任一步跳到对应区域
+      </div>
+      <div class="flex items-stretch gap-2 overflow-x-auto">
+        <button
+          v-for="s in STEPS"
+          :key="s.id"
+          type="button"
+          class="flex-1 min-w-[180px] rounded-lg border px-3 py-2 transition text-left cursor-pointer"
+          :class="store.currentStep === s.id
+            ? 'border-primary bg-primary-light text-primary'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-primary hover:bg-primary-light/40'"
+          @click="jumpToStep(s.id)"
+        >
+          <div class="font-bold text-xs">{{ s.label }}</div>
+          <div class="text-[11px] mt-0.5 leading-snug" :class="store.currentStep === s.id ? '' : 'text-slate-500'">{{ s.desc }}</div>
+          <div class="text-[10px] mt-1" :class="store.currentStep === s.id ? 'text-primary/80' : 'text-slate-400'">
+            {{ store.currentStep === s.id ? '← 当前进度' : '👆 点击跳转' }}
+          </div>
+        </button>
+      </div>
+      <!-- 一句话指引:告诉用户当前 step 下该点哪个按钮 -->
+      <div class="text-[11px] text-slate-600 px-1 pt-1 border-t border-slate-100">
+        💡
+        <template v-if="store.currentStep === 'schema'">
+          左侧选一份 scenario 模板,或右上点
+          <span class="font-semibold text-primary">「从 datasource 导入」</span>
+          从生产 schema 反向生成新 yml
+        </template>
+        <template v-else-if="store.currentStep === 'data'">
+          选好「目标 datasource」后点
+          <span class="font-semibold text-primary">「🚀 一键全套」</span>
+          (推荐,跑通整个链路)或「仅生成数据」
+        </template>
+        <template v-else-if="store.currentStep === 'sql'">
+          在「工作负载」栏找 <code class="sql-font">slow_query</code> 类型的行,点行右边
+          <span class="font-semibold text-primary">「🔬 分析」</span>
+          → 出 EXPLAIN 后点
+          <span class="font-semibold text-primary">「✨ AI 复核」</span>
+          → 改写 SQL 后重跑用
+          <span class="font-semibold text-primary">「📊 plan diff」</span>
+          对比改善
+        </template>
+        <template v-else-if="store.currentStep === 'verify'">
+          顶部点
+          <span class="font-semibold text-primary">「🛡 回归校验」</span>
+          确认数据对得上 + 性能改善没破坏 actual diff 结果
+        </template>
       </div>
     </div>
 
@@ -101,8 +142,8 @@ onMounted(async () => {
       </ul>
     </div>
 
-    <!-- 两列:左 scenario 列表 + 右主工作区 -->
-    <div class="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
+    <!-- 两列:左 scenario 列表(对应 step 1 schema 选模板)+ 右主工作区 -->
+    <div data-step-anchor="schema" class="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
       <ScenarioListPanel />
 
       <div class="space-y-6">
@@ -113,8 +154,8 @@ onMounted(async () => {
         </div>
 
         <template v-else>
-          <!-- 头部 + 操作 -->
-          <div class="card p-6">
+          <!-- 头部 + datasource picker + action buttons(对应 step 2 生成数据) -->
+          <div data-step-anchor="data" class="card p-6">
             <div class="flex items-start justify-between gap-4 mb-4">
               <div>
                 <h3 class="text-xl font-bold text-slate-800">{{ store.detail.name }}</h3>
@@ -206,8 +247,8 @@ onMounted(async () => {
             </div>
           </div>
 
-          <!-- 三栏 schema breakdown -->
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <!-- 三栏 schema breakdown(workload 列里是 step 3 SQL 优化入口:点 slow_query 行的「分析」按钮)-->
+          <div data-step-anchor="sql" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div class="card p-4">
               <div class="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">
                 表({{ store.detail.tables.length }})
@@ -310,8 +351,10 @@ onMounted(async () => {
             </div>
           </div>
 
-          <!-- 嵌入子组件:run-all / verify / materialize / record 各结果面板 -->
-          <ResultPanels />
+          <!-- 嵌入子组件:run-all / verify / materialize / record 各结果面板(verify 是 step 4 入口)-->
+          <div data-step-anchor="verify">
+            <ResultPanels />
+          </div>
 
           <!-- 嵌入子组件:slow-sql 分析卡片(per workload) -->
           <SlowSqlCards />
