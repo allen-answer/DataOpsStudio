@@ -51,13 +51,6 @@ const routes = [
   { path: '/sql-optimize',  name: 'sql-optimize',  component: () => import('../views/SqlOptimizeView.vue') },
   { path: '/admin/sandbox', redirect: '/sql-optimize' },
 
-  // Phase 14 反馈 #1: 场景管理(scenarios) 独立成一级菜单。
-  // 之前嵌在 /sql-optimize 里, 但生成数据本质是通用 fixture 基建,
-  // 不只是 SQL 优化用 —— 数据对比 / 血缘 / 慢 SQL 都该能用。独立 view 后,
-  // 选场景 + 生成数据完, 用户决定去哪个 view 继续用(3 个 CTA)。
-  // 权限 editor+ 跟 sql-optimize 一致。
-  { path: '/scenarios',     name: 'scenarios',     component: () => import('../views/ScenariosView.vue') },
-
   // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示。lazy load 节省
   // 普通用户的首屏带宽（admin 占总人数 < 5% 的场景下尤其值得）
   { path: '/admin/users',     name: 'admin-users',     component: () => import('../views/admin/UserManagementView.vue'),    meta: { adminOnly: true } },

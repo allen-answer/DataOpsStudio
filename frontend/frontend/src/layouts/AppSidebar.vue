@@ -14,7 +14,6 @@ import {
   Activity,
   Tag,
   Microscope,
-  FlaskConical,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -28,7 +27,6 @@ import { useBootstrapStore } from '../stores/bootstrap'
 // label 走 i18n —— labelKey 是 messages 里的 key，模板用 $t(item.labelKey)
 const NAV_ITEMS = [
   { id: 'datasources',   labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
-  { id: 'scenarios',     labelKey: 'nav.scenarios',    icon: FlaskConical,     path: '/scenarios',     matchPaths: ['/scenarios'] },
   { id: 'data-compare',  labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
   { id: 'sql-optimize',  labelKey: 'nav.sqlOptimize',  icon: Microscope,       path: '/sql-optimize',  matchPaths: ['/sql-optimize', '/admin/sandbox'] },
   { id: 'workflows',     labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
