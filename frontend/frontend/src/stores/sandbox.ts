@@ -8,8 +8,8 @@
 // async actions,setup style,no options API。
 import { computed, ref } from 'vue'
 import { defineStore, storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
 
+import { router } from '../router'
 import { apiGet, apiJson } from '../api'
 import { useNoticeStore } from './notice'
 import { useBootstrapStore } from './bootstrap'
@@ -74,7 +74,8 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const bootstrapStore = useBootstrapStore()
   const { state: bootState } = storeToRefs(bootstrapStore)
   const noticeStore = useNoticeStore()
-  const router = useRouter()
+  // Phase 14 修缮:用 router 实例直接 import(替代 useRouter()),
+  // 避免 setup store 顶层调 composable 在某些初始化时机下拿不到 router context
 
   const datasources = computed(() => (bootState.value?.datasources || []) as any[])
   const mysqlDatasources = computed(() =>
