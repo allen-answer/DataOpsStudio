@@ -44,10 +44,15 @@ const routes = [
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
   { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
 
-  // SQL 优化沙盒(Phase 14 P0-1 重定位):从 admin 二级菜单升级到顶级一级菜单。
-  // 原 /admin/sandbox 路径保留 301 重定向到新路径,兼容老书签 + 文档链接。
-  // 权限放开到 editor —— SQL 优化是数据工程师日常,不是 admin 特权;
-  // require_datasource_access 仍约束只能 materialize 到自己有权的 ds。
+  // Phase 14 #3 — 拆分自原 /sql-optimize:
+  // - /sql-diagnosis: 真正 SQL 诊断(preflight + EXPLAIN + AI + plan diff)
+  // - /scenario-lab: 测试沙盒(scenario yml + materialize/run-all/record/verify)
+  // - /schema-import: 从 datasource 反查 schema 生成 yml
+  // 旧 /sql-optimize 保留为兼容入口(展示 mode tab 让用户选哪个新页),
+  // /admin/sandbox 老路径继续 301 到 /sql-optimize 让书签不死链。
+  { path: '/sql-diagnosis', name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
+  { path: '/scenario-lab',  name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
+  { path: '/schema-import', name: 'schema-import', component: () => import('../views/SchemaImportView.vue') },
   { path: '/sql-optimize',  name: 'sql-optimize',  component: () => import('../views/SqlOptimizeView.vue') },
   { path: '/admin/sandbox', redirect: '/sql-optimize' },
 

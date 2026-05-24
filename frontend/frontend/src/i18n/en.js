@@ -2,6 +2,9 @@
 export default {
   nav: {
     datasources: 'Data Sources',
+    sqlDiagnosis: 'SQL Diagnosis',
+    scenarioLab: 'Scenario Lab',
+    schemaImport: 'Schema Import',
     dataCompare: 'Compare',
     sqlOptimize: 'SQL Optimizer',
     workflows: 'Workflows',

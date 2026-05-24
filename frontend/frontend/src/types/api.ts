@@ -31,9 +31,29 @@ export type ApiUserUpdate = Schemas['UserUpdate']
 // 沙盒写入端点(materialize / run-all / record)只允许 sandbox 的 ds,prod/staging
 // 返 403。api-schema.ts 是 auto-generated 的,环境字段在这里手动 augment;下次
 // schema:fetch 重生成时不会丢(merge type)。
-export type DatasourceEnvironment = 'sandbox' | 'staging' | 'prod'
-export type ApiDataSource = Schemas['DataSource'] & { environment?: DatasourceEnvironment }
-export type ApiDataSourceCreate = Schemas['DataSourceCreate'] & { environment?: DatasourceEnvironment }
+// Phase 14 #3:datasource 环境标签 fail-safe — 默认 unknown,sandbox/staging/prod 显式标
+export type DatasourceEnvironment = 'unknown' | 'sandbox' | 'staging' | 'prod'
+
+// allow_* 显式开关 — 决策 operation_policy 是否允许某 op。schema 是 auto-generated 的,
+// 这里手动 augment。openapi-typescript 重生成时不会丢(merge type)。
+export interface DatasourceAllowFlags {
+  environment_verified?: boolean
+  allow_select?: boolean
+  allow_explain?: boolean
+  allow_dm_explain?: boolean
+  allow_oracle_plan_table?: boolean
+  allow_schema_import?: boolean
+  allow_schema_save?: boolean
+  allow_scenario_write?: boolean
+  allow_record_task?: boolean
+}
+
+export type ApiDataSource = Schemas['DataSource'] & {
+  environment?: DatasourceEnvironment
+} & DatasourceAllowFlags
+export type ApiDataSourceCreate = Schemas['DataSourceCreate'] & {
+  environment?: DatasourceEnvironment
+} & DatasourceAllowFlags
 
 export type ApiCompareTask = Schemas['CompareTask']
 export type ApiCompareTaskCreate = Schemas['CompareTaskCreate']

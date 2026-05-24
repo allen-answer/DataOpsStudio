@@ -530,6 +530,56 @@ export const useSandboxStore = defineStore('sandbox', () => {
     quickResult.value = null
     quickPlanDiff.value = null
     try {
+      // Phase 14 #3 — 先跑 preflight 静态检查,blocking=true 拦
+      try {
+        const preflight = await apiJson<{
+          risk_level: string
+          blocking: boolean
+          rules: Array<{ code: string; level: string; message: string }>
+        }>('/api/sql-diagnosis/preflight', 'POST', {
+          sql: quickSql.value,
+          datasource_id: quickDatasourceId.value,
+        })
+        if (preflight.blocking) {
+          const blockRules = preflight.rules
+            .filter((r) => r.level === 'block' || r.level === 'high')
+            .map((r) => `[${r.code}] ${r.message}`)
+            .join('\n')
+          quickError.value = '❌ preflight 静态检查未通过(阻塞):\n' + blockRules
+          return
+        }
+        // medium 级别给 confirm,low 直接放行
+        if (preflight.risk_level === 'medium' && preflight.rules.length) {
+          const warnText = preflight.rules
+            .map((r) => `[${r.code}] ${r.message}`)
+            .join('\n')
+          const ok = confirm(
+            '⚠ preflight 发现 ' + preflight.rules.length + ' 个风险提示(不阻塞):\n\n'
+            + warnText + '\n\n是否继续 EXPLAIN?',
+          )
+          if (!ok) return
+        }
+      } catch (e) {
+        // preflight 失败 → 仍允许 analyze,只警告
+        console.warn('preflight 调用失败,继续 analyze:', e)
+      }
+
+      // Phase 14 #3 — prod / staging 数据源做 EXPLAIN 弹二次确认
+      const ds = (mysqlDatasources.value as any[]).find((d) => d.id === quickDatasourceId.value)
+      const env = ds?.environment || 'unknown'
+      const dbType = String(ds?.db_type || '').toLowerCase()
+      if (env === 'prod' || env === 'staging') {
+        let msg = ''
+        if (dbType === 'oracle') {
+          msg = `即将在 ${env} 环境的 Oracle 数据源上执行 EXPLAIN PLAN FOR,会向诊断表 PLAN_TABLE 写一行临时记录(非业务表)。\n\n本操作不会修改业务数据,但会被记录审计。\n\n是否继续?`
+        } else if (dbType === 'dm') {
+          msg = `即将在 ${env} 环境的 DM 数据源上执行 EXPLAIN SELECT。\n\n本操作不会修改业务数据,但会消耗优化器资源,并记录审计。\n\n是否继续?`
+        } else {
+          msg = `即将在 ${env} 环境的 ${dbType} 数据源上执行 EXPLAIN SELECT。\n\n本操作不会修改业务数据,但会记录审计。\n\n是否继续?`
+        }
+        if (!confirm(msg)) return
+      }
+
       const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
         sql: quickSql.value,
         datasource_id: quickDatasourceId.value,

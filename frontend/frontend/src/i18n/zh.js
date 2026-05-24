@@ -3,6 +3,9 @@
 export default {
   nav: {
     datasources: '数据源',
+    sqlDiagnosis: 'SQL 诊断',
+    scenarioLab: '场景测试沙盒',
+    schemaImport: 'Schema 导入',
     dataCompare: '数据对比',
     sqlOptimize: 'SQL 优化沙盒',
     workflows: '作业流',

@@ -14,6 +14,8 @@ import {
   Activity,
   Tag,
   Microscope,
+  FlaskConical,
+  FileCode,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -26,12 +28,14 @@ import { useBootstrapStore } from '../stores/bootstrap'
 // /batch-lineage 仍是合法路径（保留外部链接兼容），同样高亮该项。
 // label 走 i18n —— labelKey 是 messages 里的 key，模板用 $t(item.labelKey)
 const NAV_ITEMS = [
-  { id: 'datasources',   labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
-  { id: 'data-compare',  labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
-  { id: 'sql-optimize',  labelKey: 'nav.sqlOptimize',  icon: Microscope,       path: '/sql-optimize',  matchPaths: ['/sql-optimize', '/admin/sandbox'] },
-  { id: 'workflows',     labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
-  { id: 'lineage',       labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
-  { id: 'history',       labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
+  { id: 'datasources',     labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',     matchPaths: ['/datasources'] },
+  { id: 'sql-diagnosis',   labelKey: 'nav.sqlDiagnosis', icon: Microscope,       path: '/sql-diagnosis',   matchPaths: ['/sql-diagnosis', '/sql-optimize', '/admin/sandbox'] },
+  { id: 'scenario-lab',    labelKey: 'nav.scenarioLab',  icon: FlaskConical,     path: '/scenario-lab',    matchPaths: ['/scenario-lab'] },
+  { id: 'schema-import',   labelKey: 'nav.schemaImport', icon: FileCode,         path: '/schema-import',   matchPaths: ['/schema-import'] },
+  { id: 'data-compare',    labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',    matchPaths: ['/data-compare'] },
+  { id: 'workflows',       labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',       matchPaths: ['/workflows', '/workflow-runs'] },
+  { id: 'lineage',         labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',         matchPaths: ['/lineage', '/batch-lineage'] },
+  { id: 'history',         labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',         matchPaths: ['/history'] },
 ]
 
 // admin-only nav 项：仅 admin role 可见。Phase 14 P0-1:sandbox 移出 admin
