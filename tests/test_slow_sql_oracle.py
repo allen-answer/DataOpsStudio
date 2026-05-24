@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.datasource import DatabaseType, DataSourceCreate
+from app.models.datasource import DatabaseType, DataSourceCreate, make_sandbox_datasource_kwargs
 from app.services.slow_sql import (
     SlowSqlError,
     analyze_sql,
@@ -188,6 +188,7 @@ def oracle_datasource(isolated_storage):
         name="mock-oracle", db_type=DatabaseType.ORACLE,
         host="localhost", port=1521, database="ORCL",
         username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
     ))
 
 
@@ -198,6 +199,7 @@ def dm_datasource(isolated_storage):
         name="mock-dm", db_type=DatabaseType.DM,
         host="localhost", port=5236, database="DAMENG",
         username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
     ))
 
 
@@ -218,15 +220,21 @@ def test_analyze_sql_oracle_dialect_returns_oracle_envelope(oracle_datasource, m
     assert "full_table_scan" in codes
 
 
-def test_analyze_sql_dm_uses_oracle_path(dm_datasource, monkeypatch):
-    """DM 走 oracle 路径但 dialect 字段保持 'oracle'（PLAN_TABLE 协议一致）。"""
-    canned = [_orow(operation="TABLE ACCESS", options="FULL",
-                    object_name="T", cardinality=100)]
+def test_analyze_sql_dm_does_not_use_oracle_path(dm_datasource, monkeypatch):
+    """Phase 14 #3 反向断言:DM 不应走 Oracle PLAN_TABLE 路径。
+
+    DM 现在用 EXPLAIN SELECT 独立路径,_fetch_oracle_plan 必须不被调用。
+    """
     from app.services import slow_sql as svc
-    monkeypatch.setattr(svc, "_fetch_oracle_plan", lambda src, sql, n: canned)
+
+    def boom(*a, **kw):
+        raise AssertionError("DM analyze 不应该调用 _fetch_oracle_plan")
+
+    monkeypatch.setattr(svc, "_fetch_oracle_plan", boom)
+    monkeypatch.setattr(svc, "fetch_rows", lambda src, sql, max_rows=None: [{"operation": "CSCN2 [t]"}])
 
     result = analyze_sql(dm_datasource.id, "SELECT * FROM t")
-    assert result["dialect"] == "oracle"
+    assert result["dialect"] == "dm"
     assert len(result["plan"]) == 1
 
 

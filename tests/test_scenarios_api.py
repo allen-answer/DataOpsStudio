@@ -91,6 +91,10 @@ def test_get_scenario_not_found(client, populated_scenarios):
 
 
 def test_materialize_calls_runtime(client, populated_scenarios, monkeypatch):
+    """Phase 14 #3:require_datasource_access 现要求 ds 真实存在 + sandbox flag
+    全开,所以这里先 _create_ds_in_store 注册一个 sandbox ds 再调端点。
+    """
+    ds_id = _create_ds_in_store("demo-mysql", environment="sandbox")
     captured: dict = {}
 
     def fake_materialize(scenario, data, datasource_id, *, drop_first, batch_size):
@@ -111,38 +115,37 @@ def test_materialize_calls_runtime(client, populated_scenarios, monkeypatch):
 
     r = client.post(
         "/api/scenarios/orders-recon-mvp/materialize",
-        json={"datasource_id": "demo-mysql", "drop_first": True, "batch_size": 200},
+        json={"datasource_id": ds_id, "drop_first": True, "batch_size": 200},
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert captured == {
-        "scenario_id": "orders-recon-mvp",
-        "datasource_id": "demo-mysql",
-        "drop_first": True,
-        "batch_size": 200,
-        "table_count": 2,
-    }
+    assert captured["scenario_id"] == "orders-recon-mvp"
+    assert captured["datasource_id"] == ds_id
+    assert captured["drop_first"] is True
+    assert captured["batch_size"] == 200
+    assert captured["table_count"] == 2
     assert body["dialect"] == "mysql"
     assert "rows_generated" in body
     assert body["rows_generated"]["ods.orders"] == 1000
 
 
 def test_materialize_runtime_error_returns_400(client, populated_scenarios, monkeypatch):
+    """ds 必须存在 + sandbox 通过 policy 后,下游 ScenarioRuntimeError → 400"""
+    ds_id = _create_ds_in_store("rt-err-ds", environment="sandbox")
     from app.api import scenarios as api_module
     from app.scenarios.runtime import ScenarioRuntimeError
 
     def fake_raise(*a, **kw):
-        raise ScenarioRuntimeError("datasource not found: nope")
+        raise ScenarioRuntimeError("inner-runtime-error")
 
     monkeypatch.setattr(api_module, "materialize_to_datasource", fake_raise)
     r = client.post(
         "/api/scenarios/orders-recon-mvp/materialize",
-        json={"datasource_id": "nope"},
+        json={"datasource_id": ds_id},
     )
     assert r.status_code == 400
-    # error envelope (Phase 9 Day 6) wraps detail
     body = r.json()
-    assert "datasource not found" in str(body)
+    assert "inner-runtime-error" in str(body)
 
 
 def test_materialize_missing_datasource_id_rejected(client, populated_scenarios):
@@ -154,9 +157,10 @@ def test_materialize_missing_datasource_id_rejected(client, populated_scenarios)
 
 
 def test_materialize_scenario_not_found_404(client, populated_scenarios):
+    """ds 不存在 → require_datasource_access 自己 404(不到 scenario 校验)"""
     r = client.post(
         "/api/scenarios/no-such/materialize",
-        json={"datasource_id": "demo"},
+        json={"datasource_id": "nonexistent-ds"},
     )
     assert r.status_code == 404
 
@@ -165,14 +169,21 @@ def test_materialize_scenario_not_found_404(client, populated_scenarios):
 
 
 def _create_ds_in_store(name: str, environment: str = "sandbox") -> str:
-    """在 datasource_store 里建一个真 datasource 用于测 guard,返回 id。"""
-    from app.models.datasource import DataSourceCreate
+    """在 datasource_store 里建一个真 datasource 用于测 guard,返回 id。
+
+    Phase 14 #3:sandbox 默认 allow_* 全开(测试沙盒预期);非 sandbox 不开 flag(测拒绝)。
+    """
+    from app.models.datasource import DataSourceCreate, make_sandbox_datasource_kwargs
     from app.models.common import DatabaseType
     from app.services.repositories import datasource_store
+    if environment == "sandbox":
+        kwargs = make_sandbox_datasource_kwargs()
+    else:
+        kwargs = {"environment": environment}  # type: ignore[dict-item]
     payload = DataSourceCreate(
         name=name, db_type=DatabaseType.MYSQL, host="localhost", port=3306,
         database="x", username="x", password="x",
-        environment=environment,  # type: ignore[arg-type]
+        **kwargs,
     )
     ds = datasource_store.create(payload)
     return ds.id
@@ -244,24 +255,26 @@ def test_verify_endpoint_does_not_guard_env(client, populated_scenarios):
 
 
 def test_record_creates_compare_tasks(client, populated_scenarios):
+    ds_id = _create_ds_in_store("demo-mysql", environment="sandbox")
     r = client.post(
         "/api/scenarios/orders-recon-mvp/record",
-        json={"datasource_id": "demo-mysql", "project_id": "demo"},
+        json={"datasource_id": ds_id, "project_id": "demo"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert len(body["tasks"]) == 1
     t = body["tasks"][0]
-    assert t["source_id"] == "demo-mysql"
-    assert t["target_id"] == "demo-mysql"
+    assert t["source_id"] == ds_id
+    assert t["target_id"] == ds_id
     assert t["project_id"] == "demo"
     assert t["key_columns"] == ["order_id"]
 
 
 def test_record_scenario_not_found_404(client, populated_scenarios):
+    """ds 不存在 → require_datasource_access 404"""
     r = client.post(
         "/api/scenarios/no-such/record",
-        json={"datasource_id": "demo"},
+        json={"datasource_id": "nonexistent"},
     )
     assert r.status_code == 404
 

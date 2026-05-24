@@ -17,6 +17,7 @@ from app.api._authz import require_datasource_access
 from app.models import User
 from app.services.auth import require_role
 from app.services import plan_history
+from app.services.operation_policy import Operation, assert_operation_allowed
 from app.services.slow_sql import SlowSqlError, analyze_sql, enrich_via_ai
 
 
@@ -49,7 +50,27 @@ def analyze(
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
     # 项目级授权：editor 不能拿别的项目的 datasource_id 跑 EXPLAIN 反查 plan。
-    require_datasource_access(current, payload.datasource_id)
+    ds = require_datasource_access(current, payload.datasource_id)
+
+    # Phase 14 #3: operation policy 强制 — environment + allow_* flag 矩阵决策
+    # 按 db_type 路由到对应 Operation,prod ds 未开 allow_* 立刻 OperationDenied 403
+    db_type = (ds.db_type.value or "").lower()
+    if db_type == "mysql":
+        op = Operation.SQL_EXPLAIN_MYSQL
+    elif db_type == "dm":
+        op = Operation.SQL_EXPLAIN_DM
+    elif db_type == "oracle":
+        op = Operation.SQL_EXPLAIN_ORACLE_PLAN_TABLE
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"slow-sql analyze 暂支持 mysql / oracle / dm;got {ds.db_type.value}",
+        )
+    assert_operation_allowed(
+        current, ds, op,
+        context={"sql_hash": plan_history.sql_hash(payload.sql)},
+    )
+
     try:
         result = analyze_sql(
             payload.datasource_id,
@@ -133,6 +154,50 @@ def plan_diff(
         "plan_b": {"id": b["id"], "ts": b["ts"], "sql_text": b.get("sql_text", "")},
         "diff": plan_history.diff_plans(a, b),
     }
+
+
+@router.post("/api/sql-diagnosis/preflight")
+def sql_diagnosis_preflight(
+    payload: dict[str, Any] = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """Phase 14 #3 alias — /api/sql/preflight 同语义,挂在 sql-diagnosis namespace。
+
+    body: {sql, dialect?, key_columns?, max_rows?, stream_compare?, datasource_id?}
+    返回:assess_sql 标准 SQLPreflightDecision 形状。
+
+    用于新 /sql-diagnosis 前端在 analyze 前先调,blocking=true 时阻止用户继续。
+    不连数据库,prod 也安全。
+    """
+    from app.services.sql_preflight import assess_sql
+    sql = str(payload.get("sql") or "")
+    if not sql.strip():
+        raise HTTPException(status_code=400, detail="sql is required")
+    raw_keys = payload.get("key_columns") or []
+    if isinstance(raw_keys, str):
+        key_columns = [c.strip() for c in raw_keys.split(",") if c.strip()]
+    else:
+        key_columns = [str(c) for c in raw_keys if str(c).strip()]
+    dialect_field = str(payload.get("dialect") or "")
+    # 如果传了 datasource_id,验权 + 用 ds.db_type 校正 dialect
+    datasource_id = str(payload.get("datasource_id") or "").strip()
+    if datasource_id:
+        ds = require_datasource_access(current, datasource_id, detail="无权对此数据源做 preflight")
+        if not dialect_field:
+            dialect_field = ds.db_type.value
+    try:
+        max_rows = int(payload.get("max_rows") or 100_000)
+    except (TypeError, ValueError):
+        max_rows = 100_000
+    decision = assess_sql(
+        sql=sql,
+        dialect=dialect_field,
+        key_columns=key_columns,
+        mode="compare",
+        max_rows=max_rows,
+        stream_compare=bool(payload.get("stream_compare")),
+    )
+    return decision.model_dump()
 
 
 @router.post("/api/slow-sql/enrich")
