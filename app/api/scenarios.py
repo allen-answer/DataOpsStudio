@@ -176,13 +176,26 @@ def run_all_scenario_api(
 
 
 @router.get("/api/scenarios/{scenario_id}/verify")
-def verify_scenario_api(scenario_id: str, project_id: str = "") -> dict[str, Any]:
+def verify_scenario_api(
+    scenario_id: str,
+    project_id: str = "",
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
     """跑 actual vs expected 回归校验。
 
     遍历 compare_task workload，按命名规则（`<scenario_id> · <wl_name>`）
     找到 recorder 当时创建的 CompareTask，拿最近一次运行 summary，对比 yml
     expected 块。三态：pass / fail / skipped（no_expected / no_task / no_run）。
+
+    Phase 14 #3 收口:caller 传的 project_id 必须是当前用户有权访问的项目;
+    否则 editor 可拿别人项目 id 蹭 verify 结果。admin 不受限。
     """
+    from app.api._authz import can_access_project
+    if project_id and not can_access_project(current, project_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"无权访问 project_id={project_id} 的 verify 结果",
+        )
     scenario = _load_or_404(scenario_id)
     report = verify_scenario(scenario, project_id=project_id)
     return {

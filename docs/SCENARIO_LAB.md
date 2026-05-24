@@ -1,5 +1,9 @@
 # 场景测试沙盒(/scenario-lab) — Phase 14 #3
 
+> 旧 /sql-optimize 已废弃为迁移提示页。所有 scenario yml 模板 / materialize /
+> record / verify 操作走 /scenario-lab 入口。前端 store 是
+> `stores/scenarioLab.ts`(facade,引用 sandbox.ts backing state)。
+
 ## 范围
 
 scenario yml 模板驱动的测试沙盒 — fixture 基建:

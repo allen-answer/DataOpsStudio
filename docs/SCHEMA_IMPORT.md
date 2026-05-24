@@ -1,5 +1,8 @@
 # Schema 导入(/schema-import) — Phase 14 #3
 
+> 前端 store 是 `stores/schemaImport.ts`(facade,引用 sandbox.ts backing state)。
+> SchemaImportView + ImportDialog 通过此 store 访问,不再直接 import sandbox.ts。
+
 ## 范围
 
 从 datasource 读 `information_schema` / `all_tab_columns` / `SYSCAT.COLUMNS`,

@@ -63,6 +63,10 @@ sandbox 允许,防 admin 误把 prod ds 翻开后造数据。
 也会被引去写 PLAN_TABLE,这是错误的。现在 `_analyze_dm` 完全独立用
 `EXPLAIN SELECT` + `fetch_rows`。
 
+**/sql-diagnosis 前端支持三方言**(Phase 14 #3 Round 2)— `diagnosableDatasources`
+computed 含 `db_type in ("mysql", "dm", "oracle")`。下拉文案改成
+「选择 MySQL / DM / Oracle 数据源,系统将按方言查看执行计划」。
+
 ## 升级旧 datasource
 
 升级到 Phase 14 #3 后,旧 datasources.json 缺 `environment` 字段时 pydantic

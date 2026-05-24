@@ -159,10 +159,54 @@ def test_diff_plans_handles_none_safely():
 # ─── endpoint integration ─────────────────────────────────────────────────
 
 
-def test_plan_history_endpoint_requires_scope(client, isolated_storage):
-    """缺 datasource_id+sql_hash 也缺 scenario_id → 400"""
+def test_plan_history_endpoint_requires_datasource_and_hash(client, isolated_storage):
+    """Phase 14 #3:plan-history 现要求同时给 datasource_id + sql_hash。
+    scenario_id-only 模式已禁用以防跨项目泄露。"""
     r = client.get("/api/slow-sql/plan-history")
     assert r.status_code == 400
+
+
+def test_plan_history_scenario_id_only_rejected(client, isolated_storage):
+    """Phase 14 #3:scenario_id-only 查询禁用 → 400 + 解释文案"""
+    r = client.get("/api/slow-sql/plan-history?scenario_id=orders-recon")
+    assert r.status_code == 400
+    body = r.json()
+    detail = str(body)
+    assert "datasource_id" in detail
+    assert "sql_hash" in detail
+
+
+def test_plan_history_endpoint_uses_datasource_and_hash(client, isolated_storage):
+    """正常路径:datasource_id + sql_hash → 200"""
+    from app.models import DataSourceCreate, DatabaseType
+    from app.models.datasource import make_sandbox_datasource_kwargs
+    from app.services.repositories import datasource_store
+
+    ds = datasource_store.create(DataSourceCreate(
+        name="ds", db_type=DatabaseType.MYSQL, host="x", port=3306,
+        database="d", username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
+    ))
+    pid = plan_history.save_plan(
+        datasource_id=ds.id, dialect="mysql", sql_text="SELECT 1",
+        plan=[], issues=[], suggestions=[],
+    )
+    assert pid is not None
+    sql_hash = plan_history.sql_hash("SELECT 1")
+    r = client.get(
+        f"/api/slow-sql/plan-history?datasource_id={ds.id}&sql_hash={sql_hash}"
+    )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["items"]) >= 1
+
+
+def test_verify_endpoint_rejects_cross_project(client_editor, isolated_storage):
+    """Phase 14 #3:editor 传别人项目 id 走 verify 应被 403,在 _load_or_404 之前先校 project_id"""
+    # editor 默认不挂任何 project(conftest._bootstrap_users 建 editor 不入项目),
+    # 传一个随便的 project_id 应该被 can_access_project 拒
+    r = client_editor.get("/api/scenarios/orders-recon-mvp/verify?project_id=other-proj")
+    assert r.status_code == 403, r.text
+    assert "无权" in str(r.json()) or "403" in str(r.json())
 
 
 def test_plan_diff_endpoint_404_when_missing(client, isolated_storage):

@@ -113,21 +113,32 @@ def plan_history_list(
     limit: int = Query(10, ge=1, le=100),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
-    """两种查询模式:
-    - 给 datasource_id + sql_hash → 拉同 SQL 的最近 N 次 plan(改写迭代 timeline)
-    - 给 scenario_id (+ workload_name) → 拉该 scenario 的最近 N 次 plan(场景维度)
+    """Phase 14 #3 收口:plan-history **只**支持 datasource_id + sql_hash 模式。
+
+    旧 scenario_id-only 模式(不绑 datasource)已禁用 — 它不带项目级授权检查,
+    editor 可能拉到别项目的 plan(跨项目泄露)。如需按 scenario 维度查询,可
+    指定 scenario_id 当筛选 + 必须同时给 datasource_id + sql_hash 走授权路径。
 
     item 含 plan / issues / suggestions(已 JSON 解析)。
     """
-    if datasource_id and sql_hash:
-        require_datasource_access(current, datasource_id)
-        items = plan_history.list_plans_for_sql(datasource_id, sql_hash, limit=limit)
-    elif scenario_id:
-        # scenario_id 维度的 history 不绑 datasource(同 scenario 可换 ds 跑),
-        # 这里仅 editor 即可,具体 plan 详情已经按 datasource 落 history 时校过
-        items = plan_history.list_plans_for_scenario(scenario_id, workload_name, limit=limit)
-    else:
-        raise HTTPException(status_code=400, detail="需要 datasource_id+sql_hash 或 scenario_id")
+    if not (datasource_id and sql_hash):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "plan-history 现要求同时提供 datasource_id + sql_hash;"
+                "scenario_id-only 模式已禁用以防跨项目 plan 泄露。"
+                "如需按 scenario 维度浏览,先在 /sql-diagnosis 或 /scenario-lab 跑一次 analyze "
+                "拿 sql_hash,再用 (datasource_id, sql_hash) 查 history。"
+            ),
+        )
+    require_datasource_access(current, datasource_id)
+    items = plan_history.list_plans_for_sql(datasource_id, sql_hash, limit=limit)
+    # scenario_id + workload_name 仍可作为 client-side 过滤的筛选条件(后端
+    # list_plans_for_sql 返结果里 item 自带 scenario_id / workload_name)
+    if scenario_id:
+        items = [it for it in items if str(it.get("scenario_id") or "") == scenario_id]
+    if workload_name:
+        items = [it for it in items if str(it.get("workload_name") or "") == workload_name]
     return {"items": items}
 
 
