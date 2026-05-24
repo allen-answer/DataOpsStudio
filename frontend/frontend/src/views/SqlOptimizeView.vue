@@ -19,6 +19,7 @@ import ImportDialog from './sql-optimize/ImportDialog.vue'
 import ScenarioListPanel from './sql-optimize/ScenarioListPanel.vue'
 import SlowSqlCards from './sql-optimize/SlowSqlCards.vue'
 import ResultPanels from './sql-optimize/ResultPanels.vue'
+import QuickOptimizeMode from './sql-optimize/QuickOptimizeMode.vue'
 
 const store = useSandboxStore()
 
@@ -56,21 +57,52 @@ onMounted(async () => {
           SQL 优化沙盒
         </h2>
         <p class="mt-1 text-sm text-slate-500">
-          不连生产做 SQL 性能诊断 + 优化验证。从生产 schema 翻 yml → Faker/AI 填业务数据 → demo DB 跑 EXPLAIN → 改 SQL/加索引 → 对比 plan。
+          不连生产做 SQL 性能诊断 + 优化验证。快速优化模式直接粘 SQL 跑 EXPLAIN;场景模板模式复现千万行规模 + 数据偏斜场景。
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <button class="btn btn-primary" @click="store.openImportDialog">
+        <button v-if="store.viewMode === 'template'" class="btn btn-primary" @click="store.openImportDialog">
           <Database class="h-4 w-4" />
           从 datasource 导入
         </button>
-        <button class="btn btn-outline" :disabled="store.loadingList" @click="store.loadList">
+        <button v-if="store.viewMode === 'template'" class="btn btn-outline" :disabled="store.loadingList" @click="store.loadList">
           <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': store.loadingList }" />
           刷新列表
         </button>
       </div>
     </div>
 
+    <!-- Mode tab:快速优化(默认 / 日常)vs 场景模板(advanced / 复现生产规模) -->
+    <div class="flex border-b border-slate-200">
+      <button
+        type="button"
+        class="px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition"
+        :class="store.viewMode === 'quick'
+          ? 'border-primary text-primary'
+          : 'border-transparent text-slate-500 hover:text-slate-800'"
+        @click="store.viewMode = 'quick'"
+      >
+        ⚡ 快速优化
+        <span class="ml-1 text-[10px] text-slate-400">直接粘 SQL,无需模板</span>
+      </button>
+      <button
+        type="button"
+        class="px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition"
+        :class="store.viewMode === 'template'
+          ? 'border-primary text-primary'
+          : 'border-transparent text-slate-500 hover:text-slate-800'"
+        @click="store.viewMode = 'template'"
+      >
+        📦 场景模板
+        <span class="ml-1 text-[10px] text-slate-400">复现千万行 + 偏斜 + 回归校验</span>
+      </button>
+    </div>
+
+    <!-- Quick mode 内容 -->
+    <QuickOptimizeMode v-if="store.viewMode === 'quick'" />
+
+    <!-- Template mode 内容(原 UI) -->
+    <template v-else>
     <!-- Step bar:点任一步滚到对应区域(高亮 = 当前完成进度推断)-->
     <div class="card p-3 space-y-2">
       <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold px-1">
@@ -361,5 +393,6 @@ onMounted(async () => {
         </template>
       </div>
     </div>
+    </template>
   </section>
 </template>

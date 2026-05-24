@@ -70,6 +70,23 @@ export const useSandboxStore = defineStore('sandbox', () => {
     scenario_name: '', default_rows: 1000, save: true,
   })
 
+  // Phase 14 修缮:模式 toggle + 「快速优化」mode(默认)状态。
+  // quick mode 不依赖 scenario 模板,直接粘 SQL + 选 datasource 跑 EXPLAIN。
+  // 复用 /api/slow-sql/analyze + /enrich + plan-history + plan-diff 后端。
+  const viewMode = ref<'quick' | 'template'>('quick')
+  const quickSql = ref('')
+  const quickDatasourceId = ref('')
+  const quickTagScenarioId = ref('')  // 可选 history 归组标签
+  const quickAnalyzing = ref(false)
+  const quickEnriching = ref(false)
+  const quickPlanDiffLoading = ref(false)
+  const quickResult = ref<SlowSqlResult | null>(null)
+  const quickEnrichResult = ref<SlowSqlEnrichResult | null>(null)
+  const quickPlanDiff = ref<PlanDiffResult | null>(null)
+  const quickPlanHistory = ref<PlanHistoryItem[]>([])
+  const quickError = ref('')
+  const quickPlanDiffError = ref('')
+
   // ─── derived ───────────────────────────────────────────────────────────
   const bootstrapStore = useBootstrapStore()
   const { state: bootState } = storeToRefs(bootstrapStore)
@@ -486,6 +503,116 @@ export const useSandboxStore = defineStore('sandbox', () => {
     noticeStore.setNotice('✓ yml 已复制')
   }
 
+  // ─── Phase 14 修缮:Quick mode actions ──────────────────────────────────
+  async function runQuickAnalyze(): Promise<void> {
+    if (!quickDatasourceId.value || !quickSql.value.trim()) {
+      quickError.value = '需要先选 datasource + 粘 SQL'
+      return
+    }
+    quickAnalyzing.value = true
+    quickError.value = ''
+    quickResult.value = null
+    quickPlanDiff.value = null
+    try {
+      const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
+        sql: quickSql.value,
+        datasource_id: quickDatasourceId.value,
+        scenario_id: quickTagScenarioId.value || '',
+        workload_name: '',
+        save_history: true,
+      })
+      quickResult.value = result
+      // 同步刷一次 history 列表给 UI 展示
+      await refreshQuickHistory()
+      noticeStore.setNotice(`✓ EXPLAIN 完成,${result.issues.length} 个 issue / ${result.suggestions.length} 个建议`)
+    } catch (e) {
+      quickError.value = noticeStore.toErrorMessage(e)
+    } finally {
+      quickAnalyzing.value = false
+    }
+  }
+
+  async function refreshQuickHistory(): Promise<void> {
+    const hash = quickResult.value?.sql_hash
+    if (!hash || !quickDatasourceId.value) return
+    try {
+      const r = await apiJson<{ items: PlanHistoryItem[] }>(
+        `/api/slow-sql/plan-history?datasource_id=${encodeURIComponent(quickDatasourceId.value)}`
+        + `&sql_hash=${encodeURIComponent(hash)}&limit=20`,
+        'GET',
+      )
+      quickPlanHistory.value = r.items || []
+    } catch {
+      quickPlanHistory.value = []
+    }
+  }
+
+  async function runQuickEnrich(): Promise<void> {
+    if (!quickResult.value) {
+      quickError.value = '请先运行规则分析'
+      return
+    }
+    quickEnriching.value = true
+    try {
+      const result = await apiJson<SlowSqlEnrichResult>('/api/slow-sql/enrich', 'POST', {
+        sql: quickSql.value,
+        plan: quickResult.value.plan,
+        issues: quickResult.value.issues,
+        suggestions: quickResult.value.suggestions,
+        expected_optimizations: [],  // quick mode 无 yml expected
+        dialect: quickResult.value.dialect || 'mysql',
+      })
+      quickEnrichResult.value = result
+      if (!result.ok) {
+        noticeStore.setNotice(result.error || 'AI 复核未启用')
+      } else {
+        noticeStore.setNotice('✨ AI 复核完成')
+      }
+    } catch (e) {
+      noticeStore.setNotice(`AI 复核失败:${noticeStore.toErrorMessage(e)}`)
+    } finally {
+      quickEnriching.value = false
+    }
+  }
+
+  async function runQuickPlanDiff(): Promise<void> {
+    if (!quickResult.value?.history_id || !quickResult.value.sql_hash || !quickDatasourceId.value) {
+      quickPlanDiffError.value = '需要先跑过分析(拿到 history_id)'
+      return
+    }
+    quickPlanDiffLoading.value = true
+    quickPlanDiffError.value = ''
+    try {
+      const hist = await apiJson<{ items: PlanHistoryItem[] }>(
+        `/api/slow-sql/plan-history?datasource_id=${encodeURIComponent(quickDatasourceId.value)}`
+        + `&sql_hash=${encodeURIComponent(quickResult.value.sql_hash)}&limit=2`,
+        'GET',
+      )
+      if (!hist.items || hist.items.length < 2) {
+        quickPlanDiffError.value = '同 SQL 没有更早的历史可对比(改写 SQL/加索引后重跑就能 diff 了)'
+        return
+      }
+      const [newest, prev] = hist.items
+      const diff = await apiJson<PlanDiffResult>(
+        `/api/slow-sql/plan-diff?plan_a_id=${prev.id}&plan_b_id=${newest.id}`,
+        'GET',
+      )
+      quickPlanDiff.value = diff
+    } catch (e) {
+      quickPlanDiffError.value = noticeStore.toErrorMessage(e)
+    } finally {
+      quickPlanDiffLoading.value = false
+    }
+  }
+
+  function clearQuickAnalysis(): void {
+    quickResult.value = null
+    quickEnrichResult.value = null
+    quickPlanDiff.value = null
+    quickError.value = ''
+    quickPlanDiffError.value = ''
+  }
+
   return {
     // state
     items, loadingList, selectedId, detail, detailPath, loadingDetail,
@@ -496,6 +623,10 @@ export const useSandboxStore = defineStore('sandbox', () => {
     planDiffs, planDiffLoading, planDiffErrors,
     enrichResults, enrichLoading,
     importDialogOpen, importing, importResult, importError, importForm,
+    viewMode, quickSql, quickDatasourceId, quickTagScenarioId,
+    quickAnalyzing, quickEnriching, quickPlanDiffLoading,
+    quickResult, quickEnrichResult, quickPlanDiff, quickPlanHistory,
+    quickError, quickPlanDiffError,
     // derived
     datasources, mysqlDatasources, validScenarios, brokenScenarios, currentStep,
     // helpers
@@ -507,5 +638,6 @@ export const useSandboxStore = defineStore('sandbox', () => {
     loadList, selectScenario, runMaterialize, runAll, runVerify, runRecord,
     runSlowSqlAnalysis, runPlanDiff, runAiEnrich,
     openImportDialog, submitImport, copyImportYml,
+    runQuickAnalyze, runQuickEnrich, runQuickPlanDiff, refreshQuickHistory, clearQuickAnalysis,
   }
 })
