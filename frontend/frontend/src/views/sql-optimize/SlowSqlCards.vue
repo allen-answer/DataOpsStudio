@@ -144,6 +144,94 @@ const store = useSandboxStore()
               ⚠ 关键列被函数包(CASE/TRIM 等),普通 BTree 索引无效;需改写 SQL
               或用方言函数索引(Oracle/DM 支持)
             </div>
+
+            <!-- Phase 14 #2 lineage 影响:加索引会拖慢谁 / 受益于谁 -->
+            <details
+              v-if="ctx.ddl_candidates.length && (ctx.writers_affected?.length || ctx.readers_helped?.length)"
+              class="text-xs"
+            >
+              <summary class="cursor-pointer font-medium text-slate-700 hover:text-primary">
+                <span v-if="ctx.writers_affected?.length" class="text-status-warning">
+                  ⚠ 影响 {{ ctx.writers_affected.length }} 个 ETL 写入
+                </span>
+                <span v-if="ctx.writers_affected?.length && ctx.readers_helped?.length"> · </span>
+                <span v-if="ctx.readers_helped?.length" class="text-status-success">
+                  ✓ 受益于 {{ ctx.readers_helped.length }} 个读取脚本
+                </span>
+                <span v-if="ctx.refresh_mode" class="ml-2 text-slate-500">
+                  (refresh_mode: <span class="sql-font">{{ ctx.refresh_mode }}</span>)
+                </span>
+              </summary>
+              <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 pl-3">
+                <!-- writers -->
+                <div v-if="ctx.writers_affected?.length" class="space-y-1">
+                  <div class="text-status-warning font-bold text-[11px]">
+                    ⚠ 加索引会拖慢 ({{ ctx.writers_affected.length }}):
+                  </div>
+                  <ul class="space-y-0.5">
+                    <li
+                      v-for="(w, k) in ctx.writers_affected"
+                      :key="`w-${i}-${k}`"
+                      class="text-[11px] text-slate-700"
+                    >
+                      <span class="pill bg-status-warning-bg text-status-warning text-[9px]">
+                        {{ w.kind === 'lineage_script' ? '脚本' : w.kind }}
+                      </span>
+                      <a
+                        v-if="w.run_id"
+                        :href="`#/workflow-runs/${w.run_id}`"
+                        class="ml-1 text-primary hover:underline sql-font"
+                      >{{ w.name }} →</a>
+                      <span v-else class="ml-1 sql-font">{{ w.name }}</span>
+                    </li>
+                  </ul>
+                </div>
+                <!-- readers -->
+                <div v-if="ctx.readers_helped?.length" class="space-y-1">
+                  <div class="text-status-success font-bold text-[11px]">
+                    ✓ 可能受益 ({{ ctx.readers_helped.length }}):
+                  </div>
+                  <ul class="space-y-0.5">
+                    <li
+                      v-for="(r, k) in ctx.readers_helped"
+                      :key="`r-${i}-${k}`"
+                      class="text-[11px] text-slate-700"
+                    >
+                      <span class="pill bg-status-success-bg text-status-success text-[9px]">
+                        {{ r.kind === 'lineage_script' ? '脚本'
+                           : r.kind === 'compare_task' ? '对比'
+                           : r.kind === 'workflow' ? '作业流' : r.kind }}
+                      </span>
+                      <a
+                        v-if="r.run_id"
+                        :href="`#/workflow-runs/${r.run_id}`"
+                        class="ml-1 text-primary hover:underline sql-font"
+                      >{{ r.name }} →</a>
+                      <a
+                        v-else-if="r.workflow_id"
+                        :href="`#/workflows/${r.workflow_id}`"
+                        class="ml-1 text-primary hover:underline sql-font"
+                      >{{ r.name }} →</a>
+                      <span v-else class="ml-1 sql-font">{{ r.name }}</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <p
+                v-if="ctx.writers_affected?.length && ctx.refresh_mode === 'truncate_insert'"
+                class="mt-2 text-[10px] text-slate-500 italic pl-3"
+              >
+                💡 refresh_mode=truncate_insert: 每次 ETL 先 TRUNCATE 再 INSERT,
+                索引会在 INSERT 阶段重建,影响相对小。可考虑保留此索引。
+              </p>
+              <p
+                v-else-if="ctx.writers_affected?.length && ctx.refresh_mode === 'append'"
+                class="mt-2 text-[10px] text-slate-500 italic pl-3"
+              >
+                💡 refresh_mode=append: 增量追加写入,每条新 INSERT 都要维护索引,
+                高频写入场景需评估写入吞吐影响。
+              </p>
+            </details>
           </div>
         </div>
 

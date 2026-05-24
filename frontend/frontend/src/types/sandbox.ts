@@ -77,6 +77,15 @@ export interface SlowSqlSuggestion {
   sql?: string
 }
 
+export interface SlowSqlLineageRef {
+  name: string
+  kind: 'lineage_script' | 'workflow' | 'compare_task'
+  run_id?: string
+  node_id?: string
+  workflow_id?: string
+  task_id?: string
+}
+
 export interface SlowSqlSchemaContext {
   table: string
   schema: string
@@ -87,6 +96,10 @@ export interface SlowSqlSchemaContext {
   uncovered_columns: string[]
   ddl_candidates: string[]
   rationale: string
+  // Phase 14 #2 lineage 影响
+  writers_affected?: SlowSqlLineageRef[]
+  readers_helped?: SlowSqlLineageRef[]
+  refresh_mode?: string | null
 }
 
 export interface SlowSqlResult {

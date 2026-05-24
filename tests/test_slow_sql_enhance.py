@@ -179,6 +179,107 @@ def test_enhance_with_real_introspect(monkeypatch):
     assert "1,500,000 行" in r["rationale"]
 
 
+def test_enhance_lineage_aware_attaches_writers_readers(monkeypatch):
+    """lineage_aware=True 时 schema_context 附 writers_affected / readers_helped"""
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_indexes",
+        lambda *a: [],
+    )
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_row_count",
+        lambda *a: 1500000,
+    )
+
+    def fake_asset(name, *, project_id=""):
+        return {
+            "kind": "table", "name": name,
+            "refresh_mode": "truncate_insert",
+            "references": {
+                "lineage_scripts": [
+                    {"file_name": "etl_load.sql", "match_role": "target",
+                     "run_id": "r1", "node_id": "n1"},
+                    {"file_name": "etl_load.sql", "match_role": "source",
+                     "run_id": "r1", "node_id": "n1"},
+                    {"file_name": "report.sql", "match_role": "source",
+                     "run_id": "r2", "node_id": "n2"},
+                ],
+                "workflows": [],
+                "tasks": [{"id": "t1", "name": "cmp_task"}],
+                "history": [],
+            },
+        }
+    monkeypatch.setattr("app.services.assets.get_table_asset", fake_asset)
+
+    sql = "SELECT * FROM dw.fact a WHERE a.dt = '2026-01-01'"
+    issues = [{"code": "full_table_scan", "table": "dw.fact"}]
+    result = enhance_for_issues(
+        datasource_id="demo", sql=sql, issues=issues, dialect="mysql",
+        lineage_aware=True,
+    )
+    assert len(result) == 1
+    r = result[0]
+    # etl_load.sql 同时是 source + target,应同时出现在两边
+    assert len(r["writers_affected"]) >= 1
+    assert len(r["readers_helped"]) >= 2  # etl_load(source) + report + cmp_task
+    assert r["refresh_mode"] == "truncate_insert"
+    # rationale 应含影响摘要
+    assert "ETL 写入" in r["rationale"] or "受益" in r["rationale"]
+
+
+def test_enhance_lineage_aware_false_skips_impact(monkeypatch):
+    """lineage_aware=False 时 不调 get_table_asset, 不带 writers/readers"""
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_indexes",
+        lambda *a: [],
+    )
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_row_count",
+        lambda *a: 100,
+    )
+    called = []
+
+    def fake_asset(name, *, project_id=""):
+        called.append(name)
+        return {"references": {}}
+    monkeypatch.setattr("app.services.assets.get_table_asset", fake_asset)
+
+    sql = "SELECT 1 FROM dw.fact a WHERE a.id = 1"
+    issues = [{"code": "full_table_scan", "table": "dw.fact"}]
+    result = enhance_for_issues(
+        datasource_id="demo", sql=sql, issues=issues, dialect="mysql",
+        lineage_aware=False,
+    )
+    assert called == []  # 不应调
+    assert result[0]["writers_affected"] == []
+    assert result[0]["readers_helped"] == []
+
+
+def test_enhance_lineage_aware_handles_asset_error(monkeypatch):
+    """get_table_asset 抛错 → 主流程仍出 schema_context,writers/readers 空"""
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_indexes",
+        lambda *a: [],
+    )
+    monkeypatch.setattr(
+        "app.services.datasource_introspect.introspect_row_count",
+        lambda *a: 100,
+    )
+
+    def boom(name, *, project_id=""):
+        raise RuntimeError("lineage index unavailable")
+    monkeypatch.setattr("app.services.assets.get_table_asset", boom)
+
+    sql = "SELECT 1 FROM dw.fact a WHERE a.id = 1"
+    issues = [{"code": "full_table_scan", "table": "dw.fact"}]
+    result = enhance_for_issues(
+        datasource_id="demo", sql=sql, issues=issues, dialect="mysql",
+        lineage_aware=True,
+    )
+    assert len(result) == 1  # 主流程没崩
+    assert result[0]["writers_affected"] == []
+    assert result[0]["readers_helped"] == []
+
+
 def test_enhance_skips_wrapped_only_columns(monkeypatch):
     """全部出现都被函数包的列不生成 DDL,rationale 标 hint"""
     monkeypatch.setattr(
