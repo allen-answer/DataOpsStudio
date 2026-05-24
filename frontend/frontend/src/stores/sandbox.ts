@@ -379,7 +379,13 @@ export const useSandboxStore = defineStore('sandbox', () => {
       slowSqlResults.value = { ...slowSqlResults.value, [idx]: result }
       slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
     } catch (e) {
-      slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+      let msg = noticeStore.toErrorMessage(e)
+      // 把"表不存在"翻译成"先一键全套落库" — slow_query analyze 跑 EXPLAIN 在真表上,
+      // 用户常在没 materialize 前先点 🔬 分析,后端 1146 错误对新手不友好
+      if (/doesn't exist|不存在|1146/i.test(msg)) {
+        msg = '⚠ 表还没建,请先点上方 🚀 一键全套 把 yml 的表落到数据库,再点 🔬 分析。\n原始错误: ' + msg
+      }
+      slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: msg }
       slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
     } finally {
       slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: false }

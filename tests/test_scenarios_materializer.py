@@ -57,7 +57,10 @@ def test_plan_schema_qualified_name_emits_create_database():
         "columns": [{"name": "id", "type": "INT", "pk": True, "gen": "sequence"}],
     }])
     plan = build_materialize_plan(s, {})
-    assert plan.schemas == ["CREATE DATABASE IF NOT EXISTS `ods`"]
+    assert len(plan.schemas) == 1
+    assert plan.schemas[0].startswith("CREATE DATABASE IF NOT EXISTS `ods`")
+    # MySQL 显式 collation 兜底,防 dw vs ods schema 默认 collation 漂导致 1267
+    assert "COLLATE utf8mb4_unicode_ci" in plan.schemas[0]
 
 
 def test_plan_unqualified_name_no_create_database():
@@ -80,10 +83,9 @@ def test_plan_multiple_tables_dedup_schemas():
     ])
     plan = build_materialize_plan(s, {})
     # 顺序保留：先 ods 再 dwd，ods 不重复
-    assert plan.schemas == [
-        "CREATE DATABASE IF NOT EXISTS `ods`",
-        "CREATE DATABASE IF NOT EXISTS `dwd`",
-    ]
+    assert len(plan.schemas) == 2
+    assert plan.schemas[0].startswith("CREATE DATABASE IF NOT EXISTS `ods`")
+    assert plan.schemas[1].startswith("CREATE DATABASE IF NOT EXISTS `dwd`")
 
 
 def test_plan_drop_first_true_emits_drop():
@@ -102,6 +104,20 @@ def test_plan_drop_first_false_no_drop():
     }])
     plan = build_materialize_plan(s, {}, drop_first=False)
     assert plan.tables[0].drop_sql is None
+
+
+def test_mysql_create_table_explicit_collation():
+    """每张表 DDL 末尾兜底带 utf8mb4 + unicode_ci collation。即使外部预建的
+    schema 用了别的 default collation(MySQL 8 server default 0900_ai_ci vs
+    历史 init_db 5.x 风格 unicode_ci),新建表强制对齐,防 JOIN 字符串字段
+    1267 Illegal mix of collations。"""
+    s = _scenario(tables=[{
+        "name": "ods.orders", "role": "source", "rows": 0,
+        "columns": [{"name": "id", "type": "INT", "gen": "sequence"}],
+    }])
+    create = build_materialize_plan(s, {}).tables[0].create_sql
+    assert "DEFAULT CHARSET=utf8mb4" in create
+    assert "COLLATE=utf8mb4_unicode_ci" in create
 
 
 def test_create_sql_includes_primary_key():
@@ -423,10 +439,9 @@ def test_example_yml_full_plan():
     plan = build_materialize_plan(scenario, data)
 
     # 两个 schema：ods 和 dwd
-    assert plan.schemas == [
-        "CREATE DATABASE IF NOT EXISTS `ods`",
-        "CREATE DATABASE IF NOT EXISTS `dwd`",
-    ]
+    assert len(plan.schemas) == 2
+    assert plan.schemas[0].startswith("CREATE DATABASE IF NOT EXISTS `ods`")
+    assert plan.schemas[1].startswith("CREATE DATABASE IF NOT EXISTS `dwd`")
     # 两张表
     by_name = {t.full_name: t for t in plan.tables}
     assert set(by_name) == {"ods.orders", "dwd.orders_clean"}
