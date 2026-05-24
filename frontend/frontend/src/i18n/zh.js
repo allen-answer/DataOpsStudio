@@ -4,6 +4,7 @@ export default {
   nav: {
     datasources: '数据源',
     dataCompare: '数据对比',
+    sqlOptimize: 'SQL 优化沙盒',
     workflows: '作业流',
     lineage: '血缘分析',
     history: '执行历史',
@@ -16,7 +17,6 @@ export default {
     projects: '项目管理',
     scheduler: '调度器监控',
     governance: '分类治理',
-    sandbox: '测试沙盒',
   },
   login: {
     title: '登录 DataOps Studio',

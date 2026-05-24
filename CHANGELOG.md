@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### 🔬 Phase 14 P0-1 · SQL 优化沙盒重定位
+
+scenario 沙盒(Phase 12 起的「admin 测试沙盒」)实际用途是数据工程师 / DBA 日常处理慢 SQL 工单 —— 不是 admin 工具。重定位:
+
+- 路由 `/admin/sandbox` → `/sql-optimize`(老路径保留 301 重定向兼容老书签)
+- 权限 `adminOnly` → `editor+`(SQL 优化不是 admin 特权;`require_datasource_access` 仍约束)
+- 视图 `views/admin/ScenarioSandboxView.vue` → `views/SqlOptimizeView.vue`(git mv 保留 history)
+- 图标 Beaker → Microscope(语义更贴 SQL 性能调优)
+- 升级到顶级一级菜单(原在 admin 子菜单),i18n key `adminNav.sandbox` → `nav.sqlOptimize`
+- 标题「测试沙盒」→「SQL 优化沙盒」+ 副标题改成业务用途描述
+- 后端 API + scenario DSL + 沙盒能力完全不变 —— 只是 UI 位置 + 命名 + 权限调整
+
 ### 🧹 Phase 14 · backlog 清零(P2/P3 + 8 处陈旧 doc 同步)
 
 - **8 处陈旧 doc 同步** —— MFA/SESSION_HARDENING/STEP_UP_AUTH/REFRESH_ROTATION/COMPARE_RESULT_STORAGE/RESOURCE_GUARD/SIGNED_DOWNLOAD/CLAUDE.md 把 "未做" 段改成 ✅ 已落地的真实状态

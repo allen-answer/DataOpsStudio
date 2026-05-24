@@ -1,22 +1,28 @@
 <script setup lang="ts">
-// Phase 12 切片 5：测试沙盒 admin 视图。
+// SQL 优化沙盒(Phase 12 沙盒 → Phase 14 P0-1 重定位):不连生产做 SQL 性能
+// 诊断 + 优化验证的工作台。原 admin/sandbox 测试工具,实际用途是数据工程师
+// / DBA 日常处理慢 SQL 工单 —— 把生产 schema + 数据分布翻成 yml,在 demo DB
+// 跑 EXPLAIN + 改写 SQL/加索引 + 验证 plan 是否改善。
 //
-// 列 config/scenarios/ 下的 yml → 选一份 → 选 datasource → 一键 materialize
-// （生成数据 + DDL/INSERT 到 demo MySQL）+ 一键 record（workloads → CompareTask）。
+// 流程:列 config/scenarios/ 下 yml → 选一份 → 选 datasource → materialize
+// (Faker/AI 填业务样本 + 生成数据 + 落 DDL/INSERT)→ 跑 slow_query workload
+// (EXPLAIN + 规则识别 + AI 复核)→ 改 SQL/加索引 → 重跑对比 plan。
 //
-// 后端：
-// - GET  /api/scenarios                 列表（含 error 字段标坏文件）
-// - GET  /api/scenarios/{id}            详情（tables / anomalies / workloads）
+// 后端 API(沿用 Phase 12 不变):
+// - GET  /api/scenarios                 列表(含 error 字段标坏文件)
+// - GET  /api/scenarios/{id}            详情(tables / anomalies / workloads)
 // - POST /api/scenarios/{id}/materialize 生成数据 + 落库
 // - POST /api/scenarios/{id}/record     workloads → CompareTask
+// - POST /api/scenarios/{id}/run-all    一键链
+// - POST /api/slow-sql/analyze + /enrich SQL EXPLAIN + AI 复核
 //
-// UI 决策：单视图分两栏（左列表 / 右详情），不再开 tab —— scenario 数量预期 <20，
-// 不值得加一层导航。运行结果显示在详情面板下方，紫色 / 绿色 / 红色三态。
+// 权限:editor+(原 adminOnly,现 SQL 优化是数据工程师日常,放开)。仍受
+// require_datasource_access 约束 —— 只能 materialize 到自己有权的 demo ds。
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import {
-  Beaker,
+  Microscope,
   RefreshCw,
   Play,
   ListChecks,
@@ -24,7 +30,6 @@ import {
   CheckCircle2,
   FileWarning,
   Database,
-  Microscope,
   ChevronDown,
   ChevronRight,
   Sparkles,
@@ -33,9 +38,9 @@ import {
   GitBranch,
   Variable,
 } from 'lucide-vue-next'
-import { apiGet, apiJson } from '../../api'
-import { useNoticeStore } from '../../stores/notice'
-import { useBootstrapStore } from '../../stores/bootstrap'
+import { apiGet, apiJson } from '../api'
+import { useNoticeStore } from '../stores/notice'
+import { useBootstrapStore } from '../stores/bootstrap'
 
 interface ScenarioListItem {
   id?: string
@@ -428,11 +433,12 @@ async function runVerify(): Promise<void> {
   verifying.value = true
   verifyResult.value = null
   try {
-    verifyResult.value = await apiJson<VerifyResult>(
+    const verified = await apiJson<VerifyResult>(
       `/api/scenarios/${selectedId.value}/verify` + (projectId.value ? `?project_id=${encodeURIComponent(projectId.value)}` : ''),
       'GET',
     )
-    const s = verifyResult.value.summary
+    verifyResult.value = verified
+    const s = verified.summary
     noticeStore.setNotice(`回归校验：${s.pass} pass · ${s.fail} fail · ${s.skipped} skipped`)
   } catch (e) {
     noticeStore.setNotice(`Verify 失败：${noticeStore.toErrorMessage(e)}`)
@@ -472,12 +478,13 @@ async function runRecord(): Promise<void> {
   recordResult.value = null
   lastError.value = ''
   try {
-    recordResult.value = await apiJson<RecordResult>(
+    const recorded = await apiJson<RecordResult>(
       `/api/scenarios/${selectedId.value}/record`,
       'POST',
       { datasource_id: datasourceId.value, project_id: projectId.value },
     )
-    noticeStore.setNotice(`✨ 已创建 ${recordResult.value.tasks.length} 个对比任务`)
+    recordResult.value = recorded
+    noticeStore.setNotice(`✨ 已创建 ${recorded.tasks.length} 个对比任务`)
   } catch (e) {
     lastError.value = noticeStore.toErrorMessage(e)
     noticeStore.setNotice(`Record 失败：${lastError.value}`)
@@ -640,11 +647,11 @@ onMounted(async () => {
     <div class="flex items-end justify-between">
       <div>
         <h2 class="text-2xl font-bold text-slate-800 flex items-center gap-2">
-          <Beaker class="h-7 w-7 text-primary" />
-          测试沙盒
+          <Microscope class="h-7 w-7 text-primary" />
+          SQL 优化沙盒
         </h2>
         <p class="mt-1 text-sm text-slate-500">
-          用 scenario 模板一键生成测试数据 + 对比任务。Phase 12 · MVP（仅 MySQL）。
+          不连生产做 SQL 性能诊断 + 优化验证。从生产 schema 翻 yml → Faker/AI 填业务数据 → demo DB 跑 EXPLAIN → 改 SQL/加索引 → 对比 plan。
         </p>
       </div>
       <button class="btn btn-outline" :disabled="loadingList" @click="loadList">
@@ -702,7 +709,7 @@ onMounted(async () => {
       <div class="space-y-6">
         <div v-if="loadingDetail" class="card p-6 muted text-center">加载详情中…</div>
         <div v-else-if="!detail" class="card p-12 text-center text-slate-500">
-          <Beaker class="h-12 w-12 mx-auto text-slate-300" />
+          <Microscope class="h-12 w-12 mx-auto text-slate-300" />
           <p class="mt-3 text-sm">选一份 scenario 模板开始</p>
         </div>
 

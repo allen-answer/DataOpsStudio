@@ -44,6 +44,13 @@ const routes = [
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
   { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
 
+  // SQL 优化沙盒(Phase 14 P0-1 重定位):从 admin 二级菜单升级到顶级一级菜单。
+  // 原 /admin/sandbox 路径保留 301 重定向到新路径,兼容老书签 + 文档链接。
+  // 权限放开到 editor —— SQL 优化是数据工程师日常,不是 admin 特权;
+  // require_datasource_access 仍约束只能 materialize 到自己有权的 ds。
+  { path: '/sql-optimize',  name: 'sql-optimize',  component: () => import('../views/SqlOptimizeView.vue') },
+  { path: '/admin/sandbox', redirect: '/sql-optimize' },
+
   // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示。lazy load 节省
   // 普通用户的首屏带宽（admin 占总人数 < 5% 的场景下尤其值得）
   { path: '/admin/users',     name: 'admin-users',     component: () => import('../views/admin/UserManagementView.vue'),    meta: { adminOnly: true } },
@@ -52,7 +59,6 @@ const routes = [
   { path: '/admin/ai',        name: 'admin-ai',        component: () => import('../views/admin/AIConfigView.vue'),          meta: { adminOnly: true } },
   { path: '/admin/scheduler', name: 'admin-scheduler', component: () => import('../views/admin/SchedulerMonitorView.vue'),  meta: { adminOnly: true } },
   { path: '/admin/governance', name: 'admin-governance', component: () => import('../views/admin/AspectGovernanceView.vue'), meta: { adminOnly: true } },
-  { path: '/admin/sandbox',    name: 'admin-sandbox',    component: () => import('../views/admin/ScenarioSandboxView.vue'),  meta: { adminOnly: true } },
 
   { path: '/:pathMatch(.*)*', redirect: '/datasources' },
 ]

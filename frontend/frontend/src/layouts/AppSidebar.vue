@@ -13,7 +13,7 @@ import {
   Bot,
   Activity,
   Tag,
-  Beaker,
+  Microscope,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -28,12 +28,14 @@ import { useBootstrapStore } from '../stores/bootstrap'
 const NAV_ITEMS = [
   { id: 'datasources',   labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
   { id: 'data-compare',  labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
+  { id: 'sql-optimize',  labelKey: 'nav.sqlOptimize',  icon: Microscope,       path: '/sql-optimize',  matchPaths: ['/sql-optimize', '/admin/sandbox'] },
   { id: 'workflows',     labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
   { id: 'lineage',       labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
   { id: 'history',       labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
 ]
 
-// admin-only nav 项：仅 admin role 可见
+// admin-only nav 项：仅 admin role 可见。Phase 14 P0-1:sandbox 移出 admin
+// 升级到顶级 NAV_ITEMS(SQL 优化是数据工程师日常,不是 admin 特权)
 const ADMIN_NAV_ITEMS = [
   { id: 'ai',         labelKey: 'adminNav.ai',         icon: Bot,        path: '/admin/ai',         matchPaths: ['/admin/ai'] },
   { id: 'users',      labelKey: 'adminNav.users',      icon: Users,      path: '/admin/users',      matchPaths: ['/admin/users'] },
@@ -41,7 +43,6 @@ const ADMIN_NAV_ITEMS = [
   { id: 'projects',   labelKey: 'adminNav.projects',   icon: FolderOpen, path: '/admin/projects',   matchPaths: ['/admin/projects'] },
   { id: 'scheduler',  labelKey: 'adminNav.scheduler',  icon: Activity,   path: '/admin/scheduler',  matchPaths: ['/admin/scheduler'] },
   { id: 'governance', labelKey: 'adminNav.governance', icon: Tag,        path: '/admin/governance', matchPaths: ['/admin/governance'] },
-  { id: 'sandbox',    labelKey: 'adminNav.sandbox',    icon: Beaker,     path: '/admin/sandbox',    matchPaths: ['/admin/sandbox'] },
 ]
 
 const route = useRoute()

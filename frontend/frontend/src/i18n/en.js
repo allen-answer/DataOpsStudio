@@ -3,6 +3,7 @@ export default {
   nav: {
     datasources: 'Data Sources',
     dataCompare: 'Compare',
+    sqlOptimize: 'SQL Optimizer',
     workflows: 'Workflows',
     lineage: 'Lineage',
     history: 'History',
@@ -15,7 +16,6 @@ export default {
     projects: 'Projects',
     scheduler: 'Scheduler',
     governance: 'Governance',
-    sandbox: 'Test Sandbox',
   },
   login: {
     title: 'Sign in to DataOps Studio',
