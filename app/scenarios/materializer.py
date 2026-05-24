@@ -252,6 +252,7 @@ def materialize_streaming(
     - 其它 → 直传(rename only)
     """
     from app.scenarios.generator import (
+        _FKPool,
         estimate_total_rows,
         iter_table_rows_streaming,
     )
@@ -260,7 +261,23 @@ def materialize_streaming(
     all_tables = {t.name: t for t in scenario.tables}
 
     # 顺序:源表先,派生表后(派生表 SQL 依赖源表已存在)
+    # Phase 14 #3 Round 6:同步含 FK references 拓扑序,被引用表先生成
     ordered = _resolve_table_order(scenario.tables)
+
+    # Phase 14 #3 Round 6 — FK pool 跨表共享值
+    # 计算"哪些列被引用了" — 只这些列入 pool,省内存(大表 1500w 行 ×10 列 = 15GB,
+    # 但只有 1-2 列(PK / branch_code)真正被 FK 引用,只入这俩 ~3GB,仍大但可控
+    fk_referenced_cols: dict[str, set[str]] = {}   # table_name → set[col_name]
+    for t in scenario.tables:
+        for c in t.columns:
+            if c.gen == "foreign_key" and c.references:
+                ref_table_path, ref_col = c.references.rsplit(".", 1)
+                # 同时记录精确名 + simple name 防 schema 前缀差异
+                fk_referenced_cols.setdefault(ref_table_path, set()).add(ref_col)
+                if "." in ref_table_path:
+                    simple = ref_table_path.rsplit(".", 1)[-1]
+                    fk_referenced_cols.setdefault(simple, set()).add(ref_col)
+    pool = _FKPool()
 
     schemas_seen: list[str] = []
     schemas_set: set[str] = set()
@@ -328,14 +345,35 @@ def materialize_streaming(
         else:
             # 流式 batch INSERT
             insert_sql = dialect.insert_sql(qfull, col_names)
+            # Phase 14 #3 Round 6 — 此表是否被 FK 引用?如是,边 stream 边累计
+            simple_name = table_def.name.rsplit(".", 1)[-1] if "." in table_def.name else table_def.name
+            ref_cols_for_this_table = (
+                fk_referenced_cols.get(table_def.name, set())
+                | fk_referenced_cols.get(simple_name, set())
+            )
+            # per-column 累积 list(只累积被引用的列)
+            stream_values: dict[str, list[Any]] = {c: [] for c in ref_cols_for_this_table}
+
             for batch in iter_table_rows_streaming(
                 table_def, all_tables, scenario, batch_size=batch_size,
+                pool=pool,
             ):
                 if not batch:
                     continue
                 param_rows = [tuple(r.get(c) for c in col_names) for r in batch]
                 executor.executemany(insert_sql, param_rows)
                 rows_inserted += len(batch)
+                # 累积被引用列的值到本地 list(等表跑完入 pool)
+                for ref_col in ref_cols_for_this_table:
+                    stream_values[ref_col].extend(row.get(ref_col) for row in batch)
+
+            # 表跑完,被引用列的值入 pool 给后续引用表用
+            for ref_col, values in stream_values.items():
+                pool.add(table_def.name, ref_col, values)
+                # 也按 simple name 注册一份(让 references="schema.table.col" 跟
+                # references="table.col" 都能找到)
+                if simple_name != table_def.name:
+                    pool.add(simple_name, ref_col, values)
         # Phase 14 P0-3:materialize 完跑 ANALYZE,让优化器拿到真实统计 ——
         # SQL 优化用途下 EXPLAIN cardinality 必须接近真实,否则 plan 决策跟生产
         # 对不上。失败 best-effort 吞掉,不阻塞 materialize 主流程。
@@ -362,16 +400,39 @@ def materialize_streaming(
 
 def _resolve_table_order(tables: list[TableDef]) -> list[TableDef]:
     """跟 generator._resolve_order 同算法,放这里避免 materializer → generator
-    依赖 +更清晰职责(materializer 自己也要知道 derives_from 顺序)。"""
+    依赖 +更清晰职责(materializer 自己也要知道 derives_from 顺序)。
+
+    Phase 14 #3 Round 6:除 derives_from 外,也按 FK references 排序 — 被
+    引用表先生成 → INSERT → pool 入值 → 引用表才能从 pool 抽。
+    """
     by_name = {t.name: t for t in tables}
+    by_simple: dict[str, TableDef] = {}
+    for t in tables:
+        simple = t.name.rsplit(".", 1)[-1] if "." in t.name else t.name
+        by_simple.setdefault(simple, t)
+
+    def find_table(ref: str) -> TableDef | None:
+        if ref in by_name:
+            return by_name[ref]
+        simple = ref.rsplit(".", 1)[-1] if "." in ref else ref
+        return by_simple.get(simple)
+
     seen: set[str] = set()
     order: list[TableDef] = []
 
     def visit(t: TableDef) -> None:
         if t.name in seen:
             return
-        if t.derives_from and t.derives_from in by_name:
-            visit(by_name[t.derives_from])
+        if t.derives_from:
+            parent = find_table(t.derives_from)
+            if parent and parent.name != t.name:
+                visit(parent)
+        for col in t.columns:
+            if col.gen == "foreign_key" and col.references:
+                ref_table_path = col.references.rsplit(".", 1)[0]
+                parent = find_table(ref_table_path)
+                if parent and parent.name != t.name:
+                    visit(parent)
         seen.add(t.name)
         order.append(t)
 
