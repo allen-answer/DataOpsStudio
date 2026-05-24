@@ -471,6 +471,20 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
 
   function addTable() { form.tables.push(makeEmptyTable()) }
   function removeTable(idx: number) { form.tables.splice(idx, 1) }
+  function clearTables() { form.tables = [makeEmptyTable()] }   // 重置成 1 张空表
+  function resetForm() {
+    form.id = ''
+    form.name = ''
+    form.description = ''
+    form.dialect = 'mysql'
+    form.seed = 42
+    form.variables = []
+    form.tables = [makeEmptyTable()]
+    form.anomalies = []
+    form.workloads = []
+    saveError.value = ''
+    saveResult.value = null
+  }
   function addColumn(tableIdx: number) { form.tables[tableIdx].columns.push(makeEmptyColumn()) }
 
   // Phase 14 #3 Round 5 — 粘贴 DDL 批量添加列
@@ -544,7 +558,7 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
     form, saving, saveError, saveResult, currentStep,
     ymlPreview,
     save, toScenarioDict,
-    addTable, removeTable,
+    addTable, removeTable, clearTables, resetForm,
     addColumn, removeColumn, addColumnsFromDdl,
     addIndex, removeIndex,
     addVariable, removeVariable,

@@ -79,12 +79,21 @@ const totalRows = computed(
   () => form.tables.reduce((sum, t) => sum + (Number(t.rows) || 0), 0),
 )
 
-// Round 6 L — 模板列表
-const selectedTemplate = computed({
-  get: () => '',
-  set: (v: string) => { if (v) store.loadFromTemplate(v) },
-})
+// Round 6 L — 模板列表 + 重置
 onMounted(() => { store.loadTemplatesList() })
+function onResetForm() {
+  if (!confirm('⚠ 这会重置表单所有字段(meta + 表 + 偏差 + 工作负载)。继续?')) return
+  store.resetForm()
+  noticeStore.setNotice('已重置表单')
+}
+function onClearTables() {
+  if (form.tables.length === 1 && !form.tables[0].name && form.tables[0].columns.every((c) => !c.name)) {
+    return  // 已是空,无需确认
+  }
+  if (!confirm(`⚠ 清空所有 ${form.tables.length} 张表(留 1 张空表)。继续?`)) return
+  store.clearTables()
+  noticeStore.setNotice('已清空表定义')
+}
 
 // Round 6 M — metadata csv 上传(覆盖现有 form.tables)
 const metadataOpen = ref(false)
@@ -129,27 +138,54 @@ async function submitMetadataCsv() {
           </span>
         </p>
       </div>
-      <div class="flex items-center gap-2">
-        <label class="flex items-center gap-1 text-xs text-slate-600">
-          <BookTemplate class="h-4 w-4 text-primary" />
-          <span>📚 从模板加载:</span>
-          <select
-            :value="selectedTemplate"
-            @change="(e: any) => (selectedTemplate = e.target.value)"
-            class="sql-font text-xs"
-          >
-            <option value="">— 选模板 —</option>
-            <option
+      <a href="#/scenario-lab" class="btn btn-outline">
+        <ChevronLeft class="h-4 w-4" /> 取消返回
+      </a>
+    </div>
+
+    <!-- 模板库 — 独立卡片显眼放最上面 -->
+    <div class="card p-4 border-2 border-primary bg-primary-light/10">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2 flex-1 min-w-[200px]">
+          <BookTemplate class="h-5 w-5 text-primary" />
+          <h3 class="text-sm font-bold text-slate-800">📚 从内置行业模板加载</h3>
+          <span class="text-[10px] text-slate-500">
+            一键填充表 / 列 / FK / anomaly / workload,改 ID 后保存
+          </span>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span v-if="store.loadingTemplates" class="text-xs text-slate-500 italic">
+            加载模板列表中…
+          </span>
+          <template v-else-if="store.templatesList.length">
+            <button
               v-for="t in store.templatesList"
               :key="t.file"
-              :value="t.file"
-              :title="t.description"
-            >{{ t.name }} ({{ t.tables_count }} 表)</option>
-          </select>
-        </label>
-        <a href="#/scenario-lab" class="btn btn-outline">
-          <ChevronLeft class="h-4 w-4" /> 取消返回
-        </a>
+              class="btn btn-outline text-xs"
+              :title="t.description || t.name"
+              @click="store.loadFromTemplate(t.file)"
+            >
+              {{ t.name }} <span class="text-slate-400">({{ t.tables_count }} 表)</span>
+            </button>
+          </template>
+          <span v-else class="text-xs text-status-warning">
+            ⚠ 无模板可加载(请确认 config/scenarios/template-*.example.yml 存在)
+          </span>
+          <button
+            class="text-xs text-primary hover:underline"
+            @click="store.loadTemplatesList"
+          >
+            🔄 刷新
+          </button>
+          <span class="text-slate-300">|</span>
+          <button
+            class="text-xs text-status-error hover:underline"
+            title="清空整个表单(慎用)"
+            @click="onResetForm"
+          >
+            🗑 重置表单
+          </button>
+        </div>
       </div>
     </div>
 
@@ -221,11 +257,20 @@ async function submitMetadataCsv() {
 
         <!-- 表 -->
         <div class="card p-5 space-y-3">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between flex-wrap gap-2">
             <h3 class="text-sm font-bold text-slate-800">② 表定义 ({{ tableCount }} 张,共 {{ totalColumns }} 列,{{ totalRows.toLocaleString() }} 行)</h3>
-            <button class="btn btn-outline" @click="store.addTable">
-              <Plus class="h-4 w-4" /> 添加表
-            </button>
+            <div class="flex items-center gap-2">
+              <button class="btn btn-outline" @click="store.addTable">
+                <Plus class="h-4 w-4" /> 添加表
+              </button>
+              <button
+                class="text-xs text-status-error hover:underline"
+                title="清空所有表(留 1 张空表)"
+                @click="onClearTables"
+              >
+                🗑 清空所有表
+              </button>
+            </div>
           </div>
 
           <div v-for="(t, ti) in form.tables" :key="ti" class="rounded border border-slate-200 p-3 space-y-3">
