@@ -22,6 +22,8 @@ import {
 import { useScenarioBuilderStore } from '../stores/scenarioBuilder'
 import { useNoticeStore } from '../stores/notice'
 import ColumnEditor from '../components/scenario-builder/ColumnEditor.vue'
+import AnomalyEditor from '../components/scenario-builder/AnomalyEditor.vue'
+import WorkloadEditor from '../components/scenario-builder/WorkloadEditor.vue'
 
 const store = useScenarioBuilderStore()
 const noticeStore = useNoticeStore()
@@ -377,17 +379,64 @@ ods_acc_fundacc,source_sys,4,"jzjy|jgkh|rzrq|opt","0.55|0.25|0.15|0.05"</pre>
           </div>
         </div>
 
-        <!-- anomalies / workloads MVP 提示 -->
-        <div class="card p-4 bg-status-info-bg/30 text-xs">
-          <div class="font-bold text-status-info mb-1">📝 anomalies / workloads 暂未做可视化</div>
-          <p class="text-slate-700 leading-relaxed">
-            保存后,你可以 ssh 到云服务器(或本地)编辑 <code class="sql-font">config/scenarios/&lt;id&gt;.yml</code> 加这两段:
-            <br/>
-            • <b>anomalies</b>:偏差注入(missing_rows / value_drift 等)
-            <br/>
-            • <b>workloads</b>:工作负载(slow_query / compare_task / lineage_script)
-            <br/>
-            参考 <code class="sql-font">config/scenarios/orders-recon.example.yml</code>。下一轮做可视化。
+        <!-- 偏差注入 (anomalies) -->
+        <div class="card p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-slate-800">
+              ③ 偏差注入 ({{ form.anomalies.length }})
+              <span class="text-[10px] font-normal text-slate-400 ml-1">
+                — 让 source/target 故意有差异,演示对比功能
+              </span>
+            </h3>
+            <button class="btn btn-outline" @click="store.addAnomaly">
+              <Plus class="h-4 w-4" /> 添加偏差
+            </button>
+          </div>
+          <AnomalyEditor
+            v-for="(a, ai) in form.anomalies"
+            :key="ai"
+            :anomaly="a"
+            :index="ai"
+            :all-tables="form.tables"
+            @remove="store.removeAnomaly(ai)"
+          />
+          <p v-if="!form.anomalies.length" class="text-xs text-slate-400 italic">
+            暂无偏差注入 — 数据对比 fixture 才需要,纯 SQL 优化 case 可留空
+          </p>
+        </div>
+
+        <!-- 工作负载 (workloads) -->
+        <div class="card p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-slate-800">
+              ④ 工作负载 ({{ form.workloads.length }})
+              <span class="text-[10px] font-normal text-slate-400 ml-1">
+                — 跑啥(慢 SQL / 对比 / 血缘)
+              </span>
+            </h3>
+            <div class="flex items-center gap-1.5 text-xs">
+              <button class="text-primary hover:underline" @click="store.addWorkload('slow_query')">
+                <Plus class="h-3 w-3 inline" /> 慢 SQL
+              </button>
+              <span class="text-slate-300">|</span>
+              <button class="text-primary hover:underline" @click="store.addWorkload('compare_task')">
+                <Plus class="h-3 w-3 inline" /> 对比任务
+              </button>
+              <span class="text-slate-300">|</span>
+              <button class="text-primary hover:underline" @click="store.addWorkload('lineage_script')">
+                <Plus class="h-3 w-3 inline" /> 血缘脚本
+              </button>
+            </div>
+          </div>
+          <WorkloadEditor
+            v-for="(w, wi) in form.workloads"
+            :key="wi"
+            :workload="w"
+            :index="wi"
+            @remove="store.removeWorkload(wi)"
+          />
+          <p v-if="!form.workloads.length" class="text-xs text-slate-400 italic">
+            暂无 workload — 至少添加一个 slow_query / compare_task 才能跑 fixture
           </p>
         </div>
 

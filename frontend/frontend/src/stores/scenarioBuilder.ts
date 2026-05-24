@@ -77,6 +77,39 @@ export interface VariableForm {
   value: string
 }
 
+// Round 6 H.4 — Anomaly + Workload 表单
+export type AnomalyKind =
+  | 'missing_rows' | 'extra_rows' | 'value_drift'
+  | 'null_drift' | 'duplicate_pk' | 'type_mismatch'
+
+export interface AnomalyForm {
+  kind: AnomalyKind
+  table: string                // 引用 form.tables[].name
+  column: string               // value_drift / null_drift / type_mismatch 需要
+  count_mode: 'count' | 'fraction'   // 哪种数量模式
+  count: number                // 精确数量
+  fraction: number             // 0.0~1.0 比例
+  perturbation: string         // value_drift 用,如 "±5%" / "0.05"
+}
+
+export type WorkloadKind = 'slow_query' | 'compare_task' | 'lineage_script'
+
+export interface WorkloadForm {
+  kind: WorkloadKind
+  name: string
+  sql: string                  // slow_query / lineage_script / compare_task source 用
+  // compare_task 专属
+  target_sql: string           // 空 = 用 sql(同表对比)
+  key_columns: string          // 逗号分隔
+  expected_only_source: number
+  expected_only_target: number
+  expected_diff: number
+  expected_same: number
+  // slow_query 专属
+  intentional_issues: string[]
+  expected_optimizations: string[]
+}
+
 export interface ScenarioBuilderForm {
   id: string
   name: string
@@ -85,9 +118,8 @@ export interface ScenarioBuilderForm {
   seed: number
   variables: VariableForm[]
   tables: TableForm[]
-  // anomaly + workload 本轮简化为 yml 文本框(advanced 用户手写)
-  anomalies_yaml: string   // 整段 anomalies: [...] 的 yaml 文本
-  workloads_yaml: string   // 整段 workloads: [...] 的 yaml 文本
+  anomalies: AnomalyForm[]
+  workloads: WorkloadForm[]
 }
 
 
@@ -126,6 +158,34 @@ export function makeEmptyIndex(): IndexForm {
   return { columns_text: '', unique: false }
 }
 
+export function makeEmptyAnomaly(): AnomalyForm {
+  return {
+    kind: 'missing_rows',
+    table: '',
+    column: '',
+    count_mode: 'fraction',
+    count: 100,
+    fraction: 0.05,
+    perturbation: '±5%',
+  }
+}
+
+export function makeEmptyWorkload(): WorkloadForm {
+  return {
+    kind: 'slow_query',
+    name: '',
+    sql: '',
+    target_sql: '',
+    key_columns: '',
+    expected_only_source: 0,
+    expected_only_target: 0,
+    expected_diff: 0,
+    expected_same: 0,
+    intentional_issues: [],
+    expected_optimizations: [],
+  }
+}
+
 
 // ─── store ────────────────────────────────────────────────────────────────
 
@@ -138,8 +198,8 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
     seed: 42,
     variables: [],
     tables: [makeEmptyTable()],
-    anomalies_yaml: '# 偏差注入(可选)— 留空 / yaml list 形式\n',
-    workloads_yaml: '# 工作负载(可选)— 留空 / yaml list 形式\n',
+    anomalies: [],
+    workloads: [],
   })
 
   const saving = ref(false)
@@ -167,12 +227,55 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
       )
     }
     out.tables = form.tables.map((t) => tableToDict(t))
-    // anomalies / workloads 从 yaml 文本 parse(失败时返空数组,save 时校验)
-    const anomalies = parseYamlListLooseSafe(form.anomalies_yaml)
-    if (anomalies.length) out.anomalies = anomalies
-    const workloads = parseYamlListLooseSafe(form.workloads_yaml)
-    if (workloads.length) out.workloads = workloads
+    if (form.anomalies.length) {
+      out.anomalies = form.anomalies.map((a) => anomalyToDict(a))
+    }
+    if (form.workloads.length) {
+      out.workloads = form.workloads.map((w) => workloadToDict(w))
+    }
     return out
+  }
+
+  function anomalyToDict(a: AnomalyForm): Record<string, any> {
+    const d: Record<string, any> = { kind: a.kind, table: a.table.trim() }
+    // count vs fraction:精确优先
+    if (a.count_mode === 'count') {
+      d.count = Number(a.count) || 0
+    } else {
+      d.fraction = Number(a.fraction) || 0
+    }
+    // kind 专属字段
+    if (['value_drift', 'null_drift', 'type_mismatch'].includes(a.kind) && a.column) {
+      d.column = a.column.trim()
+    }
+    if (a.kind === 'value_drift' && a.perturbation) {
+      d.perturbation = a.perturbation
+    }
+    return d
+  }
+
+  function workloadToDict(w: WorkloadForm): Record<string, any> {
+    const d: Record<string, any> = { kind: w.kind, name: w.name.trim() }
+    if (w.kind === 'slow_query') {
+      if (w.sql.trim()) d.sql = w.sql
+      if (w.intentional_issues.length) d.intentional_issues = w.intentional_issues
+      if (w.expected_optimizations.length) d.expected_optimizations = w.expected_optimizations
+    } else if (w.kind === 'compare_task') {
+      if (w.sql.trim()) d.source_sql = w.sql
+      if (w.target_sql.trim()) d.target_sql = w.target_sql
+      const keys = w.key_columns.split(/[,\s]+/).map((k) => k.trim()).filter(Boolean)
+      if (keys.length) d.key_columns = keys
+      // expected 对比块
+      const exp: Record<string, number> = {}
+      if (w.expected_only_source) exp.only_source = w.expected_only_source
+      if (w.expected_only_target) exp.only_target = w.expected_only_target
+      if (w.expected_diff) exp.diff = w.expected_diff
+      if (w.expected_same) exp.same = w.expected_same
+      if (Object.keys(exp).length) d.expected = exp
+    } else if (w.kind === 'lineage_script') {
+      if (w.sql.trim()) d.sql = w.sql
+    }
+    return d
   }
 
   function tableToDict(t: TableForm): Record<string, any> {
@@ -328,6 +431,8 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
         name, value: String(value),
       }))
       form.tables = (sc.tables || []).map((t: any) => tableDictToForm(t))
+      form.anomalies = (sc.anomalies || []).map((a: any) => anomalyDictToForm(a))
+      form.workloads = (sc.workloads || []).map((w: any) => workloadDictToForm(w))
       noticeStore.setNotice(`✓ 已加载模板 ${sc.id};请改 id 后保存`)
     } catch (e: any) {
       noticeStore.setNotice('加载模板失败: ' + noticeStore.toErrorMessage(e))
@@ -426,6 +531,14 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
   }
   function addVariable() { form.variables.push({ name: '', value: '' }) }
   function removeVariable(idx: number) { form.variables.splice(idx, 1) }
+  function addAnomaly() { form.anomalies.push(makeEmptyAnomaly()) }
+  function removeAnomaly(idx: number) { form.anomalies.splice(idx, 1) }
+  function addWorkload(kind: WorkloadKind = 'slow_query') {
+    const w = makeEmptyWorkload()
+    w.kind = kind
+    form.workloads.push(w)
+  }
+  function removeWorkload(idx: number) { form.workloads.splice(idx, 1) }
 
   return {
     form, saving, saveError, saveResult, currentStep,
@@ -435,6 +548,8 @@ export const useScenarioBuilderStore = defineStore('scenarioBuilder', () => {
     addColumn, removeColumn, addColumnsFromDdl,
     addIndex, removeIndex,
     addVariable, removeVariable,
+    addAnomaly, removeAnomaly,
+    addWorkload, removeWorkload,
     templatesList, loadingTemplates,
     loadTemplatesList, loadFromTemplate,
     importingMetadata, metadataError, importFromMetadataCsv,
@@ -639,6 +754,47 @@ function tableDictToForm(t: any): TableForm {
   }
 }
 
+function anomalyDictToForm(a: any): AnomalyForm {
+  const out = makeEmptyAnomaly()
+  out.kind = a.kind || 'missing_rows'
+  out.table = a.table || ''
+  out.column = a.column || ''
+  if (a.count !== undefined && a.count !== null) {
+    out.count_mode = 'count'
+    out.count = Number(a.count) || 0
+  } else if (a.fraction !== undefined && a.fraction !== null) {
+    out.count_mode = 'fraction'
+    out.fraction = Number(a.fraction) || 0
+  }
+  if (a.perturbation !== undefined) {
+    out.perturbation = String(a.perturbation)
+  }
+  return out
+}
+
+function workloadDictToForm(w: any): WorkloadForm {
+  const out = makeEmptyWorkload()
+  out.kind = w.kind || 'slow_query'
+  out.name = w.name || ''
+  if (out.kind === 'slow_query') {
+    out.sql = w.sql || ''
+    out.intentional_issues = Array.isArray(w.intentional_issues) ? w.intentional_issues : []
+    out.expected_optimizations = Array.isArray(w.expected_optimizations) ? w.expected_optimizations : []
+  } else if (out.kind === 'compare_task') {
+    out.sql = w.source_sql || ''
+    out.target_sql = w.target_sql || ''
+    out.key_columns = Array.isArray(w.key_columns) ? w.key_columns.join(', ') : (w.key_columns || '')
+    const exp = w.expected || {}
+    out.expected_only_source = Number(exp.only_source) || 0
+    out.expected_only_target = Number(exp.only_target) || 0
+    out.expected_diff = Number(exp.diff) || 0
+    out.expected_same = Number(exp.same) || 0
+  } else if (out.kind === 'lineage_script') {
+    out.sql = w.sql || ''
+  }
+  return out
+}
+
 function columnDictToForm(c: any): ColumnForm {
   const out = makeEmptyColumn()
   out.name = c.name || ''
@@ -736,18 +892,4 @@ function needsQuote(s: string): boolean {
   return false
 }
 
-function parseYamlListLooseSafe(text: string): any[] {
-  // 用户在 yaml 文本框写 list,粗略 parse(失败返空 — 让后端 Pydantic 报错)
-  // 本轮不引 js-yaml lib(bundle 增 ~30KB),只支持 stripped # 注释 + 空白判断
-  const stripped = (text || '')
-    .split('\n')
-    .filter((line) => line.trim() && !line.trim().startsWith('#'))
-    .join('\n')
-    .trim()
-  if (!stripped) return []
-  // 真正的 parse 让 backend Pydantic 处理 — 这里直接把整段文本作为 raw yaml 字符串
-  // 后端 save_scenario_yml_api 接 dict 而非 yaml 文本,所以本轮 anomaly/workload 文本块
-  // 提交时如非空,前端走 js-yaml 解析。但本轮不引 js-yaml,所以暂时返回 [] —
-  // user 在 anomaly/workload 区域留空,等 H.4 做真正的可视化编辑器再启用。
-  return []
-}
+// (H.4 起 anomaly + workload 走可视化编辑器,不再需要 yaml 文本 parser)
