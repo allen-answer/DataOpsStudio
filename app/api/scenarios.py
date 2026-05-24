@@ -14,11 +14,12 @@ require_datasource_access / require_project_access 保护。
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dataclasses import asdict
 
@@ -316,6 +317,80 @@ def import_from_datasource_api(
         "saved_path": saved_path,
         "tables_imported": len(scenario.tables),
         "rows_per_table": {t.name: t.rows for t in scenario.tables},
+    }
+
+
+# ─── Phase 14 #3 Round 4 — 可视化场景编辑器 save endpoint ────────────────
+
+
+class SaveYmlRequest(BaseModel):
+    """前端可视化 builder 直接提交 scenario dict(已经按 Scenario model 形状),
+    不依赖任何 datasource — 不连库纯落 yml。
+    """
+    scenario: dict[str, Any]
+    overwrite: bool = False    # 同名 yml 是否覆盖,默认拒
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.post("/api/scenarios/save-yml")
+def save_scenario_yml_api(
+    payload: SaveYmlRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """前端可视化 builder 调用:把 dict 形式的 scenario 转 yml 文本落盘。
+
+    Phase 14 #3 风控:
+    - Pydantic Scenario.model_validate 校验输入(防 LLM / 用户输入半残品)
+    - 落盘前不需要 datasource — 但仍走 SCHEMA_IMPORT_SAVE 同语义的 admin 权限
+      (本质 = 把 yml 写到 config/scenarios,跟 import 的 save=True 同副作用)
+    - id 正则约束(scenario_id 是文件名)
+    - overwrite=False(默认)时同名拒,防误改既有 fixture
+    """
+    import yaml
+
+    from app.scenarios.models import Scenario
+
+    # Pydantic 校验(forbid 拦 yml 笔误 + Literal 拦 anomaly/workload kind)
+    try:
+        scenario = Scenario.model_validate(payload.scenario)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"scenario 模型校验失败: {exc}",
+        ) from exc
+
+    # id 二次正则约束(scenario_id 直接拼文件名)
+    if not re.match(r"^[A-Za-z0-9_\-]+$", scenario.id):
+        raise HTTPException(
+            status_code=400,
+            detail="scenario.id 只允许字母 / 数字 / _ / -",
+        )
+
+    SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
+    target = SCENARIOS_DIR / f"{scenario.id}.yml"
+    if target.exists() and not payload.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"scenario '{scenario.id}.yml' 已存在。"
+                "如要覆盖请显式传 overwrite=true(注意会丢失既有 fixture)。"
+            ),
+        )
+
+    # dump yml — 用 model_dump(by_alias=True, exclude_none=True) 拿干净 dict
+    clean = scenario.model_dump(by_alias=True, exclude_none=True)
+    yml_text = yaml.safe_dump(
+        clean, allow_unicode=True, sort_keys=False, default_flow_style=False,
+    )
+    target.write_text(yml_text, encoding="utf-8")
+
+    return {
+        "scenario_id": scenario.id,
+        "saved_path": target.name,
+        "yml_text": yml_text,
+        "tables_count": len(scenario.tables),
+        "workloads_count": len(scenario.workloads),
+        "overwrite": payload.overwrite,
     }
 
 

@@ -54,6 +54,7 @@ const routes = [
   { path: '/sql-diagnosis',        name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
   { path: '/scenario-lab',         name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
   { path: '/scenario-lab/import',  name: 'scenario-lab-import', component: () => import('../views/SchemaImportView.vue') },
+  { path: '/scenario-lab/builder', name: 'scenario-lab-builder', component: () => import('../views/ScenarioBuilderView.vue') },
   { path: '/schema-import',        redirect: '/scenario-lab/import' },
   { path: '/sql-optimize',         redirect: '/sql-diagnosis' },
   { path: '/admin/sandbox',        redirect: '/sql-diagnosis' },
