@@ -13,11 +13,11 @@
  * advanced 用户可在生成 yml 后手动编辑 .yml 文件加 anomalies / workloads
  * (后续 yml 文本编辑器也可考虑提供)。
  */
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   FlaskConical, FilePlus2, Save, ChevronLeft, Plus, Trash2, Copy,
-  AlertCircle, CheckCircle2, FileText,
+  AlertCircle, CheckCircle2, FileText, ClipboardPaste,
 } from 'lucide-vue-next'
 import { useScenarioBuilderStore } from '../stores/scenarioBuilder'
 import { useNoticeStore } from '../stores/notice'
@@ -28,6 +28,28 @@ const noticeStore = useNoticeStore()
 const router = useRouter()
 
 const form = store.form
+
+// Phase 14 #3 Round 5 — 粘贴 DDL 批量添加列
+// per-table 的临时 textarea 内容(open + ddl text)
+const ddlState = reactive<Record<number, { open: boolean; text: string }>>({})
+function toggleDdlInput(idx: number) {
+  if (!ddlState[idx]) ddlState[idx] = { open: false, text: '' }
+  ddlState[idx].open = !ddlState[idx].open
+}
+function parseAndAddFromDdl(idx: number) {
+  const state = ddlState[idx]
+  if (!state?.text.trim()) return
+  const r = store.addColumnsFromDdl(idx, state.text)
+  noticeStore.setNotice(
+    `已添加 ${r.added} 列${r.pk_count ? ` (${r.pk_count} 个 PK)` : ''}`
+    + `${r.index_count ? ` + ${r.index_count} 个索引` : ''}`
+    + `${r.warnings.length ? ` ⚠ ${r.warnings.length} 行未解析` : ''}`,
+  )
+  if (r.added > 0) {
+    state.text = ''
+    state.open = false
+  }
+}
 
 async function onSave(overwrite = false) {
   const ok = await store.save(overwrite)
@@ -191,10 +213,46 @@ const totalRows = computed(
             <div class="space-y-2 pl-4 border-l-2 border-slate-100">
               <div class="flex items-center justify-between">
                 <span class="text-xs font-semibold text-slate-500">列 ({{ t.columns.length }})</span>
-                <button class="text-xs text-primary hover:underline" @click="store.addColumn(ti)">
-                  <Plus class="h-3 w-3 inline" /> 添加列
-                </button>
+                <div class="flex items-center gap-2 text-xs">
+                  <button
+                    class="text-primary hover:underline flex items-center gap-1"
+                    title="粘贴 CREATE TABLE / desc 输出,自动解析所有列"
+                    @click="toggleDdlInput(ti)"
+                  >
+                    <ClipboardPaste class="h-3 w-3" /> 粘贴 DDL 批量添加
+                  </button>
+                  <span class="text-slate-300">|</span>
+                  <button class="text-primary hover:underline" @click="store.addColumn(ti)">
+                    <Plus class="h-3 w-3 inline" /> 单列添加
+                  </button>
+                </div>
               </div>
+
+              <!-- DDL 粘贴输入区 -->
+              <div
+                v-if="ddlState[ti]?.open"
+                class="rounded border border-primary bg-primary-light/20 p-3 space-y-2"
+              >
+                <p class="text-[11px] text-slate-600 leading-relaxed">
+                  粘贴 <code class="sql-font">CREATE TABLE</code> 整段 / 列定义片段 / <code class="sql-font">desc</code> 输出。
+                  parser 会自动提取列名/类型/PK/NOT NULL,按类型选默认 generator
+                  (BIGINT→random_int,VARCHAR→realistic,DATE→timestamp,...)。<br/>
+                  <span class="text-[10px] text-slate-400">⚠ 关键列添加后展开手动调 generator 即可,普通列保持默认</span>
+                </p>
+                <textarea
+                  v-model="ddlState[ti].text"
+                  rows="6"
+                  class="w-full sql-font text-xs"
+                  :placeholder="`例如,直接从 SHOW CREATE TABLE 复制:\n\nid BIGINT NOT NULL,\ndata_dt VARCHAR(8) NOT NULL,\ncust_name VARCHAR(200),\nthis_bal DECIMAL(28,8),\noccur_date DATETIME,\nPRIMARY KEY (id),\nKEY idx_dt (data_dt)`"
+                />
+                <div class="flex gap-2">
+                  <button class="btn btn-primary text-xs" @click="parseAndAddFromDdl(ti)">
+                    <ClipboardPaste class="h-3.5 w-3.5" /> 解析并添加
+                  </button>
+                  <button class="btn btn-outline text-xs" @click="toggleDdlInput(ti)">取消</button>
+                </div>
+              </div>
+
               <ColumnEditor
                 v-for="(c, ci) in t.columns"
                 :key="ci"
@@ -202,6 +260,9 @@ const totalRows = computed(
                 :index="ci"
                 @remove="store.removeColumn(ti, ci)"
               />
+              <p v-if="!t.columns.length" class="text-xs text-slate-400 italic">
+                还没列,点上面「粘贴 DDL 批量添加」或「单列添加」开始
+              </p>
             </div>
 
             <!-- 索引 -->

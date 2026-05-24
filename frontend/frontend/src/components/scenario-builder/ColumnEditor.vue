@@ -25,7 +25,9 @@ const emit = defineEmits<{
   (e: 'remove'): void
 }>()
 
-const expanded = ref(true)
+// Phase 14 #3 Round 5:默认折叠 — 用户只关心关键列的 generator,
+// 其它列保持默认 realistic + 类型嗅探 fallback 就行,不需要打开
+const expanded = ref(false)
 
 const GEN_OPTIONS: { value: GeneratorKind; label: string; hint: string }[] = [
   { value: 'sequence',   label: 'sequence (序列号)',     hint: 'JJ00000001 / JJ00000002 ... 适合主键' },
@@ -47,26 +49,39 @@ const DIST_OPTIONS = [
 
 <template>
   <div class="rounded border border-slate-200 bg-slate-50 p-3 space-y-2">
-    <!-- 头部:展开收起 + 列名 + 删除 -->
-    <div class="flex items-center gap-2">
-      <button class="text-slate-400 hover:text-slate-700" @click="expanded = !expanded">
-        <component :is="expanded ? ChevronDown : ChevronRight" class="h-4 w-4" />
-      </button>
+    <!-- 头部:展开收起 + 列名 + gen badge + pk 标识 + 删除 -->
+    <div class="flex items-center gap-2 cursor-pointer" @click="expanded = !expanded">
+      <component :is="expanded ? ChevronDown : ChevronRight" class="h-4 w-4 text-slate-400" />
       <span class="text-xs font-bold text-slate-500">#{{ index + 1 }}</span>
       <input
         v-model="column.name"
         class="flex-1 sql-font text-sm"
         placeholder="列名 (如 cptl_acc_num)"
+        @click.stop
       />
       <input
         v-model="column.type"
         class="w-40 sql-font text-xs"
         placeholder="VARCHAR(100)"
+        @click.stop
       />
+      <span
+        v-if="column.pk"
+        class="pill bg-status-warning-bg text-status-warning text-[9px]"
+        title="主键"
+      >PK</span>
+      <span
+        v-if="!column.nullable"
+        class="pill bg-slate-100 text-slate-600 text-[9px]"
+        title="NOT NULL"
+      >NN</span>
+      <span class="pill bg-primary-light text-primary text-[9px]" :title="GEN_OPTIONS.find((g) => g.value === column.gen)?.hint || ''">
+        {{ column.gen }}
+      </span>
       <button
         class="text-status-error hover:text-status-error/70"
         title="删除此列"
-        @click="emit('remove')"
+        @click.stop="emit('remove')"
       >
         <Trash2 class="h-3.5 w-3.5" />
       </button>
