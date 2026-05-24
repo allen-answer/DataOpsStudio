@@ -258,8 +258,10 @@ def test_anon_scenarios_list_returns_401(client_anon):
     assert client_anon.get("/api/scenarios").status_code == 401
 
 
-def test_editor_scenarios_list_returns_403(client_editor):
-    assert client_editor.get("/api/scenarios").status_code == 403
+def test_editor_scenarios_list_returns_200(client_editor):
+    """Phase 14 P0-1:SQL 优化沙盒从 admin-only 放开到 editor+(SQL 优化是
+    数据工程师日常,不是 admin 特权)。"""
+    assert client_editor.get("/api/scenarios").status_code == 200
 
 
 def test_admin_scenarios_list_returns_200(client_admin):

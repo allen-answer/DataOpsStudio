@@ -467,3 +467,269 @@ def test_example_yml_apply_through_fake():
     # CREATE DATABASE 2 次
     create_db = [c for c in ex.calls if c[1].startswith("CREATE DATABASE")]
     assert len(create_db) == 2
+
+
+# ─── Phase 14 P0-2:streaming materialize ───────────────────────────────────
+
+
+def test_streaming_materialize_basic():
+    """简单 scenario:1 张源表 100 行 / batch=30 → 4 个 batch executemany"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[{
+            "name": "t1", "role": "source", "rows": 100,
+            "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+                {"name": "v", "type": "INT", "gen": "random_int", "range": [1, 100]},
+            ],
+        }],
+    )
+    ex = FakeExecutor()
+    summary = materialize_streaming(scenario, ex, batch_size=30)
+    assert summary["streaming"] is True
+    assert summary["batch_size"] == 30
+    assert summary["tables"][0]["name"] == "t1"
+    assert summary["tables"][0]["rows_inserted"] == 100
+    # batch 数:ceil(100/30) = 4
+    inserts = [c for c in ex.calls if c[0] == "executemany"]
+    assert len(inserts) == 4
+    # 第 4 个 batch 只有 10 行
+    assert len(inserts[-1][2]) == 10
+
+
+def test_streaming_materialize_set_anomaly_applied():
+    """missing_rows + extra_rows 在 streaming 里照样生效"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[{
+            "name": "t", "role": "source", "rows": 1000,
+            "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+            ],
+        }],
+        anomalies=[
+            {"kind": "missing_rows", "table": "t", "count": 50},
+            {"kind": "extra_rows", "table": "t", "count": 20},
+        ],
+    )
+    ex = FakeExecutor()
+    summary = materialize_streaming(scenario, ex, batch_size=100)
+    # 1000 - 50 + 20 = 970
+    assert summary["tables"][0]["rows_inserted"] == 970
+
+
+def test_streaming_materialize_row_anomaly_applied():
+    """value_drift 在 streaming 中 inline 应用,部分行的 v 列被扰动"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql", seed=42,
+        tables=[{
+            "name": "t", "role": "source", "rows": 100,
+            "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+                {"name": "amount", "type": "DECIMAL(10,2)", "gen": "constant", "values": [100.0]},
+            ],
+        }],
+        anomalies=[
+            {"kind": "value_drift", "table": "t", "column": "amount", "count": 30,
+             "perturbation": "50%"},
+        ],
+    )
+    ex = FakeExecutor()
+    materialize_streaming(scenario, ex, batch_size=100)
+    # 收集所有 amount 值
+    inserts = [c for c in ex.calls if c[0] == "executemany"]
+    amounts = [row[1] for batch in inserts for row in batch[2]]
+    drifted = [a for a in amounts if a != 100.0]
+    # 大约 30 个被扰动(随机有 ±少量误差)
+    assert 25 <= len(drifted) <= 35
+
+
+def test_streaming_materialize_derived_table_sql_side():
+    """派生表走 SQL `INSERT INTO derived SELECT FROM source`,不在 Python 复制"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[
+            {"name": "src", "role": "source", "rows": 100,
+             "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+                {"name": "name", "type": "VARCHAR(50)", "gen": "uuid_short"},
+             ]},
+            {"name": "dst", "role": "target", "rows": 100,
+             "derives_from": "src",
+             "column_overrides": [{"from": "name", "rename": "user_name"}]},
+        ],
+    )
+    ex = FakeExecutor()
+    summary = materialize_streaming(scenario, ex)
+    # src 表走 executemany batch
+    assert any(c[0] == "executemany" for c in ex.calls)
+    # dst 表走 SQL INSERT-SELECT(单条 execute)
+    insert_selects = [c for c in ex.calls
+                      if c[0] == "execute" and "INSERT INTO" in c[1] and "SELECT" in c[1]]
+    assert len(insert_selects) == 1
+    # 改名生效
+    sql = insert_selects[0][1]
+    assert "`user_name`" in sql  # rename
+    assert "`name`" in sql       # source col
+    # summary 标记 derived
+    dst_summary = next(t for t in summary["tables"] if t["name"] == "dst")
+    assert dst_summary["derived"] is True
+
+
+def test_streaming_materialize_derived_with_date_transform():
+    """派生表 DATE($) transform 翻译成 SQL DATE() 函数"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[
+            {"name": "src", "role": "source", "rows": 50,
+             "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+                {"name": "ts", "type": "TIMESTAMP", "gen": "timestamp",
+                 "range": ["2026-01-01", "2026-12-31"]},
+             ]},
+            {"name": "dst", "role": "target", "rows": 50,
+             "derives_from": "src",
+             "column_overrides": [
+                {"from": "ts", "rename": "dt", "transform": "DATE($)"},
+             ]},
+        ],
+    )
+    ex = FakeExecutor()
+    materialize_streaming(scenario, ex)
+    insert_selects = [c for c in ex.calls
+                      if c[0] == "execute" and "INSERT INTO" in c[1] and "SELECT" in c[1]]
+    assert len(insert_selects) == 1
+    sql = insert_selects[0][1]
+    assert "DATE(`ts`)" in sql
+
+
+def test_iter_table_rows_streaming_memory_bound():
+    """关键不变量:streaming 一次最多持 batch_size 行,不管总行数多大"""
+    from app.scenarios.generator import iter_table_rows_streaming
+    scenario = _scenario(
+        tables=[{
+            "name": "huge", "role": "source", "rows": 100_000,
+            "columns": [
+                {"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True},
+                {"name": "v", "type": "INT", "gen": "random_int", "range": [1, 100]},
+            ],
+        }],
+    )
+    all_tables = {t.name: t for t in scenario.tables}
+    total_yielded = 0
+    max_batch = 0
+    for batch in iter_table_rows_streaming(
+        scenario.tables[0], all_tables, scenario, batch_size=500,
+    ):
+        max_batch = max(max_batch, len(batch))
+        total_yielded += len(batch)
+    assert total_yielded == 100_000
+    assert max_batch <= 500  # 每批不超过 batch_size
+
+
+def test_iter_table_rows_streaming_derived_raises():
+    """派生表不走 iter_*,直接 raise 提示走 SQL-side"""
+    from app.scenarios.generator import iter_table_rows_streaming
+    scenario = _scenario(
+        tables=[
+            {"name": "src", "role": "source", "rows": 10,
+             "columns": [{"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True}]},
+            {"name": "dst", "role": "target", "rows": 10, "derives_from": "src"},
+        ],
+    )
+    all_tables = {t.name: t for t in scenario.tables}
+    with pytest.raises(ValueError, match="derived table"):
+        list(iter_table_rows_streaming(scenario.tables[1], all_tables, scenario))
+
+
+def test_estimate_total_rows():
+    """估算行数 = base - missing + extra + dup"""
+    from app.scenarios.generator import estimate_total_rows
+    scenario = _scenario(
+        tables=[{"name": "t", "role": "source", "rows": 1000,
+                 "columns": [{"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True}]}],
+        anomalies=[
+            {"kind": "missing_rows", "table": "t", "count": 50},
+            {"kind": "extra_rows", "table": "t", "count": 20},
+            {"kind": "duplicate_pk", "table": "t", "count": 10},
+        ],
+    )
+    assert estimate_total_rows(scenario.tables[0], scenario) == 1000 - 50 + 20 + 10
+
+
+# ─── Phase 14 P0-3: auto ANALYZE ───────────────────────────────────────────
+
+
+def test_streaming_materialize_runs_analyze_by_default():
+    """default analyze=True → 每表 materialize 完跑 ANALYZE TABLE"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[{"name": "t", "role": "source", "rows": 10,
+                 "columns": [{"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True}]}],
+    )
+    ex = FakeExecutor()
+    summary = materialize_streaming(scenario, ex)
+    analyze_calls = [c for c in ex.calls if c[0] == "execute" and "ANALYZE TABLE" in c[1]]
+    assert len(analyze_calls) == 1
+    assert "`t`" in analyze_calls[0][1]
+    assert summary["tables"][0]["analyzed"] is True
+
+
+def test_streaming_materialize_analyze_can_be_disabled():
+    """analyze=False 跳过 ANALYZE"""
+    from app.scenarios.materializer import materialize_streaming
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[{"name": "t", "role": "source", "rows": 10,
+                 "columns": [{"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True}]}],
+    )
+    ex = FakeExecutor()
+    summary = materialize_streaming(scenario, ex, analyze=False)
+    analyze_calls = [c for c in ex.calls if c[0] == "execute" and "ANALYZE" in c[1]]
+    assert len(analyze_calls) == 0
+    assert summary["tables"][0]["analyzed"] is False
+
+
+def test_streaming_materialize_analyze_failure_swallowed():
+    """ANALYZE 失败 → 记 warning + analyzed=False,不阻塞 materialize"""
+    from app.scenarios.materializer import materialize_streaming
+
+    class _ExFailAnalyze(FakeExecutor):
+        def execute(self, sql, params=None):
+            if "ANALYZE TABLE" in sql:
+                raise RuntimeError("simulated ANALYZE failure")
+            super().execute(sql, params)
+
+    scenario = _scenario(
+        dialect="mysql",
+        tables=[{"name": "t", "role": "source", "rows": 10,
+                 "columns": [{"name": "id", "type": "BIGINT", "gen": "sequence", "pk": True}]}],
+    )
+    ex = _ExFailAnalyze()
+    summary = materialize_streaming(scenario, ex)
+    assert summary["tables"][0]["analyzed"] is False
+    assert any("ANALYZE t failed" in w for w in summary["warnings"])
+
+
+def test_oracle_analyze_sql_uses_dbms_stats():
+    """Oracle / DM 走 DBMS_STATS.GATHER_TABLE_STATS"""
+    from app.scenarios.dialects import get_dialect
+    d = get_dialect("oracle")
+    sql = d.analyze_table_sql('"USER"."T"')
+    assert "DBMS_STATS.GATHER_TABLE_STATS" in sql
+    assert "'USER'" in sql
+    assert "'T'" in sql
+
+
+def test_dm_analyze_inherits_oracle():
+    """DM materialize dialect 继承 Oracle,analyze 同行为"""
+    from app.scenarios.dialects import get_dialect
+    d = get_dialect("dm")
+    sql = d.analyze_table_sql('"USER"."T"')
+    assert "DBMS_STATS.GATHER_TABLE_STATS" in sql

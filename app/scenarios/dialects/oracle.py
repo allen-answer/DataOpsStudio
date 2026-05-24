@@ -41,3 +41,22 @@ class OracleMaterializeDialect(MaterializeDialect):
     def placeholder(self, index: int) -> str:
         # Oracle 编号占位符：`:1` 起步（cx_Oracle / oracledb / dmPython 都接）
         return f":{index + 1}"
+
+    def analyze_table_sql(self, qfull: str) -> str | None:
+        # Oracle / DM:DBMS_STATS.GATHER_TABLE_STATS 收集表统计 + 直方图,
+        # 等价 MySQL ANALYZE TABLE。schema 跟 table 名要分开传(不是 qfull),
+        # 但 qfull 形如 `"USER"."TBL"` —— 解析出来传给 GATHER_TABLE_STATS。
+        # 失败兜底:如果 qfull 不含 schema(裸表名),用 USER 当前 schema。
+        parts = qfull.split(".")
+        if len(parts) == 2:
+            schema = parts[0].strip('"').replace("'", "''")
+            table = parts[1].strip('"').replace("'", "''")
+        else:
+            # 裸名:让 DBMS_STATS 用 USER 推
+            return (
+                f"BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, "
+                f"'{parts[0].strip(chr(34))}'); END;"
+            )
+        return (
+            f"BEGIN DBMS_STATS.GATHER_TABLE_STATS('{schema}', '{table}'); END;"
+        )

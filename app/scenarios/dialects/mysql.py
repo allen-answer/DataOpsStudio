@@ -19,3 +19,9 @@ class MysqlMaterializeDialect(MaterializeDialect):
 
     def placeholder(self, index: int) -> str:
         return "%s"
+
+    def analyze_table_sql(self, qfull: str) -> str | None:
+        # MySQL `ANALYZE TABLE` 更新 InnoDB 统计信息(随机采样,默认 20 页)。
+        # 5.6+ 加 persistent stats 后,统计落到 mysql.innodb_table_stats /
+        # innodb_index_stats,优化器估算才接近真实。
+        return f"ANALYZE TABLE {qfull}"

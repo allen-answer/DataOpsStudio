@@ -220,3 +220,161 @@ def _build_indexes(
 def _chunked(items: list, size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+# ─── Phase 14 P0-2: streaming materialize ──────────────────────────────────
+
+
+def materialize_streaming(
+    scenario: Scenario,
+    executor: SqlExecutor,
+    *,
+    drop_first: bool = True,
+    batch_size: int = 1000,
+    analyze: bool = True,
+) -> dict[str, Any]:
+    """端到端 streaming materialize —— 不在 Python 持完整 dataset。
+
+    跟 `build_materialize_plan + apply_plan` 老路径**结果等价**(同 schema /
+    同行数 / 同 anomaly),但内存峰值是 O(batch_size × col_width) 恒定,千万
+    行规模也不爆。Phase 14 P0-2 加。
+
+    流程(单 transaction,caller 在 connection 层 commit):
+      1. CREATE DATABASE IF NOT EXISTS ...
+      2. 对每张表(按 derives_from 拓扑序):
+         a. DROP / CREATE / CREATE INDEX
+         b. 源表:`iter_table_rows_streaming(...)` 逐 batch executemany INSERT
+         c. 派生表:`INSERT INTO derived (cols) SELECT (transform_exprs) FROM source`
+            (SQL 端复制 + 改名 + transform,零 Python 内存)
+
+    派生表当前支持的 transform:
+    - `DATE($)` → `DATE(source_col)`(MySQL/Oracle/DM 都 native)
+    - 其它 → 直传(rename only)
+    """
+    from app.scenarios.generator import (
+        estimate_total_rows,
+        iter_table_rows_streaming,
+    )
+
+    dialect = get_dialect(scenario.dialect)
+    all_tables = {t.name: t for t in scenario.tables}
+
+    # 顺序:源表先,派生表后(派生表 SQL 依赖源表已存在)
+    ordered = _resolve_table_order(scenario.tables)
+
+    schemas_seen: list[str] = []
+    schemas_set: set[str] = set()
+    for t in ordered:
+        s, _ = split_name(t.name)
+        if s and s not in schemas_set:
+            schemas_set.add(s)
+            schemas_seen.append(s)
+    schema_sqls = [dialect.schema_create_sql(s) for s in schemas_seen]
+    schema_sqls = [sql for sql in schema_sqls if sql is not None]
+
+    summary: dict[str, Any] = {
+        "dialect": dialect.name,
+        "schemas_created": list(schema_sqls),
+        "tables": [],
+        "warnings": [],
+        "streaming": True,
+        "batch_size": batch_size,
+    }
+
+    for sql in schema_sqls:
+        executor.execute(sql)
+
+    for table_def in ordered:
+        eff_columns = effective_columns(table_def, all_tables)
+        if not eff_columns:
+            summary["warnings"].append(f"table {table_def.name} has no columns; skipped")
+            continue
+        _, base = split_name(table_def.name)
+        qfull = dialect.quote_qualified(table_def.name)
+        col_names = [c.name for c in eff_columns]
+        # DDL
+        if drop_first:
+            executor.execute(dialect.drop_table_sql(qfull))
+        executor.execute(dialect.create_table_sql(qfull, eff_columns))
+        for idx_sql in _build_indexes(dialect, qfull, base, table_def.indexes):
+            executor.execute(idx_sql)
+        # INSERT
+        rows_inserted = 0
+        if table_def.derives_from and table_def.derives_from in all_tables:
+            # SQL-side INSERT INTO derived SELECT FROM source(零 Python 内存)
+            parent = all_tables[table_def.derives_from]
+            qparent = dialect.quote_qualified(parent.name)
+            rename_map = {ov.from_: ov.rename for ov in table_def.column_overrides if ov.rename}
+            transform_map = {ov.from_: ov.transform for ov in table_def.column_overrides if ov.transform}
+            select_exprs = []
+            for c in parent.columns:
+                src_col = dialect.quote_identifier(c.name)
+                t = (transform_map.get(c.name) or "").strip().upper()
+                if t.startswith("DATE(") and "$" in t:
+                    select_exprs.append(f"DATE({src_col})")
+                else:
+                    select_exprs.append(src_col)
+            target_cols = [
+                dialect.quote_identifier(rename_map.get(c.name, c.name))
+                for c in parent.columns
+            ]
+            limit_clause = f" LIMIT {table_def.rows}" if table_def.rows else ""
+            sql = (
+                f"INSERT INTO {qfull} ({', '.join(target_cols)}) "
+                f"SELECT {', '.join(select_exprs)} FROM {qparent}{limit_clause}"
+            )
+            executor.execute(sql)
+            rows_inserted = estimate_total_rows(table_def, scenario)
+        else:
+            # 流式 batch INSERT
+            insert_sql = dialect.insert_sql(qfull, col_names)
+            for batch in iter_table_rows_streaming(
+                table_def, all_tables, scenario, batch_size=batch_size,
+            ):
+                if not batch:
+                    continue
+                param_rows = [tuple(r.get(c) for c in col_names) for r in batch]
+                executor.executemany(insert_sql, param_rows)
+                rows_inserted += len(batch)
+        # Phase 14 P0-3:materialize 完跑 ANALYZE,让优化器拿到真实统计 ——
+        # SQL 优化用途下 EXPLAIN cardinality 必须接近真实,否则 plan 决策跟生产
+        # 对不上。失败 best-effort 吞掉,不阻塞 materialize 主流程。
+        analyzed = False
+        if analyze:
+            analyze_sql = dialect.analyze_table_sql(qfull)
+            if analyze_sql is not None:
+                try:
+                    executor.execute(analyze_sql)
+                    analyzed = True
+                except Exception as exc:  # noqa: BLE001
+                    summary["warnings"].append(
+                        f"ANALYZE {table_def.name} failed (skipped): {exc}"
+                    )
+        summary["tables"].append({
+            "name": table_def.name,
+            "rows_inserted": rows_inserted,
+            "rows_generated": estimate_total_rows(table_def, scenario),
+            "derived": bool(table_def.derives_from),
+            "analyzed": analyzed,
+        })
+    return summary
+
+
+def _resolve_table_order(tables: list[TableDef]) -> list[TableDef]:
+    """跟 generator._resolve_order 同算法,放这里避免 materializer → generator
+    依赖 +更清晰职责(materializer 自己也要知道 derives_from 顺序)。"""
+    by_name = {t.name: t for t in tables}
+    seen: set[str] = set()
+    order: list[TableDef] = []
+
+    def visit(t: TableDef) -> None:
+        if t.name in seen:
+            return
+        if t.derives_from and t.derives_from in by_name:
+            visit(by_name[t.derives_from])
+        seen.add(t.name)
+        order.append(t)
+
+    for t in tables:
+        visit(t)
+    return order

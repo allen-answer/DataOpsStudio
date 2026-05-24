@@ -86,3 +86,19 @@ class MaterializeDialect(ABC):
         cols = ", ".join(self.quote_identifier(c) for c in col_names)
         placeholders = ", ".join(self.placeholder(i) for i in range(len(col_names)))
         return f"INSERT INTO {qfull} ({cols}) VALUES ({placeholders})"
+
+    def analyze_table_sql(self, qfull: str) -> str | None:
+        """Phase 14 P0-3: materialize 完跑 ANALYZE,让优化器拿到真实统计信息。
+
+        没这步,新建表的 EXPLAIN cardinality 是默认估算(MySQL 默认 1000 行),
+        SQL 优化用途下 EXPLAIN 跟实际 plan 完全对不上。
+
+        - MySQL: `ANALYZE TABLE t`(同步,跟数据规模相关 < 1s)
+        - Oracle / DM: `BEGIN DBMS_STATS.GATHER_TABLE_STATS('schema', 'table'); END;`
+          (DM 兼容)
+        - DB2: `RUNSTATS ON TABLE schema.table WITH DISTRIBUTION AND DETAILED INDEXES ALL`
+        - 不支持的方言返 None,materialize_streaming 跳过该步
+
+        默认返 None。子类覆盖。
+        """
+        return None

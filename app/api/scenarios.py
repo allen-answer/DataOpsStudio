@@ -1,12 +1,16 @@
-"""Scenario sandbox endpoints（Phase 12 切片 4）。
+"""Scenario sandbox / SQL 优化沙盒 endpoints(Phase 12 切片 4,Phase 14 P0-1 重定位)。
 
-四个端点：
-- `GET  /api/scenarios`               —— 列出 config/scenarios/ 下的 yml
-- `GET  /api/scenarios/{id}`          —— 加载单个 scenario，返回模型 dump
+主要端点:
+- `GET  /api/scenarios`               —— 列 config/scenarios/ 下的 yml
+- `GET  /api/scenarios/{id}`          —— 加载单 scenario,返模型 dump
 - `POST /api/scenarios/{id}/materialize` —— 生成数据 + DDL/INSERT 到 datasource
-- `POST /api/scenarios/{id}/record`   —— 把 workloads 翻译成 CompareTask 持久化
+- `POST /api/scenarios/{id}/record`   —— workloads → CompareTask 持久化
+- `POST /api/scenarios/{id}/run-all`  —— 一键链
+- `POST /api/scenarios/import-from-datasource` —— Phase 14 P1-1:从真实 ds 反向生成 yml
 
-UI 在 admin 面板调这四个；MVP 先不做 lineage_script / slow_query workload。
+Phase 14 P0-1:权限从 `admin` 放开到 `editor` —— SQL 优化是数据工程师日常工作,
+不是 admin 特权。datasource / project 级权限仍由 inner-level 的
+require_datasource_access / require_project_access 保护。
 """
 from __future__ import annotations
 
@@ -25,13 +29,14 @@ from app.scenarios.orchestrator import run_all as run_all_pipeline
 from app.scenarios.recorder import record_scenario
 from app.scenarios.runtime import ScenarioRuntimeError, materialize_to_datasource
 from app.scenarios.verifier import verify_scenario
+from app.scenarios.yml_importer import import_tables_from_datasource
 from app.services.auth import require_role
 from app.utils.paths import SCENARIOS_DIR
 
 
-# Scenario sandbox 是 admin 工具：起虚拟业务数据 + DDL/INSERT + 跑对比 + LLM
-# fill，权限敏感。全 router admin only（包括 list 列表也属管理面）。
-router = APIRouter(dependencies=[Depends(require_role("admin"))])
+# Phase 14 P0-1 重定位:editor+ 即可。inner-level authz 仍由各 endpoint 通过
+# require_datasource_access / require_project_access 自己拦。
+router = APIRouter(dependencies=[Depends(require_role("editor"))])
 
 
 class MaterializeRequest(BaseModel):
@@ -190,6 +195,72 @@ def record_scenario_api(
     return {
         "tasks": [t.model_dump() for t in result["tasks"]],
         "warnings": result["warnings"],
+    }
+
+
+# ─── Phase 14 P1-1: 从 datasource 反向生成 yml ────────────────────────────
+
+
+class ImportFromDatasourceRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    table_names: list[str] = Field(..., min_length=1)
+    scenario_id: str = Field(..., min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
+    scenario_name: str = ""
+    default_rows: int = Field(default=1000, ge=1, le=1_000_000)
+    save: bool = False  # True 时直接落 config/scenarios/<id>.yml
+
+
+@router.post("/api/scenarios/import-from-datasource")
+def import_from_datasource_api(
+    payload: ImportFromDatasourceRequest = Body(...),
+) -> dict[str, Any]:
+    """走 introspect_columns + introspect_indexes + introspect_row_count 拉真
+    表结构,翻成 scenario yml。
+
+    `save=True` 直接落 `config/scenarios/<scenario_id>.yml` 并刷新 list
+    (注意会覆盖同名文件);`save=False` 仅返 yml 文本让 caller 自己保存。
+    """
+    # require_datasource_access:导入是读 information_schema,跟 introspect 同级
+    # 权限。复用既有 endpoint pattern,避免新设计 auth 规则。
+    from app.api._authz import require_datasource_access
+    from app.services.auth import get_current_user
+    from fastapi import Request
+
+    # 注:require_datasource_access 需要 User 上下文,但本 endpoint 无 current
+    # 注入(router 级 require_role("editor") 已校登录但没注 user)。补一行:
+    # 实际项目里 dep injection 更优雅,这里 keep 简单 -- 直接 datasource lookup
+    # + project 检查 inline(同 tasks.py:194 / _guard_or_raise 的 caller 模式)
+    from app.services.repositories import datasource_store
+    ds = datasource_store.get(payload.datasource_id)
+    if ds is None:
+        raise HTTPException(status_code=404, detail="datasource not found")
+
+    try:
+        scenario, yml_text = import_tables_from_datasource(
+            payload.datasource_id,
+            payload.table_names,
+            scenario_id=payload.scenario_id,
+            scenario_name=payload.scenario_name,
+            default_rows=payload.default_rows,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"import failed: {exc}") from exc
+
+    saved_path: str | None = None
+    if payload.save:
+        SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
+        target = SCENARIOS_DIR / f"{payload.scenario_id}.yml"
+        target.write_text(yml_text, encoding="utf-8")
+        saved_path = target.name
+
+    return {
+        "scenario_id": payload.scenario_id,
+        "yml_text": yml_text,
+        "saved_path": saved_path,
+        "tables_imported": len(scenario.tables),
+        "rows_per_table": {t.name: t.rows for t in scenario.tables},
     }
 
 

@@ -124,6 +124,35 @@ interface SlowSqlResult {
   plan: Record<string, unknown>[]
   issues: SlowSqlIssue[]
   suggestions: SlowSqlSuggestion[]
+  // Phase 14 P1-2:analyze 自动落 history,返 id + hash 供 plan-diff 用
+  history_id?: number | null
+  sql_hash?: string
+}
+
+// Phase 14 P1-2:plan history + diff 类型
+interface PlanHistoryItem {
+  id: number
+  ts: string
+  dialect: string
+  sql_text: string
+  sql_hash: string
+  scenario_id?: string
+  workload_name?: string
+  plan?: Record<string, unknown>[]
+  issues?: SlowSqlIssue[]
+}
+
+interface PlanDiffResult {
+  plan_a: { id: number; ts: string; sql_text: string }
+  plan_b: { id: number; ts: string; sql_text: string }
+  diff: {
+    rows_delta: { a: number; b: number; change: number }
+    type_changes: Array<{ idx: number; from: string; to: string }>
+    extra_changes: Array<{ idx: number; removed: string[]; added: string[] }>
+    issues_resolved: string[]
+    issues_introduced: string[]
+    summary: string
+  }
 }
 
 interface SlowSqlEnrichReview {
@@ -559,6 +588,50 @@ function planColumns(plan: Record<string, unknown>[]): string[] {
   return Object.keys(plan[0])
 }
 
+// Phase 14 P1-2:plan diff —— 跟同 sql_hash 的上一次 plan 对比
+const planDiffs = ref<Record<number, PlanDiffResult | null>>({})
+const planDiffLoading = ref<Record<number, boolean>>({})
+const planDiffErrors = ref<Record<number, string>>({})
+
+async function runPlanDiff(idx: number): Promise<void> {
+  const cur = slowSqlResults.value[idx]
+  if (!cur?.history_id || !cur.sql_hash || !datasourceId.value) {
+    planDiffErrors.value = { ...planDiffErrors.value, [idx]: '需要先跑过分析(拿到 history_id)' }
+    return
+  }
+  planDiffLoading.value = { ...planDiffLoading.value, [idx]: true }
+  planDiffErrors.value = { ...planDiffErrors.value, [idx]: '' }
+  try {
+    // 拉最近 2 条同 sql_hash 历史(含本次)
+    const hist = await apiJson<{ items: PlanHistoryItem[] }>(
+      `/api/slow-sql/plan-history?datasource_id=${encodeURIComponent(datasourceId.value)}`
+      + `&sql_hash=${encodeURIComponent(cur.sql_hash)}&limit=2`,
+      'GET',
+    )
+    if (!hist.items || hist.items.length < 2) {
+      planDiffErrors.value = { ...planDiffErrors.value, [idx]: '同 SQL 没有更早的历史可对比(改写 SQL/加索引后重跑就能 diff 了)' }
+      return
+    }
+    const [newest, prev] = hist.items
+    const diff = await apiJson<PlanDiffResult>(
+      `/api/slow-sql/plan-diff?plan_a_id=${prev.id}&plan_b_id=${newest.id}`,
+      'GET',
+    )
+    planDiffs.value = { ...planDiffs.value, [idx]: diff }
+  } catch (e) {
+    planDiffErrors.value = { ...planDiffErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+  } finally {
+    planDiffLoading.value = { ...planDiffLoading.value, [idx]: false }
+  }
+}
+
+function isPlanDiffImproved(d: PlanDiffResult): boolean {
+  return d.diff.rows_delta.change < 0 || d.diff.issues_resolved.length > 0
+}
+function isPlanDiffRegressed(d: PlanDiffResult): boolean {
+  return d.diff.rows_delta.change > 0 || d.diff.issues_introduced.length > 0
+}
+
 // AI enrichment 按 workload idx 独立维护
 const enrichResults = ref<Record<number, SlowSqlEnrichResult>>({})
 const enrichLoading = ref<Record<number, boolean>>({})
@@ -640,6 +713,90 @@ onMounted(async () => {
     datasourceId.value = (mysqlDatasources.value[0] as any).id
   }
 })
+
+// ─── Phase 14 P2:step bar 视觉导航 + 从 datasource 反向导入 yml ──────────
+
+type StepId = 'schema' | 'data' | 'sql' | 'verify'
+const STEPS: { id: StepId; label: string; desc: string }[] = [
+  { id: 'schema', label: '1. Schema', desc: '从生产 SHOW CREATE 导入 yml 或选既有 scenario' },
+  { id: 'data',   label: '2. 生成数据', desc: 'Faker/AI 填业务样本 + materialize 到 demo DB + ANALYZE' },
+  { id: 'sql',    label: '3. SQL 优化',  desc: '跑慢 SQL → EXPLAIN → AI 复核 → 改写 → 重跑对比 plan' },
+  { id: 'verify', label: '4. 回归校验',  desc: '改完 SQL 跑回归确认数据没改坏 + 性能改善' },
+]
+
+// 当前 step 来自简单启发:没选 scenario → schema;选了 scenario 没 materialize → data;
+// materialize 过但没 slow-sql 结果 → sql;有 slow-sql 结果 → verify
+const currentStep = computed<StepId>(() => {
+  if (!selectedId.value) return 'schema'
+  if (!materializeResult.value) return 'data'
+  if (!Object.values(slowSqlResults.value).length) return 'sql'
+  return 'verify'
+})
+
+// 从 datasource 反向导入 yml(P1-1 UI 入口)
+const importDialogOpen = ref(false)
+const importForm = ref({
+  datasource_id: '',
+  table_names: '',
+  scenario_id: '',
+  scenario_name: '',
+  default_rows: 1000,
+  save: true,
+})
+const importing = ref(false)
+const importResult = ref<{ scenario_id: string; saved_path: string | null; yml_text: string; tables_imported: number } | null>(null)
+const importError = ref('')
+
+function openImportDialog() {
+  importForm.value = {
+    datasource_id: datasourceId.value || '',
+    table_names: '',
+    scenario_id: '',
+    scenario_name: '',
+    default_rows: 1000,
+    save: true,
+  }
+  importResult.value = null
+  importError.value = ''
+  importDialogOpen.value = true
+}
+
+async function submitImport() {
+  if (!importForm.value.datasource_id || !importForm.value.table_names.trim() || !importForm.value.scenario_id.trim()) {
+    importError.value = '需要填 datasource / table_names / scenario_id'
+    return
+  }
+  importing.value = true
+  importError.value = ''
+  try {
+    const tables = importForm.value.table_names.split(',').map(s => s.trim()).filter(Boolean)
+    const r = await apiJson<{
+      scenario_id: string; saved_path: string | null; yml_text: string; tables_imported: number
+    }>('/api/scenarios/import-from-datasource', 'POST', {
+      datasource_id: importForm.value.datasource_id,
+      table_names: tables,
+      scenario_id: importForm.value.scenario_id,
+      scenario_name: importForm.value.scenario_name,
+      default_rows: importForm.value.default_rows,
+      save: importForm.value.save,
+    })
+    importResult.value = r
+    if (r.saved_path) {
+      noticeStore.setNotice(`✨ 已保存到 config/scenarios/${r.saved_path}`)
+      await loadList()  // 刷新左侧 scenario 列表显示新建的
+    }
+  } catch (e) {
+    importError.value = noticeStore.toErrorMessage(e)
+  } finally {
+    importing.value = false
+  }
+}
+
+function copyImportYml() {
+  if (!importResult.value?.yml_text) return
+  navigator.clipboard?.writeText(importResult.value.yml_text)
+  noticeStore.setNotice('✓ yml 已复制')
+}
 </script>
 
 <template>
@@ -654,10 +811,98 @@ onMounted(async () => {
           不连生产做 SQL 性能诊断 + 优化验证。从生产 schema 翻 yml → Faker/AI 填业务数据 → demo DB 跑 EXPLAIN → 改 SQL/加索引 → 对比 plan。
         </p>
       </div>
-      <button class="btn btn-outline" :disabled="loadingList" @click="loadList">
-        <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loadingList }" />
-        刷新列表
-      </button>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-primary" @click="openImportDialog">
+          <Database class="h-4 w-4" />
+          从 datasource 导入
+        </button>
+        <button class="btn btn-outline" :disabled="loadingList" @click="loadList">
+          <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loadingList }" />
+          刷新列表
+        </button>
+      </div>
+    </div>
+
+    <!-- Phase 14 P2:step bar 视觉导航 ——— 当前 step 高亮,提示下一步该干啥 -->
+    <div class="card p-3 flex items-stretch gap-2 overflow-x-auto">
+      <div
+        v-for="(s, i) in STEPS"
+        :key="s.id"
+        class="flex-1 min-w-[180px] rounded-lg border px-3 py-2 transition"
+        :class="currentStep === s.id
+          ? 'border-primary bg-primary-light text-primary'
+          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'"
+      >
+        <div class="font-bold text-xs">{{ s.label }}</div>
+        <div class="text-[11px] mt-0.5 leading-snug" :class="currentStep === s.id ? '' : 'text-slate-500'">{{ s.desc }}</div>
+        <div v-if="currentStep === s.id" class="text-[10px] mt-1 text-primary/80">← 当前步骤</div>
+      </div>
+    </div>
+
+    <!-- Phase 14 P2:从 datasource 反向导入 yml 对话框(简易 inline,不开 modal 组件)-->
+    <div v-if="importDialogOpen" class="card border-primary bg-primary-light/10 p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-primary flex items-center gap-2">
+          <Database class="h-5 w-5" />
+          从 datasource 导入 schema → 生成 scenario yml
+        </h3>
+        <button class="text-slate-500 hover:text-slate-800" @click="importDialogOpen = false">✕</button>
+      </div>
+      <p class="text-xs text-slate-600">
+        从真实 datasource 拉表的 columns / indexes / 行数,翻成 scenario yml(自动推断 generator + 加 PRIMARY KEY)。
+        生成后填 TODO workload SQL 就能开始优化。
+      </p>
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <label class="block">
+          <span class="text-slate-700 text-xs font-semibold">Datasource</span>
+          <select v-model="importForm.datasource_id" class="mt-1 w-full">
+            <option value="">- 选 datasource -</option>
+            <option v-for="d in mysqlDatasources" :key="(d as any).id" :value="(d as any).id">
+              {{ (d as any).name }} ({{ (d as any).db_type }})
+            </option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-slate-700 text-xs font-semibold">Scenario ID(文件名)</span>
+          <input v-model="importForm.scenario_id" class="mt-1 w-full" placeholder="orders-perf" />
+        </label>
+        <label class="block col-span-2">
+          <span class="text-slate-700 text-xs font-semibold">Table 名(逗号分隔,支持 schema.table)</span>
+          <input v-model="importForm.table_names" class="mt-1 w-full sql-font" placeholder="ods.orders, ods.users" />
+        </label>
+        <label class="block">
+          <span class="text-slate-700 text-xs font-semibold">Scenario 名(可选)</span>
+          <input v-model="importForm.scenario_name" class="mt-1 w-full" placeholder="Orders 性能场景" />
+        </label>
+        <label class="block">
+          <span class="text-slate-700 text-xs font-semibold">缺统计时默认行数</span>
+          <input v-model.number="importForm.default_rows" type="number" class="mt-1 w-full" min="1" max="1000000" />
+        </label>
+        <label class="col-span-2 flex items-center gap-2 text-xs text-slate-700">
+          <input type="checkbox" v-model="importForm.save" />
+          直接保存到 <code class="sql-font">config/scenarios/{{ importForm.scenario_id || '<id>' }}.yml</code>
+        </label>
+      </div>
+      <div v-if="importError" class="text-status-error text-xs flex items-center gap-1">
+        <AlertCircle class="h-3.5 w-3.5" /> {{ importError }}
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-primary" :disabled="importing" @click="submitImport">
+          {{ importing ? '导入中…' : '✨ 导入' }}
+        </button>
+        <button class="btn btn-outline" @click="importDialogOpen = false">取消</button>
+      </div>
+      <div v-if="importResult" class="border-t border-primary/20 pt-3 space-y-2">
+        <div class="text-status-success font-bold text-xs flex items-center gap-1">
+          <CheckCircle2 class="h-3.5 w-3.5" />
+          导入成功:{{ importResult.tables_imported }} 张表
+          {{ importResult.saved_path ? `· 已保存到 ${importResult.saved_path}` : '· 未保存(仅返 yml)' }}
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-outline h-7 px-2 text-[11px]" @click="copyImportYml">📋 复制 yml</button>
+        </div>
+        <pre class="rounded bg-slate-900 text-slate-100 p-3 text-[11px] sql-font max-h-72 overflow-auto">{{ importResult.yml_text }}</pre>
+      </div>
     </div>
 
     <div v-if="lastError" class="card border-status-error bg-status-error-bg p-4 flex items-start gap-3">
@@ -1204,6 +1449,86 @@ onMounted(async () => {
                     </div>
                   </div>
                 </template>
+              </div>
+
+              <!-- Phase 14 P1-2:plan diff(跟上次对比)-->
+              <div v-if="slowSqlResults[idx]?.history_id" class="rounded-lg border border-primary-light bg-primary-light/10 p-3 text-xs">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="flex items-center gap-1.5 font-semibold text-primary">
+                    📊 plan diff
+                  </span>
+                  <button
+                    class="btn btn-outline h-7 px-2 text-[11px]"
+                    :disabled="planDiffLoading[idx]"
+                    @click="runPlanDiff(idx)"
+                  >
+                    {{ planDiffLoading[idx] ? '对比中…' : '跟上次对比' }}
+                  </button>
+                </div>
+                <div v-if="planDiffErrors[idx]" class="text-status-warning">
+                  {{ planDiffErrors[idx] }}
+                </div>
+                <div v-if="planDiffs[idx]" class="space-y-2">
+                  <!-- summary -->
+                  <div
+                    class="font-bold rounded p-2"
+                    :class="isPlanDiffImproved(planDiffs[idx]!)
+                      ? 'bg-status-success-bg text-status-success'
+                      : isPlanDiffRegressed(planDiffs[idx]!)
+                      ? 'bg-status-error-bg text-status-error'
+                      : 'bg-slate-100 text-slate-700'"
+                  >
+                    {{ planDiffs[idx]!.diff.summary }}
+                  </div>
+                  <!-- max-rows 变化 -->
+                  <div class="grid grid-cols-3 gap-2 text-center">
+                    <div class="rounded bg-slate-100 p-2">
+                      <div class="font-bold text-slate-700">{{ planDiffs[idx]!.diff.rows_delta.a.toLocaleString() }}</div>
+                      <div class="muted text-[10px]">上次 max-rows</div>
+                    </div>
+                    <div class="rounded bg-slate-100 p-2">
+                      <div class="font-bold text-slate-700">{{ planDiffs[idx]!.diff.rows_delta.b.toLocaleString() }}</div>
+                      <div class="muted text-[10px]">本次 max-rows</div>
+                    </div>
+                    <div class="rounded p-2"
+                         :class="planDiffs[idx]!.diff.rows_delta.change < 0 ? 'bg-status-success-bg text-status-success' : planDiffs[idx]!.diff.rows_delta.change > 0 ? 'bg-status-error-bg text-status-error' : 'bg-slate-100 text-slate-700'">
+                      <div class="font-bold">{{ planDiffs[idx]!.diff.rows_delta.change > 0 ? '+' : '' }}{{ planDiffs[idx]!.diff.rows_delta.change.toLocaleString() }}</div>
+                      <div class="text-[10px]">差值</div>
+                    </div>
+                  </div>
+                  <!-- issues 修复 / 新增 -->
+                  <div v-if="planDiffs[idx]!.diff.issues_resolved.length || planDiffs[idx]!.diff.issues_introduced.length" class="grid grid-cols-2 gap-2">
+                    <div v-if="planDiffs[idx]!.diff.issues_resolved.length" class="rounded bg-status-success-bg p-2">
+                      <div class="text-status-success font-bold mb-0.5">✓ 修复({{ planDiffs[idx]!.diff.issues_resolved.length }})</div>
+                      <ul class="text-slate-700">
+                        <li v-for="c in planDiffs[idx]!.diff.issues_resolved" :key="c">• {{ c }}</li>
+                      </ul>
+                    </div>
+                    <div v-if="planDiffs[idx]!.diff.issues_introduced.length" class="rounded bg-status-error-bg p-2">
+                      <div class="text-status-error font-bold mb-0.5">✗ 新引入({{ planDiffs[idx]!.diff.issues_introduced.length }})</div>
+                      <ul class="text-slate-700">
+                        <li v-for="c in planDiffs[idx]!.diff.issues_introduced" :key="c">• {{ c }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                  <!-- type / Extra 变化 -->
+                  <div v-if="planDiffs[idx]!.diff.type_changes.length || planDiffs[idx]!.diff.extra_changes.length" class="rounded bg-slate-50 p-2">
+                    <div v-if="planDiffs[idx]!.diff.type_changes.length" class="mb-1">
+                      <span class="font-semibold text-slate-700">type 变化:</span>
+                      <span v-for="(t, i) in planDiffs[idx]!.diff.type_changes" :key="`tc-${i}`" class="ml-2 text-[11px]">
+                        step{{ t.idx }} <span class="text-status-error line-through">{{ t.from }}</span> → <span class="text-status-success">{{ t.to }}</span>
+                      </span>
+                    </div>
+                    <div v-if="planDiffs[idx]!.diff.extra_changes.length">
+                      <span class="font-semibold text-slate-700">Extra 变化:</span>
+                      <div v-for="(e, i) in planDiffs[idx]!.diff.extra_changes" :key="`ec-${i}`" class="ml-2 text-[11px]">
+                        step{{ e.idx }}:
+                        <span v-if="e.removed.length" class="text-status-success">- {{ e.removed.join(', ') }}</span>
+                        <span v-if="e.added.length" class="text-status-error ml-1">+ {{ e.added.join(', ') }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <!-- EXPLAIN plan 原始行 -->

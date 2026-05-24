@@ -20,6 +20,7 @@ from app.scenarios.materializer import (
     CursorExecutor,
     apply_plan,
     build_materialize_plan,
+    materialize_streaming,
 )
 from app.scenarios.models import Scenario
 
@@ -30,18 +31,25 @@ class ScenarioRuntimeError(RuntimeError):
 
 def materialize_to_datasource(
     scenario: Scenario,
-    data: dict[str, TableData],
+    data: dict[str, TableData] | None,
     datasource_id: str,
     *,
     drop_first: bool = True,
     batch_size: int = 500,
+    streaming: bool = True,
 ) -> dict[str, Any]:
-    """跑 build_materialize_plan + apply_plan 到指定 datasource。
+    """跑 materialize 到指定 datasource。
+
+    Phase 14 P0-2 起默认走 **streaming** 路径(`materialize_streaming`)——
+    内存恒定 O(batch_size × col_width),千万行不爆。data 参数可以传 None。
+
+    `streaming=False` 走老 `build_materialize_plan + apply_plan` 路径(data
+    必须传)——向后兼容老 caller / 单测路径。
 
     raises:
         ScenarioRuntimeError —— datasource 不存在 / 驱动未装 / 执行失败
     returns:
-        apply_plan 的 summary dict（dialect / schemas_created / tables / warnings）
+        summary dict(dialect / schemas_created / tables / warnings + streaming 标志)
     """
     if not datasource_id.strip():
         raise ScenarioRuntimeError("datasource_id is required")
@@ -61,12 +69,23 @@ def materialize_to_datasource(
             f"{source.db_type.value} driver is not installed"
         )
 
-    plan = build_materialize_plan(scenario, data, drop_first=drop_first)
+    if not streaming and data is None:
+        raise ScenarioRuntimeError(
+            "streaming=False 时必须传 data(老路径需要预先 generate_scenario 结果)"
+        )
+
     try:
         with _pool.borrow(source, lambda: _connect(source, module_name)) as conn:
             cur = conn.cursor()
             try:
-                summary = apply_plan(plan, CursorExecutor(cur), batch_size=batch_size)
+                if streaming:
+                    summary = materialize_streaming(
+                        scenario, CursorExecutor(cur),
+                        drop_first=drop_first, batch_size=batch_size,
+                    )
+                else:
+                    plan = build_materialize_plan(scenario, data or {}, drop_first=drop_first)
+                    summary = apply_plan(plan, CursorExecutor(cur), batch_size=batch_size)
                 conn.commit()
                 return summary
             finally:

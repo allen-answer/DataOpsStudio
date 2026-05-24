@@ -180,6 +180,30 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             user_id TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS download_nonces_exp_idx ON download_nonces(exp);
+
+        -- Phase 14 P1-2: slow-sql plan history。每次 /api/slow-sql/analyze
+        -- 跑完自动落一条,前端 plan-diff 拿同 sql_hash 的最近 2 条对比改写
+        -- 前后的 plan(type / rows / Extra / cost 变化)。sql_hash = sha256(归一化 SQL)
+        -- 让"格式调一调"的语义相同改写归为同条历史线。
+        CREATE TABLE IF NOT EXISTS slow_sql_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            datasource_id TEXT NOT NULL,
+            dialect TEXT NOT NULL,
+            sql_text TEXT NOT NULL,
+            sql_hash TEXT NOT NULL,
+            scenario_id TEXT NOT NULL DEFAULT '',
+            workload_name TEXT NOT NULL DEFAULT '',
+            plan_json TEXT NOT NULL,
+            issues_json TEXT NOT NULL,
+            suggestions_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS slow_sql_plans_hash_idx
+          ON slow_sql_plans(datasource_id, sql_hash, ts DESC);
+        CREATE INDEX IF NOT EXISTS slow_sql_plans_scenario_idx
+          ON slow_sql_plans(scenario_id, workload_name, ts DESC);
+        CREATE INDEX IF NOT EXISTS slow_sql_plans_ts_idx
+          ON slow_sql_plans(ts DESC);
     """)
 
 

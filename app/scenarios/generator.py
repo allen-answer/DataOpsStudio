@@ -1,20 +1,26 @@
-"""Scenario generator —— 按 Scenario 在内存中产数据（Phase 12 切片 2）。
+"""Scenario generator —— 按 Scenario 产数据(Phase 12 切片 2,Phase 14 P0-2 加 streaming)。
 
-`generate_scenario(scenario)` 返回 `{table_name: list[row_dict]}`：
-- 源表用 columns 定义的 generator 现场造
-- 派生表（derives_from）拷贝源数据 + 应用 column_overrides
-- anomalies 在所有表造完之后 apply（破坏目标表，制造 only_source / diff / null）
+两套 API:
+- `generate_scenario(scenario)` 返回 `{table_name: list[row_dict]}`(老路径,小 scenario 仍用)
+- `iter_table_rows_streaming(table, ...)` yield batches —— Phase 14 加,内存 O(batch × col_width)
+  恒定,千万行不爆。`materialize_streaming` 调用方。
+
+派生表(derives_from)在 streaming 模式下走 SQL `INSERT INTO derived SELECT FROM source`,
+不再 Python 内存复制源行 —— 详见 materializer.materialize_streaming。
+
+anomaly 处理(streaming):
+- row-level(value_drift / null_drift / type_mismatch):预采样 hit 索引 + inline 应用
+- set-level(missing_rows):预采样跳过索引,生成阶段直接漏掉
+- set-level(extra_rows / duplicate_pk):base 行跑完后在 final batch 追加
 
 seed != 0 时复跑同结果。seed=0 时不固定 RNG。
-
-下一切片：materializer 把 dict 落到 demo MySQL；ai_filler 接管 ai.fill 字段。
 """
 from __future__ import annotations
 
 import random
 import re
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Iterator
 
 from app.scenarios.models import (
     AnomalyDef,
@@ -382,3 +388,161 @@ def _find_pk_name(table_name: str, all_tables: dict[str, TableDef]) -> str | Non
             if c.pk:
                 return renames.get(c.name) or c.name
     return None
+
+
+# ─── Phase 14 P0-2:streaming generation ────────────────────────────────────
+
+
+def iter_table_rows_streaming(
+    table: TableDef,
+    all_tables: dict[str, TableDef],
+    scenario: Scenario,
+    *,
+    batch_size: int = 1000,
+    rng: random.Random | None = None,
+) -> Iterator[list[Row]]:
+    """流式生成单表的行,按 batch 分批 yield。
+
+    内存:O(batch_size × col_width) + O(anomaly_indices)。1000 行/批 + 20 列 + 50B/字段
+    ≈ 1 MB 恒定,千万行规模也不爆。
+
+    **派生表(derives_from)直接 raise** —— 派生表在 streaming 模式下走 SQL 端
+    `INSERT INTO derived SELECT FROM source`,不在 Python 复制行,
+    所以这个函数只负责源表。caller 检 `table.derives_from` 跳过这函数。
+
+    anomaly 处理:
+    - row-level(value_drift / null_drift / type_mismatch):预采样索引集合,
+      生成阶段 inline 应用
+    - missing_rows:预采样跳过索引,base loop 跳掉
+    - extra_rows / duplicate_pk:base loop 跑完后追加在最后一批
+    """
+    if table.derives_from:
+        raise ValueError(
+            f"iter_table_rows_streaming: derived table {table.name!r} should "
+            f"go through materializer.materialize_streaming SQL-side INSERT-SELECT"
+        )
+    if rng is None:
+        rng = random.Random(scenario.seed) if scenario.seed else random.Random()
+
+    total_rows = table.rows or 0
+    if total_rows <= 0:
+        return
+
+    # 1. 收集本表相关 anomaly
+    table_anomalies = [a for a in scenario.anomalies if a.table == table.name]
+
+    # 2. 预采样 set-level / row-level 索引
+    skip_indices: set[int] = set()              # missing_rows 跳过的索引
+    value_drift_indices: dict[str, set[int]] = {}  # col → 命中索引集
+    null_drift_indices: dict[str, set[int]] = {}
+    type_mismatch_indices: dict[str, set[int]] = {}
+    extra_count = 0
+    dup_count = 0
+    perturbations: dict[str, float] = {}  # col → 比例
+    for a in table_anomalies:
+        if a.kind == "missing_rows":
+            n = _count(a, total_rows)
+            if n > 0:
+                skip_indices.update(
+                    rng.sample(range(total_rows), min(n, total_rows))
+                )
+        elif a.kind == "extra_rows":
+            extra_count += _count(a, total_rows)
+        elif a.kind == "duplicate_pk":
+            dup_count += _count(a, total_rows)
+        elif a.kind == "value_drift" and a.column:
+            n = _count(a, total_rows)
+            if n > 0:
+                value_drift_indices.setdefault(a.column, set()).update(
+                    rng.sample(range(total_rows), min(n, total_rows))
+                )
+                perturbations[a.column] = _perturbation(a)
+        elif a.kind == "null_drift" and a.column:
+            n = _count(a, total_rows)
+            if n > 0:
+                null_drift_indices.setdefault(a.column, set()).update(
+                    rng.sample(range(total_rows), min(n, total_rows))
+                )
+        elif a.kind == "type_mismatch" and a.column:
+            n = _count(a, total_rows)
+            if n > 0:
+                type_mismatch_indices.setdefault(a.column, set()).update(
+                    rng.sample(range(total_rows), min(n, total_rows))
+                )
+
+    pk = _find_pk_name(table.name, all_tables)
+
+    # 3. base loop:按 batch 攒行,inline 应用 row-level anomaly,跳 missing
+    batch: list[Row] = []
+    extra_pool: list[Row] = []  # 给 extra_rows / duplicate_pk 留几行做模板
+    for i in range(total_rows):
+        if i in skip_indices:
+            continue
+        row: Row = {c.name: _generate_value(c, rng, i) for c in table.columns}
+        # row-level anomaly inline
+        for col, idx_set in value_drift_indices.items():
+            if i in idx_set:
+                v = row.get(col)
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, (int, float)):
+                    row[col] = type(v)(v * (1 + (rng.random() - 0.5) * 2 * perturbations.get(col, 0.02)))
+        for col, idx_set in null_drift_indices.items():
+            if i in idx_set:
+                row[col] = None
+        for col, idx_set in type_mismatch_indices.items():
+            if i in idx_set:
+                v = row.get(col)
+                row[col] = "" if v is None else str(v)
+        batch.append(row)
+        # extra/dup 模板池(随机存几行,后面追加用)
+        if (extra_count or dup_count) and len(extra_pool) < 50 and rng.random() < 0.1:
+            extra_pool.append(dict(row))
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+
+    # 4. extra_rows:append e 个新行(新 PK)
+    if extra_count and (extra_pool or table.columns):
+        for _ in range(extra_count):
+            template = dict(rng.choice(extra_pool)) if extra_pool else {
+                c.name: _generate_value(c, rng, total_rows + _) for c in table.columns
+            }
+            if pk:
+                template[pk] = _uuid_short(rng)
+            batch.append(template)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+
+    # 5. duplicate_pk:append d 个重复行(沿用现 PK)
+    if dup_count and extra_pool:
+        for _ in range(dup_count):
+            victim = rng.choice(extra_pool)
+            dup = dict(rng.choice(extra_pool))
+            if pk:
+                dup[pk] = victim.get(pk)
+            batch.append(dup)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+
+    if batch:
+        yield batch
+
+
+def estimate_total_rows(table: TableDef, scenario: Scenario) -> int:
+    """估算 streaming 实际会产出多少行(扣掉 missing,加上 extra/dup)。
+
+    给 caller 报 summary.rows_generated 用 —— 不实际跑 generation,纯计算。
+    """
+    if table.derives_from:
+        return table.rows  # 派生表 SQL-side 复制,行数 = source 期望
+    base = table.rows or 0
+    missing = sum(_count(a, base) for a in scenario.anomalies
+                  if a.table == table.name and a.kind == "missing_rows")
+    extra = sum(_count(a, base) for a in scenario.anomalies
+                if a.table == table.name and a.kind == "extra_rows")
+    dup = sum(_count(a, base) for a in scenario.anomalies
+              if a.table == table.name and a.kind == "duplicate_pk")
+    return max(0, base - missing) + extra + dup

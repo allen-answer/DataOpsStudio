@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 🚀 Phase 14 P0-2 / P0-3 / P1-1 / P1-2 / P2 · SQL 优化沙盒生产化
+
+把 SQL 优化沙盒从「demo / 测试工具」升级成「不连生产做 SQL 性能优化」生产级工作台,5 个切片一气交付。
+
+- **P0-2 streaming generator + 流式 materialize** —— 新增 `iter_table_rows_streaming` 按 batch yield 行 + `materialize_streaming` 走 streaming insert + 派生表 SQL 端 `INSERT INTO derived SELECT FROM source` 零 Python 内存复制 + anomaly 三档处理(row-level inline / missing_rows 预采样跳过 / extra+dup 末批追加)。runtime 默认开 streaming。**内存 O(batch×col_width) 恒定,千万行不爆**(老路径 100k 行就 OOM 风险)
+- **P0-3 materialize 后自动 ANALYZE** —— `MaterializeDialect.analyze_table_sql` 新抽象 + MySQL `ANALYZE TABLE` / Oracle/DM `DBMS_STATS.GATHER_TABLE_STATS` 实现。每表 materialize 完自动跑,best-effort 吞失败不阻塞。**优化器 cardinality 从默认估算变成真实数据采样**,EXPLAIN plan 接近生产
+- **P1-1 SHOW CREATE TABLE → yml** —— `app/scenarios/yml_importer.py` 走 introspect_columns + 新加的 introspect_indexes (MySQL `SHOW INDEX FROM`) + introspect_row_count (info_schema.TABLES/USER_TABLES/SYSCAT)。`POST /api/scenarios/import-from-datasource` body `{datasource_id, table_names, scenario_id, save?}` → yml 文本(可选直接落 config/scenarios/<id>.yml)。列类型 + 列名启发推断 generator(int→sequence/random_int / varchar→realistic / datetime→timestamp / ENUM 解析字面值)。**手抄 schema 翻 yml 的 30 分钟变 30 秒**
+- **P1-2 plan diff** —— `slow_sql_plans` SQLite 表 + `sql_hash` 归一化(空白折叠 / 保大小写)+ `save_plan` / `list_plans_for_sql` / `list_plans_for_scenario` / `diff_plans`。`/api/slow-sql/analyze` 自动落 history,新 endpoints `GET /api/slow-sql/plan-history` + `GET /api/slow-sql/plan-diff`。diff 算 max-rows 变化 / type 变化 / Extra token 增删 / issues 修复 vs 新引入。前端 SqlOptimizeView 加 plan diff 紫色卡片,绿/红 banner 标改善/退化 + step-level type/Extra 着色(老 strike-through,新 underline)
+- **P2 UX 步骤式重构 (lite)** —— 顶部加 4-step 视觉导航条(schema → 生成数据 → SQL 优化 → 回归校验),当前步骤紫色高亮 + 描述 + "当前步骤"标识。新增「从 datasource 导入」主按钮 → inline 对话框(填 ds / 表名 / scenario_id / save 复选框)→ 调 P1-1 endpoint → 成功后显示 yml 预览 + 复制按钮 + 自动刷新左侧 scenario 列表。**没强拆 4 个 sub-view 文件**(view 已 1357 行,完整重构留长期);scenario 列表 / 详情面板 / slow-sql 卡片结构保持,只加导航 + 入口
+- **scenarios router 权限 admin → editor+** —— 配合 P0-1 重定位,后端跟前端权限对齐;datasource / project 级权限仍由各 endpoint 内部 `require_datasource_access` / `require_project_access` 保护
+
 ### 🔬 Phase 14 P0-1 · SQL 优化沙盒重定位
 
 scenario 沙盒(Phase 12 起的「admin 测试沙盒」)实际用途是数据工程师 / DBA 日常处理慢 SQL 工单 —— 不是 admin 工具。重定位:

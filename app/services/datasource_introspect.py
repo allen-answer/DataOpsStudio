@@ -154,6 +154,109 @@ def introspect_columns(
     return out
 
 
+def introspect_indexes(
+    datasource_id: str, table_name: str,
+) -> list[dict[str, Any]]:
+    """拉表的索引定义,Phase 14 P1-1 给 yml_importer 反向生成 IndexDef 用。
+
+    返回 `[{name, columns: [...], unique: bool, is_pk: bool}]`,按 index name 排序。
+
+    MySQL 走 `SHOW INDEX FROM table`(每行一个 (index, seq, column),要按 index
+    名 group)。Oracle / DM / DB2 留口返 [](后续切片补)—— 用户仍可手工 ALTER TABLE
+    后再 introspect。
+    """
+    if not table_name or not datasource_id:
+        return []
+    source = datasource_store.get(datasource_id)
+    if source is None:
+        raise ValueError(f"datasource {datasource_id} not found")
+    schema, table = _split_schema_table(table_name)
+    _validate_identifier(table)
+    if schema:
+        _validate_identifier(schema)
+    if source.db_type != DatabaseType.MYSQL:
+        return []
+    qfull = f"`{schema}`.`{table}`" if schema else f"`{table}`"
+    sql = f"SHOW INDEX FROM {qfull}"
+    try:
+        rows = dbclients_factory.fetch_rows(source, sql, max_rows=500)
+    except Exception as exc:
+        logger.warning("introspect_indexes failed for %s: %s", table_name, exc)
+        return []
+    # group by index name; 保 seq 排序
+    by_name: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        idx_name = r.get("Key_name") or r.get("KEY_NAME") or ""
+        if not idx_name:
+            continue
+        entry = by_name.setdefault(idx_name, {
+            "name": idx_name,
+            "columns": [],
+            "unique": int(r.get("Non_unique", 1)) == 0,
+            "is_pk": idx_name.upper() == "PRIMARY",
+            "_seqs": [],
+        })
+        col = r.get("Column_name") or r.get("COLUMN_NAME") or ""
+        seq = int(r.get("Seq_in_index", 0) or 0)
+        if col:
+            entry["_seqs"].append((seq, col))
+    out: list[dict[str, Any]] = []
+    for name, entry in by_name.items():
+        entry["columns"] = [c for _, c in sorted(entry["_seqs"])]
+        entry.pop("_seqs", None)
+        out.append(entry)
+    return sorted(out, key=lambda x: (not x["is_pk"], x["name"]))
+
+
+def introspect_row_count(
+    datasource_id: str, table_name: str,
+) -> int | None:
+    """拉表的近似行数 —— yml_importer 给 scenario.tables[].rows 当默认。
+
+    MySQL: `information_schema.TABLES.TABLE_ROWS`(InnoDB 估算,可能差几十%)
+    Oracle / DM: `USER_TABLES.NUM_ROWS`(需要 ANALYZE 过)
+    DB2: `SYSCAT.TABLES.CARD`(需要 RUNSTATS 过)
+
+    返 None 表示拿不到(表不存在 / 没统计信息 / 不支持的方言)。
+    """
+    source = datasource_store.get(datasource_id)
+    if source is None:
+        return None
+    schema, table = _split_schema_table(table_name)
+    _validate_identifier(table)
+    if schema:
+        _validate_identifier(schema)
+    if source.db_type == DatabaseType.MYSQL:
+        cond = f"TABLE_NAME = '{table}'"
+        if schema:
+            cond += f" AND TABLE_SCHEMA = '{schema}'"
+        sql = f"SELECT TABLE_ROWS AS n FROM information_schema.TABLES WHERE {cond} LIMIT 1"
+    elif source.db_type in (DatabaseType.ORACLE, DatabaseType.DM):
+        cond = f"TABLE_NAME = UPPER('{table}')"
+        if schema:
+            cond += f" AND OWNER = UPPER('{schema}')"
+        sql = f"SELECT NUM_ROWS AS n FROM ALL_TABLES WHERE {cond}"
+    elif source.db_type == DatabaseType.DB2:
+        cond = f"TABNAME = UPPER('{table}')"
+        if schema:
+            cond += f" AND TABSCHEMA = UPPER('{schema}')"
+        sql = f"SELECT CARD AS n FROM SYSCAT.TABLES WHERE {cond}"
+    else:
+        return None
+    try:
+        rows = dbclients_factory.fetch_rows(source, sql, max_rows=1)
+    except Exception as exc:
+        logger.warning("introspect_row_count failed for %s: %s", table_name, exc)
+        return None
+    if not rows:
+        return None
+    n = rows[0].get("n") or rows[0].get("N") or rows[0].get("NUM_ROWS")
+    try:
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def invalidate_cache(datasource_id: str = "", table_name: str = "") -> None:
     """显式失效缓存。任一参数为空 = 全部失效。"""
     with _cache_lock:
