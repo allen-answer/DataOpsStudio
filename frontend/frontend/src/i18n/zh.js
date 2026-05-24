@@ -3,8 +3,9 @@
 export default {
   nav: {
     datasources: '数据源',
+    scenarios: '场景',
     dataCompare: '数据对比',
-    sqlOptimize: 'SQL 优化沙盒',
+    sqlOptimize: 'SQL 优化',
     workflows: '作业流',
     lineage: '血缘分析',
     history: '执行历史',

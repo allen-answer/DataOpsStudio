@@ -2,8 +2,9 @@
 export default {
   nav: {
     datasources: 'Data Sources',
+    scenarios: 'Scenarios',
     dataCompare: 'Compare',
-    sqlOptimize: 'SQL Optimizer',
+    sqlOptimize: 'SQL Optimize',
     workflows: 'Workflows',
     lineage: 'Lineage',
     history: 'History',

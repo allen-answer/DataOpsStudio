@@ -145,24 +145,42 @@ const store = useSandboxStore()
               或用方言函数索引(Oracle/DM 支持)
             </div>
 
-            <!-- Phase 14 #2 lineage 影响:加索引会拖慢谁 / 受益于谁 -->
-            <details
-              v-if="ctx.ddl_candidates.length && (ctx.writers_affected?.length || ctx.readers_helped?.length)"
-              class="text-xs"
-            >
-              <summary class="cursor-pointer font-medium text-slate-700 hover:text-primary">
+            <!-- Phase 14 #2 lineage 影响:加索引会拖慢谁 / 受益于谁
+                 总是显示(即使 writers/readers 都 0 也是数据点,说明此表
+                 没在最近 50 workflow_run 出现过 → 安全建) -->
+            <details v-if="ctx.ddl_candidates.length" class="text-xs">
+              <summary class="cursor-pointer font-medium text-slate-700 hover:text-primary py-1">
+                <span class="text-slate-500 mr-1">🔗 上下游影响:</span>
                 <span v-if="ctx.writers_affected?.length" class="text-status-warning">
-                  ⚠ 影响 {{ ctx.writers_affected.length }} 个 ETL 写入
+                  ⚠ {{ ctx.writers_affected.length }} 个 ETL 写入
                 </span>
                 <span v-if="ctx.writers_affected?.length && ctx.readers_helped?.length"> · </span>
                 <span v-if="ctx.readers_helped?.length" class="text-status-success">
-                  ✓ 受益于 {{ ctx.readers_helped.length }} 个读取脚本
+                  ✓ {{ ctx.readers_helped.length }} 个读取脚本
+                </span>
+                <span
+                  v-if="!ctx.writers_affected?.length && !ctx.readers_helped?.length"
+                  class="text-slate-500 italic"
+                >
+                  未检测到上下游影响(lineage 索引里此表无最近引用)— 可安全建
                 </span>
                 <span v-if="ctx.refresh_mode" class="ml-2 text-slate-500">
                   (refresh_mode: <span class="sql-font">{{ ctx.refresh_mode }}</span>)
                 </span>
               </summary>
-              <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 pl-3">
+              <!-- 空态:lineage_index 没此表的上下游 -->
+              <div
+                v-if="!ctx.writers_affected?.length && !ctx.readers_helped?.length"
+                class="mt-2 ml-3 text-[11px] text-slate-500 bg-slate-50 rounded p-2 border border-slate-200"
+              >
+                <p class="mb-1">💡 此表没出现在最近 50 个 workflow_run 的 lineage 输出里。可能原因:</p>
+                <ul class="space-y-0.5 ml-3 list-disc">
+                  <li>这是临时分析表 / 一次性查询用 — 索引可放心加</li>
+                  <li>实际 ETL 用 lineage_script workload 跑过但 lineage 索引未刷新 — 去 <code class="sql-font">/admin/governance</code> 或调 <code class="sql-font">POST /api/lineage/graph/refresh</code></li>
+                  <li>ETL 跑在 DataOpsStudio 外部(直接 cron + shell 脚本)— lineage 看不到,索引影响需要人工评估</li>
+                </ul>
+              </div>
+              <div v-else class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 pl-3">
                 <!-- writers -->
                 <div v-if="ctx.writers_affected?.length" class="space-y-1">
                   <div class="text-status-warning font-bold text-[11px]">

@@ -8,9 +8,10 @@
 //
 // 后端 API + 沙盒能力不变。
 import { onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import {
-  Microscope, RefreshCw, Play, ListChecks, Database, Sparkles,
-  ShieldCheck, Rocket, Variable, ChevronDown, ChevronRight,
+  Microscope, RefreshCw, Database, Sparkles, Variable,
+  ChevronDown, ChevronRight, FlaskConical,
 } from 'lucide-vue-next'
 import { useSandboxStore } from '../stores/sandbox'
 import type { StepId } from '../types/sandbox'
@@ -39,11 +40,22 @@ function jumpToStep(stepId: StepId): void {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+const route = useRoute()
+
 onMounted(async () => {
   await store.loadList()
-  // **不自动选 scenario** —— Phase 14 P2 完整版后让用户主动选,
-  // 否则 currentStep 直接跳 step 2,看起来"第一步选不了"
-  // 同样不自动选 datasource —— 让用户在 step 2 显式选
+  // 从 /scenarios 跳过来时带 ?scenario_id=&datasource_id=&project_id= —— 自动选中
+  const q = route.query
+  if (q.scenario_id && typeof q.scenario_id === 'string') {
+    store.viewMode = 'template'
+    await store.selectScenario(q.scenario_id)
+  }
+  if (q.datasource_id && typeof q.datasource_id === 'string') {
+    store.datasourceId = q.datasource_id
+  }
+  if (q.project_id && typeof q.project_id === 'string') {
+    store.projectId = q.project_id
+  }
 })
 </script>
 
@@ -265,45 +277,12 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="mt-4 flex flex-wrap gap-3">
-              <button
-                class="btn btn-primary"
-                :disabled="!store.datasourceId || store.runningAll || store.sandboxWriteLocked"
-                @click="store.runAll"
-                :title="store.sandboxWriteLocked
-                  ? '此 datasource 是 ' + store.selectedDsEnvironment + ' 环境,造数据已锁定'
-                  : 'fill → generate → materialize → record → run tasks → verify 一气呵成'"
-              >
-                <Rocket class="h-4 w-4" :class="{ 'animate-pulse': store.runningAll }" />
-                {{ store.runningAll ? '一键链跑中…' : '🚀 一键全套' }}
-              </button>
-              <button
-                class="btn btn-outline"
-                :disabled="!store.datasourceId || store.materializing || store.sandboxWriteLocked"
-                @click="store.runMaterialize"
-                :title="store.sandboxWriteLocked ? '非 sandbox 环境,造数据已锁定' : ''"
-              >
-                <Play class="h-4 w-4" :class="{ 'animate-pulse': store.materializing }" />
-                {{ store.materializing ? '生成中…' : '仅生成数据' }}
-              </button>
-              <button
-                class="btn btn-outline"
-                :disabled="!store.datasourceId || store.recording || store.sandboxWriteLocked"
-                @click="store.runRecord"
-                :title="store.sandboxWriteLocked ? '非 sandbox 环境,建任务已锁定' : ''"
-              >
-                <ListChecks class="h-4 w-4" />
-                {{ store.recording ? '建任务中…' : '建对比任务' }}
-              </button>
-              <button
-                class="btn btn-outline"
-                :disabled="store.verifying"
-                @click="store.runVerify"
-                title="对比 yml expected vs actual run summary,把 scenario 当回归 fixture 用"
-              >
-                <ShieldCheck class="h-4 w-4" />
-                {{ store.verifying ? '校验中…' : '回归校验' }}
-              </button>
+            <!-- 写入端点(造数据 / record / 校验 / 一键)已搬到 /scenarios 场景管理 -->
+            <div class="mt-3 text-xs text-slate-500 flex items-center gap-1.5 italic">
+              💡 此页只看 / 分析数据 — 想生成数据 / 建任务 / 回归校验,去
+              <a href="#/scenarios" class="text-primary hover:underline font-medium not-italic flex items-center gap-1">
+                <FlaskConical class="h-3 w-3" />场景管理
+              </a>
             </div>
           </div>
 
