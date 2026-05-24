@@ -87,6 +87,66 @@ const store = useSandboxStore()
           </div>
         </div>
 
+        <!-- 实质数据 schema_context:表行数 / 现有索引 / WHERE+JOIN 列 / 具体 CREATE INDEX DDL
+             不依赖 LLM,后端 sqlglot 解析 SQL + introspect schema 产出,给 actionable 数据 -->
+        <div
+          v-if="store.slowSqlResults[idx]?.schema_context?.length"
+          class="rounded-lg border border-status-info bg-status-info-bg/30 p-3 space-y-3"
+        >
+          <div class="text-sm font-bold text-status-info flex items-center gap-1.5">
+            📊 schema 上下文 + 具体 DDL 候选
+            <span class="text-[10px] font-normal text-slate-500 normal-case">
+              规则建议的实质化扩展(无 LLM)
+            </span>
+          </div>
+          <div
+            v-for="(ctx, i) in store.slowSqlResults[idx].schema_context"
+            :key="`ctx-${i}`"
+            class="rounded border border-slate-200 bg-white p-3 space-y-2"
+          >
+            <div class="flex items-center gap-2 flex-wrap text-sm">
+              <span class="pill bg-primary-light text-primary sql-font">
+                {{ ctx.schema ? `${ctx.schema}.${ctx.table}` : ctx.table }}
+              </span>
+              <span v-if="ctx.table_row_count !== null" class="text-xs text-slate-600">
+                ≈ {{ ctx.table_row_count.toLocaleString() }} 行
+              </span>
+              <span class="text-xs text-slate-500">
+                · {{ ctx.existing_indexes.length }} 个现有索引
+              </span>
+            </div>
+            <div v-if="ctx.rationale" class="text-xs text-slate-600 leading-relaxed">
+              {{ ctx.rationale }}
+            </div>
+            <div v-if="ctx.existing_indexes.length" class="text-xs">
+              <span class="text-slate-500 font-medium">现有索引:</span>
+              <span
+                v-for="(idx, j) in ctx.existing_indexes"
+                :key="`idx-${i}-${j}`"
+                class="ml-1 inline-block pill bg-slate-100 text-slate-700 text-[10px] sql-font"
+                :title="idx.unique ? 'UNIQUE' : '非唯一'"
+              >
+                {{ idx.name }}({{ idx.columns.join(', ') }})
+              </span>
+            </div>
+            <div v-if="ctx.ddl_candidates.length" class="space-y-1">
+              <div class="text-xs font-medium text-slate-700">📝 建议 DDL(可直接执行):</div>
+              <pre
+                v-for="(ddl, j) in ctx.ddl_candidates"
+                :key="`ddl-${i}-${j}`"
+                class="px-2 py-1.5 bg-slate-900 text-green-300 rounded text-[11px] sql-font whitespace-pre-wrap break-all"
+              >{{ ddl }}</pre>
+            </div>
+            <div
+              v-else-if="ctx.uncovered_columns.length"
+              class="text-xs text-status-warning italic"
+            >
+              ⚠ 关键列被函数包(CASE/TRIM 等),普通 BTree 索引无效;需改写 SQL
+              或用方言函数索引(Oracle/DM 支持)
+            </div>
+          </div>
+        </div>
+
         <!-- AI enrichment 结果 -->
         <div v-if="store.enrichResults[idx]" class="rounded-lg border-2 border-primary p-3 space-y-3 bg-white">
           <div class="flex items-center justify-between">
