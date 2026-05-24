@@ -10,7 +10,7 @@
  *   生产环境 save=True 后端会 403,前端 disable Save 按钮 + 文案警告
  */
 import { ref, computed } from 'vue'
-import { Database, FileCode, Save, Eye, Copy, AlertTriangle } from 'lucide-vue-next'
+import { Database, FileCode, Save, Eye, Copy, AlertTriangle, FlaskConical } from 'lucide-vue-next'
 import { useSchemaImportStore } from '../stores/schemaImport'
 import { apiJson } from '../api'
 import { useNoticeStore } from '../stores/notice'
@@ -102,19 +102,31 @@ async function copyYml() {
 
 <template>
   <section class="space-y-6">
+    <!-- 面包屑 — 显示这是 scenario-lab 子流程 -->
+    <nav class="text-xs text-slate-500 flex items-center gap-1">
+      <a href="#/scenario-lab" class="hover:text-primary inline-flex items-center gap-1">
+        <FlaskConical class="h-3 w-3" /> 场景测试沙盒
+      </a>
+      <span class="text-slate-400">/</span>
+      <span class="text-slate-700 font-medium">从 datasource 导入 schema</span>
+    </nav>
+
     <div class="flex items-end justify-between">
       <div>
         <h2 class="text-2xl font-bold text-slate-800 flex items-center gap-2">
           <FileCode class="h-7 w-7 text-primary" />
-          Schema 导入
+          从 datasource 导入 schema
         </h2>
         <p class="mt-1 text-sm text-slate-500">
           从 datasource 读 information_schema / all_tab_columns,反向生成
-          scenario yml(给 <a href="#/scenario-lab" class="text-primary hover:underline">场景测试沙盒</a>
-          用)。
+          scenario yml — 给 <a href="#/scenario-lab" class="text-primary hover:underline">场景测试沙盒</a>
+          的 yml 模板库用。
           <span class="text-status-error font-semibold">生产 ds 默认只能 preview,不能 save。</span>
         </p>
       </div>
+      <a href="#/scenario-lab" class="btn btn-outline">
+        ← 返回场景测试沙盒
+      </a>
     </div>
 
     <!-- 表单 -->

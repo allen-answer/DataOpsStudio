@@ -1,7 +1,16 @@
-# Schema 导入(/schema-import) — Phase 14 #3
+# Schema 导入(/scenario-lab/import) — Phase 14 #3 Round 3
 
+> **信息架构更新**:Schema 导入不再作为一级菜单。它现在是 **场景测试沙盒
+> 的子流程**:
+>
+> - 路由:`/scenario-lab/import`(SchemaImportView 不变,只换路径)
+> - 入口:`/scenario-lab` 顶部按钮「从 datasource 导入 schema」
+> - 旧 `/schema-import` 仍 redirect 到 `/scenario-lab/import`(老书签兼容)
+> - 侧边栏:**已删除** Schema 导入一级菜单项
+>
 > 前端 store 是 `stores/schemaImport.ts`(facade,引用 sandbox.ts backing state)。
 > SchemaImportView + ImportDialog 通过此 store 访问,不再直接 import sandbox.ts。
+> 页面顶部含面包屑「场景测试沙盒 / 从 datasource 导入 schema」+ 返回链接。
 
 ## 范围
 

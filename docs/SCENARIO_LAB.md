@@ -1,8 +1,15 @@
-# 场景测试沙盒(/scenario-lab) — Phase 14 #3
+# 场景测试沙盒(/scenario-lab) — Phase 14 #3 Round 3
 
-> 旧 /sql-optimize 已废弃为迁移提示页。所有 scenario yml 模板 / materialize /
-> record / verify 操作走 /scenario-lab 入口。前端 store 是
-> `stores/scenarioLab.ts`(facade,引用 sandbox.ts backing state)。
+> **信息架构更新**:scenario-lab 现在含 1 个子流程 `/scenario-lab/import`(原
+> /schema-import,现归为子流程)。一级菜单只有 SQL 诊断 / 场景测试沙盒 两个。
+>
+> 旧 /sql-optimize 已废弃(redirect → /sql-diagnosis)。所有 scenario yml
+> 模板 / materialize / record / verify 操作走 /scenario-lab 入口。
+> 前端 store 是 `stores/scenarioLab.ts`(facade,引用 sandbox.ts backing state)。
+>
+> 顶部入口按钮:
+> - 「从 datasource 导入 schema」 → `/scenario-lab/import`
+> - 「刷新模板列表」 → 重新拉 yml 列表
 
 ## 范围
 

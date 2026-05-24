@@ -15,7 +15,6 @@ import {
   Tag,
   Microscope,
   FlaskConical,
-  FileCode,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -27,11 +26,13 @@ import { useBootstrapStore } from '../stores/bootstrap'
 // Phase 4：单脚本血缘 + 多脚本分析合并为"血缘分析"，path 默认 /lineage；
 // /batch-lineage 仍是合法路径（保留外部链接兼容），同样高亮该项。
 // label 走 i18n —— labelKey 是 messages 里的 key，模板用 $t(item.labelKey)
+// Phase 14 #3 Round 3 — IA 调整后:schema-import 不再作为一级菜单
+// (它现在是 /scenario-lab/import 子流程,通过 /scenario-lab 顶部按钮进入)
+// scenario-lab matchPaths 含 /scenario-lab/import → 进子流程时仍高亮父菜单
 const NAV_ITEMS = [
   { id: 'datasources',     labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',     matchPaths: ['/datasources'] },
   { id: 'sql-diagnosis',   labelKey: 'nav.sqlDiagnosis', icon: Microscope,       path: '/sql-diagnosis',   matchPaths: ['/sql-diagnosis', '/sql-optimize', '/admin/sandbox'] },
-  { id: 'scenario-lab',    labelKey: 'nav.scenarioLab',  icon: FlaskConical,     path: '/scenario-lab',    matchPaths: ['/scenario-lab'] },
-  { id: 'schema-import',   labelKey: 'nav.schemaImport', icon: FileCode,         path: '/schema-import',   matchPaths: ['/schema-import'] },
+  { id: 'scenario-lab',    labelKey: 'nav.scenarioLab',  icon: FlaskConical,     path: '/scenario-lab',    matchPaths: ['/scenario-lab', '/schema-import'] },
   { id: 'data-compare',    labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',    matchPaths: ['/data-compare'] },
   { id: 'workflows',       labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',       matchPaths: ['/workflows', '/workflow-runs'] },
   { id: 'lineage',         labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',         matchPaths: ['/lineage', '/batch-lineage'] },

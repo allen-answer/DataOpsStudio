@@ -44,17 +44,19 @@ const routes = [
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
   { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
 
-  // Phase 14 #3 — 拆分自原 /sql-optimize:
-  // - /sql-diagnosis: 真正 SQL 诊断(preflight + EXPLAIN + AI + plan diff)
-  // - /scenario-lab: 测试沙盒(scenario yml + materialize/run-all/record/verify)
-  // - /schema-import: 从 datasource 反查 schema 生成 yml
-  // 旧 /sql-optimize 保留为兼容入口(展示 mode tab 让用户选哪个新页),
-  // /admin/sandbox 老路径继续 301 到 /sql-optimize 让书签不死链。
-  { path: '/sql-diagnosis', name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
-  { path: '/scenario-lab',  name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
-  { path: '/schema-import', name: 'schema-import', component: () => import('../views/SchemaImportView.vue') },
-  { path: '/sql-optimize',  name: 'sql-optimize',  component: () => import('../views/SqlOptimizeView.vue') },
-  { path: '/admin/sandbox', redirect: '/sql-optimize' },
+  // Phase 14 #3 Round 3 — IA 调整为"两页 + 一个子流程":
+  // 一级菜单仅:/sql-diagnosis + /scenario-lab
+  // schema 导入 = scenario-lab 的子流程 (/scenario-lab/import),不上一级菜单
+  // 老 URL 都 redirect:
+  //   /sql-optimize    → /sql-diagnosis   (旧混合页彻底废弃)
+  //   /admin/sandbox   → /sql-diagnosis   (老书签兼容)
+  //   /schema-import   → /scenario-lab/import (老书签兼容)
+  { path: '/sql-diagnosis',        name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
+  { path: '/scenario-lab',         name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
+  { path: '/scenario-lab/import',  name: 'scenario-lab-import', component: () => import('../views/SchemaImportView.vue') },
+  { path: '/schema-import',        redirect: '/scenario-lab/import' },
+  { path: '/sql-optimize',         redirect: '/sql-diagnosis' },
+  { path: '/admin/sandbox',        redirect: '/sql-diagnosis' },
 
   // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示。lazy load 节省
   // 普通用户的首屏带宽（admin 占总人数 < 5% 的场景下尤其值得）

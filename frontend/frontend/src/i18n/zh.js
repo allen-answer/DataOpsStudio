@@ -5,12 +5,12 @@ export default {
     datasources: '数据源',
     sqlDiagnosis: 'SQL 诊断',
     scenarioLab: '场景测试沙盒',
-    schemaImport: 'Schema 导入',
     dataCompare: '数据对比',
-    sqlOptimize: 'SQL 优化沙盒',
     workflows: '作业流',
     lineage: '血缘分析',
     history: '执行历史',
+    // Phase 14 #3 Round 3:schema 导入不再上一级菜单(改子流程进 /scenario-lab/import)
+    // 旧 key sqlOptimize / schemaImport 已移除
   },
   adminNav: {
     sectionLabel: '管理',

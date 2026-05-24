@@ -51,7 +51,9 @@ onMounted(() => {
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <a href="#/schema-import" class="btn btn-outline">
+        <!-- Phase 14 #3 Round 3:schema 导入是 scenario-lab 的子流程,
+             用 router push 进 /scenario-lab/import,而非跳一级菜单 -->
+        <a href="#/scenario-lab/import" class="btn btn-primary">
           <Database class="h-4 w-4" />
           从 datasource 导入 schema
         </a>
