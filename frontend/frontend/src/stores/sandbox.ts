@@ -1,0 +1,510 @@
+// SQL 优化沙盒 Pinia store(Phase 14 P2 完整版 view 拆分)。
+//
+// 把 SqlOptimizeView 1689 行里的 state + actions 全收口到这,让 5 个子组件
+// (ScenarioListPanel / StepSchema / StepData / StepSql / StepVerify / SandboxSummary)
+// 共享 reactive state,不用 prop drilling 10 层。
+//
+// 模式跟 stores/task.ts(WorkbenchView 同款)一致:state ref + computed +
+// async actions,setup style,no options API。
+import { computed, ref } from 'vue'
+import { defineStore, storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
+
+import { apiGet, apiJson } from '../api'
+import { useNoticeStore } from './notice'
+import { useBootstrapStore } from './bootstrap'
+
+import type {
+  AiFillReport, AnomalyDef, ImportFromDsResult, MaterializeResult, PlanDiffResult,
+  PlanHistoryItem, RecordResult, RunAllResult, ScenarioDetail, ScenarioDetailResponse,
+  ScenarioListItem, ScenarioListResponse, SlowSqlEnrichResult, SlowSqlResult, StepId,
+  VerifyResult, WorkloadDef,
+} from '../types/sandbox'
+
+
+const TEMPLATE_VAR_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g
+
+
+export const useSandboxStore = defineStore('sandbox', () => {
+  // ─── core state ─────────────────────────────────────────────────────────
+  const items = ref<ScenarioListItem[]>([])
+  const loadingList = ref(false)
+  const selectedId = ref('')
+  const detail = ref<ScenarioDetail | null>(null)
+  const detailPath = ref('')
+  const loadingDetail = ref(false)
+
+  const datasourceId = ref('')
+  const dropFirst = ref(true)
+  const aiFill = ref(false)
+  const projectId = ref('')
+
+  const materializing = ref(false)
+  const recording = ref(false)
+  const verifying = ref(false)
+  const runningAll = ref(false)
+  const materializeResult = ref<MaterializeResult | null>(null)
+  const recordResult = ref<RecordResult | null>(null)
+  const verifyResult = ref<VerifyResult | null>(null)
+  const runAllResult = ref<RunAllResult | null>(null)
+  const lastError = ref('')
+
+  // slow-sql / plan diff / AI enrich(按 workload idx 维护)
+  const slowSqlResults = ref<Record<number, SlowSqlResult>>({})
+  const slowSqlAnalyzing = ref<Record<number, boolean>>({})
+  const slowSqlExpanded = ref<Record<number, boolean>>({})
+  const slowSqlErrors = ref<Record<number, string>>({})
+  const planDiffs = ref<Record<number, PlanDiffResult | null>>({})
+  const planDiffLoading = ref<Record<number, boolean>>({})
+  const planDiffErrors = ref<Record<number, string>>({})
+  const enrichResults = ref<Record<number, SlowSqlEnrichResult>>({})
+  const enrichLoading = ref<Record<number, boolean>>({})
+
+  // import from datasource(P1-1 UI 状态)
+  const importDialogOpen = ref(false)
+  const importing = ref(false)
+  const importResult = ref<ImportFromDsResult | null>(null)
+  const importError = ref('')
+  const importForm = ref({
+    datasource_id: '', table_names: '', scenario_id: '',
+    scenario_name: '', default_rows: 1000, save: true,
+  })
+
+  // ─── derived ───────────────────────────────────────────────────────────
+  const bootstrapStore = useBootstrapStore()
+  const { state: bootState } = storeToRefs(bootstrapStore)
+  const noticeStore = useNoticeStore()
+  const router = useRouter()
+
+  const datasources = computed(() => (bootState.value?.datasources || []) as any[])
+  const mysqlDatasources = computed(() =>
+    datasources.value.filter((ds: any) => String(ds.db_type || '').toLowerCase().includes('mysql')),
+  )
+  const validScenarios = computed(() => items.value.filter((it) => !it.error))
+  const brokenScenarios = computed(() => items.value.filter((it) => !!it.error))
+
+  // 当前 step 启发推断
+  const currentStep = computed<StepId>(() => {
+    if (!selectedId.value) return 'schema'
+    if (!materializeResult.value) return 'data'
+    if (!Object.values(slowSqlResults.value).length) return 'sql'
+    return 'verify'
+  })
+
+  // ─── helpers ───────────────────────────────────────────────────────────
+  function isSelected(id?: string): boolean {
+    return !!id && id === selectedId.value
+  }
+
+  function renderSql(sql: string | undefined): { text: string; missing: string[] } {
+    if (!sql) return { text: '', missing: [] }
+    const vars = detail.value?.variables || {}
+    const missing = new Set<string>()
+    const text = sql.replace(TEMPLATE_VAR_RE, (full, name) => {
+      if (Object.prototype.hasOwnProperty.call(vars, name)) {
+        const v = (vars as any)[name]
+        return v === null || v === undefined ? '' : String(v)
+      }
+      missing.add(name)
+      return full
+    })
+    return { text, missing: Array.from(missing).sort() }
+  }
+
+  function planColumns(plan: Record<string, unknown>[]): string[] {
+    if (!plan.length) return []
+    return Object.keys(plan[0])
+  }
+
+  function statusBadgeClass(status: string): string {
+    switch (status) {
+      case 'pass': return 'bg-status-success-bg text-status-success'
+      case 'fail': return 'bg-status-error-bg text-status-error'
+      case 'no_task':
+      case 'no_run':
+      case 'no_expected': return 'bg-status-warning-bg text-status-warning'
+      default: return 'bg-slate-100 text-slate-600'
+    }
+  }
+
+  function statusLabel(status: string): string {
+    switch (status) {
+      case 'pass': return '✓ 通过'
+      case 'fail': return '✗ 不一致'
+      case 'no_expected': return '未声明 expected'
+      case 'no_task': return '未 record'
+      case 'no_run': return '未跑过'
+      default: return status
+    }
+  }
+
+  function verdictBadgeClass(verdict: string): string {
+    switch (verdict) {
+      case 'confirmed': return 'bg-status-success-bg text-status-success'
+      case 'false_positive': return 'bg-status-error-bg text-status-error'
+      case 'insufficient_info': return 'bg-status-warning-bg text-status-warning'
+      default: return 'bg-slate-100 text-slate-600'
+    }
+  }
+
+  function confidenceBadgeClass(c?: string): string {
+    switch (c) {
+      case 'high': return 'bg-status-success-bg text-status-success'
+      case 'medium': return 'bg-status-warning-bg text-status-warning'
+      case 'low': return 'bg-slate-100 text-slate-600'
+      default: return 'bg-slate-100 text-slate-600'
+    }
+  }
+
+  function anomalyLabel(a: AnomalyDef): string {
+    const parts: string[] = []
+    if (a.column) parts.push(a.column)
+    if (a.fraction != null) parts.push(`${(a.fraction * 100).toFixed(1)}%`)
+    else if (a.count != null) parts.push(`${a.count} 条`)
+    return parts.join(' · ')
+  }
+
+  function totalRows(d: ScenarioDetail): number {
+    return d.tables.reduce((sum, t) => sum + (t.rows || 0), 0)
+  }
+
+  function isPlanDiffImproved(d: PlanDiffResult): boolean {
+    return d.diff.rows_delta.change < 0 || d.diff.issues_resolved.length > 0
+  }
+  function isPlanDiffRegressed(d: PlanDiffResult): boolean {
+    return d.diff.rows_delta.change > 0 || d.diff.issues_introduced.length > 0
+  }
+
+  function toggleSlowSqlExpansion(idx: number): void {
+    slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: !slowSqlExpanded.value[idx] }
+  }
+
+  function gotoTask(taskId: string): void {
+    router.push({ path: '/data-compare', query: { task_id: taskId } })
+  }
+
+  function gotoHistory(): void {
+    router.push({ path: '/history', query: { type: 'lineage' } })
+  }
+
+  // ─── actions ───────────────────────────────────────────────────────────
+  async function loadList(): Promise<void> {
+    loadingList.value = true
+    lastError.value = ''
+    try {
+      const data = await apiGet<ScenarioListResponse>('/api/scenarios')
+      items.value = data.items || []
+    } catch (e) {
+      lastError.value = noticeStore.toErrorMessage(e)
+    } finally {
+      loadingList.value = false
+    }
+  }
+
+  async function selectScenario(id: string): Promise<void> {
+    if (!id || id === selectedId.value) return
+    selectedId.value = id
+    detail.value = null
+    detailPath.value = ''
+    materializeResult.value = null
+    recordResult.value = null
+    loadingDetail.value = true
+    try {
+      const data = await apiGet<ScenarioDetailResponse>(`/api/scenarios/${id}`)
+      detail.value = data.scenario
+      detailPath.value = data.path
+    } catch (e) {
+      noticeStore.setNotice(`加载 scenario 失败：${noticeStore.toErrorMessage(e)}`)
+    } finally {
+      loadingDetail.value = false
+    }
+  }
+
+  async function runMaterialize(): Promise<void> {
+    if (!selectedId.value || !datasourceId.value) {
+      noticeStore.setNotice('请先选 scenario 和 datasource')
+      return
+    }
+    materializing.value = true
+    materializeResult.value = null
+    lastError.value = ''
+    try {
+      materializeResult.value = await apiJson<MaterializeResult>(
+        `/api/scenarios/${selectedId.value}/materialize`,
+        'POST',
+        {
+          datasource_id: datasourceId.value,
+          drop_first: dropFirst.value,
+          batch_size: 500,
+          ai_fill: aiFill.value,
+        },
+      )
+      noticeStore.setNotice('✨ 数据已落库')
+    } catch (e) {
+      lastError.value = noticeStore.toErrorMessage(e)
+      noticeStore.setNotice(`Materialize 失败：${lastError.value}`)
+    } finally {
+      materializing.value = false
+    }
+  }
+
+  async function runAll(): Promise<void> {
+    if (!selectedId.value || !datasourceId.value) {
+      noticeStore.setNotice('请先选 scenario 和 datasource')
+      return
+    }
+    runningAll.value = true
+    runAllResult.value = null
+    materializeResult.value = null
+    recordResult.value = null
+    verifyResult.value = null
+    lastError.value = ''
+    try {
+      const result = await apiJson<RunAllResult>(
+        `/api/scenarios/${selectedId.value}/run-all`,
+        'POST',
+        {
+          datasource_id: datasourceId.value,
+          drop_first: dropFirst.value,
+          batch_size: 500,
+          ai_fill: aiFill.value,
+          project_id: projectId.value,
+        },
+      )
+      runAllResult.value = result
+      materializeResult.value = result.materialize
+      if (result.record?.tasks?.length || result.record?.lineage_runs?.length) {
+        recordResult.value = {
+          tasks: (result.record.tasks || []).map(t => ({
+            id: t.id, name: t.name,
+            source_id: '', target_id: '',
+            source_sql: '', target_sql: '',
+            key_columns: [], project_id: t.project_id || '',
+          })),
+          warnings: result.record.warnings,
+          lineage_runs: result.record.lineage_runs,
+        }
+      }
+      verifyResult.value = result.verify
+      if (result.ok) {
+        noticeStore.setNotice('🚀 一键链全套完成 · 全部 pass')
+      } else {
+        noticeStore.setNotice(`一键链完成但有问题:${result.error || '查看下方 verify 结果'}`)
+      }
+    } catch (e) {
+      lastError.value = noticeStore.toErrorMessage(e)
+      noticeStore.setNotice(`一键链失败：${lastError.value}`)
+    } finally {
+      runningAll.value = false
+    }
+  }
+
+  async function runVerify(): Promise<void> {
+    if (!selectedId.value) return
+    verifying.value = true
+    verifyResult.value = null
+    try {
+      const verified = await apiJson<VerifyResult>(
+        `/api/scenarios/${selectedId.value}/verify`
+        + (projectId.value ? `?project_id=${encodeURIComponent(projectId.value)}` : ''),
+        'GET',
+      )
+      verifyResult.value = verified
+      const s = verified.summary
+      noticeStore.setNotice(`回归校验：${s.pass} pass · ${s.fail} fail · ${s.skipped} skipped`)
+    } catch (e) {
+      noticeStore.setNotice(`Verify 失败：${noticeStore.toErrorMessage(e)}`)
+    } finally {
+      verifying.value = false
+    }
+  }
+
+  async function runRecord(): Promise<void> {
+    if (!selectedId.value || !datasourceId.value) {
+      noticeStore.setNotice('请先选 scenario 和 datasource')
+      return
+    }
+    recording.value = true
+    recordResult.value = null
+    lastError.value = ''
+    try {
+      const recorded = await apiJson<RecordResult>(
+        `/api/scenarios/${selectedId.value}/record`,
+        'POST',
+        { datasource_id: datasourceId.value, project_id: projectId.value },
+      )
+      recordResult.value = recorded
+      noticeStore.setNotice(`✨ 已创建 ${recorded.tasks.length} 个对比任务`)
+    } catch (e) {
+      lastError.value = noticeStore.toErrorMessage(e)
+      noticeStore.setNotice(`Record 失败：${lastError.value}`)
+    } finally {
+      recording.value = false
+    }
+  }
+
+  async function runSlowSqlAnalysis(idx: number, workload: WorkloadDef): Promise<void> {
+    if (!workload.sql || !datasourceId.value) {
+      noticeStore.setNotice('需要先选 datasource，且 workload 有 sql 字段')
+      return
+    }
+    slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: true }
+    slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: '' }
+    try {
+      const { text: renderedSql } = renderSql(workload.sql)
+      const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
+        sql: renderedSql,
+        datasource_id: datasourceId.value,
+        scenario_id: selectedId.value,
+        workload_name: workload.name || '',
+      })
+      slowSqlResults.value = { ...slowSqlResults.value, [idx]: result }
+      slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
+    } catch (e) {
+      slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+      slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
+    } finally {
+      slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: false }
+    }
+  }
+
+  async function runPlanDiff(idx: number): Promise<void> {
+    const cur = slowSqlResults.value[idx]
+    if (!cur?.history_id || !cur.sql_hash || !datasourceId.value) {
+      planDiffErrors.value = { ...planDiffErrors.value, [idx]: '需要先跑过分析(拿到 history_id)' }
+      return
+    }
+    planDiffLoading.value = { ...planDiffLoading.value, [idx]: true }
+    planDiffErrors.value = { ...planDiffErrors.value, [idx]: '' }
+    try {
+      const hist = await apiJson<{ items: PlanHistoryItem[] }>(
+        `/api/slow-sql/plan-history?datasource_id=${encodeURIComponent(datasourceId.value)}`
+        + `&sql_hash=${encodeURIComponent(cur.sql_hash)}&limit=2`,
+        'GET',
+      )
+      if (!hist.items || hist.items.length < 2) {
+        planDiffErrors.value = { ...planDiffErrors.value, [idx]:
+          '同 SQL 没有更早的历史可对比(改写 SQL/加索引后重跑就能 diff 了)' }
+        return
+      }
+      const [newest, prev] = hist.items
+      const diff = await apiJson<PlanDiffResult>(
+        `/api/slow-sql/plan-diff?plan_a_id=${prev.id}&plan_b_id=${newest.id}`,
+        'GET',
+      )
+      planDiffs.value = { ...planDiffs.value, [idx]: diff }
+    } catch (e) {
+      planDiffErrors.value = { ...planDiffErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+    } finally {
+      planDiffLoading.value = { ...planDiffLoading.value, [idx]: false }
+    }
+  }
+
+  async function runAiEnrich(idx: number, workload: WorkloadDef): Promise<void> {
+    const analysisResult = slowSqlResults.value[idx]
+    if (!analysisResult || !workload.sql) {
+      noticeStore.setNotice('请先运行规则分析')
+      return
+    }
+    enrichLoading.value = { ...enrichLoading.value, [idx]: true }
+    try {
+      const { text: renderedSql } = renderSql(workload.sql)
+      const result = await apiJson<SlowSqlEnrichResult>('/api/slow-sql/enrich', 'POST', {
+        sql: renderedSql,
+        plan: analysisResult.plan,
+        issues: analysisResult.issues,
+        suggestions: analysisResult.suggestions,
+        expected_optimizations: workload.expected_optimizations || [],
+        dialect: analysisResult.dialect || 'mysql',
+      })
+      enrichResults.value = { ...enrichResults.value, [idx]: result }
+      if (!result.ok) {
+        noticeStore.setNotice(result.error || 'AI 复核未启用')
+      } else {
+        const pct = result.expected_coverage.coverage_pct
+        noticeStore.setNotice(
+          result.expected_coverage.missing.length
+            ? `✨ AI 复核完成，覆盖率 ${pct}%`
+            : `✨ AI 复核完成`,
+        )
+      }
+    } catch (e) {
+      noticeStore.setNotice(`AI 复核失败：${noticeStore.toErrorMessage(e)}`)
+    } finally {
+      enrichLoading.value = { ...enrichLoading.value, [idx]: false }
+    }
+  }
+
+  // ─── import from datasource(P1-1 UI 入口)──────────────────────────────
+  function openImportDialog(): void {
+    importForm.value = {
+      datasource_id: datasourceId.value || '',
+      table_names: '', scenario_id: '', scenario_name: '',
+      default_rows: 1000, save: true,
+    }
+    importResult.value = null
+    importError.value = ''
+    importDialogOpen.value = true
+  }
+
+  async function submitImport(): Promise<void> {
+    if (!importForm.value.datasource_id || !importForm.value.table_names.trim()
+        || !importForm.value.scenario_id.trim()) {
+      importError.value = '需要填 datasource / table_names / scenario_id'
+      return
+    }
+    importing.value = true
+    importError.value = ''
+    try {
+      const tables = importForm.value.table_names.split(',').map(s => s.trim()).filter(Boolean)
+      const r = await apiJson<ImportFromDsResult>(
+        '/api/scenarios/import-from-datasource', 'POST', {
+          datasource_id: importForm.value.datasource_id,
+          table_names: tables,
+          scenario_id: importForm.value.scenario_id,
+          scenario_name: importForm.value.scenario_name,
+          default_rows: importForm.value.default_rows,
+          save: importForm.value.save,
+        },
+      )
+      importResult.value = r
+      if (r.saved_path) {
+        noticeStore.setNotice(`✨ 已保存到 config/scenarios/${r.saved_path}`)
+        await loadList()
+      }
+    } catch (e) {
+      importError.value = noticeStore.toErrorMessage(e)
+    } finally {
+      importing.value = false
+    }
+  }
+
+  function copyImportYml(): void {
+    if (!importResult.value?.yml_text) return
+    navigator.clipboard?.writeText(importResult.value.yml_text)
+    noticeStore.setNotice('✓ yml 已复制')
+  }
+
+  return {
+    // state
+    items, loadingList, selectedId, detail, detailPath, loadingDetail,
+    datasourceId, dropFirst, aiFill, projectId,
+    materializing, recording, verifying, runningAll,
+    materializeResult, recordResult, verifyResult, runAllResult, lastError,
+    slowSqlResults, slowSqlAnalyzing, slowSqlExpanded, slowSqlErrors,
+    planDiffs, planDiffLoading, planDiffErrors,
+    enrichResults, enrichLoading,
+    importDialogOpen, importing, importResult, importError, importForm,
+    // derived
+    datasources, mysqlDatasources, validScenarios, brokenScenarios, currentStep,
+    // helpers
+    isSelected, renderSql, planColumns, statusBadgeClass, statusLabel,
+    verdictBadgeClass, confidenceBadgeClass, anomalyLabel, totalRows,
+    isPlanDiffImproved, isPlanDiffRegressed, toggleSlowSqlExpansion,
+    gotoTask, gotoHistory,
+    // actions
+    loadList, selectScenario, runMaterialize, runAll, runVerify, runRecord,
+    runSlowSqlAnalysis, runPlanDiff, runAiEnrich,
+    openImportDialog, submitImport, copyImportYml,
+  }
+})
