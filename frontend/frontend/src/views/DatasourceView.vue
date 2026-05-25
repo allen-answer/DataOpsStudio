@@ -12,7 +12,7 @@ const loadBootstrap = bootstrapStore.reload    // sidebar / 顶部按钮重新�
 const datasourceStore = useDatasourceStore()
 const { editingDatasourceId } = storeToRefs(datasourceStore)
 const {
-  datasourceDraft, editDraft,
+  datasourceDraft, editDraft, testResults,
   startEditDatasource, cancelEditDatasource,
   updateDatasource, deleteDatasource, createDatasource, testDatasource,
 } = datasourceStore
@@ -266,7 +266,22 @@ const ALLOW_GROUPS: AllowGroup[] = [
                   >⚠ 未验证</span>
                 </td>
                 <td class="px-5 py-3 text-right">
-                  <div class="inline-flex gap-1">
+                  <div class="inline-flex items-center gap-1.5">
+                    <!-- 连接测试结果 inline 显示(替代顶部 banner,数据源多时不挤丢) -->
+                    <span
+                      v-if="testResults.get(item.id)"
+                      :title="testResults.get(item.id)?.message"
+                      class="text-[10px] px-1.5 py-0.5 rounded font-bold"
+                      :class="testResults.get(item.id)?.running
+                        ? 'bg-status-pending-bg text-status-pending'
+                        : testResults.get(item.id)?.ok
+                          ? 'bg-status-success-bg text-status-success'
+                          : 'bg-status-error-bg text-status-error'"
+                    >
+                      <template v-if="testResults.get(item.id)?.running">⏳ 测试中…</template>
+                      <template v-else-if="testResults.get(item.id)?.ok">✓ 连接成功</template>
+                      <template v-else>✗ 连接失败</template>
+                    </span>
                     <button class="rounded px-2 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900" @click="testDatasource(item.id)">测试</button>
                     <button class="rounded px-2 py-1 text-xs font-semibold text-primary transition hover:bg-primary-light" @click="startEditDatasource(item)">
                       {{ editingDatasourceId === item.id ? '收起' : '编辑' }}

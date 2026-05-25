@@ -13,7 +13,7 @@
  * S3.B：迁 .ts。Datasource 实例 shape 在 view 不强类型，先 unknown[] 处理；
  * 等 task / workflow store 迁完后统一收口。
  */
-import { reactive, ref } from 'vue'
+import { reactive, ref, shallowReactive } from 'vue'
 import { defineStore } from 'pinia'
 import { apiJson } from '../api'
 import { useNoticeStore } from './notice'
@@ -175,13 +175,21 @@ export const useDatasourceStore = defineStore('datasource', () => {
     }
   }
 
+  // 连接测试结果 inline 显示在数据源行里(替代原顶部 notice banner — 数据源
+   // 一多就被列表挤下去,要滚回顶看,体验差)。结构:datasource.id → result;
+   // running=true 时显示"测试中…",resolve 后改成 ok/error + 时间戳。
+   // shallowReactive:Map 本身 reactive,Map 内 value object 整 set 才 trigger,
+   // 适合 result item 只整体替换不就地改字段的场景(性能更好)。
+  type TestResult = { running: boolean; ok?: boolean; message?: string; ts?: number }
+  const testResults = shallowReactive(new Map<string, TestResult>())
+
   async function testDatasource(id: string): Promise<void> {
-    const notice = useNoticeStore()
+    testResults.set(id, { running: true })
     try {
       await apiJson(`/api/datasources/${id}/test`, 'POST')
-      notice.setNotice('连接成功')
+      testResults.set(id, { running: false, ok: true, message: '连接成功', ts: Date.now() })
     } catch (error) {
-      notice.setNotice(`连接失败：${_toErrorMessage(error)}`)
+      testResults.set(id, { running: false, ok: false, message: _toErrorMessage(error), ts: Date.now() })
     }
   }
 
@@ -189,5 +197,6 @@ export const useDatasourceStore = defineStore('datasource', () => {
     datasourceDraft, editingDatasourceId, editDraft,
     startEditDatasource, cancelEditDatasource, resetDatasourceDraft,
     createDatasource, updateDatasource, deleteDatasource, testDatasource,
+    testResults,
   }
 })
