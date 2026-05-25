@@ -97,12 +97,24 @@ def _analyze_mysql(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
         raise SlowSqlError(f"EXPLAIN failed: {exc}") from exc
     issues = detect_issues(rows)
     suggestions = build_suggestions(issues)
+    issue_dicts = [asdict(i) for i in issues]
+    # 实质性建议 — schema introspect + sqlglot 提取 WHERE/JOIN 列 + 生成 CREATE
+    # INDEX DDL。失败不影响主流程返回(best-effort)
+    enhanced: list[dict[str, Any]] = []
+    try:
+        from app.services.slow_sql_enhance import enhance_for_issues
+        enhanced = enhance_for_issues(
+            datasource_id=source.id, sql=sql, issues=issue_dicts, dialect="mysql",
+        )
+    except Exception as exc:
+        logger.warning("slow-sql enhance failed (best-effort): %s", exc)
     return {
         "dialect": "mysql",
         "explain_sql": explain_sql,
         "plan": rows,
-        "issues": [asdict(i) for i in issues],
+        "issues": issue_dicts,
         "suggestions": [asdict(s) for s in suggestions],
+        "schema_context": enhanced,
     }
 
 
@@ -122,6 +134,7 @@ def _analyze_oracle(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]
         "plan": rows,
         "issues": [asdict(i) for i in issues],
         "suggestions": [asdict(s) for s in suggestions],
+        "schema_context": [],  # Oracle / DM schema enhance 留下个切片;先空字段保 API 形态
     }
 
 

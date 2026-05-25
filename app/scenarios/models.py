@@ -97,7 +97,9 @@ class TableDef(BaseModel):
 
     name: str = Field(..., min_length=1)  # `schema.basename` 或裸表名
     role: Role
-    rows: int = Field(default=1000, ge=0, le=1_000_000)
+    # Phase 14 P0-2 streaming generator 不爆内存,cap 提到 1 亿(yml_importer
+    # 单表 cap 是 1_000_000,但直接写 yml 的高级用户可以上千万 / 亿级)
+    rows: int = Field(default=1000, ge=0, le=100_000_000)
     columns: list[ColumnDef] = Field(default_factory=list)
     indexes: list[IndexDef] = Field(default_factory=list)
     # 引用另一张表名 —— 继承其 columns，下面 overrides 只写差异
