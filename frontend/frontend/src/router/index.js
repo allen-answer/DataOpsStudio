@@ -44,12 +44,20 @@ const routes = [
   // :name 用 :pathMatch 接受含点号 / 斜杠的表名（如 ods.t_users）
   { path: '/assets/table/:name(.*)', name: 'asset-table', component: () => import('../views/AssetDetailView.vue'), props: true },
 
-  // SQL 优化沙盒(Phase 14 P0-1 重定位):从 admin 二级菜单升级到顶级一级菜单。
-  // 原 /admin/sandbox 路径保留 301 重定向到新路径,兼容老书签 + 文档链接。
-  // 权限放开到 editor —— SQL 优化是数据工程师日常,不是 admin 特权;
-  // require_datasource_access 仍约束只能 materialize 到自己有权的 ds。
-  { path: '/sql-optimize',  name: 'sql-optimize',  component: () => import('../views/SqlOptimizeView.vue') },
-  { path: '/admin/sandbox', redirect: '/sql-optimize' },
+  // Phase 14 #3 Round 3 — IA 调整为"两页 + 一个子流程":
+  // 一级菜单仅:/sql-diagnosis + /scenario-lab
+  // schema 导入 = scenario-lab 的子流程 (/scenario-lab/import),不上一级菜单
+  // 老 URL 都 redirect:
+  //   /sql-optimize    → /sql-diagnosis   (旧混合页彻底废弃)
+  //   /admin/sandbox   → /sql-diagnosis   (老书签兼容)
+  //   /schema-import   → /scenario-lab/import (老书签兼容)
+  { path: '/sql-diagnosis',        name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
+  { path: '/scenario-lab',         name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
+  { path: '/scenario-lab/import',  name: 'scenario-lab-import', component: () => import('../views/SchemaImportView.vue') },
+  { path: '/scenario-lab/builder', name: 'scenario-lab-builder', component: () => import('../views/ScenarioBuilderView.vue') },
+  { path: '/schema-import',        redirect: '/scenario-lab/import' },
+  { path: '/sql-optimize',         redirect: '/sql-diagnosis' },
+  { path: '/admin/sandbox',        redirect: '/sql-diagnosis' },
 
   // Admin —— 仅 admin 可访问，sidebar 也只在 admin role 下显示。lazy load 节省
   // 普通用户的首屏带宽（admin 占总人数 < 5% 的场景下尤其值得）

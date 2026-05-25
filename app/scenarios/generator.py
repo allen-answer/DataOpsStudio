@@ -37,31 +37,107 @@ TableData = list[Row]
 def generate_scenario(scenario: Scenario) -> dict[str, TableData]:
     """Generate all tables → {table_name: rows}.
 
-    顺序：源表 → 派生表 → anomalies。同 seed 同输出。
+    Phase 14 #3 Round 6:顺序由 derives_from + FK references 共同决定。
+    被引用表先生成,把列值入 FK pool,引用表 gen=foreign_key 时从 pool 抽样
+    → JOIN 拿到匹配行。
     """
     rng = random.Random(scenario.seed) if scenario.seed else random.Random()
     all_tables = {t.name: t for t in scenario.tables}
     out: dict[str, TableData] = {}
+    pool = _FKPool()
     for table in _resolve_order(scenario.tables):
-        out[table.name] = _generate_table(table, all_tables, out, rng)
+        out[table.name] = _generate_table(table, all_tables, out, rng, pool)
+        _populate_pool(pool, table, out[table.name])
     for anomaly in scenario.anomalies:
         _apply_anomaly(out, anomaly, all_tables, rng)
     return out
+
+
+# ─── FK pool(Phase 14 #3 Round 6)────────────────────────────────────────
+
+
+class _FKPool:
+    """跨表共享值池。key=(table_name, column_name) → 已生成的所有值列表。
+
+    支持 schema-qualified 表名查找(`ods.foo` 也能用 `foo` 找到)。
+    """
+    def __init__(self) -> None:
+        self._pool: dict[tuple[str, str], list[Any]] = {}
+
+    def add(self, table_name: str, column_name: str, values: list[Any]) -> None:
+        self._pool[(table_name, column_name)] = values
+
+    def get(self, references: str) -> list[Any] | None:
+        """references 格式 "table.col" 或 "schema.table.col"。
+        先精确匹配,再去 schema 前缀匹配。找不到返 None。"""
+        if "." not in references:
+            return None
+        ref_table, ref_col = references.rsplit(".", 1)
+        if (ref_table, ref_col) in self._pool:
+            return self._pool[(ref_table, ref_col)]
+        # fallback:去 schema 前缀
+        if "." in ref_table:
+            base = ref_table.rsplit(".", 1)[1]
+            if (base, ref_col) in self._pool:
+                return self._pool[(base, ref_col)]
+        # fallback:加 schema 前缀(被引用表注册的是裸名,引用的是 schema.table)
+        for (t, c), vals in self._pool.items():
+            if c == ref_col and (t == ref_table or t.endswith("." + ref_table)):
+                return vals
+        return None
+
+
+def _populate_pool(pool: _FKPool, table: TableDef, rows: TableData) -> None:
+    """把刚生成的表的所有列值入 pool(被 FK 引用了才会被查到,简单起见全入)。
+
+    内存代价:O(rows × columns)。1500w 行 × 15 列 ≈ 200M strings,占 1-2GB。
+    实战中只有"被引用"的 PK 列才会被查,其它列填进去其实可不入 — 留 P1 优化。
+    """
+    for col in table.columns:
+        values = [row.get(col.name) for row in rows]
+        pool.add(table.name, col.name, values)
 
 
 # ─── table-level ────────────────────────────────────────────────────────────
 
 
 def _resolve_order(tables: list[TableDef]) -> list[TableDef]:
+    """拓扑序:derives_from 父表 + FK references 被引用表 → 先生成。
+
+    Phase 14 #3 Round 6:除 derives_from 外,新增 FK 依赖。
+    Scenario.model_validator 已检测循环,这里走 DFS 假设是 DAG。
+    """
     by_name = {t.name: t for t in tables}
+    # 支持 schema.table 引用裸表名查找
+    by_simple: dict[str, TableDef] = {}
+    for t in tables:
+        simple = t.name.rsplit(".", 1)[-1] if "." in t.name else t.name
+        by_simple.setdefault(simple, t)
+
+    def find_table(ref: str) -> TableDef | None:
+        if ref in by_name:
+            return by_name[ref]
+        simple = ref.rsplit(".", 1)[-1] if "." in ref else ref
+        return by_simple.get(simple)
+
     seen: set[str] = set()
     order: list[TableDef] = []
 
     def visit(t: TableDef) -> None:
         if t.name in seen:
             return
-        if t.derives_from and t.derives_from in by_name:
-            visit(by_name[t.derives_from])
+        # 1. derives_from 父表先
+        if t.derives_from:
+            parent = find_table(t.derives_from)
+            if parent and parent.name != t.name:
+                visit(parent)
+        # 2. FK references 被引用表先
+        for col in t.columns:
+            if col.gen == "foreign_key" and col.references:
+                ref_table_path = col.references.rsplit(".", 1)[0]
+                parent = find_table(ref_table_path)
+                if parent and parent.name != t.name:
+                    visit(parent)
         seen.add(t.name)
         order.append(t)
 
@@ -75,11 +151,16 @@ def _generate_table(
     all_tables: dict[str, TableDef],
     generated: dict[str, TableData],
     rng: random.Random,
+    pool: _FKPool | None = None,
 ) -> TableData:
     if table.derives_from and table.derives_from in generated:
         return _derive_from(table, generated[table.derives_from])
+    # Phase 14 #3 Round 6:fk_unique 列要全表去重 → 用 per-table seen set
+    unique_seen: dict[str, set[Any]] = {
+        c.name: set() for c in table.columns if c.gen == "foreign_key" and c.fk_unique
+    }
     return [
-        {c.name: _generate_value(c, rng, i) for c in table.columns}
+        {c.name: _generate_value(c, rng, i, pool, unique_seen) for c in table.columns}
         for i in range(table.rows)
     ]
 
@@ -105,7 +186,20 @@ def _derive_from(table: TableDef, source_rows: TableData) -> TableData:
 # ─── per-column generator ───────────────────────────────────────────────────
 
 
-def _generate_value(col: ColumnDef, rng: random.Random, row_index: int) -> Any:
+def _generate_value(
+    col: ColumnDef,
+    rng: random.Random,
+    row_index: int,
+    pool: "_FKPool | None" = None,
+    unique_seen: dict[str, set[Any]] | None = None,
+) -> Any:
+    # Round 6 N — 金融行业 faker provider 优先级最高(覆盖 dist_params / values)
+    if col.faker_provider:
+        from app.scenarios.faker_providers import generate_with_provider
+        v = generate_with_provider(col.faker_provider, rng)
+        if v is not None:
+            return v
+        # provider 未注册 → fallback 到正常 gen 流程
     g = col.gen
     if g == "uuid_short":
         return _uuid_short(rng)
@@ -135,7 +229,68 @@ def _generate_value(col: ColumnDef, rng: random.Random, row_index: int) -> Any:
         return f"{prefix}{row_index + 1}" if prefix else row_index + 1
     if g == "realistic":
         return _realistic_value(col, rng)
+    if g == "foreign_key":
+        return _fk_value(col, rng, pool, unique_seen)
     raise ValueError(f"unknown generator: {g}")
+
+
+def _fk_value(
+    col: ColumnDef,
+    rng: random.Random,
+    pool: "_FKPool | None",
+    unique_seen: dict[str, set[Any]] | None,
+) -> Any:
+    """Phase 14 #3 Round 6:gen=foreign_key 从 pool 抽样。
+
+    - pool 为空 / 池没值 → 返 None(警告交由 generator 层日志)
+    - match_rate < 1.0:按概率给"池外"值,模拟脏数据 / LEFT JOIN miss
+    - fk_unique=True:per-table 去重抽(最多 50 次尝试,实在不行 fallback 接受重复)
+    - fk_distribution=zipf:头部值更可能被抽中(头部账户/客户特征)
+    """
+    if pool is None or not col.references:
+        return None
+    candidates = pool.get(col.references)
+    if not candidates:
+        return None
+
+    # match_rate < 1:部分给池外值
+    if col.match_rate < 1.0 and rng.random() > col.match_rate:
+        return _generate_unmatched_value(col, rng)
+
+    # fk_unique:per-table 去重抽
+    if col.fk_unique and unique_seen is not None:
+        seen = unique_seen.get(col.name, set())
+        for _ in range(50):
+            v = _fk_pick_one(candidates, rng, col)
+            if v not in seen:
+                seen.add(v)
+                return v
+        # 50 次都重复 → fallback 接受重复(候选池可能耗尽)
+        return _fk_pick_one(candidates, rng, col)
+
+    return _fk_pick_one(candidates, rng, col)
+
+
+def _fk_pick_one(candidates: list[Any], rng: random.Random, col: ColumnDef) -> Any:
+    """按 fk_distribution 从 candidates 抽 1 个。"""
+    if col.fk_distribution == "zipf":
+        n = len(candidates)
+        alpha = float(col.fk_zipf_alpha or 1.2)
+        weights = [1.0 / ((i + 1) ** alpha) for i in range(n)]
+        return rng.choices(candidates, weights=weights, k=1)[0]
+    return rng.choice(candidates)
+
+
+def _generate_unmatched_value(col: ColumnDef, rng: random.Random) -> Any:
+    """池外值 — 模拟脏数据 / LEFT JOIN 拿不到值的场景。
+
+    简单实现:用一个 UUID-like 字符串(几乎肯定不在池里);数值列用大负数。
+    后续 P1 可改成 "类似格式但不在池" 的更智能模拟。
+    """
+    t = (col.type or "").upper()
+    if any(k in t for k in ("INT", "BIGINT", "NUMBER", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC")):
+        return -rng.randint(1_000_000, 9_999_999)
+    return f"__UNMATCHED_{rng.randint(10000, 99999)}"
 
 
 def _uuid_short(rng: random.Random) -> str:
@@ -400,6 +555,7 @@ def iter_table_rows_streaming(
     *,
     batch_size: int = 1000,
     rng: random.Random | None = None,
+    pool: "_FKPool | None" = None,
 ) -> Iterator[list[Row]]:
     """流式生成单表的行,按 batch 分批 yield。
 
@@ -472,13 +628,18 @@ def iter_table_rows_streaming(
 
     pk = _find_pk_name(table.name, all_tables)
 
+    # Phase 14 #3 Round 6 — per-table fk_unique 状态(全表去重)
+    unique_seen: dict[str, set[Any]] = {
+        c.name: set() for c in table.columns if c.gen == "foreign_key" and c.fk_unique
+    }
+
     # 3. base loop:按 batch 攒行,inline 应用 row-level anomaly,跳 missing
     batch: list[Row] = []
     extra_pool: list[Row] = []  # 给 extra_rows / duplicate_pk 留几行做模板
     for i in range(total_rows):
         if i in skip_indices:
             continue
-        row: Row = {c.name: _generate_value(c, rng, i) for c in table.columns}
+        row: Row = {c.name: _generate_value(c, rng, i, pool, unique_seen) for c in table.columns}
         # row-level anomaly inline
         for col, idx_set in value_drift_indices.items():
             if i in idx_set:
@@ -506,7 +667,7 @@ def iter_table_rows_streaming(
     if extra_count and (extra_pool or table.columns):
         for _ in range(extra_count):
             template = dict(rng.choice(extra_pool)) if extra_pool else {
-                c.name: _generate_value(c, rng, total_rows + _) for c in table.columns
+                c.name: _generate_value(c, rng, total_rows + _, pool, unique_seen) for c in table.columns
             }
             if pk:
                 template[pk] = _uuid_short(rng)

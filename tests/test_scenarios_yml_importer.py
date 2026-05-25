@@ -78,12 +78,14 @@ def test_db_type_to_dialect_mapping():
 def _patch_introspect(monkeypatch, isolated_storage):
     """monkeypatch yml_importer 用到的三个 introspect 函数 + datasource_store"""
     from app.models import DataSourceCreate, DatabaseType
+    from app.models.datasource import make_sandbox_datasource_kwargs
     from app.services.repositories import datasource_store
 
     ds = datasource_store.create(DataSourceCreate(
         name="test-ds", db_type=DatabaseType.MYSQL,
         host="localhost", port=3306, database="test",
         username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
     ))
 
     def _fake_cols(_ds_id, table):
@@ -228,11 +230,13 @@ def test_import_all_tables_fail_raises(monkeypatch, _patch_introspect):
 def test_import_partial_failure_keeps_good_tables(monkeypatch, isolated_storage):
     """部分表失败 → 保留好表,fail 表进 warning"""
     from app.models import DataSourceCreate, DatabaseType
+    from app.models.datasource import make_sandbox_datasource_kwargs
     from app.services.repositories import datasource_store
 
     ds = datasource_store.create(DataSourceCreate(
         name="ds", db_type=DatabaseType.MYSQL, host="x", port=3306,
         database="d", username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
     ))
 
     def _cols(_d, t):

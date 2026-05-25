@@ -1,23 +1,35 @@
-"""Slow SQL analysis —— EXPLAIN + 规则推断 issues + 优化建议（Phase 12 切片 6 + 16）。
+"""Slow SQL analysis —— EXPLAIN + 规则推断 issues + 优化建议(Phase 12 切片 6 + 16,
+Phase 14 #3 拆 DM 独立)。
 
-支持的 dialect：
-- mysql        EXPLAIN <sql>，解析 type / Extra / rows
-- oracle / dm  EXPLAIN PLAN FOR <sql> → SELECT FROM PLAN_TABLE，解析
-               operation / options / object_name / cardinality / cost
+支持的 dialect:
+- mysql:  EXPLAIN <sql>,解析 type / Extra / rows
+- dm:     EXPLAIN <sql>,解析 DM operator 字段(CSCN/SSEK/HAGR/NEST LOOP/SORT)
+          ⚠ DM 不走 PLAN_TABLE,跟 Oracle 路径完全独立
+- oracle: EXPLAIN PLAN FOR <sql> → SELECT FROM PLAN_TABLE,解析
+          operation / options / object_name / cardinality / cost
+          ⚠ 该操作会向诊断表 PLAN_TABLE 写一行临时记录(非业务表)
 
-MySQL 4 条规则（切片 6）：
-- type=ALL                    → 全表扫描，建议加索引
+MySQL 4 条规则(切片 6):
+- type=ALL                    → 全表扫描,建议加索引
 - Extra 含 filesort           → ORDER BY 没用上索引
 - Extra 含 Using temporary    → GROUP BY / DISTINCT 触发临时表
 - rows > 10000 且 type=all/idx → 高扫描行数没走 key
 
-Oracle 5 条规则（切片 16）：
+DM 6 条规则(Phase 14 #3):
+- CSCN / CSCN2                → 全表扫描(集簇扫描)
+- SSEK / SSEK2 / CSEK / CSEK2 → 索引范围扫描(info,正常)
+- HAGR / HAGR2                → hash group(可能消耗内存)
+- SAGR / SAGR2                → stream group(info)
+- NEST LOOP + 行数大          → 大数据集嵌套循环
+- SORT 类                     → 排序成本
+
+Oracle 5 条规则(切片 16):
 - TABLE ACCESS / FULL                                 → 全表扫描
 - SORT / ORDER BY                                     → 未走索引排序
 - SORT / GROUP BY|UNIQUE                              → GROUP/DISTINCT 走临时排序
-- NESTED LOOPS + cardinality > 10000                  → 大数据集 NL（应改 HASH JOIN）
+- NESTED LOOPS + cardinality > 10000                  → 大数据集 NL(应改 HASH JOIN)
 - cost > 1000 任意非 SELECT STATEMENT 步骤            → 高 cost 提示统计信息 / hint
-- cardinality > 100000 + TABLE ACCESS FULL            → 高扫描（与 full_table_scan 同 row 触发）
+- cardinality > 100000 + TABLE ACCESS FULL            → 高扫描(与 full_table_scan 同 row 触发)
 
 Phase 12 切片 8：`enrich_via_ai` 把上面规则推断的 issues + plan + 原始 SQL
 喂给 LLM provider，让它：
@@ -85,8 +97,13 @@ def analyze_sql(
         )
     if dialect == "mysql":
         return _analyze_mysql(source, sql, max_plan_rows)
-    # oracle / dm 共用一套 plan_table 协议
-    return _analyze_oracle(source, sql, max_plan_rows)
+    if dialect == "dm":
+        # Phase 14 #3:DM 用 EXPLAIN SELECT,完全独立路径,不走 PLAN_TABLE
+        return _analyze_dm(source, sql, max_plan_rows)
+    if dialect == "oracle":
+        return _analyze_oracle(source, sql, max_plan_rows)
+    # 不可达(SUPPORTED_DIALECTS 已限制),fail-safe 兜底
+    raise SlowSqlError(f"unsupported dialect: {dialect}")
 
 
 def _analyze_mysql(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
@@ -115,6 +132,41 @@ def _analyze_mysql(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
         "issues": issue_dicts,
         "suggestions": [asdict(s) for s in suggestions],
         "schema_context": enhanced,
+    }
+
+
+def _analyze_dm(source: Any, sql: str, max_plan_rows: int) -> dict[str, Any]:
+    """DM 达梦 EXPLAIN — 纯只读,不写 PLAN_TABLE。
+
+    DM 兼容 Oracle 多数语法,但 EXPLAIN 语义跟 MySQL 接近:
+        EXPLAIN <SELECT SQL>
+    直接返回 plan 文本(多行,每行一个 operator,DM 优化器输出格式)。
+
+    DM operator 缩写参考(来自 DM 8 文档):
+    - CSCN / CSCN2:    Cluster Scan (全表扫描)
+    - SSEK / SSEK2:    Single index Seek (单条索引精确)
+    - CSEK / CSEK2:    Cluster index Seek (聚簇索引精确)
+    - HAGR / HAGR2:    Hash Aggregation
+    - SAGR / SAGR2:    Stream Aggregation
+    - NEST LOOP:       嵌套循环 join
+    - HASH JOIN:       hash join
+    - SORT:            排序
+    """
+    validate_readonly_sql(sql)  # 双保险:caller 已校过,但这里再拦一次
+    explain_sql = f"EXPLAIN {sql.rstrip().rstrip(';').strip()}"
+    try:
+        rows = fetch_rows(source, explain_sql, max_rows=max_plan_rows)
+    except Exception as exc:
+        raise SlowSqlError(f"DM EXPLAIN failed: {exc}") from exc
+    issues = detect_dm_issues(rows)
+    suggestions = build_dm_suggestions(issues)
+    return {
+        "dialect": "dm",
+        "explain_sql": explain_sql,
+        "plan": rows,
+        "issues": [asdict(i) for i in issues],
+        "suggestions": [asdict(s) for s in suggestions],
+        "schema_context": [],  # DM schema enhance 留下个切片
     }
 
 
@@ -276,6 +328,145 @@ def build_suggestions(issues: list[Issue]) -> list[Suggestion]:
             out.append(Suggestion(
                 code="narrow_scan",
                 message=f"{issue.table or '该表'} 扫描行数过大，考虑加 WHERE 过滤 / 复合索引 / 分区",
+            ))
+    return out
+
+
+# ─── DM rules(Phase 14 #3) ────────────────────────────────────────────────
+
+
+# DM plan row 文本字段名各版本可能略不同(operation / OPERATION / op / line),
+# 这里全收口
+_DM_TEXT_KEYS = ("operation", "OPERATION", "op", "OP", "line", "LINE", "plan", "PLAN")
+_DM_ROW_KEYS = ("cardinality", "CARDINALITY", "rows", "ROWS", "card", "CARD")
+
+
+def _extract_dm_text(row: dict[str, Any]) -> str:
+    """从 DM EXPLAIN 行里提取算子文本,合并大小写 + 多种字段名。"""
+    for k in _DM_TEXT_KEYS:
+        v = row.get(k)
+        if v:
+            return str(v).strip().upper()
+    # 兜底:所有字段串起来扫(防字段名变种)
+    return " ".join(str(v) for v in row.values() if v is not None).strip().upper()
+
+
+def _extract_dm_card(row: dict[str, Any]) -> int:
+    for k in _DM_ROW_KEYS:
+        v = row.get(k)
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def detect_dm_issues(plan_rows: list[dict[str, Any]]) -> list[Issue]:
+    """6 条 DM 规则。算子缩写检测用子串匹配(防版本差异)。
+
+    same-line 多 issue 共存(NEST LOOP + CSCN 都是问题),不去重。
+    """
+    issues: list[Issue] = []
+    for row in plan_rows:
+        text = _extract_dm_text(row)
+        if not text:
+            continue
+        card = _extract_dm_card(row)
+
+        # 全表扫描:CSCN / CSCN2
+        if "CSCN" in text:
+            issues.append(Issue(
+                severity="warning",
+                code="full_table_scan",
+                message=f"DM 集簇全表扫描(CSCN){' card≈' + str(card) if card else ''}",
+                table="",
+                detail=text[:200],
+            ))
+        # 索引范围扫描 — info 提示(算正常)
+        elif any(op in text for op in ("SSEK", "CSEK")):
+            issues.append(Issue(
+                severity="info",
+                code="index_range_scan",
+                message=f"DM 走索引范围扫描{' card≈' + str(card) if card else ''}",
+                table="",
+                detail=text[:200],
+            ))
+        # Hash group
+        if any(op in text for op in ("HAGR", "HAGR2")):
+            issues.append(Issue(
+                severity="warning",
+                code="hash_group",
+                message="DM hash group(HAGR),GROUP BY 可能占用内存",
+                table="",
+                detail=text[:200],
+            ))
+        # Stream group — info
+        if any(op in text for op in ("SAGR", "SAGR2")):
+            issues.append(Issue(
+                severity="info",
+                code="stream_group",
+                message="DM stream group(SAGR),已排序前提下的轻量分组",
+                table="",
+                detail=text[:200],
+            ))
+        # Nested loop 大数据集
+        if "NEST LOOP" in text and card > 10000:
+            issues.append(Issue(
+                severity="warning",
+                code="nested_loop_large",
+                message=f"DM 嵌套循环 join 在大数据集上(card≈{card}),可改 HASH JOIN",
+                table="",
+                detail=text[:200],
+            ))
+        # Sort
+        if "SORT" in text:
+            issues.append(Issue(
+                severity="info",
+                code="sort_cost",
+                message="DM SORT 算子,如未走索引会消耗内存/临时空间",
+                table="",
+                detail=text[:200],
+            ))
+    return issues
+
+
+def build_dm_suggestions(issues: list[Issue]) -> list[Suggestion]:
+    """DM 建议派生,同类去重。"""
+    out: list[Suggestion] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue.code == "full_table_scan":
+            if "add_index" in seen:
+                continue
+            seen.add("add_index")
+            out.append(Suggestion(
+                code="add_index",
+                message="考虑在 WHERE / JOIN 列上加索引消除 CSCN 全表扫描",
+            ))
+        elif issue.code == "hash_group":
+            if "group_index" in seen:
+                continue
+            seen.add("group_index")
+            out.append(Suggestion(
+                code="group_by_index",
+                message="GROUP BY 列上加索引可让 DM 走 SAGR(stream)替代 HAGR(hash)",
+            ))
+        elif issue.code == "nested_loop_large":
+            if "force_hash_join" in seen:
+                continue
+            seen.add("force_hash_join")
+            out.append(Suggestion(
+                code="force_hash_join",
+                message="大数据集 NEST LOOP 效率低,可改写 SQL 或加 hint /*+ USE_HASH(t1 t2) */",
+            ))
+        elif issue.code == "sort_cost":
+            if "sort_index" in seen:
+                continue
+            seen.add("sort_index")
+            out.append(Suggestion(
+                code="order_by_index",
+                message="为 ORDER BY 列建索引可消除 SORT 算子",
             ))
     return out
 

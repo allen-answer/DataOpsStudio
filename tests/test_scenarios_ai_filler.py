@@ -309,7 +309,10 @@ def test_realistic_falls_back_when_no_values():
 
 @pytest.fixture
 def client_with_scenarios(client_admin, isolated_storage, monkeypatch):
-    """sandbox path patching + admin token（scenarios router 全 admin only）。"""
+    """sandbox path patching + admin token(scenarios router 全 admin only)。
+
+    Phase 14 #3:也注一个 "ds-1" 的 sandbox MySQL ds(测试用字面 id)。
+    """
     from app.utils.paths import BASE_DIR
     sdir = isolated_storage["cfg"] / "scenarios"
     sdir.mkdir()
@@ -323,6 +326,20 @@ def client_with_scenarios(client_admin, isolated_storage, monkeypatch):
     monkeypatch.setattr(paths_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(loader_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(api_module, "SCENARIOS_DIR", sdir)
+
+    # 注 "ds-1" 字面 id 的 sandbox ds
+    from app.models.datasource import (
+        DataSource, DatabaseType, make_sandbox_datasource_kwargs,
+    )
+    from app.services.repositories import datasource_store
+    ds = DataSource(
+        id="ds-1", name="ds-1-sandbox", db_type=DatabaseType.MYSQL,
+        host="localhost", port=3306,
+        **make_sandbox_datasource_kwargs(),
+    )
+    current = [d.model_dump(mode="json") for d in datasource_store.list()]
+    current.append(ds.model_dump(mode="json"))
+    datasource_store._write_raw(current)  # noqa: SLF001
     return client_admin
 
 

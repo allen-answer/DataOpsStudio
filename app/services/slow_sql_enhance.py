@@ -55,6 +55,10 @@ class EnhancedSuggestion:
     uncovered_columns: list[str] = field(default_factory=list)
     ddl_candidates: list[str] = field(default_factory=list)
     rationale: str = ""
+    # Phase 14 #2 lineage-aware:加索引会影响哪些 ETL 写入 / 可能让哪些查询受益
+    writers_affected: list[dict[str, Any]] = field(default_factory=list)
+    readers_helped: list[dict[str, Any]] = field(default_factory=list)
+    refresh_mode: str | None = None  # 主写入模式(truncate_insert/append/merge/...)
 
 
 def extract_table_usage(sql: str, dialect: str = "mysql") -> dict[str, TableUsage]:
@@ -214,12 +218,81 @@ def _index_covers(idx: dict[str, Any], col: str) -> bool:
     return cols[0].lower() == col.lower()
 
 
+def _fetch_lineage_impact(table_full_name: str, project_id: str = "") -> dict[str, Any]:
+    """反查"加索引会影响谁"。返:
+    {
+        writers: [{ name, kind, run_id?, node_id? }, ...]       # ETL 写入(INSERT/MERGE)
+        readers: [{ name, kind, run_id?, node_id? }, ...]       # 读取(SELECT/compare)
+        refresh_mode: str | None    # 主写入模式: truncate_insert/append/merge/...
+    }
+
+    走 assets.get_table_asset 拿 references(已聚合 task/workflow/lineage_script/
+    history 4 类),按 match_role 区分 writer vs reader。lazy import 防循环。
+
+    任一异常返空字典(主流程不阻塞 — 没拿到 lineage 数据时,enhance 仍输出
+    schema_context 不带 writers/readers)。
+    """
+    try:
+        from app.services.assets import get_table_asset
+    except Exception:
+        return {}
+    try:
+        asset = get_table_asset(table_full_name, project_id=project_id)
+    except Exception as exc:
+        logger.info("lineage impact fetch failed for %s: %s", table_full_name, exc)
+        return {}
+
+    writers: list[dict[str, Any]] = []
+    readers: list[dict[str, Any]] = []
+    refs = asset.get("references") or {}
+
+    # lineage_scripts 里的 match_role 已区分 source/target/source+target
+    for ls in refs.get("lineage_scripts") or []:
+        role = str(ls.get("match_role") or "")
+        entry = {
+            "name": ls.get("file_name") or ls.get("workflow_id") or "lineage script",
+            "kind": "lineage_script",
+            "run_id": ls.get("run_id"),
+            "node_id": ls.get("node_id"),
+            "workflow_id": ls.get("workflow_id"),
+        }
+        if "target" in role:
+            writers.append(entry)
+        if "source" in role:
+            readers.append(entry)
+
+    # workflows 里引用此表的(粒度粗,统一归 readers 不归 writers — 后续可
+    # 看节点类型细分)
+    for wf in refs.get("workflows") or []:
+        readers.append({
+            "name": wf.get("name") or wf.get("id") or "workflow",
+            "kind": "workflow",
+            "workflow_id": wf.get("id"),
+        })
+
+    # compare tasks 双端都是 SELECT,纯 reader
+    for t in refs.get("tasks") or []:
+        readers.append({
+            "name": t.get("name") or t.get("id") or "compare task",
+            "kind": "compare_task",
+            "task_id": t.get("id"),
+        })
+
+    return {
+        "writers": writers,
+        "readers": readers,
+        "refresh_mode": asset.get("refresh_mode"),
+    }
+
+
 def enhance_for_issues(
     *,
     datasource_id: str,
     sql: str,
     issues: list[dict[str, Any]],
     dialect: str = "mysql",
+    lineage_aware: bool = True,
+    project_id: str = "",
 ) -> list[dict[str, Any]]:
     """对 full_table_scan / high_row_scan issue 命中的表,拉 schema 上下文并产
     具体 DDL 建议。返 list[dict] 给 endpoint 直接 JSON 化。
@@ -346,6 +419,28 @@ def enhance_for_issues(
                 f"未被现有索引前导列覆盖且可建索引: {', '.join(coverable_uncovered)}"
             )
 
+        # Phase 14 #2 — lineage 反查: 加索引会拖慢哪些 writer / 受益哪些 reader
+        writers_affected: list[dict[str, Any]] = []
+        readers_helped: list[dict[str, Any]] = []
+        refresh_mode: str | None = None
+        if lineage_aware:
+            impact = _fetch_lineage_impact(full_name, project_id=project_id)
+            writers_affected = impact.get("writers", [])
+            readers_helped = impact.get("readers", [])
+            refresh_mode = impact.get("refresh_mode")
+            # 在 rationale 末尾加一句影响摘要(用户即使不展开 writers/readers
+            # 列表也能一眼看到影响范围)
+            if ddl_candidates and (writers_affected or readers_helped):
+                impact_parts = []
+                if writers_affected:
+                    impact_parts.append(
+                        f"⚠ 加此索引会拖慢 {len(writers_affected)} 个 ETL 写入"
+                        + (f" (refresh_mode={refresh_mode})" if refresh_mode else "")
+                    )
+                if readers_helped:
+                    impact_parts.append(f"✓ 可能受益于 {len(readers_helped)} 个读取脚本")
+                rationale_parts.append(" / ".join(impact_parts))
+
         results.append(EnhancedSuggestion(
             table=base,
             schema=schema,
@@ -356,6 +451,9 @@ def enhance_for_issues(
             uncovered_columns=uncovered,
             ddl_candidates=ddl_candidates,
             rationale=" · ".join(rationale_parts),
+            writers_affected=writers_affected,
+            readers_helped=readers_helped,
+            refresh_mode=refresh_mode,
         ).__dict__)
 
     return results

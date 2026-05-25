@@ -14,6 +14,7 @@ import {
   Activity,
   Tag,
   Microscope,
+  FlaskConical,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -25,13 +26,19 @@ import { useBootstrapStore } from '../stores/bootstrap'
 // Phase 4：单脚本血缘 + 多脚本分析合并为"血缘分析"，path 默认 /lineage；
 // /batch-lineage 仍是合法路径（保留外部链接兼容），同样高亮该项。
 // label 走 i18n —— labelKey 是 messages 里的 key，模板用 $t(item.labelKey)
+// Phase 14 #3 Round 3 — IA 调整后:schema-import 不再作为一级菜单
+// (它现在是 /scenario-lab/import 子流程,通过 /scenario-lab 顶部按钮进入)
+// scenario-lab matchPaths 含 /scenario-lab/import → 进子流程时仍高亮父菜单
+// Phase 14 #3 Round 6 N — 按用户偏好重排:产线日常(数据源/对比/血缘/SQL诊断/作业流/历史)
+// 集中在前,实验室(scenario-lab)放最后
 const NAV_ITEMS = [
-  { id: 'datasources',   labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',   matchPaths: ['/datasources'] },
-  { id: 'data-compare',  labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',  matchPaths: ['/data-compare'] },
-  { id: 'sql-optimize',  labelKey: 'nav.sqlOptimize',  icon: Microscope,       path: '/sql-optimize',  matchPaths: ['/sql-optimize', '/admin/sandbox'] },
-  { id: 'workflows',     labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',     matchPaths: ['/workflows', '/workflow-runs'] },
-  { id: 'lineage',       labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',       matchPaths: ['/lineage', '/batch-lineage'] },
-  { id: 'history',       labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',       matchPaths: ['/history'] },
+  { id: 'datasources',     labelKey: 'nav.datasources',  icon: Database,         path: '/datasources',     matchPaths: ['/datasources'] },
+  { id: 'data-compare',    labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',    matchPaths: ['/data-compare'] },
+  { id: 'lineage',         labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',         matchPaths: ['/lineage', '/batch-lineage'] },
+  { id: 'sql-diagnosis',   labelKey: 'nav.sqlDiagnosis', icon: Microscope,       path: '/sql-diagnosis',   matchPaths: ['/sql-diagnosis', '/sql-optimize', '/admin/sandbox'] },
+  { id: 'workflows',       labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',       matchPaths: ['/workflows', '/workflow-runs'] },
+  { id: 'history',         labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',         matchPaths: ['/history'] },
+  { id: 'scenario-lab',    labelKey: 'nav.scenarioLab',  icon: FlaskConical,     path: '/scenario-lab',    matchPaths: ['/scenario-lab', '/schema-import'] },
 ]
 
 // admin-only nav 项：仅 admin role 可见。Phase 14 P0-1:sandbox 移出 admin

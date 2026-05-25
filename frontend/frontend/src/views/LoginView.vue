@@ -1,20 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+// Phase 14 #3 Round 6 N — 登录页改全暗色控制台风(用户选 C)
+// 设计:网格纹理 + cyan 终端配色 + bracket [ AUTH ] 框 + > prompt 字段 label
+// + 底部假状态条让页面有"数据中心控制台"质感
+// 功能全保留:密码登录 / MFA TOTP / MFA recovery code 三步流不变
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../stores/auth'
 import { useNoticeStore } from '../stores/notice'
-import {
-  Activity,
-  AlertCircle,
-  Database,
-  GitCompareArrows,
-  Lock,
-  Network,
-  ShieldCheck,
-  User as UserIcon,
-  Workflow,
-} from 'lucide-vue-next'
+import { AlertCircle, Zap, ShieldCheck, ChevronRight, Lock, User as UserIcon } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const notice = useNoticeStore()
@@ -27,13 +21,16 @@ const password = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
-// MFA 两步流：login 返 mfa_required=true 时切到 'mfa' 步,显示 OTP 输入
 const step = ref<'password' | 'mfa'>('password')
 const mfaToken = ref('')
 const mfaCode = ref('')
-// MFA 子模式:totp(6 位 OTP) / recovery(10 字符后备码) —— 丢手机走 recovery
 const mfaMode = ref<'totp' | 'recovery'>('totp')
 const recoveryCode = ref('')
+
+// 装饰用:渲染时随机生成的 uptime/nodes — 每次刷新不一样,让控制台底栏有"活着"的感觉
+const uptimeDays = computed(() => 30 + Math.floor(Math.random() * 60))
+const uptimeHours = computed(() => Math.floor(Math.random() * 24))
+const nodeCount = computed(() => 4 + Math.floor(Math.random() * 12))
 
 function _redirectAfterLogin(): void {
   notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
@@ -51,7 +48,6 @@ async function onSubmit(): Promise<void> {
   try {
     const resp = await auth.login(username.value, password.value)
     if (resp.mfa_required && resp.mfa_token) {
-      // 进 MFA 第二步;access_token 还没拿到（store.login 已经过滤了不写）
       mfaToken.value = resp.mfa_token
       mfaCode.value = ''
       step.value = 'mfa'
@@ -84,7 +80,6 @@ async function onSubmitMfa(): Promise<void> {
       submitting.value = false
     }
   } else {
-    // recovery 模式 —— 后端会 normalize,这里只做粗校验
     const raw = recoveryCode.value.trim()
     if (raw.replace(/[\s-]/g, '').length < 8) {
       errorMsg.value = '请输入完整的恢复码'
@@ -122,190 +117,145 @@ function backToPassword(): void {
 </script>
 
 <template>
-  <div class="login-shell relative min-h-screen overflow-hidden bg-slate-950 text-slate-900">
-    <div class="login-grid" aria-hidden="true"></div>
-    <div class="relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1fr)_520px]">
-      <section class="hidden min-h-screen flex-col justify-between px-10 py-9 text-white lg:flex xl:px-14">
-        <div class="flex items-center gap-3">
-          <div class="grid h-10 w-10 place-items-center rounded-xl bg-white text-primary shadow-lg shadow-black/20">
-            <Network class="h-5 w-5" />
-          </div>
-          <div>
-            <h1 class="text-base font-bold">DataOps Studio</h1>
-            <p class="text-xs text-slate-300">数据运维控制台</p>
-          </div>
+  <div class="console-shell relative min-h-screen overflow-hidden font-mono text-cyan-100">
+    <!-- 网格背景 + 扫描线 -->
+    <div class="console-grid" aria-hidden="true"></div>
+    <div class="console-scan" aria-hidden="true"></div>
+
+    <!-- 顶部标题条 -->
+    <header class="relative z-10 mx-auto flex max-w-5xl items-center justify-between px-6 pt-8">
+      <div class="flex items-center gap-2 text-sm">
+        <Zap class="h-4 w-4 text-cyan-300" />
+        <span class="font-bold uppercase tracking-[0.3em] text-cyan-200">DataOps Console</span>
+        <Zap class="h-4 w-4 text-cyan-300" />
+      </div>
+      <div class="hidden gap-4 text-[10px] uppercase tracking-widest text-cyan-300/60 sm:flex">
+        <span>SYS: ONLINE</span>
+        <span class="text-emerald-300">●</span>
+      </div>
+    </header>
+
+    <!-- 中央 form 区 -->
+    <main class="relative z-10 mx-auto flex min-h-[calc(100vh-180px)] max-w-5xl items-center justify-center px-6 py-8">
+      <!-- 第一步:账号密码 -->
+      <form
+        v-if="step === 'password'"
+        class="console-card w-full max-w-md"
+        @submit.prevent="onSubmit"
+      >
+        <!-- 顶部 bracket label -->
+        <div class="console-card-label">
+          <span class="text-cyan-400">╭─[</span>
+          <span class="px-2 font-bold text-cyan-100">AUTH</span>
+          <span class="text-cyan-400">]</span>
+          <span class="ml-2 flex-1 border-t border-dashed border-cyan-500/30"></span>
+          <span class="ml-2 text-[10px] uppercase text-cyan-400/60">SECURE LOGIN</span>
         </div>
 
-        <div class="max-w-2xl">
-          <p class="text-xs font-bold uppercase tracking-wider text-cyan-200">Operations Workspace</p>
-          <h2 class="mt-4 max-w-xl text-4xl font-bold leading-tight text-white">
-            数据对比、血缘分析和作业编排，一个入口完成。
-          </h2>
-          <p class="mt-4 max-w-lg text-sm leading-7 text-slate-300">
-            登录后继续管理数据源、任务运行、审计记录和 AI 辅助分析。
-          </p>
-
-          <div class="mt-10 w-full max-w-2xl rounded-2xl border border-white/10 bg-white/10 p-4 shadow-2xl shadow-black/30">
-            <div class="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
-              <div>
-                <p class="text-sm font-semibold text-white">今日运行概览</p>
-                <p class="text-xs text-slate-400">Pipeline health</p>
-              </div>
-              <div class="flex items-center gap-1.5 rounded-full border border-emerald-300/25 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200">
-                <Activity class="h-3.5 w-3.5" />
-                正常
-              </div>
+        <div class="px-6 py-6 space-y-5">
+          <!-- USER_ID -->
+          <label class="block">
+            <span class="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-cyan-300">
+              <ChevronRight class="h-3 w-3" />
+              USER_ID
+            </span>
+            <div class="console-input-wrap">
+              <UserIcon class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500/50" />
+              <input
+                v-model="username"
+                type="text"
+                autocomplete="username"
+                autofocus
+                class="console-input pl-9"
+                placeholder="admin"
+              />
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-cyan-400/40">█</span>
             </div>
+          </label>
 
-            <div class="grid grid-cols-3 gap-3">
-              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
-                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-400/15 text-cyan-200">
-                  <Database class="h-4 w-4" />
-                </div>
-                <p class="text-2xl font-bold text-white">18</p>
-                <p class="mt-1 text-xs text-slate-400">数据源</p>
-              </div>
-              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
-                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-violet-400/15 text-violet-200">
-                  <GitCompareArrows class="h-4 w-4" />
-                </div>
-                <p class="text-2xl font-bold text-white">42</p>
-                <p class="mt-1 text-xs text-slate-400">对比任务</p>
-              </div>
-              <div class="rounded-xl border border-white/10 bg-slate-900/70 p-3">
-                <div class="mb-4 flex h-8 w-8 items-center justify-center rounded-lg bg-amber-300/15 text-amber-100">
-                  <Workflow class="h-4 w-4" />
-                </div>
-                <p class="text-2xl font-bold text-white">7</p>
-                <p class="mt-1 text-xs text-slate-400">作业流</p>
-              </div>
+          <!-- PASSPHRASE -->
+          <label class="block">
+            <span class="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-cyan-300">
+              <ChevronRight class="h-3 w-3" />
+              PASSPHRASE
+            </span>
+            <div class="console-input-wrap">
+              <Lock class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500/50" />
+              <input
+                v-model="password"
+                type="password"
+                autocomplete="current-password"
+                class="console-input pl-9"
+                :placeholder="$t('login.passwordPlaceholder')"
+              />
             </div>
+          </label>
 
-            <div class="mt-4 rounded-xl border border-white/10 bg-slate-950/80 p-4">
-              <div class="flex items-center gap-3">
-                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-400/15 text-cyan-200">
-                  <Database class="h-4 w-4" />
-                </div>
-                <div class="h-px flex-1 bg-cyan-200/35"></div>
-                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-400/15 text-violet-200">
-                  <GitCompareArrows class="h-4 w-4" />
-                </div>
-                <div class="h-px flex-1 bg-violet-200/35"></div>
-                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-400/15 text-emerald-200">
-                  <Network class="h-4 w-4" />
-                </div>
-              </div>
-              <div class="mt-3 grid grid-cols-3 text-[11px] text-slate-400">
-                <span>采集</span>
-                <span class="text-center">校验</span>
-                <span class="text-right">血缘</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 text-xs text-slate-400">
-          <ShieldCheck class="h-4 w-4 text-emerald-300" />
-          <span>DataOps Studio · Console Access</span>
-        </div>
-      </section>
-
-      <main class="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 sm:px-6 lg:bg-white">
-        <!-- 第一步：账号密码 -->
-        <form
-          v-if="step === 'password'"
-          class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/70 sm:p-8"
-          @submit.prevent="onSubmit"
-        >
-          <div class="mb-8">
-            <div class="mb-5 flex items-center gap-3 lg:hidden">
-              <div class="grid h-10 w-10 place-items-center rounded-xl bg-primary text-white shadow-md shadow-primary/30">
-                <Network class="h-5 w-5" />
-              </div>
-              <div>
-                <h1 class="text-base font-bold text-slate-900">DataOps Studio</h1>
-                <p class="text-xs text-slate-500">数据运维控制台</p>
-              </div>
-            </div>
-            <p class="text-xs font-bold uppercase tracking-wider text-primary">Secure Login</p>
-            <h2 class="mt-2 text-2xl font-bold text-slate-950">欢迎回来</h2>
-            <p class="mt-2 text-sm text-slate-500">输入账号信息进入工作台。</p>
-          </div>
-
-          <div class="space-y-4">
-            <label class="block">
-              <span class="mb-1.5 block text-xs font-bold text-slate-600">{{ $t('login.username') }}</span>
-              <div class="relative">
-                <UserIcon class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
-                <input
-                  v-model="username"
-                  type="text"
-                  autocomplete="username"
-                  autofocus
-                  class="h-11 w-full rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm transition focus:border-primary focus:bg-white focus:ring-primary/20"
-                  placeholder="admin"
-                />
-              </div>
-            </label>
-
-            <label class="block">
-              <span class="mb-1.5 block text-xs font-bold text-slate-600">{{ $t('login.password') }}</span>
-              <div class="relative">
-                <Lock class="absolute left-3 top-3 h-4 w-4 text-slate-400" />
-                <input
-                  v-model="password"
-                  type="password"
-                  autocomplete="current-password"
-                  class="h-11 w-full rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm transition focus:border-primary focus:bg-white focus:ring-primary/20"
-                  :placeholder="$t('login.passwordPlaceholder')"
-                />
-              </div>
-            </label>
-          </div>
-
+          <!-- 错误提示 -->
           <div
             v-if="errorMsg"
-            class="mt-4 flex items-start gap-2 rounded-xl border border-status-error/20 bg-status-error-bg px-3 py-2.5 text-xs text-status-error"
+            class="flex items-start gap-2 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
           >
-            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <AlertCircle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
             <span>{{ errorMsg }}</span>
           </div>
 
+          <!-- 主按钮 -->
           <button
             type="submit"
-            class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            class="console-btn"
             :disabled="submitting"
           >
-            {{ submitting ? $t('login.submitting') : $t('login.submit') }}
+            <span class="text-cyan-400">[</span>
+            <span class="mx-1 tracking-wider">{{ submitting ? 'AUTHENTICATING…' : 'AUTHENTICATE' }}</span>
+            <span class="text-cyan-400">→ ]</span>
           </button>
 
-          <div class="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-[11px] leading-5 text-slate-500">
-            首次启动默认账号 <code class="font-mono font-semibold text-slate-700">admin / admin</code>
-            ，登录后请到「用户管理」修改密码
+          <!-- 默认账号提示 -->
+          <div class="rounded border border-cyan-500/15 bg-cyan-500/5 px-3 py-2 text-center text-[10px] leading-5 text-cyan-300/70">
+            首次启动默认账号
+            <code class="font-mono font-semibold text-cyan-100">admin / admin</code>
+            <br>登录后请到「用户管理」修改密码
           </div>
-        </form>
+        </div>
 
-        <!-- 第二步：MFA OTP（仅 user.mfa_enabled 时触发） -->
-        <form
-          v-else
-          class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/70 sm:p-8"
-          @submit.prevent="onSubmitMfa"
-        >
-          <div class="mb-6 flex items-start gap-3">
-            <div class="grid h-10 w-10 place-items-center rounded-xl bg-primary-light text-primary shadow-md shadow-primary/15">
-              <ShieldCheck class="h-5 w-5" />
-            </div>
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-bold uppercase tracking-wider text-primary">Two-Factor Authentication</p>
-              <h2 class="mt-1 text-2xl font-bold text-slate-950">二步验证</h2>
-              <p v-if="mfaMode === 'totp'" class="mt-1 text-sm text-slate-500">打开 TOTP app（Google Authenticator / Authy 等）,输入 6 位当前码。</p>
-              <p v-else class="mt-1 text-sm text-slate-500">输入启用 MFA 时保存的一次性恢复码 —— 单次有效。</p>
+        <!-- 底部 bracket close -->
+        <div class="console-card-footer">
+          <span class="text-cyan-400">╰</span>
+          <span class="flex-1 border-t border-dashed border-cyan-500/30"></span>
+          <span class="text-cyan-400">╯</span>
+        </div>
+      </form>
+
+      <!-- 第二步:MFA -->
+      <form
+        v-else
+        class="console-card w-full max-w-md"
+        @submit.prevent="onSubmitMfa"
+      >
+        <div class="console-card-label">
+          <span class="text-violet-400">╭─[</span>
+          <span class="px-2 font-bold text-violet-100">2FA</span>
+          <span class="text-violet-400">]</span>
+          <span class="ml-2 flex-1 border-t border-dashed border-violet-500/30"></span>
+          <span class="ml-2 text-[10px] uppercase text-violet-400/60">SECONDARY AUTH</span>
+        </div>
+
+        <div class="px-6 py-6 space-y-5">
+          <div class="flex items-start gap-3 rounded border border-violet-500/20 bg-violet-500/5 p-3">
+            <ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
+            <div class="text-[11px] leading-relaxed text-violet-100/90">
+              <p v-if="mfaMode === 'totp'">打开 TOTP app(Google Authenticator / Authy 等),输入 6 位当前码。</p>
+              <p v-else>输入启用 MFA 时保存的一次性恢复码 — 单次有效。</p>
             </div>
           </div>
 
-          <!-- TOTP 模式 -->
+          <!-- TOTP -->
           <label v-if="mfaMode === 'totp'" class="block">
-            <span class="mb-1.5 block text-xs font-bold text-slate-600">6 位 OTP</span>
+            <span class="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-violet-300">
+              <ChevronRight class="h-3 w-3" />
+              OTP_CODE
+            </span>
             <input
               v-model="mfaCode"
               type="text"
@@ -314,13 +264,15 @@ function backToPassword(): void {
               autocomplete="one-time-code"
               autofocus
               placeholder="000000"
-              class="h-12 w-full rounded-xl border-slate-200 bg-slate-50 text-center font-mono text-lg tracking-[0.5em] transition focus:border-primary focus:bg-white focus:ring-primary/20"
+              class="console-input console-input-otp"
             >
           </label>
 
-          <!-- 恢复码模式 -->
           <label v-else class="block">
-            <span class="mb-1.5 block text-xs font-bold text-slate-600">恢复码</span>
+            <span class="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-violet-300">
+              <ChevronRight class="h-3 w-3" />
+              RECOVERY_KEY
+            </span>
             <input
               v-model="recoveryCode"
               type="text"
@@ -328,30 +280,32 @@ function backToPassword(): void {
               autocapitalize="characters"
               autofocus
               placeholder="ABCDE-FGHJK"
-              class="h-12 w-full rounded-xl border-slate-200 bg-slate-50 text-center font-mono text-base uppercase tracking-[0.25em] transition focus:border-primary focus:bg-white focus:ring-primary/20"
+              class="console-input console-input-otp text-base tracking-[0.25em]"
             >
-            <span class="mt-1.5 block text-[10px] text-slate-400">分隔符可省 · 大小写不限 · 用过即失效</span>
+            <span class="mt-1.5 block text-[10px] text-violet-300/50">分隔符可省 · 大小写不限 · 用过即失效</span>
           </label>
 
           <div
             v-if="errorMsg"
-            class="mt-4 flex items-start gap-2 rounded-xl border border-status-error/20 bg-status-error-bg px-3 py-2.5 text-xs text-status-error"
+            class="flex items-start gap-2 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
           >
-            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <AlertCircle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
             <span>{{ errorMsg }}</span>
           </div>
 
           <button
             type="submit"
-            class="mt-6 inline-flex h-11 w-full items-center justify-center rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            class="console-btn console-btn-violet"
             :disabled="submitting || (mfaMode === 'totp' ? mfaCode.length < 6 : recoveryCode.replace(/[\s-]/g, '').length < 8)"
           >
-            {{ submitting ? '验证中…' : '验证并登录' }}
+            <span class="text-violet-400">[</span>
+            <span class="mx-1 tracking-wider">{{ submitting ? 'VERIFYING…' : 'VERIFY & LOGIN' }}</span>
+            <span class="text-violet-400">→ ]</span>
           </button>
 
           <button
             type="button"
-            class="mt-3 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-primary hover:text-primary-hover hover:underline"
+            class="block w-full text-center text-[11px] text-cyan-300/70 transition hover:text-cyan-200 hover:underline"
             :disabled="submitting"
             @click="toggleMfaMode"
           >
@@ -360,34 +314,202 @@ function backToPassword(): void {
 
           <button
             type="button"
-            class="mt-2 inline-flex h-9 w-full items-center justify-center rounded-xl text-xs text-slate-500 hover:text-slate-800"
+            class="block w-full text-center text-[10px] text-cyan-400/40 transition hover:text-cyan-300"
             :disabled="submitting"
             @click="backToPassword"
           >
             ← 返回输入密码
           </button>
-        </form>
-      </main>
-    </div>
+        </div>
+
+        <div class="console-card-footer">
+          <span class="text-violet-400">╰</span>
+          <span class="flex-1 border-t border-dashed border-violet-500/30"></span>
+          <span class="text-violet-400">╯</span>
+        </div>
+      </form>
+    </main>
+
+    <!-- 底部状态栏 -->
+    <footer class="relative z-10 mx-auto max-w-5xl px-6 pb-6">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-t border-cyan-500/15 pt-4 text-[10px] uppercase tracking-widest text-cyan-300/60">
+        <div class="flex items-center gap-3">
+          <Zap class="h-3 w-3 text-cyan-300" />
+          <span>NODES: {{ nodeCount }}</span>
+          <span class="text-cyan-500/30">·</span>
+          <span>UPTIME: {{ uptimeDays }}D {{ uptimeHours }}H</span>
+          <span class="text-cyan-500/30">·</span>
+          <span class="text-emerald-300">● HEALTHY</span>
+        </div>
+        <div class="hidden sm:flex items-center gap-2">
+          <ShieldCheck class="h-3 w-3 text-emerald-300" />
+          <span>DataOps Studio · CONSOLE ACCESS</span>
+        </div>
+      </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.login-shell {
+.console-shell {
   background:
-    linear-gradient(120deg, rgba(14, 165, 233, 0.20), transparent 34%),
-    linear-gradient(150deg, #111827 0%, #182135 46%, #0f172a 100%);
+    radial-gradient(ellipse at top, rgba(6, 182, 212, 0.08), transparent 50%),
+    radial-gradient(ellipse at bottom, rgba(124, 58, 237, 0.08), transparent 50%),
+    linear-gradient(180deg, #050810 0%, #0a0e1a 50%, #050810 100%);
 }
 
-.login-grid {
+.console-grid {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(rgba(6, 182, 212, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 182, 212, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
   background-position: -1px -1px;
-  mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.84) 44%, transparent 74%);
+  mask-image: radial-gradient(ellipse at center, #000 0%, rgba(0, 0, 0, 0.4) 70%, transparent 100%);
   pointer-events: none;
+}
+
+.console-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(6, 182, 212, 0.04) 50%,
+    transparent 100%
+  );
+  background-size: 100% 8px;
+  pointer-events: none;
+  opacity: 0.5;
+  animation: scan 8s linear infinite;
+}
+
+@keyframes scan {
+  0%   { background-position: 0 0; }
+  100% { background-position: 0 100vh; }
+}
+
+.console-card {
+  background:
+    linear-gradient(180deg, rgba(8, 47, 73, 0.6) 0%, rgba(10, 14, 26, 0.85) 100%);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(6, 182, 212, 0.05) inset,
+    0 8px 32px rgba(6, 182, 212, 0.08),
+    0 0 60px rgba(124, 58, 237, 0.05);
+  backdrop-filter: blur(8px);
+}
+
+.console-card-label,
+.console-card-footer {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.console-card-label {
+  border-bottom: 1px solid rgba(6, 182, 212, 0.15);
+}
+
+.console-card-footer {
+  border-top: 1px solid rgba(6, 182, 212, 0.15);
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.console-input-wrap {
+  position: relative;
+}
+
+.console-input {
+  display: block;
+  width: 100%;
+  height: 2.5rem;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  background-color: rgba(8, 47, 73, 0.4);
+  color: #e0f2fe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+
+.console-input::placeholder {
+  color: rgba(165, 243, 252, 0.3);
+}
+
+.console-input:focus {
+  outline: none;
+  border-color: rgba(6, 182, 212, 0.7);
+  background-color: rgba(8, 47, 73, 0.7);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+}
+
+.console-input-otp {
+  height: 3rem;
+  font-size: 1.1rem;
+  text-align: center;
+  letter-spacing: 0.5em;
+}
+
+.console-btn {
+  display: inline-flex;
+  width: 100%;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid rgba(6, 182, 212, 0.5);
+  background:
+    linear-gradient(180deg, rgba(6, 182, 212, 0.15) 0%, rgba(6, 182, 212, 0.05) 100%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: #cffafe;
+  letter-spacing: 0.05em;
+  transition: all 0.15s;
+  box-shadow:
+    0 0 0 1px rgba(6, 182, 212, 0.1) inset,
+    0 4px 12px rgba(6, 182, 212, 0.15);
+}
+
+.console-btn:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(6, 182, 212, 0.25) 0%, rgba(6, 182, 212, 0.1) 100%);
+  border-color: rgba(6, 182, 212, 0.8);
+  box-shadow:
+    0 0 0 1px rgba(6, 182, 212, 0.2) inset,
+    0 6px 20px rgba(6, 182, 212, 0.3);
+}
+
+.console-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.console-btn-violet {
+  border-color: rgba(124, 58, 237, 0.5);
+  background:
+    linear-gradient(180deg, rgba(124, 58, 237, 0.15) 0%, rgba(124, 58, 237, 0.05) 100%);
+  color: #ede9fe;
+  box-shadow:
+    0 0 0 1px rgba(124, 58, 237, 0.1) inset,
+    0 4px 12px rgba(124, 58, 237, 0.15);
+}
+
+.console-btn-violet:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(124, 58, 237, 0.25) 0%, rgba(124, 58, 237, 0.1) 100%);
+  border-color: rgba(124, 58, 237, 0.8);
+  box-shadow:
+    0 0 0 1px rgba(124, 58, 237, 0.2) inset,
+    0 6px 20px rgba(124, 58, 237, 0.3);
 }
 </style>

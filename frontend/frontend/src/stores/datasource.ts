@@ -43,6 +43,7 @@ export const useDatasourceStore = defineStore('datasource', () => {
   // 'DM' / 'DB2'（区分大小写）。原来写 'mysql' 小写会被后端 422 reject —— 之前
   // 没暴露是因为表单上 select dropdown 的 value 也都是大写覆盖默认值，
   // 但默认 state 偷偷错了 1 年。codegen 类型对齐后 typecheck 直接抓出来。
+  // Phase 14 #3 Round 3 — sandbox 预设默认全开 allow_*(新建 ds 通常是测试用)
   const datasourceDraft = reactive<DatasourceDraft>({
     name: '',
     db_type: 'MySQL',
@@ -51,6 +52,16 @@ export const useDatasourceStore = defineStore('datasource', () => {
     database: '',
     username: '',
     password: '',
+    environment: 'sandbox',
+    environment_verified: true,
+    allow_select: true,
+    allow_explain: true,
+    allow_dm_explain: true,
+    allow_oracle_plan_table: true,
+    allow_schema_import: true,
+    allow_schema_save: true,
+    allow_scenario_write: true,
+    allow_record_task: true,
   })
 
   const editingDatasourceId = ref<string>('')
@@ -58,6 +69,16 @@ export const useDatasourceStore = defineStore('datasource', () => {
     name: '', db_type: 'MySQL', host: '', port: 3306,
     database: '', username: '', password: '',
     project_id: '',
+    environment: 'sandbox',
+    environment_verified: true,
+    allow_select: true,
+    allow_explain: false,
+    allow_dm_explain: false,
+    allow_oracle_plan_table: false,
+    allow_schema_import: false,
+    allow_schema_save: false,
+    allow_scenario_write: false,
+    allow_record_task: false,
   })
 
   function startEditDatasource(item: Datasource): void {
@@ -71,6 +92,17 @@ export const useDatasourceStore = defineStore('datasource', () => {
       username: item.username,
       password: '',
       project_id: item.project_id || '',
+      environment: item.environment || 'unknown',
+      // 8 个 allow_* + environment_verified — 加载现有值,user 在表单里看到当前状态
+      environment_verified: (item as any).environment_verified ?? false,
+      allow_select: (item as any).allow_select ?? true,
+      allow_explain: (item as any).allow_explain ?? false,
+      allow_dm_explain: (item as any).allow_dm_explain ?? false,
+      allow_oracle_plan_table: (item as any).allow_oracle_plan_table ?? false,
+      allow_schema_import: (item as any).allow_schema_import ?? false,
+      allow_schema_save: (item as any).allow_schema_save ?? false,
+      allow_scenario_write: (item as any).allow_scenario_write ?? false,
+      allow_record_task: (item as any).allow_record_task ?? false,
     })
   }
 
@@ -81,6 +113,16 @@ export const useDatasourceStore = defineStore('datasource', () => {
   function resetDatasourceDraft(): void {
     Object.assign(datasourceDraft, {
       name: '', host: '', database: '', username: '', password: '',
+      environment: 'sandbox',
+      environment_verified: true,
+      allow_select: true,
+      allow_explain: true,
+      allow_dm_explain: true,
+      allow_oracle_plan_table: true,
+      allow_schema_import: true,
+      allow_schema_save: true,
+      allow_scenario_write: true,
+      allow_record_task: true,
     })
   }
 

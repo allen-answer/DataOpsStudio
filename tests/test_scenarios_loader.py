@@ -142,12 +142,19 @@ def test_load_top_level_non_dict_raises(tmp_path):
         load_scenario(bad)
 
 
-def test_rows_upper_bound_clamps_million(tmp_path):
-    """rows 上限 1M（防 LLM / 用户写飞 → OOM）。"""
+def test_rows_upper_bound_clamps_hundred_million(tmp_path):
+    """rows 上限 100M(Phase 14 P0-2 streaming generator 落地后从 1M 提到 100M,
+    支持千万 / 亿级真实生产规模 case;再大基本是配置失误,防 LLM / 用户写飞)。"""
+    # 1000w 在上限内,合法
+    Scenario.model_validate({
+        "id": "x", "name": "X",
+        "tables": [{"name": "t", "role": "source", "rows": 10_000_000}],
+    })
+    # 1.5 亿超上限
     with pytest.raises(ValidationError):
         Scenario.model_validate({
             "id": "x", "name": "X",
-            "tables": [{"name": "t", "role": "source", "rows": 10_000_000}],
+            "tables": [{"name": "t", "role": "source", "rows": 150_000_000}],
         })
 
 

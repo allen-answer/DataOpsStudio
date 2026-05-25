@@ -1,11 +1,17 @@
-// SQL 优化沙盒 Pinia store(Phase 14 P2 完整版 view 拆分)。
-//
-// 把 SqlOptimizeView 1689 行里的 state + actions 全收口到这,让 5 个子组件
-// (ScenarioListPanel / StepSchema / StepData / StepSql / StepVerify / SandboxSummary)
-// 共享 reactive state,不用 prop drilling 10 层。
-//
-// 模式跟 stores/task.ts(WorkbenchView 同款)一致:state ref + computed +
-// async actions,setup style,no options API。
+/**
+ * @deprecated Phase 14 #3 Round 2 起,views 和子组件应通过 facade stores
+ * 访问:
+ *   - useSqlDiagnosisStore (stores/sqlDiagnosis.ts) — /sql-diagnosis 用
+ *   - useScenarioLabStore  (stores/scenarioLab.ts)  — /scenario-lab 用
+ *   - useSchemaImportStore (stores/schemaImport.ts) — /schema-import 用
+ *
+ * 本文件仍是 backing — 三个 facade 引用同一份 reactive state 避免双向同步。
+ * 长期目标:把字段真正拆到各 facade,delete 此 file。当前作为过渡保留。
+ *
+ * 历史:Phase 14 P2 把 SqlOptimizeView 1689 行的 state + actions 全收口到这。
+ * Phase 14 #3 Round 1 拆 3 个 view,但 view 还在 import sandbox。
+ * Phase 14 #3 Round 2 引入 facade stores 让 view import 干净。
+ */
 import { computed, ref } from 'vue'
 import { defineStore, storeToRefs } from 'pinia'
 
@@ -84,6 +90,9 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const quickEnrichResult = ref<SlowSqlEnrichResult | null>(null)
   const quickPlanDiff = ref<PlanDiffResult | null>(null)
   const quickPlanHistory = ref<PlanHistoryItem[]>([])
+  // Phase 14 #3 — view 可注入异步 confirm callback (替换 confirm())。
+  // SqlDiagnosisView 在 onMounted 注入 OperationPreviewModal,其它入口走 fallback。
+  const confirmAnalyzePromise = ref<(() => Promise<boolean>) | null>(null)
   const quickError = ref('')
   const quickPlanDiffError = ref('')
 
@@ -97,6 +106,25 @@ export const useSandboxStore = defineStore('sandbox', () => {
   const datasources = computed(() => (bootState.value?.datasources || []) as any[])
   const mysqlDatasources = computed(() =>
     datasources.value.filter((ds: any) => String(ds.db_type || '').toLowerCase().includes('mysql')),
+  )
+  // Phase 14 #3 — /sql-diagnosis 支持 MySQL / DM / Oracle 三方言。
+  // scenario-lab / schema-import 仍只用 mysqlDatasources(materialize 流程
+  // 当前只实现 MySQL 方言)。
+  const diagnosableDatasources = computed(() =>
+    datasources.value.filter((ds: any) => {
+      const t = String(ds.db_type || '').toLowerCase()
+      return t === 'mysql' || t === 'dm' || t === 'oracle'
+    }),
+  )
+  // Phase 14 #1 合规防御 — 选中 datasource 的 environment
+  const selectedDs = computed(() =>
+    datasources.value.find((ds: any) => ds.id === datasourceId.value),
+  )
+  const selectedDsEnvironment = computed<string>(() =>
+    (selectedDs.value?.environment as string) || 'sandbox',
+  )
+  const sandboxWriteLocked = computed(() =>
+    !!datasourceId.value && selectedDsEnvironment.value !== 'sandbox',
   )
   const validScenarios = computed(() => items.value.filter((it) => !it.error))
   const brokenScenarios = computed(() => items.value.filter((it) => !!it.error))
@@ -379,7 +407,13 @@ export const useSandboxStore = defineStore('sandbox', () => {
       slowSqlResults.value = { ...slowSqlResults.value, [idx]: result }
       slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
     } catch (e) {
-      slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: noticeStore.toErrorMessage(e) }
+      let msg = noticeStore.toErrorMessage(e)
+      // 把"表不存在"翻译成"先一键全套落库" — slow_query analyze 跑 EXPLAIN 在真表上,
+      // 用户常在没 materialize 前先点 🔬 分析,后端 1146 错误对新手不友好
+      if (/doesn't exist|不存在|1146/i.test(msg)) {
+        msg = '⚠ 表还没建,请先点上方 🚀 一键全套 把 yml 的表落到数据库,再点 🔬 分析。\n原始错误: ' + msg
+      }
+      slowSqlErrors.value = { ...slowSqlErrors.value, [idx]: msg }
       slowSqlExpanded.value = { ...slowSqlExpanded.value, [idx]: true }
     } finally {
       slowSqlAnalyzing.value = { ...slowSqlAnalyzing.value, [idx]: false }
@@ -514,6 +548,64 @@ export const useSandboxStore = defineStore('sandbox', () => {
     quickResult.value = null
     quickPlanDiff.value = null
     try {
+      // Phase 14 #3 — 先跑 preflight 静态检查,blocking=true 拦
+      try {
+        const preflight = await apiJson<{
+          risk_level: string
+          blocking: boolean
+          rules: Array<{ code: string; level: string; message: string }>
+        }>('/api/sql-diagnosis/preflight', 'POST', {
+          sql: quickSql.value,
+          datasource_id: quickDatasourceId.value,
+        })
+        if (preflight.blocking) {
+          const blockRules = preflight.rules
+            .filter((r) => r.level === 'block' || r.level === 'high')
+            .map((r) => `[${r.code}] ${r.message}`)
+            .join('\n')
+          quickError.value = '❌ preflight 静态检查未通过(阻塞):\n' + blockRules
+          return
+        }
+        // medium 级别给 confirm,low 直接放行
+        if (preflight.risk_level === 'medium' && preflight.rules.length) {
+          const warnText = preflight.rules
+            .map((r) => `[${r.code}] ${r.message}`)
+            .join('\n')
+          const ok = confirm(
+            '⚠ preflight 发现 ' + preflight.rules.length + ' 个风险提示(不阻塞):\n\n'
+            + warnText + '\n\n是否继续 EXPLAIN?',
+          )
+          if (!ok) return
+        }
+      } catch (e) {
+        // preflight 失败 → 仍允许 analyze,只警告
+        console.warn('preflight 调用失败,继续 analyze:', e)
+      }
+
+      // Phase 14 #3 — 任何环境的 EXPLAIN 都走 OperationPreviewModal(/sql-diagnosis
+      // view 在 onMounted 时注入 confirmAnalyzePromise);如果 view 没注入(单元
+      // 测试 / 旧路径)就 fallback 到 confirm()。prod/staging 必须走 modal;
+      // sandbox 也走(用户期望"任何环境都给清晰的影响声明")
+      const ds = (diagnosableDatasources.value as any[]).find((d) => d.id === quickDatasourceId.value)
+      const env = ds?.environment || 'unknown'
+      if (confirmAnalyzePromise.value) {
+        const ok = await confirmAnalyzePromise.value()
+        if (!ok) return
+      } else if (env === 'prod' || env === 'staging') {
+        // fallback:没注入 modal callback,退化为 confirm 文案(测试 / 非
+        // /sql-diagnosis 入口走这条)
+        const dbType = String(ds?.db_type || '').toLowerCase()
+        let msg = ''
+        if (dbType === 'oracle') {
+          msg = `即将在 ${env} 环境的 Oracle 数据源上执行 EXPLAIN PLAN FOR,会向诊断表 PLAN_TABLE 写一行临时记录(非业务表)。\n\n本操作不会修改业务数据,但会被记录审计。\n\n是否继续?`
+        } else if (dbType === 'dm') {
+          msg = `即将在 ${env} 环境的 DM 数据源上执行 EXPLAIN SELECT。\n\n本操作不会修改业务数据,但会消耗优化器资源,并记录审计。\n\n是否继续?`
+        } else {
+          msg = `即将在 ${env} 环境的 ${dbType} 数据源上执行 EXPLAIN SELECT。\n\n本操作不会修改业务数据,但会记录审计。\n\n是否继续?`
+        }
+        if (!confirm(msg)) return
+      }
+
       const result = await apiJson<SlowSqlResult>('/api/slow-sql/analyze', 'POST', {
         sql: quickSql.value,
         datasource_id: quickDatasourceId.value,
@@ -627,8 +719,11 @@ export const useSandboxStore = defineStore('sandbox', () => {
     quickAnalyzing, quickEnriching, quickPlanDiffLoading,
     quickResult, quickEnrichResult, quickPlanDiff, quickPlanHistory,
     quickError, quickPlanDiffError,
+    confirmAnalyzePromise,
     // derived
-    datasources, mysqlDatasources, validScenarios, brokenScenarios, currentStep,
+    datasources, mysqlDatasources, diagnosableDatasources,
+    validScenarios, brokenScenarios, currentStep,
+    selectedDs, selectedDsEnvironment, sandboxWriteLocked,
     // helpers
     isSelected, renderSql, planColumns, statusBadgeClass, statusLabel,
     verdictBadgeClass, confidenceBadgeClass, anomalyLabel, totalRows,

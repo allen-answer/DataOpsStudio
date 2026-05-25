@@ -41,9 +41,19 @@ def _create_project(admin: TestClient, name: str, member_ids: list[str]) -> str:
 
 
 def _create_datasource(client: TestClient, name: str, project_id: str) -> str:
+    """Phase 14 #3:测试 ds 默认标 sandbox + 全 allow_*,绕过 operation_policy 拒绝。"""
     r = client.post("/api/datasources", json={
         "name": name, "db_type": "MySQL", "host": "h", "port": 3306,
         "database": "d", "username": "u", "password": "p", "project_id": project_id,
+        "environment": "sandbox",
+        "environment_verified": True,
+        "allow_explain": True,
+        "allow_dm_explain": True,
+        "allow_oracle_plan_table": True,
+        "allow_schema_import": True,
+        "allow_schema_save": True,
+        "allow_scenario_write": True,
+        "allow_record_task": True,
     })
     assert r.status_code == 200, r.text
     return r.json()["id"]

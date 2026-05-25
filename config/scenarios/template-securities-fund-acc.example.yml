@@ -1,0 +1,174 @@
+# 证券行业模板 · 资金账户开户链 (基于 ODS.sql 真实 schema 抽取)
+# 6 表关联,演示 Phase 14 #3 Round 6 referential integrity:
+#   ods_acc_fundacc (主)
+#     ├─ INNER JOIN  ods_ast_nor_acc_fund   (1:1 余额表)
+#     ├─ INNER JOIN  ods_acc_bankacc_info   (1:N 银行账户)
+#     ├─ LEFT  JOIN  a_ks_cust_base_info    (部分匹配)
+#     ├─ EXISTS      ods_acc_holderacc_info (1:N 股东账户)
+#     └─ NOT EXISTS  cisp_pcyyyb            (反连接废弃营业部)
+#
+# rows 按头部券商规模:500w 资金账户(中型券商单家级别)
+# 复制后调小 rows 跑测试,生产规模复刻直接 1500w / 500w 模拟
+id: securities-fund-acc-template
+name: 证券行业 · 资金账户开户链(6 表关联,FK 引用 + 金融 faker)
+description: |
+  基于真实 ODS schema 的模板。展示 referential integrity 完整能力:
+  - 5 张表 FK references → ods_acc_fundacc(主键值池)
+  - match_rate=0.9 模拟 LEFT JOIN miss
+  - fk_unique=true 模拟 1:1 关系(余额表)
+  - faker_provider 金融行业域 generator
+dialect: dm
+seed: 42
+
+variables:
+  v_qmrq_m: "20260524"
+
+tables:
+  # ── 主表(FK pool 源头) ────────────────────────────────────────
+  - name: ods.ods_acc_fundacc
+    role: source
+    rows: 500000      # 头部券商单中型 500w 模拟,测试时可降到 50000
+    columns:
+      - {name: fund_acc_no, type: VARCHAR2(40), pk: true, nullable: false,
+         gen: realistic, faker_provider: fund_acc_no}
+      - {name: fund_acc_name, type: VARCHAR2(40),
+         gen: realistic, faker_provider: chinese_name_individual}
+      - {name: branch_code, type: VARCHAR2(20),
+         gen: realistic, faker_provider: branch_code}
+      - {name: fund_acc_status, type: VARCHAR2(20),
+         gen: enum, values: ["0","1","2"], distribution: [0.85, 0.10, 0.05]}
+      - {name: main_flag, type: VARCHAR2(4),
+         gen: enum, values: ["1","0"], distribution: [0.70, 0.30]}
+      - {name: source_sys, type: VARCHAR2(20),
+         gen: enum, values: ["jzjy","jgkh","rzrq","opt"],
+         distribution: [0.55, 0.25, 0.15, 0.05]}
+      - {name: open_date, type: TIMESTAMP, gen: timestamp,
+         range: ["2018-01-01","2026-05-24"]}
+      - {name: close_date, type: TIMESTAMP, nullable: true,
+         gen: constant, values: [null]}
+      - {name: org_flag, type: VARCHAR2(20), gen: enum,
+         values: ["0","1"], distribution: [0.92, 0.08]}     # 92% 个人
+    indexes:
+      - {columns: [fund_acc_no], unique: true}
+
+  # ── 1:1 余额表(FK 主键级) ──────────────────────────────────
+  - name: ods.ods_ast_nor_acc_fund
+    role: source
+    rows: 500000
+    columns:
+      - {name: fund_acc_no, type: VARCHAR2(40), pk: true, nullable: false,
+         gen: foreign_key,
+         references: ods.ods_acc_fundacc.fund_acc_no,
+         fk_unique: true}
+      - {name: currency_type, type: VARCHAR2(20),
+         gen: enum, values: ["01","02"], distribution: [0.95, 0.05]}
+      - {name: open_date, type: TIMESTAMP, gen: timestamp,
+         range: ["2018-01-01","2026-05-24"]}
+      - {name: close_date, type: TIMESTAMP, nullable: true,
+         gen: constant, values: [null]}
+
+  # ── 1:N 银行账户(头部账户银行多 — zipf 偏斜) ────────────────
+  - name: ods.ods_acc_bankacc_info
+    role: source
+    rows: 1200000          # 平均 1 资金账户 2.4 银行账户
+    columns:
+      - {name: fund_acc_no, type: VARCHAR2(40), nullable: false,
+         gen: foreign_key,
+         references: ods.ods_acc_fundacc.fund_acc_no,
+         fk_distribution: zipf, fk_zipf_alpha: 1.2}
+      - {name: bank_acc_no, type: VARCHAR2(100),
+         gen: realistic, faker_provider: bank_card}
+      - {name: bank_currency_type, type: VARCHAR2(20),
+         gen: enum, values: ["01","02"]}
+      - {name: source_sys, type: VARCHAR2(20),
+         gen: enum, values: ["jzjy","jgkh"]}
+      - {name: inure_flag, type: VARCHAR2(20),
+         gen: enum, values: ["1","0"], distribution: [0.92, 0.08]}
+
+  # ── EXISTS 半连接:股东账户 ─────────────────────────────────
+  - name: ods.ods_acc_holderacc_info
+    role: source
+    rows: 900000          # 1.8 股东账户/资金账户(沪/深双边可能多个)
+    columns:
+      - {name: fund_acc_no, type: VARCHAR2(40), nullable: false,
+         gen: foreign_key,
+         references: ods.ods_acc_fundacc.fund_acc_no,
+         match_rate: 0.92}             # 8% 资金账户无股东账户
+      - {name: holder_acc_no, type: VARCHAR2(40),
+         gen: realistic, faker_provider: shareholder_acc_sh}
+      - {name: market_code, type: VARCHAR2(4),
+         gen: realistic, faker_provider: market_code}
+      - {name: status, type: VARCHAR2(4),
+         gen: enum, values: ["0","1","3"], distribution: [0.85, 0.10, 0.05]}
+      - {name: source_sys, type: VARCHAR2(20),
+         gen: enum, values: ["jzjy","jgkh"]}
+
+  # ── LEFT JOIN 部分匹配:客户基本信息(个人) ─────────────────
+  - name: ods.a_ks_cust_base_info
+    role: source
+    rows: 450000          # 90% 资金账户有客户档案,10% LEFT JOIN 空
+    columns:
+      - {name: cust_no, type: VARCHAR2(40), pk: true, nullable: false,
+         gen: foreign_key,
+         references: ods.ods_acc_fundacc.fund_acc_no,
+         match_rate: 0.9, fk_unique: true}
+      - {name: cust_name, type: VARCHAR2(40),
+         gen: realistic, faker_provider: chinese_name_individual}
+      - {name: id_no, type: VARCHAR2(200), nullable: false,
+         gen: realistic, faker_provider: chinese_id}
+      - {name: mobile, type: VARCHAR2(20),
+         gen: realistic, faker_provider: mobile_phone}
+      - {name: attribute, type: VARCHAR2(20),
+         gen: enum, values: ["1A","1B","2A","2B","3A"],
+         distribution: [0.40, 0.25, 0.15, 0.10, 0.10]}
+
+  # ── 反连接:废弃营业部(NOT EXISTS) ─────────────────────────
+  - name: ods.cisp_pcyyyb
+    role: source
+    rows: 50              # 几十个废弃营业部
+    columns:
+      - {name: yyb, type: VARCHAR2(20), pk: true, nullable: false,
+         gen: enum, values: ["9999","8001","8002","8003","8004"]}
+
+workloads:
+  - kind: slow_query
+    name: fund-acc-open-etl
+    dialect: dm
+    sql: |
+      SELECT
+        '{{v_qmrq_m}}' as data_dt,
+        a.fund_acc_no as cptl_acc_num,
+        a.branch_code as inr_ins_num,
+        a.fund_acc_no as cust_num,
+        a.fund_acc_name as cust_name,
+        b.currency_type as crrc_cd,
+        c.bank_acc_no as depo_bnk_num
+      FROM ods.ods_acc_fundacc a
+      INNER JOIN ods.ods_ast_nor_acc_fund b
+        ON TRIM(a.fund_acc_no) = TRIM(b.fund_acc_no)
+       AND b.currency_type = '01'
+      INNER JOIN ods.ods_acc_bankacc_info c
+        ON TRIM(c.fund_acc_no) = TRIM(b.fund_acc_no)
+       AND b.currency_type = c.bank_currency_type
+      LEFT JOIN ods.a_ks_cust_base_info t
+        ON TRIM(a.fund_acc_no) = TRIM(t.cust_no)
+      WHERE a.fund_acc_status = '0'
+        AND a.main_flag = '1'
+        AND NOT EXISTS (
+          SELECT 1 FROM ods.cisp_pcyyyb g
+          WHERE g.yyb = TRIM(a.branch_code)
+        )
+        AND EXISTS (
+          SELECT 1 FROM ods.ods_acc_holderacc_info e
+          WHERE TRIM(e.fund_acc_no) = TRIM(a.fund_acc_no)
+            AND e.market_code IN ('1','2')
+            AND e.status <> '3'
+        )
+    intentional_issues:
+      - "TRIM 包列让索引失效"
+      - "branch_code 上无索引,NOT EXISTS 走全表扫"
+      - "5 表关联可能 NESTED LOOPS 在大数据上效率低"
+    expected_optimizations:
+      - "保证 fund_acc_no 数据无前后空格,去掉 TRIM"
+      - "为 ods_acc_fundacc 加 (data_dt, branch_code, fund_acc_status) 复合索引"
+      - "考虑改为 LEFT JOIN + IS NOT NULL 替代 EXISTS 让优化器走 HASH JOIN"

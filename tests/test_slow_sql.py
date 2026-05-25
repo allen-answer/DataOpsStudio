@@ -156,8 +156,11 @@ def test_suggestions_empty_for_no_issues():
 
 @pytest.fixture
 def mysql_datasource(isolated_storage):
-    """注一份 MySQL datasource 到 isolated 的 task_store / datasource_store。"""
-    from app.models.datasource import DataSourceCreate
+    """注一份 MySQL datasource 到 isolated 的 task_store / datasource_store。
+
+    Phase 14 #3:显式标 sandbox + allow_* 全开,绕过 operation_policy 拒绝。
+    """
+    from app.models.datasource import DataSourceCreate, make_sandbox_datasource_kwargs
     from app.services.repositories import datasource_store
 
     return datasource_store.create(DataSourceCreate(
@@ -165,6 +168,7 @@ def mysql_datasource(isolated_storage):
         db_type=DatabaseType.MYSQL,
         host="localhost", port=3306,
         database="demo", username="u", password="p",
+        **make_sandbox_datasource_kwargs(),
     ))
 
 

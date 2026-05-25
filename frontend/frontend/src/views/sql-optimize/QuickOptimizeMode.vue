@@ -3,9 +3,9 @@
 // 不用 scenario 模板,直接选 datasource + 粘 SQL → EXPLAIN + AI 复核 + plan diff。
 // Phase 14 修缮:解决用户反馈"必须选模板才能用"的 UX 问题。
 import { Microscope, Sparkles, Play, AlertCircle, Database, ChevronRight, Trash2 } from 'lucide-vue-next'
-import { useSandboxStore } from '../../stores/sandbox'
+import { useSqlDiagnosisStore } from '../../stores/sqlDiagnosis'
 
-const store = useSandboxStore()
+const store = useSqlDiagnosisStore()
 </script>
 
 <template>
@@ -26,16 +26,23 @@ const store = useSandboxStore()
     <div class="card p-5 space-y-4">
       <div>
         <label class="block text-xs uppercase tracking-wider text-slate-500 font-bold mb-1">
-          <Database class="h-3 w-3 inline" /> 目标 datasource(只显示 MySQL,Oracle/DM EXPLAIN 后续切片)
+          <Database class="h-3 w-3 inline" /> 目标 datasource
+          <span class="text-[10px] font-normal normal-case tracking-normal text-slate-400">
+            (MySQL / DM / Oracle,按方言查看执行计划)
+          </span>
         </label>
         <select v-model="store.quickDatasourceId" class="w-full">
           <option value="" disabled>—— 选一个 ——</option>
-          <option v-for="ds in store.mysqlDatasources" :key="(ds as any).id" :value="(ds as any).id">
-            {{ (ds as any).name }} · {{ (ds as any).host }}:{{ (ds as any).port }}/{{ (ds as any).database }}
+          <option v-for="ds in store.diagnosableDatasources" :key="(ds as any).id" :value="(ds as any).id">
+            {{ (ds as any).name }} · {{ (ds as any).db_type }} · {{ (ds as any).host }}:{{ (ds as any).port }}/{{ (ds as any).database }}
           </option>
         </select>
-        <p v-if="!store.mysqlDatasources.length" class="mt-1 text-xs text-status-warning">
-          无可用 MySQL datasource —— 先去「数据源」页加一个。
+        <p v-if="!store.diagnosableDatasources.length" class="mt-1 text-xs text-status-warning">
+          无可用 MySQL/DM/Oracle datasource —— 先去「数据源」页加一个。
+        </p>
+        <p class="mt-1 text-[11px] text-slate-500">
+          选择 MySQL / DM / Oracle 数据源,系统将按方言查看执行计划。
+          <span class="sql-font">MySQL/DM = EXPLAIN SELECT;Oracle = EXPLAIN PLAN FOR + PLAN_TABLE</span>
         </p>
       </div>
 

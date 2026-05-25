@@ -249,7 +249,11 @@ def test_ai_fill_exception_continues(isolated_storage, monkeypatch):
 @pytest.fixture
 def client_with_scenario(client_admin, isolated_storage, monkeypatch):
     """带 admin token 的 TestClient + 准备好 example scenario 文件。
-    scenarios router 全 admin only，必须 admin token。"""
+    scenarios router 全 admin only，必须 admin token。
+
+    Phase 14 #3:也注一个 "ds-1" 的 sandbox MySQL ds(测试用字面 id),
+    让 require_datasource_access + operation_policy 都过。
+    """
     from app.utils.paths import BASE_DIR
     from app.api import scenarios as api_module
     from app.scenarios import loader as loader_module
@@ -263,6 +267,21 @@ def client_with_scenario(client_admin, isolated_storage, monkeypatch):
     monkeypatch.setattr(paths_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(loader_module, "SCENARIOS_DIR", sdir)
     monkeypatch.setattr(api_module, "SCENARIOS_DIR", sdir)
+
+    # 注 "ds-1" 字面 id 的 sandbox ds — 测试常用此 id
+    from app.models.datasource import (
+        DataSource, DatabaseType, make_sandbox_datasource_kwargs,
+    )
+    from app.services.repositories import datasource_store
+    ds = DataSource(
+        id="ds-1", name="ds-1-sandbox", db_type=DatabaseType.MYSQL,
+        host="localhost", port=3306,
+        **make_sandbox_datasource_kwargs(),
+    )
+    # 直接写 store(绕过 create 自动生成 id);_write_raw 是私有 API
+    current = [d.model_dump(mode="json") for d in datasource_store.list()]
+    current.append(ds.model_dump(mode="json"))
+    datasource_store._write_raw(current)  # noqa: SLF001
     return client_admin
 
 

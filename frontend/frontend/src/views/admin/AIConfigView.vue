@@ -264,7 +264,11 @@ onMounted(() => {
 
           <label class="space-y-1.5">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Timeout seconds</span>
-            <input v-model.number="draft.timeout_seconds" type="number" min="1" max="120" />
+            <input v-model.number="draft.timeout_seconds" type="number" min="1" max="600" />
+            <p class="text-xs text-slate-500">
+              Kimi K2 / Claude Opus / GPT-4 等带 thinking 的慢模型建议 240-300;
+              短 prompt 简单 chat 模型 30-60 即可。
+            </p>
           </label>
 
           <div class="space-y-3 lg:col-span-2">
