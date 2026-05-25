@@ -8,10 +8,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../stores/auth'
 import { useNoticeStore } from '../stores/notice'
+import { useBootstrapStore } from '../stores/bootstrap'
+import { useProjectStore } from '../stores/project'
 import { AlertCircle, Zap, ShieldCheck, ChevronRight, Lock, User as UserIcon } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const notice = useNoticeStore()
+// 登录成功后必须主动 reload bootstrap / project —— App.vue 的 onMounted 在用户
+// 还没登录时已经跑过且早退,登录后路由切换不会触发它重跑,会导致首次进 datasources
+// 看到空列表(必须刷新页面才出来)。fix #170。
+const bootstrap = useBootstrapStore()
+const project = useProjectStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -32,8 +39,15 @@ const uptimeDays = computed(() => 30 + Math.floor(Math.random() * 60))
 const uptimeHours = computed(() => Math.floor(Math.random() * 24))
 const nodeCount = computed(() => 4 + Math.floor(Math.random() * 12))
 
-function _redirectAfterLogin(): void {
+async function _redirectAfterLogin(): Promise<void> {
   notice.setNotice(t('login.welcome', { name: auth.user?.display_name || auth.user?.username }))
+  // 先拉项目 + bootstrap,跳路由前数据就位 —— 避免目标 view 看到空 state
+  try {
+    await project.reload()
+    await bootstrap.reload()
+  } catch {
+    // 单次失败不阻塞跳转,目标 view 自己有 refresh 按钮
+  }
   const redirect = (route.query.redirect as string) || '/datasources'
   router.push(redirect)
 }
@@ -53,7 +67,7 @@ async function onSubmit(): Promise<void> {
       step.value = 'mfa'
       return
     }
-    _redirectAfterLogin()
+    await _redirectAfterLogin()
   } catch (error: any) {
     errorMsg.value = error?.message || t('login.error')
   } finally {
@@ -72,7 +86,7 @@ async function onSubmitMfa(): Promise<void> {
     errorMsg.value = ''
     try {
       await auth.mfaChallenge(mfaToken.value, { code })
-      _redirectAfterLogin()
+      await _redirectAfterLogin()
     } catch (error: any) {
       errorMsg.value = error?.message || 'OTP 验证失败'
       mfaCode.value = ''
@@ -89,7 +103,7 @@ async function onSubmitMfa(): Promise<void> {
     errorMsg.value = ''
     try {
       await auth.mfaChallenge(mfaToken.value, { recoveryCode: raw })
-      _redirectAfterLogin()
+      await _redirectAfterLogin()
     } catch (error: any) {
       errorMsg.value = error?.message || '恢复码无效'
       recoveryCode.value = ''
