@@ -4,6 +4,7 @@ export default {
   nav: {
     datasources: '数据源',
     sqlDiagnosis: 'SQL 诊断',
+    sqlWorkbench: 'SQL 工作台',
     scenarioLab: '场景测试沙盒',
     dataCompare: '数据对比',
     workflows: '作业流',

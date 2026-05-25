@@ -15,6 +15,7 @@ import {
   Tag,
   Microscope,
   FlaskConical,
+  Terminal,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
@@ -36,6 +37,7 @@ const NAV_ITEMS = [
   { id: 'data-compare',    labelKey: 'nav.dataCompare',  icon: GitCompareArrows, path: '/data-compare',    matchPaths: ['/data-compare'] },
   { id: 'lineage',         labelKey: 'nav.lineage',      icon: GitBranch,        path: '/lineage',         matchPaths: ['/lineage', '/batch-lineage'] },
   { id: 'sql-diagnosis',   labelKey: 'nav.sqlDiagnosis', icon: Microscope,       path: '/sql-diagnosis',   matchPaths: ['/sql-diagnosis', '/sql-optimize', '/admin/sandbox'] },
+  { id: 'sql-workbench',   labelKey: 'nav.sqlWorkbench', icon: Terminal,         path: '/sql-workbench',   matchPaths: ['/sql-workbench'] },
   { id: 'workflows',       labelKey: 'nav.workflows',    icon: Workflow,         path: '/workflows',       matchPaths: ['/workflows', '/workflow-runs'] },
   { id: 'history',         labelKey: 'nav.history',      icon: HistoryIcon,      path: '/history',         matchPaths: ['/history'] },
   { id: 'scenario-lab',    labelKey: 'nav.scenarioLab',  icon: FlaskConical,     path: '/scenario-lab',    matchPaths: ['/scenario-lab', '/schema-import'] },

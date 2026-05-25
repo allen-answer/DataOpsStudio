@@ -3,6 +3,7 @@ export default {
   nav: {
     datasources: 'Data Sources',
     sqlDiagnosis: 'SQL Diagnosis',
+    sqlWorkbench: 'SQL Workbench',
     scenarioLab: 'Scenario Lab',
     dataCompare: 'Compare',
     workflows: 'Workflows',

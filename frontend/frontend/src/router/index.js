@@ -52,6 +52,8 @@ const routes = [
   //   /admin/sandbox   → /sql-diagnosis   (老书签兼容)
   //   /schema-import   → /scenario-lab/import (老书签兼容)
   { path: '/sql-diagnosis',        name: 'sql-diagnosis', component: () => import('../views/SqlDiagnosisView.vue') },
+  // SQL Workbench v0.1 — 多 tab SELECT 工作台,editor+ 可用
+  { path: '/sql-workbench',        name: 'sql-workbench', component: () => import('../views/SqlWorkbenchView.vue') },
   { path: '/scenario-lab',         name: 'scenario-lab',  component: () => import('../views/ScenarioLabView.vue') },
   { path: '/scenario-lab/import',  name: 'scenario-lab-import', component: () => import('../views/SchemaImportView.vue') },
   { path: '/scenario-lab/builder', name: 'scenario-lab-builder', component: () => import('../views/ScenarioBuilderView.vue') },
