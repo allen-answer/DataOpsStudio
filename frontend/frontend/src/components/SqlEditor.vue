@@ -77,30 +77,35 @@ watch(fullscreen, (on) => {
 </script>
 
 <template>
-  <!-- 全屏时整体提到 fixed 顶层覆盖视口；普通时 relative 让全屏按钮浮在右上角。
-       !m-0 抵消父级 space-y-* 给本 div 的 margin-top —— 否则 fixed 层会被顶下来一截。 -->
-  <div :class="fullscreen ? 'fixed inset-0 z-50 !m-0 flex flex-col bg-slate-900/85 p-3 backdrop-blur-sm' : 'relative'">
-    <div v-if="fullscreen" class="mb-2 px-1">
-      <span class="text-xs font-semibold text-slate-300">SQL 编辑器 · 全屏（Esc 退出）</span>
+  <!-- 全屏时整体 fixed 覆盖视口;普通时正常流。全屏按钮挪到顶部细工具栏,
+       不再 absolute 浮在编辑器右上角(避免遮挡 SQL 第一行内容)。
+       !m-0 抵消父级 space-y-* 给本 div 的 margin-top —— 否则 fixed 层会被顶下来。 -->
+  <div :class="fullscreen ? 'fixed inset-0 z-50 !m-0 flex flex-col bg-slate-900/85 p-3 backdrop-blur-sm' : ''">
+    <!-- 顶部工具栏:左侧 label,右侧全屏切换。普通模式只 24px 高,不挤页面 -->
+    <div
+      class="flex items-center justify-between rounded-t-2xl border-x-4 border-t-4 border-slate-900 bg-slate-900 px-2.5 py-1"
+      :class="fullscreen ? '' : ''"
+    >
+      <span class="text-[11px] font-semibold text-slate-300">
+        <template v-if="fullscreen">SQL 编辑器 · 全屏(Esc 退出)</template>
+        <template v-else>SQL</template>
+      </span>
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700 hover:text-white"
+        :title="fullscreen ? '退出全屏 (Esc)' : '全屏编辑 SQL'"
+        @click="fullscreen = !fullscreen"
+      >
+        <component :is="fullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" />
+        {{ fullscreen ? '退出全屏' : '全屏' }}
+      </button>
     </div>
 
     <div
       ref="container"
-      class="overflow-hidden rounded-2xl border-4 border-slate-900"
+      class="overflow-hidden rounded-b-2xl border-x-4 border-b-4 border-slate-900"
       :class="fullscreen ? 'min-h-0 flex-1' : ''"
       :style="fullscreen ? undefined : `height:${height}`"
     ></div>
-
-    <!-- 全屏切换按钮：浮在编辑器右上角 -->
-    <button
-      type="button"
-      class="absolute z-10 flex items-center gap-1 rounded-md bg-slate-700/90 px-2 py-1 text-[11px] font-semibold text-slate-100 shadow-sm ring-1 ring-slate-600 transition hover:bg-slate-600"
-      :class="fullscreen ? 'right-5 top-5' : 'right-3 top-3'"
-      :title="fullscreen ? '退出全屏 (Esc)' : '全屏编辑 SQL'"
-      @click="fullscreen = !fullscreen"
-    >
-      <component :is="fullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" />
-      {{ fullscreen ? '退出全屏' : '全屏' }}
-    </button>
   </div>
 </template>
