@@ -195,7 +195,7 @@ const ALLOW_GROUPS: AllowGroup[] = [
               <label v-for="f in group.flags" :key="f.key" class="flex items-start gap-2 cursor-pointer rounded px-1 py-0.5 hover:bg-white/50">
                 <input
                   type="checkbox"
-                  class="mt-0.5"
+                  class="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary cursor-pointer"
                   :checked="!!(datasourceDraft as any)[f.key]"
                   @change="(datasourceDraft as any)[f.key] = ($event.target as HTMLInputElement).checked"
                 />
