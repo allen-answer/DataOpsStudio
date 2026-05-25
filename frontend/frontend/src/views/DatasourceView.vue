@@ -301,6 +301,7 @@ const ALLOW_GROUPS: AllowGroup[] = [
                         title="环境标签:沙盒可造数据;预发 / 生产严禁 materialize / record"
                         @change="onEnvChange(editDraft as any)"
                       >
+                        <option value="unknown">⚪ unknown 未确认(默认,写入端点全锁)</option>
                         <option value="sandbox">🟢 sandbox 沙盒(可造数据)</option>
                         <option value="staging">🟡 staging 预发(只读)</option>
                         <option value="prod">🔴 prod 生产(只读 / 严禁造数据)</option>
