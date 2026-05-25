@@ -72,6 +72,7 @@ cd frontend/frontend && npm install && npm run dev
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | oncall 备份 / 升级 / 回滚 / 故障排查 |
 | [`docs/PARAMETERS.md`](docs/PARAMETERS.md) | 作业流变量 / 参数引用语法（`${var}` / `${nodes.X.Y}` / 过滤器）|
 | [`docs/COMPARE_RESULT_STORAGE.md`](docs/COMPARE_RESULT_STORAGE.md) | 设计大数据比对结果的落盘方案 |
+| [`docs/SQL_WORKBENCH.md`](docs/SQL_WORKBENCH.md) | SQL Workbench(多 tab SELECT 工作台,只读)使用 + 安全限制 |
 | [`CLAUDE.md`](CLAUDE.md) | 架构、设计决策、phase-by-phase 历史 |
 | `README_OFFLINE.md` | 仅在离线包内部，给客户机部署同事看 |
 
