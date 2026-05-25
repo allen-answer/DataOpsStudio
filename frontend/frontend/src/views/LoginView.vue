@@ -225,12 +225,6 @@ function backToPassword(): void {
             <span class="text-cyan-400">→ ]</span>
           </button>
 
-          <!-- 默认账号提示 -->
-          <div class="rounded border border-cyan-500/15 bg-cyan-500/5 px-3 py-2 text-center text-[10px] leading-5 text-cyan-300/70">
-            首次启动默认账号
-            <code class="font-mono font-semibold text-cyan-100">admin / admin</code>
-            <br>登录后请到「用户管理」修改密码
-          </div>
         </div>
 
         <!-- 底部 bracket close -->
@@ -444,8 +438,11 @@ function backToPassword(): void {
   display: block;
   width: 100%;
   height: 2.5rem;
-  padding-left: 0.75rem;
-  padding-right: 0.75rem;
+  /* padding-left 默认 2.25rem 让 icon 不挡 placeholder;有 icon 的 input
+     在 template 里写 pl-9(2.25rem,跟此 default 一致);无 icon(OTP/恢复码)
+     模板用 pl-3 override。padding-right 1rem 留给右侧装饰光标。 */
+  padding-left: 2.25rem;
+  padding-right: 1rem;
   border-radius: 6px;
   border: 1px solid rgba(6, 182, 212, 0.25);
   background-color: rgba(8, 47, 73, 0.4);
@@ -469,6 +466,9 @@ function backToPassword(): void {
 .console-input-otp {
   height: 3rem;
   font-size: 1.1rem;
+  /* OTP / 恢复码居中,左右 padding 对称(覆盖 .console-input 的 pl-9 default) */
+  padding-left: 1rem;
+  padding-right: 1rem;
   text-align: center;
   letter-spacing: 0.5em;
 }
