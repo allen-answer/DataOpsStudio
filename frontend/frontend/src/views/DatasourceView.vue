@@ -26,17 +26,20 @@ function projectName(id: string): string {
   return p ? p.name : `(已删除 ${id.slice(0, 6)})`
 }
 
-// Phase 14 #1 合规防御 — 环境标签三色徽章 + prod 二次确认
+// Phase 14 #1 合规防御 — 环境标签四态徽章(unknown / sandbox / staging / prod)
+// 后端默认 environment="unknown"(fail-safe),admin 必须显式选过才解锁写入
 function envBadgeClass(env?: string): string {
   if (env === 'prod') return 'bg-status-error-bg text-status-error'
   if (env === 'staging') return 'bg-status-warning-bg text-status-warning'
-  return 'bg-status-success-bg text-status-success'  // sandbox (default)
+  if (env === 'sandbox') return 'bg-status-success-bg text-status-success'
+  return 'bg-status-pending-bg text-status-pending'  // unknown / undefined — 灰
 }
 
 function envBadgeTitle(env?: string): string {
   if (env === 'prod') return '生产环境 — 写入端点(materialize / run-all / record)已锁定'
   if (env === 'staging') return '预发环境 — 写入端点已锁定'
-  return '沙盒环境 — 可造数据 / 跑模拟流程'
+  if (env === 'sandbox') return '沙盒环境 — 可造数据 / 跑模拟流程'
+  return '未确认环境 — admin 选择具体环境后才能解锁操作(fail-safe 默认)'
 }
 
 // Phase 14 #3 Round 3 — 环境预设:选环境时自动填 8 个 allow_* flag。
@@ -165,6 +168,7 @@ const ALLOW_GROUPS: AllowGroup[] = [
           title="环境标签:沙盒 = 可造数据 / 跑模拟流程;预发 / 生产 = 写入端点拒绝(防误灌假数据)"
           @change="onEnvChange(datasourceDraft as any)"
         >
+          <option value="unknown">⚪ unknown 未确认(默认,写入端点全锁)</option>
           <option value="sandbox">🟢 sandbox 沙盒(可造数据)</option>
           <option value="staging">🟡 staging 预发(只读)</option>
           <option value="prod">🔴 prod 生产(只读 / 严禁造数据)</option>
@@ -254,7 +258,12 @@ const ALLOW_GROUPS: AllowGroup[] = [
                     :class="envBadgeClass(item.environment)"
                     class="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider"
                     :title="envBadgeTitle(item.environment)"
-                  >{{ item.environment || 'sandbox' }}</span>
+                  >{{ item.environment || 'unknown' }}</span>
+                  <span
+                    v-if="!item.environment_verified"
+                    class="ml-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-status-warning-bg text-status-warning"
+                    title="admin 尚未确认环境标签 — 写入端点全部 403"
+                  >⚠ 未验证</span>
                 </td>
                 <td class="px-5 py-3 text-right">
                   <div class="inline-flex gap-1">
