@@ -120,6 +120,18 @@ pytest tests/test_sql_workbench_*.py
 ## 路线图
 
 - **Phase 1**(已交付): 后端 API + JSON 存储 + SELECT 执行 + 测试 + 本文档
-- **Phase 2**(计划): 前端 `/sql-workbench` 视图,多 tab + CodeMirror 编辑器 + 结果 grid + history 面板
-- **Phase 3**(计划): metadata tree(schemas/tables/columns)接 `datasource_introspect`
-- **Phase 4**(计划): 编辑器顶部 / 历史行加快捷:发送当前 SQL 到 → 血缘分析 / 数据对比 / SQL 诊断
+- **Phase 2**(已交付): 前端 `/sql-workbench` 视图,多 tab + CodeMirror 编辑器 + 结果 grid + history 面板
+- **Phase 3**(已交付): metadata 树 tab 接 `app/sqlide/metadata.py` —— 支持 MySQL / Oracle / DM / DB2 的
+  schemas / tables / columns 列表;前端 lazy-load + 点表名插入 `SELECT * FROM ... LIMIT 100;`
+- **Phase 4**(已交付): "发送到" 菜单 + history 行 hover 快捷,SQL 通过 `utils/sqlTransfer` sessionStorage
+  桥跳转到 → 血缘分析(`/lineage`)/ 数据对比(`/data-compare`,backlog 二端 SQL 接收)/ SQL 诊断(`/sql-diagnosis`)。
+  目标视图 `onMounted` 调 `takeSqlTransfer()` 预填。Lineage / Diagnosis 已接;Compare 双 SQL 形态待 v0.2 完整接入
+
+## 跨视图传 SQL 桥
+
+`frontend/frontend/src/utils/sqlTransfer.ts` 提供:
+```ts
+setSqlTransfer({ sql, datasourceId?, source? })   // 发起方写
+takeSqlTransfer(): { sql, datasourceId?, source? } | null  // 接收方读 + 一次性清
+```
+走 sessionStorage 而非 URL query —— SQL 经常含特殊字符 / 可能很长 / 用户分享链接时不应带走 payload。

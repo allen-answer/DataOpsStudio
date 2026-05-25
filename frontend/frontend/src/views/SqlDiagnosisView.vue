@@ -16,6 +16,7 @@ import { useSqlDiagnosisStore } from '../stores/sqlDiagnosis'
 import OperationRiskPanel from '../components/sql/OperationRiskPanel.vue'
 import OperationPreviewModal from '../components/sql/OperationPreviewModal.vue'
 import QuickOptimizeMode from './sql-optimize/QuickOptimizeMode.vue'
+import { takeSqlTransfer } from '../utils/sqlTransfer'
 
 const store = useSqlDiagnosisStore()
 
@@ -46,6 +47,13 @@ onMounted(() => {
   store.loadList()
   // 注册到 store —— runQuickAnalyze 走 store.confirmAnalyzePromise 拿确认
   store.confirmAnalyzePromise = requestConfirm
+
+  // Phase 4 (sql-workbench): 接收来自 SqlWorkbench 的 SQL transfer
+  const transfer = takeSqlTransfer()
+  if (transfer?.sql) {
+    store.quickSql = transfer.sql
+    if (transfer.datasourceId) store.quickDatasourceId = transfer.datasourceId
+  }
 })
 </script>
 

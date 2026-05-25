@@ -166,16 +166,28 @@ def list_history(
     return {"items": [h.model_dump(mode="json") for h in items]}
 
 
-# ─── metadata (Phase 3 接 datasource_introspect,Phase 1 stub) ──────────────
+# ─── metadata (Phase 3 真实接 datasource_introspect / sqlide.metadata) ────
+
+from app.sqlide import metadata as _metadata
+
+
+def _metadata_error(exc: Exception) -> dict[str, Any]:
+    """统一 200 + items=[] + error 字段,前端能优雅 fallback。"""
+    return {"items": [], "error": str(exc)}
+
 
 @router.get("/api/sql-workbench/metadata/schemas")
 def list_schemas(
     datasource_id: str = Query(..., min_length=1),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
-    require_datasource_access(current, datasource_id)
-    # Phase 3 实:接 datasource_introspect 拉 information_schema.schemata
-    return {"items": [], "phase": 1, "note": "metadata tree shipped in Phase 3"}
+    ds = require_datasource_access(current, datasource_id)
+    try:
+        items = _metadata.list_schemas(ds)
+    except Exception as exc:
+        logger.warning("list_schemas failed: %s", exc)
+        return _metadata_error(exc)
+    return {"items": items}
 
 
 @router.get("/api/sql-workbench/metadata/tables")
@@ -184,15 +196,26 @@ def list_tables(
     schema: str = Query(default=""),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
-    require_datasource_access(current, datasource_id)
-    return {"items": [], "phase": 1, "note": "metadata tree shipped in Phase 3"}
+    ds = require_datasource_access(current, datasource_id)
+    try:
+        items = _metadata.list_tables(ds, schema=schema)
+    except Exception as exc:
+        logger.warning("list_tables failed: %s", exc)
+        return _metadata_error(exc)
+    return {"items": items}
 
 
 @router.get("/api/sql-workbench/metadata/columns")
 def list_columns(
     datasource_id: str = Query(..., min_length=1),
     table: str = Query(..., min_length=1),
+    schema: str = Query(default=""),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
-    require_datasource_access(current, datasource_id)
-    return {"items": [], "phase": 1, "note": "metadata tree shipped in Phase 3"}
+    ds = require_datasource_access(current, datasource_id)
+    try:
+        items = _metadata.list_columns(ds, table=table, schema=schema)
+    except Exception as exc:
+        logger.warning("list_columns failed: %s", exc)
+        return _metadata_error(exc)
+    return {"items": items}

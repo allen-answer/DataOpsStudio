@@ -48,6 +48,18 @@ export interface HistoryEntry {
   error?: string | null
 }
 
+export interface MetadataSchema {
+  name: string
+  loading?: boolean
+  expanded?: boolean
+  tables?: MetadataTable[]
+}
+
+export interface MetadataTable {
+  name: string
+  schema: string
+}
+
 export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   // ─── state ────────────────────────────────────────────────────────────
   const consoles = ref<Console[]>([])
@@ -58,6 +70,9 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   const running = reactive<Record<string, boolean>>({})
   const history = ref<HistoryEntry[]>([])
   const loadingConsoles = ref(false)
+
+  // metadata tree —— 按 datasource_id 缓存,切换数据源时复用
+  const metadataByDs = reactive<Record<string, { schemas: MetadataSchema[]; loading: boolean; error: string }>>({})
 
   const activeConsole = computed(() =>
     consoles.value.find(c => c.id === activeConsoleId.value) || null,
@@ -151,6 +166,60 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     if (consoles.value.some(c => c.id === id)) activeConsoleId.value = id
   }
 
+  // ─── metadata tree ────────────────────────────────────────────────────
+
+  async function loadSchemas(datasourceId: string): Promise<void> {
+    if (!datasourceId) return
+    if (!metadataByDs[datasourceId]) {
+      metadataByDs[datasourceId] = { schemas: [], loading: false, error: '' }
+    }
+    metadataByDs[datasourceId].loading = true
+    metadataByDs[datasourceId].error = ''
+    try {
+      const resp = await apiGet<{ items: { name: string }[]; error?: string }>(
+        `/api/sql-workbench/metadata/schemas?datasource_id=${encodeURIComponent(datasourceId)}`,
+      )
+      metadataByDs[datasourceId].schemas = (resp.items || []).map(s => ({
+        name: s.name, expanded: false, loading: false, tables: undefined,
+      }))
+      if (resp.error) metadataByDs[datasourceId].error = resp.error
+    } catch (e: unknown) {
+      metadataByDs[datasourceId].error = (e as Error)?.message || String(e)
+    } finally {
+      metadataByDs[datasourceId].loading = false
+    }
+  }
+
+  async function loadTables(datasourceId: string, schema: string): Promise<void> {
+    const meta = metadataByDs[datasourceId]
+    if (!meta) return
+    const target = meta.schemas.find(s => s.name === schema)
+    if (!target) return
+    if (target.tables !== undefined) return  // 已加载过,不重复打
+    target.loading = true
+    try {
+      const resp = await apiGet<{ items: { name: string; schema: string }[]; error?: string }>(
+        `/api/sql-workbench/metadata/tables?datasource_id=${encodeURIComponent(datasourceId)}&schema=${encodeURIComponent(schema)}`,
+      )
+      target.tables = resp.items || []
+    } catch (e: unknown) {
+      target.tables = []
+    } finally {
+      target.loading = false
+    }
+  }
+
+  function toggleSchema(datasourceId: string, schema: string): void {
+    const meta = metadataByDs[datasourceId]
+    if (!meta) return
+    const target = meta.schemas.find(s => s.name === schema)
+    if (!target) return
+    target.expanded = !target.expanded
+    if (target.expanded && target.tables === undefined) {
+      loadTables(datasourceId, schema).catch(() => {})
+    }
+  }
+
   function _defaultName(): string {
     let n = 1
     const existing = new Set(consoles.value.map(c => c.name))
@@ -161,7 +230,9 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   return {
     consoles, activeConsoleId, activeConsole,
     results, running, history, loadingConsoles,
+    metadataByDs,
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, loadHistory, setActive,
+    loadSchemas, loadTables, toggleSchema,
   }
 })

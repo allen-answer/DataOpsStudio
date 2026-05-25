@@ -11,22 +11,59 @@
  *         刷新页面 → loadConsoles() 恢复全部 tab + 上次激活的 tab(本地存)。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, Database, History as HistoryIcon, Table2 } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
 import SqlEditor from '../components/SqlEditor.vue'
+import { setSqlTransfer } from '../utils/sqlTransfer'
+
+const router = useRouter()
 
 const store = useSqlWorkbenchStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
-const { consoles, activeConsole, activeConsoleId, results, running, history } = storeToRefs(store)
+const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs } = storeToRefs(store)
 const { state: bootstrapState } = bootstrap
 
 const ACTIVE_ID_KEY = 'dataops.sqlWorkbench.activeId'
-const bottomTab = ref<'result' | 'history'>('result')
+const bottomTab = ref<'result' | 'history' | 'metadata'>('result')
 const maxRows = ref(1000)
+
+// metadata:切 datasource 自动拉一次
+watch(() => activeConsole.value?.datasource_id, (dsId) => {
+  if (!dsId) return
+  // 没缓存才拉(避免每次切 tab 都重打)
+  if (!metadataByDs.value[dsId]) {
+    store.loadSchemas(dsId).catch(() => {})
+  }
+}, { immediate: true })
+
+function refreshMetadata() {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  // 清缓存重拉
+  delete metadataByDs.value[dsId]
+  store.loadSchemas(dsId).catch(() => {})
+}
+
+function onTableClick(schema: string, table: string) {
+  const c = activeConsole.value
+  if (!c) return
+  const qualified = schema ? `${schema}.${table}` : table
+  const snippet = `SELECT *\nFROM ${qualified}\nLIMIT 100;`
+  // 简化:追加到当前 SQL 后面(用户可见上下文,且不破坏现有草稿)
+  c.sql = c.sql ? `${c.sql}\n\n${snippet}` : snippet
+  bottomTab.value = 'result'
+  nextTick(() => _scheduleSave())
+}
+
+const currentMeta = computed(() => {
+  const dsId = activeConsole.value?.datasource_id || ''
+  return dsId ? metadataByDs.value[dsId] : null
+})
 
 // ─── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -175,6 +212,32 @@ function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(2)} s`
 }
+
+// ─── Phase 4:发送当前 SQL 到血缘 / 对比 / 诊断 ─────────────────────────
+
+const showSendMenu = ref(false)
+
+function sendTo(target: 'lineage' | 'compare' | 'diagnosis', sql?: string, dsId?: string) {
+  const finalSql = (sql ?? activeConsole.value?.sql ?? '').trim()
+  if (!finalSql) {
+    notice.setNotice('SQL 为空,无法发送')
+    return
+  }
+  const finalDs = dsId ?? activeConsole.value?.datasource_id ?? ''
+  setSqlTransfer({ sql: finalSql, datasourceId: finalDs, source: 'sql-workbench' })
+  showSendMenu.value = false
+  const path = {
+    lineage: '/lineage',
+    compare: '/data-compare',
+    diagnosis: '/sql-diagnosis',
+  }[target]
+  router.push(path)
+}
+
+function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis', evt: Event) {
+  evt.stopPropagation()  // 不要触发行的 "load 到当前 console"
+  sendTo(target, entry.sql, entry.datasource_id)
+}
 </script>
 
 <template>
@@ -243,6 +306,33 @@ function formatElapsed(ms: number): string {
           <Save class="h-3.5 w-3.5" />
           保存
         </button>
+        <!-- 发送到 ▾ —— Phase 4 跟其它工作台打通 -->
+        <div class="relative">
+          <button
+            class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+            title="把当前 SQL 发送到其它工作台"
+            @click="showSendMenu = !showSendMenu"
+          >
+            <Send class="h-3.5 w-3.5" />
+            发送到
+            <ChevronDown class="h-3 w-3" />
+          </button>
+          <div
+            v-if="showSendMenu"
+            class="absolute right-0 top-full mt-1 z-20 min-w-44 rounded-md border border-slate-200 bg-white shadow-md py-1"
+            @mouseleave="showSendMenu = false"
+          >
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="sendTo('lineage')">
+              <GitBranch class="h-3.5 w-3.5 text-primary" /> 血缘分析
+            </button>
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="sendTo('compare')">
+              <GitCompareArrows class="h-3.5 w-3.5 text-primary" /> 数据对比
+            </button>
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="sendTo('diagnosis')">
+              <Microscope class="h-3.5 w-3.5 text-primary" /> SQL 诊断
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -272,6 +362,21 @@ function formatElapsed(ms: number): string {
           @click="bottomTab = 'history'; store.loadHistory()"
         >
           <HistoryIcon class="h-3 w-3" /> 历史
+        </button>
+        <button
+          class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+          :class="bottomTab === 'metadata' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+          @click="bottomTab = 'metadata'"
+        >
+          <FolderTree class="h-3 w-3" /> 元数据
+        </button>
+        <button
+          v-if="bottomTab === 'metadata' && activeConsole?.datasource_id"
+          class="ml-auto inline-flex items-center gap-1 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          title="刷新元数据"
+          @click="refreshMetadata"
+        >
+          <RefreshCw class="h-3 w-3" />
         </button>
       </div>
 
@@ -304,6 +409,51 @@ function formatElapsed(ms: number): string {
         </div>
       </div>
 
+      <!-- metadata tree -->
+      <div v-else-if="bottomTab === 'metadata'" class="flex-1 min-h-0 overflow-auto p-3">
+        <div v-if="!activeConsole?.datasource_id" class="py-10 text-center text-sm text-slate-400">
+          请先选择数据源
+        </div>
+        <div v-else-if="currentMeta?.loading" class="py-10 text-center text-sm text-slate-400">
+          加载中…
+        </div>
+        <div v-else-if="currentMeta?.error" class="rounded border border-status-error/30 bg-status-error-bg p-3 text-xs text-status-error">
+          <div class="font-bold mb-1">元数据加载失败</div>
+          <pre class="sql-font whitespace-pre-wrap break-all">{{ currentMeta.error }}</pre>
+        </div>
+        <div v-else-if="!currentMeta?.schemas?.length" class="py-10 text-center text-sm text-slate-400">
+          无 schema(或当前数据库不支持元数据查询)
+        </div>
+        <div v-else class="text-xs space-y-0.5">
+          <div v-for="s in currentMeta.schemas" :key="s.name">
+            <button
+              class="flex items-center gap-1.5 w-full rounded px-1.5 py-1 hover:bg-slate-100 text-left"
+              @click="store.toggleSchema(activeConsole.datasource_id, s.name)"
+            >
+              <ChevronDown v-if="s.expanded" class="h-3 w-3 text-slate-400" />
+              <ChevronRight v-else class="h-3 w-3 text-slate-400" />
+              <FolderTree class="h-3.5 w-3.5 text-amber-500" />
+              <span class="sql-font font-semibold text-slate-700">{{ s.name }}</span>
+              <span v-if="s.tables" class="text-[10px] text-slate-400">({{ s.tables.length }})</span>
+            </button>
+            <div v-if="s.expanded" class="ml-5 mt-0.5 space-y-0.5">
+              <div v-if="s.loading" class="text-[11px] text-slate-400 py-1">加载表…</div>
+              <div v-else-if="!s.tables?.length" class="text-[11px] text-slate-400 py-1 italic">空 schema</div>
+              <button
+                v-for="t in s.tables"
+                :key="t.name"
+                class="flex items-center gap-1.5 w-full rounded px-1.5 py-0.5 hover:bg-primary-light/40 text-left group"
+                :title="'点击插入 SELECT * FROM ' + s.name + '.' + t.name"
+                @click="onTableClick(s.name, t.name)"
+              >
+                <Table2 class="h-3 w-3 text-slate-400 group-hover:text-primary" />
+                <span class="sql-font text-slate-700 group-hover:text-primary">{{ t.name }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- history -->
       <div v-else class="flex-1 min-h-0 overflow-auto">
         <div v-if="!history.length" class="px-4 py-10 text-center text-sm text-slate-400">
@@ -324,7 +474,7 @@ function formatElapsed(ms: number): string {
             <tr
               v-for="h in history"
               :key="h.id"
-              class="hover:bg-primary-light/40 cursor-pointer"
+              class="hover:bg-primary-light/40 cursor-pointer group"
               :title="'点击复制 SQL 到当前 Console'"
               @click="loadHistoryEntry(h)"
             >
@@ -338,7 +488,14 @@ function formatElapsed(ms: number): string {
               </td>
               <td class="text-slate-500">{{ formatElapsed(h.elapsed_ms) }}</td>
               <td class="text-slate-500">{{ h.row_count }}</td>
-              <td class="sql-font text-slate-700 max-w-xl truncate">{{ h.sql }}</td>
+              <td class="sql-font text-slate-700 max-w-xl truncate relative">
+                {{ h.sql }}
+                <span class="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition flex gap-0.5">
+                  <button class="p-1 rounded hover:bg-primary-light text-slate-400 hover:text-primary" title="发送到血缘分析" @click="sendHistoryEntry(h, 'lineage', $event)"><GitBranch class="h-3 w-3" /></button>
+                  <button class="p-1 rounded hover:bg-primary-light text-slate-400 hover:text-primary" title="发送到数据对比" @click="sendHistoryEntry(h, 'compare', $event)"><GitCompareArrows class="h-3 w-3" /></button>
+                  <button class="p-1 rounded hover:bg-primary-light text-slate-400 hover:text-primary" title="发送到 SQL 诊断" @click="sendHistoryEntry(h, 'diagnosis', $event)"><Microscope class="h-3 w-3" /></button>
+                </span>
+              </td>
             </tr>
           </tbody>
         </table>

@@ -9,6 +9,7 @@ import { apiGet } from '../api'
 import { useLineageStore } from '../stores/lineage'
 import { useBatchStore } from '../stores/batch'
 import { downloadResultFile } from '../utils/download'
+import { takeSqlTransfer } from '../utils/sqlTransfer'
 
 type ModeId = 'paste' | 'file' | 'multi' | 'zip'
 type Pipeline = 'single' | 'batch'
@@ -58,6 +59,14 @@ watch(() => route.path, (p) => { mode.value = defaultModeFromRoute(p) })
 onMounted(async () => {
   mode.value = defaultModeFromRoute(route.path)
   loadLineageAIStatus?.()
+
+  // Phase 4 (sql-workbench): 从 SqlWorkbench 跳过来时,sessionStorage 里有 SQL,
+  // 预填到粘贴 SQL 模式的输入框
+  const transfer = takeSqlTransfer()
+  if (transfer?.sql) {
+    mode.value = 'paste'
+    lineage.sql = transfer.sql
+  }
 
   // Phase 10 #1：URL ?stress=N → 加载合成压测 fixture，跳过分析。用于在浏览器
   // 跑 G6 / Cytoscape 双引擎压测对比。落到 lineage state 即可，单脚本路径渲染。

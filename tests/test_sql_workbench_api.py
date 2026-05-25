@@ -211,10 +211,45 @@ def test_history_filter_by_datasource(client_admin, monkeypatch):
 
 # ─── metadata stubs (Phase 3 真实化) ───────────────────────────────────────
 
-def test_metadata_stubs_return_phase_marker(client_admin):
+def test_metadata_schemas_returns_envelope(client_admin, monkeypatch):
+    """Phase 3:metadata 真接 introspect。fetch_rows 不真打 DB,mock 一下。"""
     ds_id = _create_mysql_ds(client_admin)
+    monkeypatch.setattr(
+        "app.dbclients.factory.fetch_rows",
+        lambda *a, **kw: [{"name": "myapp"}, {"name": "information_schema"}],
+    )
     r = client_admin.get(f"/api/sql-workbench/metadata/schemas?datasource_id={ds_id}")
     assert r.status_code == 200
     body = r.json()
-    assert body["items"] == []
-    assert body["phase"] == 1
+    # information_schema 系统库被过滤
+    assert body["items"] == [{"name": "myapp"}]
+
+
+def test_metadata_tables_filters_by_schema(client_admin, monkeypatch):
+    ds_id = _create_mysql_ds(client_admin)
+    monkeypatch.setattr(
+        "app.dbclients.factory.fetch_rows",
+        lambda *a, **kw: [{"name": "users"}, {"name": "orders"}],
+    )
+    r = client_admin.get(f"/api/sql-workbench/metadata/tables?datasource_id={ds_id}&schema=myapp")
+    assert r.status_code == 200
+    body = r.json()
+    assert [t["name"] for t in body["items"]] == ["users", "orders"]
+
+
+def test_metadata_unsupported_dbtype_returns_empty(client_admin, monkeypatch):
+    """introspect 不支持的 db_type 返空 items 而非 500。"""
+    r = client_admin.post("/api/datasources", json={
+        "name": "pgx", "db_type": "MySQL", "host": "x", "port": 1, "database": "x",
+        "username": "u", "password": "p", "allow_select": True,
+        "environment": "sandbox", "environment_verified": True,
+    })
+    ds_id = r.json()["id"]
+    # mock fetch_rows 抛错(模拟驱动错)→ endpoint 应该捕获返 error 字段
+    def _fail(*a, **kw):
+        raise RuntimeError("driver not installed")
+    monkeypatch.setattr("app.dbclients.factory.fetch_rows", _fail)
+    r = client_admin.get(f"/api/sql-workbench/metadata/schemas?datasource_id={ds_id}")
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+    assert "driver not installed" in r.json().get("error", "")
