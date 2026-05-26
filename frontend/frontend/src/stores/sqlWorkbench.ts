@@ -221,6 +221,54 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     return status === 'success' || status === 'done' || status === 'failed' || status === 'cancelled'
   }
 
+  // ─── v0.5+ 结果导出 ──────────────────────────────────────────────────
+  // 4 种格式:csv / excel / json / sql(SQL Insert 语句)。后端走异步:
+  // 短同步 sync_wait 命中即 success,否则 poll until terminal。
+  const exporting = reactive<Record<string, boolean>>({})  // by console_id
+
+  async function exportResult(consoleId: string, payload: {
+    datasource_id: string
+    sql: string
+    format: 'csv' | 'excel' | 'json' | 'sql'
+    title?: string
+    max_rows?: number
+  }): Promise<{ ok: boolean; download_url?: string; error?: string; row_count?: number }> {
+    exporting[consoleId] = true
+    try {
+      const env = await apiJson<{
+        export_id: string
+        status: 'pending' | 'running' | 'success' | 'failed'
+        download_url?: string
+        row_count?: number
+        truncated?: boolean
+        error?: string | null
+      }>('/api/sql-workbench/export', 'POST', {
+        datasource_id: payload.datasource_id,
+        sql: payload.sql,
+        format: payload.format,
+        title: payload.title || '',
+        max_rows: payload.max_rows || 100_000,
+      })
+      let final = env
+      if (env.status === 'pending' || env.status === 'running') {
+        // poll up to 10 min (export 比 execute 慢得多;主要是大结果场景)
+        for (let i = 0; i < 1200; i++) {
+          await new Promise(r => setTimeout(r, 500))
+          final = await apiGet<typeof env>(`/api/sql-workbench/export/${env.export_id}`)
+          if (final.status !== 'pending' && final.status !== 'running') break
+        }
+      }
+      if (final.status !== 'success' || !final.download_url) {
+        return { ok: false, error: final.error || `导出失败: status=${final.status}` }
+      }
+      return { ok: true, download_url: final.download_url, row_count: final.row_count }
+    } catch (e) {
+      return { ok: false, error: (e as Error)?.message || String(e) }
+    } finally {
+      exporting[consoleId] = false
+    }
+  }
+
   async function execute(consoleId: string, payload: {
     datasource_id: string
     sql: string
@@ -548,12 +596,13 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     consoles, activeConsoleId, activeConsole,
     results, running, history, loadingConsoles,
     metadataByDs, currentExecutionId, explainResults,
-    searchResults, searchLoading,
+    searchResults, searchLoading, exporting,
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, cancelExecution, loadHistory, setActive,
     loadSchemas, loadTables, toggleSchema, loadColumns,
     refreshAllMetadata, loadCacheSummary,
     searchMetadata, loadTableDetail,
+    exportResult,
     formatSql, explain,
     saveDraft, loadDraft, clearDraft,
   }

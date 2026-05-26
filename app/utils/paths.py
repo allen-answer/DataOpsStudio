@@ -17,6 +17,8 @@ WORKFLOW_TEMPLATES_FILE = CONFIG_DIR / "workflow_templates.json"
 LINEAGE_AI_CONFIG_FILE = CONFIG_DIR / "lineage_ai.json"
 LOCAL_SECRET_KEY_FILE = CONFIG_DIR / ".dataops_secret.key"
 WORKFLOW_RUNS_DIR = RESULTS_DIR / "workflow_runs"
+# SQL 工作台 v0.5 导出目录
+SQL_EXPORTS_DIR = RESULTS_DIR / "sql_exports"
 LINEAGE_GROUP_RULES_YAML = CONFIG_DIR / "lineage_group_rules.yml"
 LINEAGE_GROUP_RULES_JSON = CONFIG_DIR / "lineage_group_rules.json"
 SCENARIOS_DIR = CONFIG_DIR / "scenarios"
@@ -31,6 +33,7 @@ SQL_TEMPLATES_EXAMPLE_FILE = CONFIG_DIR / "sql_templates.example.json"
 def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    SQL_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not DATASOURCES_FILE.exists():

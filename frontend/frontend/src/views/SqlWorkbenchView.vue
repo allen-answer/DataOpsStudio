@@ -28,7 +28,7 @@ const store = useSqlWorkbenchStore()
 const templatesStore = useSqlTemplatesStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
-const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading } = storeToRefs(store)
+const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading, exporting } = storeToRefs(store)
 const { templates, loading: templatesLoading, filters: templateFilters } = storeToRefs(templatesStore)
 const { state: bootstrapState } = bootstrap
 
@@ -720,6 +720,38 @@ function isSlow(ms: number | undefined | null): boolean {
   return !!ms && ms >= SLOW_THRESHOLD_MS
 }
 
+// ─── v0.5+ 结果导出 ────────────────────────────────────────────────
+const showExportMenu = ref(false)
+
+async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql') {
+  const c = activeConsole.value
+  if (!c || !c.datasource_id || !c.sql.trim()) {
+    notice.setNotice('请先选数据源 + 输入 SQL')
+    return
+  }
+  showExportMenu.value = false
+  notice.setNotice(`正在导出为 ${format.toUpperCase()}...`)
+  const r = await store.exportResult(c.id, {
+    datasource_id: c.datasource_id,
+    sql: c.sql,
+    format,
+    title: c.name || '',
+    max_rows: 100_000,
+  })
+  if (r.ok && r.download_url) {
+    // 触发浏览器下载
+    window.location.href = r.download_url
+    notice.setNotice(`导出完成(${r.row_count ?? '?'} 行),开始下载`)
+  } else {
+    notice.setNotice(`导出失败: ${r.error || '未知错误'}`)
+  }
+}
+
+const isExporting = computed<boolean>(() => {
+  const c = activeConsole.value
+  return c ? !!exporting.value[c.id] : false
+})
+
 // ─── Phase 4:发送当前 SQL 到血缘 / 对比 / 诊断 ─────────────────────────
 
 const showSendMenu = ref(false)
@@ -895,6 +927,29 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <BookmarkPlus class="h-3.5 w-3.5" />
           存为模板
         </button>
+        <!-- 导出(v0.5+)—— 下拉菜单 4 个格式 -->
+        <div class="relative">
+          <button
+            class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+            :disabled="isExporting"
+            :title="isExporting ? '导出中...' : '导出结果为 CSV / Excel / JSON / SQL Insert'"
+            @click="showExportMenu = !showExportMenu"
+          >
+            <Download class="h-3.5 w-3.5" :class="{ 'animate-pulse': isExporting }" />
+            {{ isExporting ? '导出中…' : '导出' }}
+            <ChevronDown class="h-3 w-3" />
+          </button>
+          <div
+            v-if="showExportMenu && !isExporting"
+            class="absolute right-0 top-full mt-1 z-20 min-w-32 rounded-md border border-slate-200 bg-white shadow-md py-1"
+            @mouseleave="showExportMenu = false"
+          >
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="exportAs('csv')">📄 CSV</button>
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="exportAs('excel')">📊 Excel</button>
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="exportAs('json')">{ } JSON</button>
+            <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-primary-light text-slate-700" @click="exportAs('sql')">📋 SQL Insert</button>
+          </div>
+        </div>
         <!-- 发送到 ▾ —— Phase 4 跟其它工作台打通 -->
         <div class="relative">
           <button

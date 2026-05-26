@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from pathlib import Path as _Path
 
 from pydantic import BaseModel, Field
 
@@ -265,6 +267,99 @@ def cancel_execution(
     return {"ok": True, "execution_id": execution_id, "cancel_requested": True}
 
 
+# ─── export (v0.5+) ────────────────────────────────────────────────────────
+
+
+class ExportRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    sql: str = Field(..., min_length=1)
+    format: str = Field(..., description="csv | excel | json | sql")
+    title: str = Field(default="", max_length=80)
+    max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
+
+
+_EXPORT_MIME = {
+    "csv": "text/csv; charset=utf-8",
+    "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "json": "application/json",
+    "sql": "text/plain; charset=utf-8",
+}
+
+
+@router.post("/api/sql-workbench/export")
+def submit_export(
+    payload: ExportRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """提交一次结果导出。后台异步跑 SELECT + 写文件 → registry 状态机:
+    pending → running → success/failed。短同步 sync_wait 内能完成则直接返
+    success(下载 URL 已就绪);大结果返 pending/running,前端 poll。
+
+    project_id 校验通过 require_datasource_access — 无权用该 ds 的用户连
+    submit 都进不来。
+    """
+    if payload.format not in _sql_export.SUPPORTED_FORMATS:
+        raise HTTPException(status_code=400, detail=f"unsupported format: {payload.format}")
+    ds = require_datasource_access(current, payload.datasource_id)
+    if not getattr(ds, "allow_select", True):
+        raise HTTPException(status_code=403, detail=f"数据源 {ds.name} 已禁用 SELECT")
+
+    ex = _sql_export.start_export(
+        user_id=current.id,
+        datasource=ds,
+        sql=payload.sql,
+        fmt=payload.format,  # type: ignore[arg-type]
+        title=payload.title,
+        max_rows=payload.max_rows,
+    )
+    if ex.status == "success":
+        # 额外审计行 —— 给 admin 跟踪谁导了多少数据
+        logger.info(
+            "sql export complete export_id=%s user=%s ds=%s fmt=%s rows=%d bytes=%d",
+            ex.id, current.id, ds.id, ex.format, ex.row_count, ex.file_size,
+        )
+    return ex.to_envelope()
+
+
+@router.get("/api/sql-workbench/export/{export_id}")
+def get_export_status(
+    export_id: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    ex = _sql_export.get_export(export_id)
+    if ex is None:
+        raise HTTPException(status_code=404, detail="export 不存在或已过期")
+    if ex.user_id != current.id:
+        raise HTTPException(status_code=403, detail="无权查看他人的 export")
+    return ex.to_envelope()
+
+
+@router.get("/api/sql-workbench/export/{export_id}/download")
+def download_export(
+    export_id: str,
+    current: User = Depends(require_role("editor")),
+):
+    ex = _sql_export.get_export(export_id)
+    if ex is None:
+        raise HTTPException(status_code=404, detail="export 不存在或已过期")
+    if ex.user_id != current.id:
+        raise HTTPException(status_code=403, detail="无权下载他人的 export")
+    if ex.status != "success":
+        raise HTTPException(status_code=409, detail=f"export 状态 {ex.status},不能下载")
+    p = _Path(ex.file_path)
+    if not p.exists():
+        raise HTTPException(status_code=410, detail="导出文件已被清理")
+    logger.info(
+        "sql export download export_id=%s user=%s file=%s",
+        ex.id, current.id, ex.file_name,
+    )
+    return FileResponse(
+        p,
+        media_type=_EXPORT_MIME.get(ex.format, "application/octet-stream"),
+        filename=ex.file_name,
+    )
+
+
 # ─── format (v0.2) ─────────────────────────────────────────────────────────
 
 class FormatRequest(BaseModel):
@@ -348,6 +443,7 @@ def list_history(
 
 # ─── metadata (v0.3 加 cache + refresh + indexes/views/DDL) ──────────────
 
+from app.services import sql_export as _sql_export
 from app.sqlide import metadata as _metadata
 from app.sqlide import metadata_cache as _meta_cache
 from app.sqlide import search as _meta_search
