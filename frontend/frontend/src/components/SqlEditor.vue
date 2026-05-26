@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { basicSetup, EditorView } from 'codemirror'
-import { EditorState } from '@codemirror/state'
-import { sql } from '@codemirror/lang-sql'
+import { EditorState, Compartment } from '@codemirror/state'
+import { sql, MySQL, PLSQL, StandardSQL } from '@codemirror/lang-sql'
+import { autocompletion, snippetCompletion } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { placeholder as cmPlaceholder } from '@codemirror/view'
 import { Maximize2, Minimize2 } from 'lucide-vue-next'
@@ -13,12 +14,26 @@ const props = defineProps({
   // 普通模式下编辑器固定可视高度。内容超出走编辑器内部滚动，不再撑高整页
   // —— 数据对比工作台和血缘分析工作台共用此组件，长 SQL 都不会顶飞页面布局。
   height: { type: String, default: '300px' },
+  // SQL Workbench v0.2 起增加的可选补全/snippet 配置。这些 prop **不设默认值时
+  // 一律 no-op**,确保 LineageView / WorkbenchView / WorkflowDetailView 等老调用点
+  // 行为不变。
+  // dialect: 上游业务的数据库方言名(mysql/oracle/dm/dameng/ob_mysql/ob_oracle)。
+  //   内部按 CLAUDE.md 的方言映射规则路由到 lang-sql 的 MySQL / PLSQL。
+  dialect: { type: String, default: '' },
+  // completionSchema: { 'schema.table': ['col1','col2', ...] } 或 { table: [...] }。
+  //   直接喂给 lang-sql 的 sql({schema:...}) 让它做 schema/table/column 补全。
+  completionSchema: { type: Object, default: null },
+  // snippets: true 时注册 6 个常用 SQL 片段(SELECT * / COUNT / WHERE / JOIN /
+  //   GROUP BY / ORDER BY)到 autocomplete。
+  snippets: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
 
 const container = ref(null)
 const fullscreen = ref(false)
 let view = null
+// Compartment 允许在 dialect/schema 变化时不 destroy/recreate 整个 EditorView。
+const languageCompartment = new Compartment()
 
 // height:100% 让 .cm-editor 撑满外层容器；外层容器高度决定可视区，
 // .cm-scroller overflow:auto 让超长 SQL 在编辑器内部滚动而非撑高页面。
@@ -32,6 +47,63 @@ const editorTheme = EditorView.theme({
   '.cm-focused': { outline: 'none' },
 })
 
+// 6 个 SQL 片段。${N} / ${N:default} 是 CodeMirror snippetCompletion 的 tabstop 语法。
+const SQL_SNIPPETS = [
+  snippetCompletion('SELECT *\nFROM ${table}\nWHERE ${1};', {
+    label: 'SELECT *', detail: '查询全部列', type: 'snippet', boost: 5,
+  }),
+  snippetCompletion('COUNT(${1:*})', {
+    label: 'COUNT', detail: '行数统计', type: 'snippet', boost: 4,
+  }),
+  snippetCompletion('WHERE ${1}', {
+    label: 'WHERE', detail: '条件过滤', type: 'snippet', boost: 4,
+  }),
+  snippetCompletion('JOIN ${table} ON ${1}', {
+    label: 'JOIN', detail: '关联表', type: 'snippet', boost: 4,
+  }),
+  snippetCompletion('GROUP BY ${1}', {
+    label: 'GROUP BY', detail: '分组', type: 'snippet', boost: 4,
+  }),
+  snippetCompletion('ORDER BY ${1}', {
+    label: 'ORDER BY', detail: '排序', type: 'snippet', boost: 4,
+  }),
+]
+
+function snippetSource(context) {
+  // 仅在用户主动触发或正在敲单词时弹片段,避免空白处误干扰。
+  const word = context.matchBefore(/\w*/)
+  if (!word || (word.from === word.to && !context.explicit)) return null
+  return { from: word.from, options: SQL_SNIPPETS, validFor: /^\w*$/ }
+}
+
+// dialect 名 → CodeMirror lang-sql dialect 实例。规则跟根 CLAUDE.md 一致:
+//   mysql / ob_mysql / oceanbase  → MySQL
+//   oracle / dm / dameng / ob_oracle → PLSQL(Oracle 方言)
+//   其他空值 → StandardSQL
+function resolveCmDialect(name) {
+  const n = String(name || '').toLowerCase()
+  if (n === 'mysql' || n === 'ob_mysql' || n === 'oceanbase') return MySQL
+  if (n === 'oracle' || n === 'dm' || n === 'dameng' || n === 'ob_oracle') return PLSQL
+  return StandardSQL
+}
+
+function buildLanguageExtension() {
+  const dialect = resolveCmDialect(props.dialect)
+  const sqlConfig = { dialect, upperCaseKeywords: true }
+  if (props.completionSchema && typeof props.completionSchema === 'object') {
+    sqlConfig.schema = props.completionSchema
+  }
+  const exts = [sql(sqlConfig)]
+  if (props.snippets) {
+    // 把 snippet source 接到 autocomplete facet 上。@codemirror/lang-sql 已经
+    // 通过 language data 注册了 keyword + schema 的 source,我们这里追加一条
+    // 独立 source 而不 override,让两者共存。
+    exts.push(autocompletion({ override: null, defaultKeymap: true, activateOnTyping: true }))
+    exts.push(EditorState.languageData.of(() => [{ autocomplete: snippetSource }]))
+  }
+  return exts
+}
+
 function onKeydown(e) {
   if (e.key === 'Escape' && fullscreen.value) fullscreen.value = false
 }
@@ -39,7 +111,7 @@ function onKeydown(e) {
 onMounted(() => {
   const extensions = [
     basicSetup,
-    sql(),
+    languageCompartment.of(buildLanguageExtension()),
     oneDark,
     editorTheme,
     EditorView.lineWrapping,
@@ -69,6 +141,12 @@ watch(() => props.modelValue, (val) => {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: val } })
   }
 })
+
+// dialect / completionSchema / snippets 变化时,reconfigure 语言扩展而不重建编辑器。
+watch(() => [props.dialect, props.completionSchema, props.snippets], () => {
+  if (!view) return
+  view.dispatch({ effects: languageCompartment.reconfigure(buildLanguageExtension()) })
+}, { deep: true })
 
 // 全屏时锁背景滚动，退出 / 卸载时还原。
 watch(fullscreen, (on) => {

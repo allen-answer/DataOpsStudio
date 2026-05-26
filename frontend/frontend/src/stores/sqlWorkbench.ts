@@ -82,7 +82,14 @@ export interface MetadataSchema {
 export interface MetadataTable {
   name: string
   schema: string
+  // columns 是惰性的:用户点表头才拉,拉过的写回这里供补全用
+  columns?: string[]
+  columnsLoading?: boolean
 }
+
+// 本地草稿的 localStorage key 前缀。每个 console 独立一份,
+// 跟后端 console.sql 是两条并行通道:后端代表"已保存",draft 代表"未保存编辑"。
+const DRAFT_KEY_PREFIX = 'dataops.sqlWorkbench.draft.'
 
 export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   // ─── state ────────────────────────────────────────────────────────────
@@ -154,6 +161,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     consoles.value = consoles.value.filter(c => c.id !== id)
     delete results[id]
     delete running[id]
+    clearDraft(id)
     if (activeConsoleId.value === id) {
       activeConsoleId.value = consoles.value[0]?.id || ''
     }
@@ -311,6 +319,62 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     }
   }
 
+  async function loadColumns(datasourceId: string, schema: string, table: string): Promise<string[]> {
+    const meta = metadataByDs[datasourceId]
+    if (!meta) return []
+    const sch = meta.schemas.find(s => s.name === schema)
+    if (!sch || !sch.tables) return []
+    const t = sch.tables.find(x => x.name === table)
+    if (!t) return []
+    if (Array.isArray(t.columns)) return t.columns
+    if (t.columnsLoading) return []
+    t.columnsLoading = true
+    try {
+      const qs = new URLSearchParams({ datasource_id: datasourceId, table, schema })
+      const resp = await apiGet<{ items: { name: string }[]; error?: string }>(
+        `/api/sql-workbench/metadata/columns?${qs.toString()}`,
+      )
+      t.columns = (resp.items || []).map(c => c.name)
+      return t.columns
+    } catch {
+      t.columns = []
+      return []
+    } finally {
+      t.columnsLoading = false
+    }
+  }
+
+  // ─── 本地草稿(localStorage) ─────────────────────────────────────────
+  // 后端 console.sql 是"已保存到服务器",draft 是"用户最近一次未保存到服务器
+  // 的编辑"。两者分开,允许用户离线编辑 / 跨刷新恢复未保存。
+  function saveDraft(consoleId: string, sql: string): void {
+    if (!consoleId) return
+    try {
+      if (sql) localStorage.setItem(DRAFT_KEY_PREFIX + consoleId, sql)
+      else localStorage.removeItem(DRAFT_KEY_PREFIX + consoleId)
+    } catch {
+      // localStorage 容量满 / 隐私模式 / SSR 环境下静默失败
+    }
+  }
+
+  function loadDraft(consoleId: string): string {
+    if (!consoleId) return ''
+    try {
+      return localStorage.getItem(DRAFT_KEY_PREFIX + consoleId) || ''
+    } catch {
+      return ''
+    }
+  }
+
+  function clearDraft(consoleId: string): void {
+    if (!consoleId) return
+    try {
+      localStorage.removeItem(DRAFT_KEY_PREFIX + consoleId)
+    } catch {
+      // ignore
+    }
+  }
+
   function _defaultName(): string {
     let n = 1
     const existing = new Set(consoles.value.map(c => c.name))
@@ -324,7 +388,8 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     metadataByDs, currentExecutionId, explainResults,
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, cancelExecution, loadHistory, setActive,
-    loadSchemas, loadTables, toggleSchema,
+    loadSchemas, loadTables, toggleSchema, loadColumns,
     formatSql, explain,
+    saveDraft, loadDraft, clearDraft,
   }
 })

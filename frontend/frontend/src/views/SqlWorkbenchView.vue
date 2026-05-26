@@ -13,7 +13,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
@@ -57,6 +57,10 @@ function onTableClick(schema: string, table: string) {
   // 简化:追加到当前 SQL 后面(用户可见上下文,且不破坏现有草稿)
   c.sql = c.sql ? `${c.sql}\n\n${snippet}` : snippet
   bottomTab.value = 'result'
+  // 顺便拉一次该表的 columns,让 SQL 编辑器补全立刻能用 — 失败静默(补全降级到表级)。
+  if (c.datasource_id) {
+    store.loadColumns(c.datasource_id, schema, table).catch(() => {})
+  }
   nextTick(() => _scheduleSave())
 }
 
@@ -65,7 +69,67 @@ const currentMeta = computed(() => {
   return dsId ? metadataByDs.value[dsId] : null
 })
 
+// 把 metadata tree 派生成 CodeMirror lang-sql 需要的形状:
+//   { 'schema.table': ['col1', 'col2', ...], 'schema.table2': [...], ... }
+// 表 columns 还没拉时给空数组 —— lang-sql 仍能补表名,只是补不了列。
+// 用户点击 metadata table 时(onTableClick)会顺势 loadColumns,这时本 computed
+// reactive 重算,SqlEditor 通过 watch 重新配置语言扩展。
+const completionSchema = computed<Record<string, string[]>>(() => {
+  const meta = currentMeta.value
+  if (!meta?.schemas?.length) return {}
+  const result: Record<string, string[]> = {}
+  for (const s of meta.schemas) {
+    for (const t of (s.tables || [])) {
+      const key = s.name ? `${s.name}.${t.name}` : t.name
+      result[key] = Array.isArray(t.columns) ? t.columns : []
+    }
+  }
+  return result
+})
+
+// 当前数据源的 db_type —— SqlEditor 用它路由 CodeMirror 方言
+const currentDbType = computed<string>(() => {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return ''
+  const ds = (datasources.value || []).find((d: any) => d.id === dsId)
+  return (ds?.db_type as string) || ''
+})
+
 // ─── lifecycle ─────────────────────────────────────────────────────────────
+
+// 草稿恢复提示:console 加载完成后,若 localStorage 里有跟后端 sql 不同的草稿,
+// 提示用户决定恢复还是丢弃。一个 console 一条记录,值是草稿 SQL。
+const pendingDrafts = ref<Record<string, string>>({})
+
+function detectDrafts() {
+  const found: Record<string, string> = {}
+  for (const c of consoles.value) {
+    const draft = store.loadDraft(c.id)
+    if (draft && draft !== c.sql) found[c.id] = draft
+  }
+  pendingDrafts.value = found
+}
+
+function restoreDraft(consoleId: string) {
+  const draft = pendingDrafts.value[consoleId]
+  if (!draft) return
+  const c = consoles.value.find(x => x.id === consoleId)
+  if (c) c.sql = draft
+  delete pendingDrafts.value[consoleId]
+  notice.setNotice('已恢复未保存草稿')
+}
+
+function discardDraft(consoleId: string) {
+  store.clearDraft(consoleId)
+  delete pendingDrafts.value[consoleId]
+}
+
+function saveAsDraft() {
+  const c = activeConsole.value
+  if (!c) return
+  store.saveDraft(c.id, c.sql)
+  notice.setNotice('已保存为本地草稿')
+}
 
 onMounted(async () => {
   await store.loadConsoles()
@@ -77,8 +141,24 @@ onMounted(async () => {
   if (!consoles.value.length) {
     await store.createConsole()
   }
+  detectDrafts()
   store.loadHistory().catch(() => {})
 })
+
+// 草稿自动保存:SQL 变化 → debounce 300ms 写 localStorage。
+// 跟后端 _scheduleSave 是两条并行通道(后端走 800ms debounce)。
+let draftTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => activeConsole.value?.sql,
+  (sql) => {
+    const c = activeConsole.value
+    if (!c) return
+    if (draftTimer) clearTimeout(draftTimer)
+    draftTimer = setTimeout(() => {
+      store.saveDraft(c.id, sql || '')
+    }, 300)
+  },
+)
 
 watch(activeConsoleId, (id) => {
   if (id) localStorage.setItem(ACTIVE_ID_KEY, id)
@@ -391,6 +471,15 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <Save class="h-3.5 w-3.5" />
           保存
         </button>
+        <!-- 本地草稿:即使无网络 / 后端报错也能保留当前编辑,刷新页面后会提示恢复 -->
+        <button
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+          title="把当前 SQL 存进浏览器本地草稿(不依赖服务器)"
+          @click="saveAsDraft"
+        >
+          <FileText class="h-3.5 w-3.5" />
+          另存草稿
+        </button>
         <!-- 发送到 ▾ —— Phase 4 跟其它工作台打通 -->
         <div class="relative">
           <button
@@ -421,9 +510,41 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
       </div>
     </div>
 
+    <!-- 草稿恢复提示条(仅当 active console 有未恢复草稿时显示) -->
+    <div
+      v-if="activeConsole && pendingDrafts[activeConsole.id]"
+      class="mx-3 flex items-center justify-between gap-3 rounded-md border border-status-warning/40 bg-status-warning-bg px-3 py-1.5 text-xs"
+    >
+      <span class="text-slate-700">
+        <FileText class="inline h-3.5 w-3.5 -mt-0.5 text-status-warning" />
+        检测到本地未保存草稿,跟服务器版本不同。
+      </span>
+      <span class="flex items-center gap-2">
+        <button
+          class="rounded bg-primary px-2 py-0.5 text-white hover:bg-primary-hover"
+          @click="restoreDraft(activeConsole.id)"
+        >
+          恢复草稿
+        </button>
+        <button
+          class="rounded border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
+          @click="discardDraft(activeConsole.id)"
+        >
+          丢弃
+        </button>
+      </span>
+    </div>
+
     <!-- SQL 编辑器 -->
     <div v-if="activeConsole" class="px-3">
-      <SqlEditor v-model="activeConsole.sql" height="280px" placeholder="-- SELECT ... FROM ...   (Ctrl/Cmd+Enter 运行)" />
+      <SqlEditor
+        v-model="activeConsole.sql"
+        height="280px"
+        placeholder="-- SELECT ... FROM ...   (Ctrl/Cmd+Enter 运行)"
+        :dialect="currentDbType"
+        :completion-schema="completionSchema"
+        :snippets="true"
+      />
     </div>
 
     <!-- 底部 result / history -->

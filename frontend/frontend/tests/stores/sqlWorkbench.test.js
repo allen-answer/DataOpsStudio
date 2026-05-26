@@ -162,4 +162,92 @@ describe('useSqlWorkbenchStore', () => {
     store.setActive('nonexistent')
     expect(store.activeConsoleId).toBe('a')
   })
+
+  // ─── 本地草稿(localStorage) ─────────────────────────────────────────
+  describe('local draft', () => {
+    beforeEach(() => {
+      // jsdom 自带 localStorage,清掉前一测试残留
+      localStorage.clear()
+    })
+
+    it('saveDraft 写 localStorage,loadDraft 读回来', () => {
+      const store = useSqlWorkbenchStore()
+      store.saveDraft('c1', 'SELECT 1;')
+      expect(store.loadDraft('c1')).toBe('SELECT 1;')
+    })
+
+    it('saveDraft 空字符串等价于删除', () => {
+      const store = useSqlWorkbenchStore()
+      store.saveDraft('c1', 'select')
+      store.saveDraft('c1', '')
+      expect(store.loadDraft('c1')).toBe('')
+    })
+
+    it('clearDraft 删除指定 console 的草稿', () => {
+      const store = useSqlWorkbenchStore()
+      store.saveDraft('c1', 'A')
+      store.saveDraft('c2', 'B')
+      store.clearDraft('c1')
+      expect(store.loadDraft('c1')).toBe('')
+      expect(store.loadDraft('c2')).toBe('B')
+    })
+
+    it('deleteConsole 顺手清掉本地草稿', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [
+        { id: 'd1', name: 'A', datasource_id: '', sql: '', project_id: '', owner_user_id: 'u', created_at: '', updated_at: '' },
+      ] })
+      await store.loadConsoles()
+      store.saveDraft('d1', 'SELECT 99;')
+      apiJson.mockResolvedValueOnce({ ok: true })
+      await store.deleteConsole('d1')
+      expect(store.loadDraft('d1')).toBe('')
+    })
+
+    it('空 consoleId 不抛错', () => {
+      const store = useSqlWorkbenchStore()
+      expect(() => store.saveDraft('', 'x')).not.toThrow()
+      expect(store.loadDraft('')).toBe('')
+      expect(() => store.clearDraft('')).not.toThrow()
+    })
+  })
+
+  // ─── 列名补全:loadColumns 写回 metadata ─────────────────────────────
+  describe('loadColumns', () => {
+    it('拉某表列名并写回 metadata.schemas[].tables[].columns', async () => {
+      const store = useSqlWorkbenchStore()
+      // 先 loadSchemas + loadTables,把基础结构建起来
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }] })
+      await store.loadSchemas('ds-1')
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'users', schema: 'public' }] })
+      await store.loadTables('ds-1', 'public')
+      // 然后拉 columns
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'id' }, { name: 'email' }] })
+      const cols = await store.loadColumns('ds-1', 'public', 'users')
+      expect(cols).toEqual(['id', 'email'])
+      const table = store.metadataByDs['ds-1'].schemas[0].tables[0]
+      expect(table.columns).toEqual(['id', 'email'])
+    })
+
+    it('重复 loadColumns 不再打后端', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }] })
+      await store.loadSchemas('ds-1')
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'orders', schema: 'public' }] })
+      await store.loadTables('ds-1', 'public')
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'id' }] })
+      await store.loadColumns('ds-1', 'public', 'orders')
+      const callCountBefore = apiGet.mock.calls.length
+      // 第二次:走缓存,不应再调 apiGet
+      const cols = await store.loadColumns('ds-1', 'public', 'orders')
+      expect(cols).toEqual(['id'])
+      expect(apiGet.mock.calls.length).toBe(callCountBefore)
+    })
+
+    it('schema/table 不存在时返回空数组,不抛错', async () => {
+      const store = useSqlWorkbenchStore()
+      const cols = await store.loadColumns('nonexistent-ds', 'x', 'y')
+      expect(cols).toEqual([])
+    })
+  })
 })
