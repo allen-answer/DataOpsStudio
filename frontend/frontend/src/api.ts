@@ -293,6 +293,38 @@ export const apiForm = async <T = unknown>(url: string, formData: FormData): Pro
   return response.json() as Promise<T>
 }
 
+/** 下载 binary 文件并触发浏览器 download。
+ *
+ * **为什么不用 `window.location.href = url`**:浏览器原生导航不带
+ * Authorization Bearer header,需要 token 鉴权的 endpoint 直接 401。
+ * 这个 helper 用 fetch + Bearer header 拿 blob,然后 anchor.click()
+ * 触发下载,跟 axios 同 auth refresh / retry 机制走一条链。
+ *
+ * `filename` 决定保存文件名(浏览器优先用 Content-Disposition 里的,但
+ * 这里显式 download attr 兜底)。
+ */
+export const apiDownload = async (url: string, filename: string): Promise<void> => {
+  const _fire = () => fetch(_versionPath(url), { headers: { ...authHeaders() } })
+  let response = await _fire()
+  if (response.status === 401 && !_isRefreshEndpoint(url)) {
+    if (await _attemptRefresh()) response = await _fire()
+  }
+  if (!response.ok) {
+    _handleAuthFailure(response)
+    const message = await parseError(response)
+    throw new Error(message)
+  }
+  const blob = await response.blob()
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+}
+
 // 显式触发翻译 + 上下文（适合预览 SQL 失败 / 错误卡片底部"AI 解释"按钮）：
 // 业务代码 catch 后调 translateError({ error: e.message, sql_excerpt, db_type })
 // Phase 9 Day 6：显式调用不受 enable_auto_translation gate 限制，只要 AI provider

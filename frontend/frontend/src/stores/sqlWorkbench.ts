@@ -232,13 +232,14 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     format: 'csv' | 'excel' | 'json' | 'sql'
     title?: string
     max_rows?: number
-  }): Promise<{ ok: boolean; download_url?: string; error?: string; row_count?: number }> {
+  }): Promise<{ ok: boolean; download_url?: string; file_name?: string; error?: string; row_count?: number }> {
     exporting[consoleId] = true
     try {
       const env = await apiJson<{
         export_id: string
         status: 'pending' | 'running' | 'success' | 'failed'
         download_url?: string
+        file_name?: string
         row_count?: number
         truncated?: boolean
         error?: string | null
@@ -261,7 +262,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
       if (final.status !== 'success' || !final.download_url) {
         return { ok: false, error: final.error || `导出失败: status=${final.status}` }
       }
-      return { ok: true, download_url: final.download_url, row_count: final.row_count }
+      return { ok: true, download_url: final.download_url, file_name: final.file_name, row_count: final.row_count }
     } catch (e) {
       return { ok: false, error: (e as Error)?.message || String(e) }
     } finally {

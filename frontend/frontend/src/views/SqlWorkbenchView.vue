@@ -759,9 +759,15 @@ async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql') {
     max_rows: 100_000,
   })
   if (r.ok && r.download_url) {
-    // 触发浏览器下载
-    window.location.href = r.download_url
-    notice.setNotice(`导出完成(${r.row_count ?? '?'} 行),开始下载`)
+    // 关键 fix:不用 window.location.href(浏览器原生导航不带 Bearer token 直接 401)。
+    // 改走 apiDownload —— fetch + Authorization header 拿 blob,然后 a.click() 触发下载。
+    try {
+      const { apiDownload } = await import('../api')
+      await apiDownload(r.download_url, r.file_name || `export.${format === 'excel' ? 'xlsx' : format}`)
+      notice.setNotice(`导出完成(${r.row_count ?? '?'} 行),开始下载`)
+    } catch (e) {
+      notice.setNotice(`下载失败: ${(e as Error)?.message || String(e)}`)
+    }
   } else {
     notice.setNotice(`导出失败: ${r.error || '未知错误'}`)
   }
