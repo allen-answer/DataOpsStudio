@@ -85,6 +85,52 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 
 ---
 
+## 本轮例外：Phase 14 SQL 工作台 + IA 收紧
+
+工程收敛轮中段（2026-05-22 ~ 05-26）用户基于一线运维需求**主动**扩出了一系列大功能。**承认这是事实加进冻结基线**，但**之后不再继续扩**：
+
+### Phase 14 #1-#3 IA 收紧
+
+- ✅ `/sql-optimize` 一级菜单 → 拆为 `/sql-diagnosis` + `/scenario-lab` + `/schema-import`（`b441336`）
+- ✅ `/admin/sandbox` 老 URL 保留 301 重定向兼容老书签
+- ✅ plan-history + verify 跨项目泄露收口（`9b52aa5`）
+- ✅ IA 收紧为「两页 + 一个子流程」（`6611f8d`）
+
+### SQL Workbench v0.1 ~ v0.5+
+
+新独立模块 `/sql-workbench`，详见 [SQL_WORKBENCH.md](SQL_WORKBENCH.md)。落地能力：
+
+- ✅ v0.1：后端 API + JSON 存储 + SELECT 执行 + history（`6106f8b`）
+- ✅ v0.2：前端多 tab + CodeMirror + 元数据 / 跨视图打通 / 格式化 + Explain + 异步执行 + cancel（`5521520` / `51be27c` / `9655c5d`）
+- ✅ v0.3：metadata cache + 对象搜索 + 表详情（`509e5a6`）
+- ✅ v0.4：SQL 模板库（`ea1088c`）详见 [SQL_TEMPLATES.md](SQL_TEMPLATES.md)
+- ✅ v0.5：execution 状态机 + KILL QUERY + Explain 增强 + 慢 SQL 阈值 + 跨视图传透
+  （`7ba9cc3` / `698947a`）详见 [SQL_EXPLAIN_HINTS.md](SQL_EXPLAIN_HINTS.md)
+- ✅ v0.5+：结果导出 4 格式 + 公式注入防御（`c2a2e8d`）详见 [SQL_EXPORT.md](SQL_EXPORT.md)
+- ✅ 别名补全 + 6 snippets + 草稿（`b8f5cdf` / `e9383ee`）
+- ✅ OOM 防护（单 cell 64KB / 整结果 64MB，`f5cc265`）
+
+### 离线包工程化
+
+- ✅ `import-db-drivers.bat` 把 dmPython/oracledb/ibm_db 迁到 portable（`c68786e`）
+- ✅ `upgrade.bat` 入仓 + `start.bat` 加日志 + .bat 全 ASCII（`da4f04e` / `eeb1651` / `685049d`）
+- ✅ `tzdata` 显式加入 requirements.txt 修 Windows APScheduler 启动崩（`978a382`）
+- ✅ `scripts/deploy.sh` 一键本地→云端部署（`eb82c9a`）
+- ✅ 发布包索引落 [RELEASE_PACKAGES.md](RELEASE_PACKAGES.md)
+
+### 之后明确不做
+
+- ❌ DML / DDL 通道（SQL Workbench v0.x 永远只读；需要写库走 Compare / Scenario / 诊断）
+- ❌ 跨用户共享 console / execution
+- ❌ 模板市场 / 评分 / 收藏（等多客户使用反馈再判）
+- ❌ Excel 之外的新导出格式 / 新 hint 规则 / 新慢阈值可配（SLOW_THRESHOLD_MS 当前硬编码 3000ms 不开放）
+- ❌ 跨方言 Explain 统一化（Oracle/DM 已经在 SQL 诊断里 PLAN_TABLE 路径，不在 workbench 再做一遍）
+- ❌ Phase 14 之后**不再新增一级菜单 / 顶级 view**，所有需求落到现有 6 个 view 之一
+
+如果之后真要扩 SQL Workbench，**走单独的 RFC**。
+
+---
+
 ## 本轮明确不做（important: 不主动碰）
 
 > 这些功能要么已经做过一轮（在 `CLAUDE.md` 历史 phase 里）但当前不再扩，要么超出"核心定位"。**所有新需求落到这一列必须先升级讨论**，不要一边做工程收敛一边偷偷加。

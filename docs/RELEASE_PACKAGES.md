@@ -1,6 +1,7 @@
 # DataOps Studio 发布包记录
 
-仓库 `dist/` 目录历次产物索引。新包从顶部加。
+Windows 离线 / portable 发布包索引。新包从顶部加。物理产物落本地 `dist/`
+(.gitignore),本文件只是索引 + 选包决策树。
 
 ---
 
