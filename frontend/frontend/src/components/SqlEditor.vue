@@ -87,11 +87,80 @@ function resolveCmDialect(name) {
   return StandardSQL
 }
 
+// SQL 关键字黑名单 —— 防 `FROM users WHERE` 把 "WHERE" 当成 alias
+const _SQL_RESERVED = new Set([
+  'where', 'group', 'order', 'having', 'limit', 'offset',
+  'left', 'right', 'inner', 'outer', 'cross', 'full', 'natural',
+  'on', 'using', 'join', 'union', 'select', 'from', 'as',
+  'and', 'or', 'not', 'in', 'is', 'null', 'case', 'when',
+  'then', 'else', 'end', 'between', 'like', 'exists',
+])
+
+// 注释剥离 —— 防 `-- FROM x t` 误进 alias map
+function _stripSqlComments(text) {
+  return String(text || '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')   // block comment
+    .replace(/--[^\n]*/g, ' ')           // line comment
+}
+
+// 扫 SQL 提取 alias → tableRef 映射。
+// 例:`FROM users u JOIN orders AS o ON ...` → { u: 'users', o: 'orders' }
+//     `FROM ods.users u` → { u: 'ods.users' }
+// 不支持(下一版再加):子查询 alias `FROM (SELECT ...) t`、CTE。
+function deriveAliasMap(sqlText) {
+  const out = {}
+  const cleaned = _stripSqlComments(sqlText)
+  // 匹配 from / join 后的 <table_ref> [AS] <alias>
+  // table_ref 可选 schema 前缀,允许反引号 / 双引号包裹
+  const re = /(?:\bfrom|\bjoin)\s+([`"]?[\w$]+[`"]?(?:\.[`"]?[\w$]+[`"]?)?)\s+(?:as\s+)?([a-zA-Z_]\w*)\b/gi
+  let m
+  while ((m = re.exec(cleaned)) !== null) {
+    const tableRef = m[1].replace(/[`"]/g, '')
+    const alias = m[2]
+    if (_SQL_RESERVED.has(alias.toLowerCase())) continue
+    // 同名时后出现的覆盖前面(用户最后写的更可能是想要补全的)
+    out[alias] = tableRef
+  }
+  return out
+}
+
+// 合并 base schema + alias derived columns。
+// base 形如 { 'ods.users': ['id', 'name'], 'public.orders': [...] }
+// 输出在 base 基础上,把每个 alias 当 key 指向同样的 columns 列表。
+function buildAliasAwareSchema(baseSchema, sqlText) {
+  if (!baseSchema || typeof baseSchema !== 'object') return baseSchema
+  const aliasMap = deriveAliasMap(sqlText)
+  if (Object.keys(aliasMap).length === 0) return baseSchema
+  const result = { ...baseSchema }
+  // baseSchema 的 key 可能是 'schema.table' 或 'table' 形式;tableRef 也可能
+  // 是这两种之一。做一次 case-sensitive + case-insensitive 双轮匹配。
+  const lcIndex = {}
+  for (const k of Object.keys(baseSchema)) lcIndex[k.toLowerCase()] = k
+  for (const [alias, tableRef] of Object.entries(aliasMap)) {
+    let cols = baseSchema[tableRef]
+    if (!cols) cols = baseSchema[lcIndex[tableRef.toLowerCase()]]
+    // tableRef 只给了 table 没给 schema 时,扫 baseSchema 看哪条 'X.table' 匹配
+    if (!cols && !tableRef.includes('.')) {
+      const lc = tableRef.toLowerCase()
+      for (const k of Object.keys(baseSchema)) {
+        if (k.toLowerCase().endsWith('.' + lc)) { cols = baseSchema[k]; break }
+      }
+    }
+    if (Array.isArray(cols) && cols.length) {
+      result[alias] = cols
+    }
+  }
+  return result
+}
+
 function buildLanguageExtension() {
   const dialect = resolveCmDialect(props.dialect)
   const sqlConfig = { dialect, upperCaseKeywords: true }
   if (props.completionSchema && typeof props.completionSchema === 'object') {
-    sqlConfig.schema = props.completionSchema
+    // 关键:每次 reconfigure 时,从当前 doc 实时推导 alias map,合并进 schema。
+    // 这样用户键入 `FROM users u`,接着 `u.` 就能列 users 的列。
+    const currentSql = view ? view.state.doc.toString() : (props.modelValue || '')
+    sqlConfig.schema = buildAliasAwareSchema(props.completionSchema, currentSql)
   }
   const exts = [sql(sqlConfig)]
   if (props.snippets) {
@@ -108,6 +177,10 @@ function onKeydown(e) {
   if (e.key === 'Escape' && fullscreen.value) fullscreen.value = false
 }
 
+// alias 重算 debounce timer。SQL 每改一字符都重 reconfigure 太频繁,
+// 250ms 内合并(用户输入手感不变,但少做一堆无效解析)。
+let _aliasReconfigureTimer = null
+
 onMounted(() => {
   const extensions = [
     basicSetup,
@@ -118,6 +191,15 @@ onMounted(() => {
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         emit('update:modelValue', update.state.doc.toString())
+        // 文档变 → 250ms 后重 build language(alias map 可能变)
+        if (props.completionSchema) {
+          clearTimeout(_aliasReconfigureTimer)
+          _aliasReconfigureTimer = setTimeout(() => {
+            if (view) {
+              view.dispatch({ effects: languageCompartment.reconfigure(buildLanguageExtension()) })
+            }
+          }, 250)
+        }
       }
     }),
   ]
