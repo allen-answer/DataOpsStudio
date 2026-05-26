@@ -9,5 +9,5 @@
 #
 # 这些不放进 requirements.txt：playwright 带 ~150MB chromium binary，
 # 主开发流程和 CI backend job 都不需要。
-playwright>=1.50
-pytest-playwright>=0.5
+playwright>=1.60.0
+pytest-playwright>=0.8.0
