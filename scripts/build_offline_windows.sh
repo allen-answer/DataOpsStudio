@@ -132,6 +132,7 @@ cp main.py "${STAGING_DIR}/main.py"
 cp requirements.txt "${STAGING_DIR}/requirements.txt"
 cp scripts/offline/install.bat "${STAGING_DIR}/install.bat"
 cp scripts/offline/start.bat "${STAGING_DIR}/start.bat"
+cp scripts/offline/upgrade.bat "${STAGING_DIR}/upgrade.bat"
 cp README_OFFLINE.md "${STAGING_DIR}/README_OFFLINE.md"
 
 # config 只带 example
