@@ -25,6 +25,7 @@ from app.api import (
     scheduler,
     search,
     slow_sql,
+    sql_templates,
     sql_workbench,
     system,
     tasks,
@@ -57,4 +58,5 @@ router.include_router(search.router)
 router.include_router(assets.router)
 router.include_router(scenarios.router)
 router.include_router(slow_sql.router)
+router.include_router(sql_templates.router)
 router.include_router(sql_workbench.router)

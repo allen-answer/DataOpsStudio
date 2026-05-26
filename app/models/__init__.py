@@ -93,6 +93,12 @@ from app.models.lineage import (
 )
 
 # --- API 响应 schema ---
+from app.models.sql_template import (
+    SQLTemplate,
+    SQLTemplateCreate,
+    SQLTemplateUpdate,
+)
+
 from app.models.responses import (
     BootstrapResponse,
     ConnectionTestResult,
@@ -136,6 +142,8 @@ __all__ = [
     "ParseStatus", "ProcessStep", "RefreshMode", "RiskLevel",
     "RuleConfidence", "TableRef", "TableRoleKind",
     "TargetOperation", "TargetSummary",
+    # sql template(v0.4)
+    "SQLTemplate", "SQLTemplateCreate", "SQLTemplateUpdate",
     # responses
     "BootstrapResponse", "ConnectionTestResult", "DriverInfo",
     "ExcelUploadResponse", "LineageAnalyzeResult",

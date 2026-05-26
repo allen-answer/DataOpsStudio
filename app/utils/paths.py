@@ -23,6 +23,9 @@ SCENARIOS_DIR = CONFIG_DIR / "scenarios"
 USERS_FILE = CONFIG_DIR / "users.json"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
 AUDIT_LOG_FILE = LOGS_DIR / "audit.jsonl"
+# SQL 工作台 v0.4 模板库
+SQL_TEMPLATES_FILE = CONFIG_DIR / "sql_templates.json"
+SQL_TEMPLATES_EXAMPLE_FILE = CONFIG_DIR / "sql_templates.example.json"
 
 
 def ensure_dirs() -> None:
@@ -44,3 +47,5 @@ def ensure_dirs() -> None:
         USERS_FILE.write_text("[]", encoding="utf-8")
     if not PROJECTS_FILE.exists():
         PROJECTS_FILE.write_text("[]", encoding="utf-8")
+    if not SQL_TEMPLATES_FILE.exists():
+        SQL_TEMPLATES_FILE.write_text("[]", encoding="utf-8")

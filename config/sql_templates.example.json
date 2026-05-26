@@ -1,0 +1,56 @@
+[
+  {
+    "id": "row-count",
+    "name": "行数统计",
+    "description": "快速看某表行数,基础健康检查。",
+    "tags": ["统计", "基础"],
+    "db_types": ["all"],
+    "risk_level": "low",
+    "sql": "SELECT COUNT(*) AS row_count\nFROM ${table};"
+  },
+  {
+    "id": "duplicate-keys",
+    "name": "重复主键检测",
+    "description": "找出违反主键唯一约束的数据。GROUP BY + HAVING 经典写法。",
+    "tags": ["数据质量", "去重"],
+    "db_types": ["mysql", "oracle", "dm"],
+    "risk_level": "low",
+    "sql": "SELECT ${pk_column}, COUNT(*) AS cnt\nFROM ${table}\nGROUP BY ${pk_column}\nHAVING COUNT(*) > 1\nORDER BY cnt DESC\nLIMIT 100;"
+  },
+  {
+    "id": "null-distribution",
+    "name": "字段空值分布",
+    "description": "看某字段的空值率,数据补齐 / 字段必填检查。",
+    "tags": ["数据质量", "空值"],
+    "db_types": ["all"],
+    "risk_level": "low",
+    "sql": "SELECT\n  COUNT(*) AS total,\n  SUM(CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END) AS null_count,\n  ROUND(SUM(CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS null_pct\nFROM ${table};"
+  },
+  {
+    "id": "daily-trend",
+    "name": "按日趋势",
+    "description": "时间字段按天聚合,做趋势分析。MySQL 用 DATE();Oracle 用 TRUNC()。",
+    "tags": ["统计", "时间序列"],
+    "db_types": ["mysql"],
+    "risk_level": "low",
+    "sql": "SELECT DATE(${time_col}) AS day, COUNT(*) AS cnt\nFROM ${table}\nWHERE ${time_col} >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)\nGROUP BY DATE(${time_col})\nORDER BY day;"
+  },
+  {
+    "id": "top-n-grouped",
+    "name": "分组 Top N",
+    "description": "找某分组下值最大的 N 条。窗口函数,需要 MySQL 8+ / Oracle 12c+。",
+    "tags": ["统计", "窗口函数"],
+    "db_types": ["mysql", "oracle", "dm"],
+    "risk_level": "low",
+    "sql": "SELECT *\nFROM (\n  SELECT t.*,\n    ROW_NUMBER() OVER (PARTITION BY ${group_col} ORDER BY ${order_col} DESC) AS rn\n  FROM ${table} t\n) sub\nWHERE rn <= 10\nORDER BY ${group_col}, rn;"
+  },
+  {
+    "id": "slow-explain",
+    "name": "EXPLAIN 看慢 SQL",
+    "description": "MySQL EXPLAIN 看执行计划。注意:type=ALL 是全表扫描 / Extra 含 filesort 要警惕。",
+    "tags": ["性能", "explain"],
+    "db_types": ["mysql"],
+    "risk_level": "medium",
+    "sql": "-- 把目标 SQL 整体替换到下面 EXPLAIN 后面\nEXPLAIN\nSELECT *\nFROM ${table}\nWHERE ${col} = ${value};"
+  }
+]

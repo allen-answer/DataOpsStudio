@@ -67,6 +67,8 @@ config/scenarios/*.yml
 !config/scenarios/*.example.yml
 # SQL 工作台元数据缓存(per-datasource JSON,每个 clone 自己生成)
 config/metadata_cache/
+# SQL 工作台用户模板(每个 clone 自己,内置 example 仍跟踪)
+config/sql_templates.json
 frontend.zip
 *.tmp
 *.bak

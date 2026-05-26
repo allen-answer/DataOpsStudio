@@ -13,8 +13,9 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info, Bookmark, BookmarkPlus, Upload, Download, Trash2, Pencil } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
+import { useSqlTemplatesStore, type SQLTemplate } from '../stores/sqlTemplates'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
 import SqlEditor from '../components/SqlEditor.vue'
@@ -23,13 +24,15 @@ import { setSqlTransfer } from '../utils/sqlTransfer'
 const router = useRouter()
 
 const store = useSqlWorkbenchStore()
+const templatesStore = useSqlTemplatesStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
 const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading } = storeToRefs(store)
+const { templates, loading: templatesLoading, filters: templateFilters } = storeToRefs(templatesStore)
 const { state: bootstrapState } = bootstrap
 
 const ACTIVE_ID_KEY = 'dataops.sqlWorkbench.activeId'
-const bottomTab = ref<'result' | 'history' | 'metadata' | 'explain'>('result')
+const bottomTab = ref<'result' | 'history' | 'metadata' | 'explain' | 'templates'>('result')
 const maxRows = ref(1000)
 
 // metadata:切 datasource 自动拉一次
@@ -186,6 +189,183 @@ async function openTableDetail(schema: string, table: string) {
 function closeTableDetail() {
   tableDetail.value = null
 }
+
+// ─── 模板库(v0.4) ───────────────────────────────────────────────────
+// 「保存为模板」modal 状态
+const showSaveTemplateModal = ref(false)
+const saveTemplateDraft = ref<{
+  id?: string  // 编辑现有时填,新建时空
+  name: string
+  description: string
+  tagsText: string   // UI 用逗号分隔字符串,提交时切成数组
+  db_typesText: string
+  risk_level: 'low' | 'medium' | 'high'
+  sql: string
+}>({ name: '', description: '', tagsText: '', db_typesText: 'all', risk_level: 'low', sql: '' })
+
+function openSaveTemplateModal() {
+  const c = activeConsole.value
+  if (!c || !c.sql.trim()) {
+    notice.setNotice('当前 SQL 为空,无法保存为模板')
+    return
+  }
+  // 默认拿当前 ds 的 db_type 预填
+  const ds = (datasources.value || []).find((d: any) => d.id === c.datasource_id)
+  saveTemplateDraft.value = {
+    name: '', description: '', tagsText: '',
+    db_typesText: ds?.db_type || 'all',
+    risk_level: 'low',
+    sql: c.sql,
+  }
+  showSaveTemplateModal.value = true
+}
+
+function openEditTemplateModal(t: SQLTemplate) {
+  if (t.builtin) {
+    notice.setNotice('内置模板不可编辑,可以点"克隆"按钮另存为新模板')
+    return
+  }
+  saveTemplateDraft.value = {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    tagsText: (t.tags || []).join(', '),
+    db_typesText: (t.db_types || ['all']).join(', '),
+    risk_level: t.risk_level,
+    sql: t.sql,
+  }
+  showSaveTemplateModal.value = true
+}
+
+function cloneTemplateToDraft(t: SQLTemplate) {
+  saveTemplateDraft.value = {
+    name: t.name + ' (副本)',
+    description: t.description,
+    tagsText: (t.tags || []).join(', '),
+    db_typesText: (t.db_types || ['all']).join(', '),
+    risk_level: t.risk_level,
+    sql: t.sql,
+  }
+  showSaveTemplateModal.value = true
+}
+
+function _parseCsv(s: string): string[] {
+  return s.split(',').map(x => x.trim()).filter(Boolean)
+}
+
+async function onSubmitSaveTemplate() {
+  const d = saveTemplateDraft.value
+  if (!d.name.trim()) { notice.setNotice('请填模板名'); return }
+  if (!d.sql.trim()) { notice.setNotice('SQL 不能为空'); return }
+  const payload = {
+    name: d.name.trim(),
+    description: d.description,
+    tags: _parseCsv(d.tagsText),
+    db_types: _parseCsv(d.db_typesText) || ['all'],
+    risk_level: d.risk_level,
+    sql: d.sql,
+  }
+  try {
+    if (d.id) {
+      await templatesStore.updateTemplate(d.id, payload)
+      notice.setNotice('模板已更新')
+    } else {
+      await templatesStore.createTemplate(payload)
+      notice.setNotice('模板已保存')
+    }
+    showSaveTemplateModal.value = false
+  } catch (e: any) {
+    notice.setNotice('保存模板失败: ' + (e?.message || String(e)))
+  }
+}
+
+function insertTemplateToConsole(t: SQLTemplate) {
+  const c = activeConsole.value
+  if (!c) { notice.setNotice('请先打开一个 Console'); return }
+  // 跟"点表名插 SELECT *"一个套路:append 而不是 replace,保护用户当前编辑
+  c.sql = c.sql.trim() ? `${c.sql}\n\n${t.sql}` : t.sql
+  bottomTab.value = 'result'
+  notice.setNotice(`已插入模板「${t.name}」`)
+}
+
+async function deleteTemplateConfirm(t: SQLTemplate) {
+  if (t.builtin) {
+    notice.setNotice('内置模板不可删除')
+    return
+  }
+  if (!confirm(`确定删除模板「${t.name}」?该操作不可恢复。`)) return
+  try {
+    await templatesStore.deleteTemplate(t.id)
+    notice.setNotice('已删除')
+  } catch (e: any) {
+    notice.setNotice('删除失败: ' + (e?.message || String(e)))
+  }
+}
+
+// 导入 JSON:用 file input 选本地文件
+function onImportClick() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,application/json'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      // 兼容两种格式:{templates: [...]} 或直接 [...]
+      const items = Array.isArray(parsed) ? parsed : parsed.templates
+      if (!Array.isArray(items)) {
+        notice.setNotice('JSON 格式错误:期望 {templates: [...]} 或直接数组')
+        return
+      }
+      const overwrite = confirm(`检测到 ${items.length} 个模板。同名模板要覆盖现有的吗?\n\n确定 = 覆盖同名 / 取消 = 跳过同名`)
+      const report = await templatesStore.importTemplates(items, overwrite)
+      notice.setNotice(`导入完成:新建 ${report.created} · 跳过 ${report.skipped} · 错误 ${report.errors}`)
+    } catch (e: any) {
+      notice.setNotice('导入失败: ' + (e?.message || String(e)))
+    }
+  }
+  input.click()
+}
+
+// 导出:把数据 dump 成 .json 文件触发浏览器下载
+async function onExportClick(includeBuiltin: boolean = false) {
+  try {
+    const items = await templatesStore.exportTemplates(includeBuiltin)
+    const blob = new Blob(
+      [JSON.stringify({ templates: items, count: items.length, exported_at: new Date().toISOString() }, null, 2)],
+      { type: 'application/json' },
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sql-templates-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    notice.setNotice(`已导出 ${items.length} 个模板`)
+  } catch (e: any) {
+    notice.setNotice('导出失败: ' + (e?.message || String(e)))
+  }
+}
+
+// 切到模板 tab 时 lazy 拉一次列表(首次)
+watch(bottomTab, (tab) => {
+  if (tab === 'templates' && !templates.value.length && !templatesLoading.value) {
+    templatesStore.loadTemplates().catch(() => {})
+  }
+})
+
+// 过滤变化 → 重拉(简单方案,debounce 300ms)
+let templateFilterTimer: ReturnType<typeof setTimeout> | null = null
+watch(templateFilters, () => {
+  if (templateFilterTimer) clearTimeout(templateFilterTimer)
+  templateFilterTimer = setTimeout(() => {
+    if (bottomTab.value === 'templates') {
+      templatesStore.loadTemplates().catch(() => {})
+    }
+  }, 300)
+}, { deep: true })
 
 function onTableClick(schema: string, table: string) {
   const c = activeConsole.value
@@ -618,6 +798,15 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <FileText class="h-3.5 w-3.5" />
           另存草稿
         </button>
+        <!-- 保存为模板(v0.4)—— 把当前 SQL 入模板库,跨 console / 跨用户复用 -->
+        <button
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+          title="把当前 SQL 保存到模板库,跨 console 复用"
+          @click="openSaveTemplateModal"
+        >
+          <BookmarkPlus class="h-3.5 w-3.5" />
+          存为模板
+        </button>
         <!-- 发送到 ▾ —— Phase 4 跟其它工作台打通 -->
         <div class="relative">
           <button
@@ -777,6 +966,14 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <span v-if="currentExplain?.success" class="text-[10px] text-slate-400">
             · {{ currentExplain.rows.length }} 行 · {{ formatElapsed(currentExplain.elapsed_ms) }}
           </span>
+        </button>
+        <button
+          class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+          :class="bottomTab === 'templates' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+          @click="bottomTab = 'templates'"
+        >
+          <Bookmark class="h-3 w-3" /> 模板
+          <span v-if="templates.length" class="text-[10px] text-slate-400">· {{ templates.length }}</span>
         </button>
         <!-- metadata 缓存时间徽章 + 刷新按钮 -->
         <span
@@ -980,6 +1177,131 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         </template>
       </div>
 
+      <!-- templates(v0.4 SQL 模板库) -->
+      <div v-else-if="bottomTab === 'templates'" class="flex-1 min-h-0 overflow-auto p-3">
+        <!-- 工具栏:过滤 + 导入 / 导出 -->
+        <div class="flex flex-wrap items-center gap-2 mb-3">
+          <div class="relative flex-1 min-w-40">
+            <Search class="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+            <input
+              v-model="templateFilters.q"
+              type="text"
+              placeholder="搜模板(名称 / 描述 / SQL 内容)"
+              class="w-full pl-7 pr-3 text-xs"
+            />
+          </div>
+          <input
+            v-model="templateFilters.tag"
+            type="text"
+            placeholder="标签(逗号分隔)"
+            class="text-xs w-32"
+            title="多个标签 AND 命中"
+          />
+          <select v-model="templateFilters.db_type" class="text-xs w-28">
+            <option value="">所有方言</option>
+            <option value="mysql">MySQL</option>
+            <option value="oracle">Oracle</option>
+            <option value="dm">DM 达梦</option>
+            <option value="ob_mysql">OB MySQL</option>
+            <option value="ob_oracle">OB Oracle</option>
+            <option value="db2">DB2</option>
+          </select>
+          <button
+            class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            title="从 JSON 文件导入模板"
+            @click="onImportClick"
+          >
+            <Upload class="h-3 w-3" /> 导入
+          </button>
+          <button
+            class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            title="把所有用户模板导出为 JSON 文件"
+            @click="onExportClick(false)"
+          >
+            <Download class="h-3 w-3" /> 导出
+          </button>
+        </div>
+
+        <!-- list -->
+        <div v-if="templatesLoading" class="py-10 text-center text-sm text-slate-400">
+          加载中…
+        </div>
+        <div v-else-if="!templates.length" class="py-10 text-center text-sm text-slate-400">
+          <div>无匹配模板。</div>
+          <div class="mt-2 text-[11px]">点 SQL 编辑器上方的「存为模板」按钮把当前 SQL 保存。</div>
+        </div>
+        <div v-else class="space-y-1.5">
+          <div
+            v-for="t in templates"
+            :key="t.id"
+            class="rounded-md border border-slate-200 p-2.5 hover:border-primary hover:bg-primary-light/20 transition group"
+          >
+            <div class="flex items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap mb-1">
+                  <span class="text-sm font-semibold text-slate-800 truncate">{{ t.name }}</span>
+                  <span
+                    v-if="t.builtin"
+                    class="rounded bg-primary-light text-primary px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                  >内置</span>
+                  <span
+                    v-if="t.risk_level === 'high'"
+                    class="rounded bg-status-error-bg text-status-error px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                  >高风险</span>
+                  <span
+                    v-else-if="t.risk_level === 'medium'"
+                    class="rounded bg-status-warning-bg text-status-warning px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                  >中风险</span>
+                  <span
+                    v-for="tag in t.tags"
+                    :key="tag"
+                    class="rounded bg-slate-100 text-slate-600 px-1.5 py-0.5 text-[10px]"
+                  >{{ tag }}</span>
+                  <span v-if="t.db_types.length" class="text-[10px] text-slate-400 sql-font">
+                    {{ t.db_types.join(' / ') }}
+                  </span>
+                </div>
+                <p v-if="t.description" class="text-xs text-slate-500 mb-1">{{ t.description }}</p>
+                <pre class="sql-font text-[11px] text-slate-600 bg-slate-50 rounded p-1.5 whitespace-pre-wrap break-all max-h-20 overflow-y-auto">{{ t.sql }}</pre>
+              </div>
+              <div class="flex flex-col gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                <button
+                  class="inline-flex items-center gap-1 rounded bg-primary text-white px-2 py-1 text-[11px] hover:bg-primary-hover"
+                  title="插入到当前 Console"
+                  @click="insertTemplateToConsole(t)"
+                >
+                  <Plus class="h-3 w-3" /> 插入
+                </button>
+                <button
+                  v-if="!t.builtin"
+                  class="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+                  title="编辑该模板"
+                  @click="openEditTemplateModal(t)"
+                >
+                  <Pencil class="h-3 w-3" /> 编辑
+                </button>
+                <button
+                  v-else
+                  class="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+                  title="基于该内置模板克隆一个新模板"
+                  @click="cloneTemplateToDraft(t)"
+                >
+                  <Pencil class="h-3 w-3" /> 克隆
+                </button>
+                <button
+                  v-if="!t.builtin"
+                  class="inline-flex items-center gap-1 rounded border border-status-error/30 bg-white px-2 py-1 text-[11px] text-status-error hover:bg-status-error-bg"
+                  title="删除该模板"
+                  @click="deleteTemplateConfirm(t)"
+                >
+                  <Trash2 class="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- history -->
       <div v-else class="flex-1 min-h-0 overflow-auto">
         <div v-if="!history.length" class="px-4 py-10 text-center text-sm text-slate-400">
@@ -1141,6 +1463,72 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
             </div>
             <pre v-else class="sql-font text-xs text-slate-700 bg-slate-50 rounded p-3 whitespace-pre-wrap break-all">{{ tableDetail.ddl }}</pre>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 保存为模板 modal (v0.4) —— 同时给"新建"和"编辑"用 -->
+    <div
+      v-if="showSaveTemplateModal"
+      class="fixed inset-0 z-40 bg-slate-900/40 flex items-center justify-center p-4"
+      @click.self="showSaveTemplateModal = false"
+    >
+      <div class="bg-white rounded-xl shadow-2xl w-[640px] max-w-full max-h-[90vh] flex flex-col">
+        <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div class="flex items-center gap-2">
+            <BookmarkPlus class="h-4 w-4 text-primary" />
+            <h3 class="font-semibold text-slate-800">{{ saveTemplateDraft.id ? '编辑模板' : '保存为模板' }}</h3>
+          </div>
+          <button class="rounded p-1 text-slate-400 hover:bg-slate-100" @click="showSaveTemplateModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+        <div class="flex-1 min-h-0 overflow-auto p-4 space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">名称 <span class="text-status-error">*</span></label>
+            <input v-model="saveTemplateDraft.name" type="text" class="w-full text-sm" placeholder="如:大客户订单 Top 10" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">描述</label>
+            <textarea v-model="saveTemplateDraft.description" class="w-full text-xs" rows="2" placeholder="一句话说明用途 / 注意事项"></textarea>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">标签</label>
+              <input v-model="saveTemplateDraft.tagsText" type="text" class="w-full text-xs" placeholder="逗号分隔,如:统计, 日报" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">数据库类型</label>
+              <input v-model="saveTemplateDraft.db_typesText" type="text" class="w-full text-xs sql-font" placeholder="mysql, oracle 或 all" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">风险等级</label>
+            <div class="flex gap-3 text-xs">
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" v-model="saveTemplateDraft.risk_level" value="low" /> 低 <span class="text-slate-400">(纯查询)</span>
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" v-model="saveTemplateDraft.risk_level" value="medium" /> 中 <span class="text-slate-400">(大表扫描)</span>
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" v-model="saveTemplateDraft.risk_level" value="high" /> 高 <span class="text-slate-400">(慎用)</span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">SQL <span class="text-status-error">*</span></label>
+            <textarea v-model="saveTemplateDraft.sql" class="w-full text-xs sql-font" rows="8"></textarea>
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+          <button class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50" @click="showSaveTemplateModal = false">
+            取消
+          </button>
+          <button class="inline-flex items-center gap-1 rounded-md bg-primary text-white px-3 py-1.5 text-xs font-bold hover:bg-primary-hover" @click="onSubmitSaveTemplate">
+            <Save class="h-3 w-3" />
+            {{ saveTemplateDraft.id ? '更新' : '保存' }}
+          </button>
         </div>
       </div>
     </div>
