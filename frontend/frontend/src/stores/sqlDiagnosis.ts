@@ -10,35 +10,43 @@
  *
  * 不暴露:scenario / materialize / record / verify / importForm 等不相关字段。
  */
-import { defineStore } from 'pinia'
+import { defineStore, storeToRefs } from 'pinia'
 import { useSandboxStore } from './sandbox'
 
 export const useSqlDiagnosisStore = defineStore('sqlDiagnosis', () => {
   const sandbox = useSandboxStore()
 
+  // **关键**:用 storeToRefs 把 sandbox 内部的 ref 真正"穿透"过来,而不是写
+  // `quickSql: sandbox.quickSql` —— 后者会取出当前 unwrap 后的 value(普通
+  // string),丢失 ref 引用,导致 `store.quickSql = x` 写不进底层 sandbox.quickSql.value。
+  // 这条 bug 直接表现:从 SQL 工作台 sendTo('diagnosis') 后,SqlDiagnosisView
+  // 调 `store.quickSql = transfer.sql` 看似成功,但 runQuickAnalyze 读到的 sandbox
+  // 内部 quickSql.value 仍是空 → 立即 return → 整个"跑 EXPLAIN"按钮静默失败。
+  const refs = storeToRefs(sandbox)
+
   return {
-    // === SQL 诊断专属 state ===
-    quickSql: sandbox.quickSql,
-    quickDatasourceId: sandbox.quickDatasourceId,
-    quickTagScenarioId: sandbox.quickTagScenarioId,
-    quickAnalyzing: sandbox.quickAnalyzing,
-    quickEnriching: sandbox.quickEnriching,
-    quickPlanDiffLoading: sandbox.quickPlanDiffLoading,
-    quickResult: sandbox.quickResult,
-    quickEnrichResult: sandbox.quickEnrichResult,
-    quickPlanDiff: sandbox.quickPlanDiff,
-    quickPlanHistory: sandbox.quickPlanHistory,
-    quickError: sandbox.quickError,
-    quickPlanDiffError: sandbox.quickPlanDiffError,
-    confirmAnalyzePromise: sandbox.confirmAnalyzePromise,
+    // === SQL 诊断专属 state(reactive ref 透传)===
+    quickSql: refs.quickSql,
+    quickDatasourceId: refs.quickDatasourceId,
+    quickTagScenarioId: refs.quickTagScenarioId,
+    quickAnalyzing: refs.quickAnalyzing,
+    quickEnriching: refs.quickEnriching,
+    quickPlanDiffLoading: refs.quickPlanDiffLoading,
+    quickResult: refs.quickResult,
+    quickEnrichResult: refs.quickEnrichResult,
+    quickPlanDiff: refs.quickPlanDiff,
+    quickPlanHistory: refs.quickPlanHistory,
+    quickError: refs.quickError,
+    quickPlanDiffError: refs.quickPlanDiffError,
+    confirmAnalyzePromise: refs.confirmAnalyzePromise,
 
-    // === 共享 derived (datasources 列表) ===
-    diagnosableDatasources: sandbox.diagnosableDatasources,
+    // === 共享 derived (computed/getter)===
+    diagnosableDatasources: refs.diagnosableDatasources,
     // 兼容旧名(QuickOptimizeMode 历史引用):mysqlDatasources
-    mysqlDatasources: sandbox.mysqlDatasources,
-    datasources: sandbox.datasources,
+    mysqlDatasources: refs.mysqlDatasources,
+    datasources: refs.datasources,
 
-    // === actions ===
+    // === actions(函数引用,不需要 storeToRefs)===
     runQuickAnalyze: sandbox.runQuickAnalyze,
     runQuickEnrich: sandbox.runQuickEnrich,
     runQuickPlanDiff: sandbox.runQuickPlanDiff,
