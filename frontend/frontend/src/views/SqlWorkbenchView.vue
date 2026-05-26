@@ -13,7 +13,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
@@ -25,11 +25,11 @@ const router = useRouter()
 const store = useSqlWorkbenchStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
-const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs } = storeToRefs(store)
+const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults } = storeToRefs(store)
 const { state: bootstrapState } = bootstrap
 
 const ACTIVE_ID_KEY = 'dataops.sqlWorkbench.activeId'
-const bottomTab = ref<'result' | 'history' | 'metadata'>('result')
+const bottomTab = ref<'result' | 'history' | 'metadata' | 'explain'>('result')
 const maxRows = ref(1000)
 
 // metadata:切 datasource 自动拉一次
@@ -172,13 +172,70 @@ async function onSave() {
   notice.setNotice('已保存')
 }
 
-// Ctrl/Cmd+Enter Run 快捷键
+// Ctrl/Cmd+Enter Run / Alt+Shift+F 格式化 快捷键
 function onKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
     e.preventDefault()
     onRun()
+    return
+  }
+  // Alt + Shift + F:格式化(浏览器 Alt 在 Windows 默认菜单冲突,但 SQL 编辑器内部 focus 时通常 OK)
+  if (e.altKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+    e.preventDefault()
+    onFormat()
   }
 }
+
+// ─── 格式化 / 停止 / Explain (v0.2) ─────────────────────────────────────
+
+async function onFormat() {
+  const c = activeConsole.value
+  if (!c?.sql?.trim()) return
+  try {
+    const resp = await store.formatSql(c.sql, c.datasource_id)
+    if (resp.success && resp.formatted_sql) {
+      c.sql = resp.formatted_sql
+      notice.setNotice(`格式化完成 (${resp.dialect})`)
+      nextTick(() => _scheduleSave())
+    } else {
+      notice.setNotice('格式化失败: ' + (resp.error || '未知错误'))
+    }
+  } catch (e: unknown) {
+    notice.setNotice('格式化失败: ' + ((e as Error)?.message || String(e)))
+  }
+}
+
+async function onStop() {
+  const c = activeConsole.value
+  if (!c) return
+  try {
+    await store.cancelExecution(c.id)
+    notice.setNotice('已请求取消 —— 等待当前查询返回后丢弃结果')
+  } catch (e: unknown) {
+    notice.setNotice('取消失败: ' + ((e as Error)?.message || String(e)))
+  }
+}
+
+async function onExplain() {
+  const c = activeConsole.value
+  if (!c) return
+  if (!c.datasource_id) {
+    notice.setNotice('请先选择数据源')
+    return
+  }
+  if (!c.sql.trim()) {
+    notice.setNotice('SQL 为空')
+    return
+  }
+  try {
+    await store.explain(c.id, { datasource_id: c.datasource_id, sql: c.sql })
+    bottomTab.value = 'explain'
+  } catch (e: unknown) {
+    notice.setNotice('Explain 失败: ' + ((e as Error)?.message || String(e)))
+  }
+}
+
+const currentExplain = computed(() => (activeConsole.value ? explainResults.value[activeConsole.value.id] : null))
 
 onMounted(() => {
   document.addEventListener('keydown', onKeydown)
@@ -289,14 +346,42 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           limit
           <input v-model.number="maxRows" type="number" min="1" max="10000" class="w-16 text-xs" />
         </div>
+        <!-- v0.2 运行 / 停止 双态按钮 —— 执行中显示停止 -->
         <button
-          class="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-primary-hover disabled:opacity-50"
-          :disabled="isRunning"
+          v-if="!isRunning"
+          class="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-primary-hover"
           title="Ctrl/Cmd+Enter"
           @click="onRun"
         >
           <Play class="h-3.5 w-3.5" />
-          {{ isRunning ? '执行中…' : '运行' }}
+          运行
+        </button>
+        <button
+          v-else
+          class="inline-flex items-center gap-1 rounded-md bg-status-error px-3 py-1.5 text-xs font-bold text-white hover:opacity-90"
+          title="请求取消(底层驱动可能不支持中途中断,完成后会丢弃结果)"
+          @click="onStop"
+        >
+          <Square class="h-3.5 w-3.5" />
+          停止
+        </button>
+        <!-- v0.2 格式化按钮 —— Alt+Shift+F -->
+        <button
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+          title="格式化 SQL (Alt+Shift+F)"
+          @click="onFormat"
+        >
+          <Sparkles class="h-3.5 w-3.5" />
+          格式化
+        </button>
+        <!-- v0.2 Explain 按钮 -->
+        <button
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+          title="查看执行计划 (MySQL/OB MySQL 完整支持,Oracle/DM 暂不支持)"
+          @click="onExplain"
+        >
+          <BarChart3 class="h-3.5 w-3.5" />
+          Explain
         </button>
         <button
           class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
@@ -371,6 +456,16 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <FolderTree class="h-3 w-3" /> 元数据
         </button>
         <button
+          class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+          :class="bottomTab === 'explain' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+          @click="bottomTab = 'explain'"
+        >
+          <BarChart3 class="h-3 w-3" /> Explain
+          <span v-if="currentExplain?.success" class="text-[10px] text-slate-400">
+            · {{ currentExplain.rows.length }} 行 · {{ formatElapsed(currentExplain.elapsed_ms) }}
+          </span>
+        </button>
+        <button
           v-if="bottomTab === 'metadata' && activeConsole?.datasource_id"
           class="ml-auto inline-flex items-center gap-1 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           title="刷新元数据"
@@ -406,6 +501,41 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         </table>
         <div v-else class="px-4 py-10 text-center text-sm text-slate-400">
           {{ currentResult.row_count }} 行(无列输出)
+        </div>
+      </div>
+
+      <!-- explain panel (v0.2) -->
+      <div v-else-if="bottomTab === 'explain'" class="flex-1 min-h-0 overflow-auto">
+        <div v-if="!currentExplain" class="px-4 py-10 text-center text-sm text-slate-400">
+          点击「Explain」查看执行计划
+        </div>
+        <div v-else-if="currentExplain.unsupported" class="m-3 rounded border border-status-warning/30 bg-status-warning-bg p-3 text-xs text-status-warning">
+          <div class="font-bold mb-1">⚠ {{ currentExplain.dialect }} 暂不支持 EXPLAIN</div>
+          <p class="text-slate-700">{{ currentExplain.error }}</p>
+        </div>
+        <div v-else-if="!currentExplain.success" class="m-3 rounded border border-status-error/30 bg-status-error-bg p-3 text-xs text-status-error">
+          <div class="font-bold mb-1">Explain 失败</div>
+          <pre class="sql-font whitespace-pre-wrap break-all">{{ currentExplain.error }}</pre>
+        </div>
+        <div v-else>
+          <div class="px-3 py-1.5 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-500 sql-font">
+            {{ currentExplain.explain_sql }}
+          </div>
+          <table class="text-xs">
+            <thead class="bg-slate-50 sticky top-0">
+              <tr>
+                <th v-for="col in currentExplain.columns" :key="col" class="text-left whitespace-nowrap">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in currentExplain.rows" :key="i" class="hover:bg-slate-50">
+                <td v-for="(cell, j) in row" :key="j" class="sql-font whitespace-nowrap" :title="String(cell ?? '')">
+                  <span v-if="cell === null" class="italic text-slate-400">NULL</span>
+                  <template v-else>{{ cell }}</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 

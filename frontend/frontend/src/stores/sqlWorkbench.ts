@@ -33,6 +33,30 @@ export interface ExecuteResponse {
   error?: string | null
 }
 
+export interface ExecutionEnvelope extends Partial<ExecuteResponse> {
+  execution_id: string
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  cancel_requested?: boolean
+}
+
+export interface FormatResponse {
+  success: boolean
+  formatted_sql: string
+  dialect: string
+  error?: string | null
+}
+
+export interface ExplainResponse {
+  success: boolean
+  dialect: string
+  columns: string[]
+  rows: unknown[][]
+  explain_sql: string
+  elapsed_ms: number
+  unsupported: boolean
+  error?: string | null
+}
+
 export interface HistoryEntry {
   id: string
   datasource_id: string
@@ -73,6 +97,11 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
 
   // metadata tree —— 按 datasource_id 缓存,切换数据源时复用
   const metadataByDs = reactive<Record<string, { schemas: MetadataSchema[]; loading: boolean; error: string }>>({})
+
+  // v0.2:每个 console 当前 in-flight execution_id(用于 cancel)
+  const currentExecutionId = reactive<Record<string, string>>({})
+  // v0.2:explain 结果按 console_id 缓存
+  const explainResults = reactive<Record<string, ExplainResponse | null>>({})
 
   const activeConsole = computed(() =>
     consoles.value.find(c => c.id === activeConsoleId.value) || null,
@@ -130,26 +159,88 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     }
   }
 
+  /**
+   * v0.2:execute 改成异步路径 —— 立刻拿 execution_id + status;running 时
+   * 客户端 poll 直到 done/failed/cancelled。中间 running 期间用户可点"停止"。
+   */
   async function execute(consoleId: string, payload: {
     datasource_id: string
     sql: string
     max_rows?: number
-  }): Promise<ExecuteResponse> {
+  }): Promise<ExecuteResponse | null> {
     running[consoleId] = true
     try {
-      const resp = await apiJson<ExecuteResponse>('/api/sql-workbench/execute', 'POST', {
+      const env = await apiJson<ExecutionEnvelope>('/api/sql-workbench/execute', 'POST', {
         datasource_id: payload.datasource_id,
         sql: payload.sql,
         max_rows: payload.max_rows || 1000,
         console_id: consoleId,
       })
-      results[consoleId] = resp
-      // 异步刷历史(不阻塞)
+      currentExecutionId[consoleId] = env.execution_id
+
+      // 已完成:envelope 平铺含 success/columns/rows
+      if (env.status === 'done' || env.status === 'failed') {
+        const r = _envelopeToResult(env)
+        results[consoleId] = r
+        loadHistory().catch(() => {})
+        return r
+      }
+      if (env.status === 'cancelled') {
+        results[consoleId] = { success: false, columns: [], rows: [], row_count: 0, elapsed_ms: 0, truncated: false, error: '已取消' }
+        return results[consoleId]
+      }
+
+      // running:poll 直到 finished
+      const final = await _pollExecution(env.execution_id)
+      const r = _envelopeToResult(final)
+      results[consoleId] = r
       loadHistory().catch(() => {})
-      return resp
+      return r
     } finally {
       running[consoleId] = false
+      delete currentExecutionId[consoleId]
     }
+  }
+
+  async function _pollExecution(executionId: string, intervalMs: number = 500, maxAttempts: number = 600): Promise<ExecutionEnvelope> {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, intervalMs))
+      const env = await apiGet<ExecutionEnvelope>(`/api/sql-workbench/executions/${executionId}`)
+      if (env.status !== 'running') return env
+    }
+    return { execution_id: executionId, status: 'failed', error: 'poll timeout' } as ExecutionEnvelope
+  }
+
+  function _envelopeToResult(env: ExecutionEnvelope): ExecuteResponse {
+    return {
+      success: env.success ?? false,
+      columns: env.columns ?? [],
+      rows: env.rows ?? [],
+      row_count: env.row_count ?? 0,
+      elapsed_ms: env.elapsed_ms ?? 0,
+      truncated: env.truncated ?? false,
+      error: env.error ?? (env.status === 'cancelled' ? '已取消' : null),
+    }
+  }
+
+  async function cancelExecution(consoleId: string): Promise<void> {
+    const execId = currentExecutionId[consoleId]
+    if (!execId) return
+    await apiJson(`/api/sql-workbench/executions/${execId}/cancel`, 'POST', {})
+  }
+
+  // ─── v0.2:format & explain ───────────────────────────────────────────
+
+  async function formatSql(sql: string, datasourceId: string = ''): Promise<FormatResponse> {
+    return await apiJson<FormatResponse>('/api/sql-workbench/format', 'POST', {
+      datasource_id: datasourceId, sql,
+    })
+  }
+
+  async function explain(consoleId: string, payload: { datasource_id: string; sql: string }): Promise<ExplainResponse> {
+    const resp = await apiJson<ExplainResponse>('/api/sql-workbench/explain', 'POST', payload)
+    explainResults[consoleId] = resp
+    return resp
   }
 
   async function loadHistory(datasourceId: string = '', limit: number = 100): Promise<void> {
@@ -230,9 +321,10 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   return {
     consoles, activeConsoleId, activeConsole,
     results, running, history, loadingConsoles,
-    metadataByDs,
+    metadataByDs, currentExecutionId, explainResults,
     loadConsoles, createConsole, updateConsole, deleteConsole,
-    execute, loadHistory, setActive,
+    execute, cancelExecution, loadHistory, setActive,
     loadSchemas, loadTables, toggleSchema,
+    formatSql, explain,
   }
 })

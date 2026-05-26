@@ -1,4 +1,97 @@
-# SQL Workbench v0.1
+# SQL Workbench v0.2
+
+> v0.1 后端 + 多 tab + 元数据 + 跨视图打通已交付。v0.2 增强 IDE 体验:
+> SQL 格式化、Explain 执行计划、查询中断(异步执行模型)。仍保持只读安全策略。
+
+## v0.2 新增端点
+
+### 格式化 `POST /api/sql-workbench/format`
+
+```json
+// request
+{ "datasource_id": "ds-xxx", "sql": "select * from t where id=1" }
+// response
+{ "success": true, "formatted_sql": "SELECT *\nFROM t\nWHERE id = 1", "dialect": "mysql" }
+// 失败时(SQL 语法错 / 空):
+{ "success": false, "formatted_sql": "", "dialect": "mysql", "error": "格式化失败: ..." }
+```
+- 基于 `sqlglot.transpile(pretty=True)`,dialect 映射跟 `app.lineage.dialects.resolve_dialect` 一致:
+  - `MySQL` → `mysql`(含 OceanBase MySQL mode:`ob_mysql` / `oceanbase` → `mysql`)
+  - `Oracle` / `DM` / `dameng` / `ob_oracle` → `oracle`
+- 失败时 `formatted_sql` 为空,**不覆盖原 SQL**,前端能安全展示错误
+- `datasource_id` 可选,空 → 默认 `mysql` 方言
+
+### Explain `POST /api/sql-workbench/explain`
+
+```json
+// request
+{ "datasource_id": "ds-xxx", "sql": "SELECT * FROM users WHERE id=1" }
+// response (MySQL)
+{
+  "success": true, "dialect": "mysql",
+  "columns": ["id", "select_type", "table", "type", "rows", "Extra"],
+  "rows": [[1, "SIMPLE", "users", "ALL", 1000, "Using where"]],
+  "explain_sql": "EXPLAIN SELECT * FROM users WHERE id=1",
+  "elapsed_ms": 12, "unsupported": false, "error": null
+}
+// Oracle / DM (unsupported):
+{
+  "success": false, "dialect": "oracle", "columns": [], "rows": [],
+  "explain_sql": "", "elapsed_ms": 0, "unsupported": true,
+  "error": "Oracle / DM EXPLAIN PLAN 在 SQL Workbench v0.2 未启用 —— ..."
+}
+```
+- 仍只允许 SELECT/WITH(`sql_guard` 拦截)
+- MySQL / OceanBase MySQL:`EXPLAIN <sql>` + fetch_rows
+- Oracle / DM / OceanBase Oracle:返 `unsupported=true` + 引导用户去 SQL 诊断模块
+  (`EXPLAIN PLAN FOR ...` 需写 PLAN_TABLE,跟 slow_sql.analyze_sql 链路重复)
+- DB2:同 unsupported
+
+### 异步执行 + 中断
+
+#### `POST /api/sql-workbench/execute` (envelope 升级)
+
+```json
+// request 不变
+{ "datasource_id": "ds-xxx", "sql": "SELECT ...", "max_rows": 1000, "console_id": "..." }
+// response (envelope):
+{
+  "execution_id": "exe-abc",
+  "status": "done" | "running" | "failed" | "cancelled",
+  "cancel_requested": false,
+  // done/failed 时平铺(v0.1 兼容):
+  "success": true, "columns": [...], "rows": [...], "row_count": N,
+  "elapsed_ms": 12, "truncated": false, "error": null
+}
+```
+- 服务端 short-poll 默认 300ms;快查直接返 `done`,慢查返 `running` 让前端 poll
+- v0.1 客户端不动可用 —— envelope 在 done 时平铺仍含 `success/columns/rows`
+
+#### `GET /api/sql-workbench/executions/{execution_id}` (新)
+返回当前 execution 状态(同 envelope shape)。
+
+#### `POST /api/sql-workbench/executions/{execution_id}/cancel` (新)
+```json
+{ "ok": true, "execution_id": "exe-abc", "cancel_requested": true }
+```
+- 404:execution 不存在或已 TTL 清理
+- 403:无权 cancel 他人的 execution
+- 409:execution 已 `done/failed/cancelled`,不能再 cancel
+
+**实现说明**:大多数 DB-API 驱动不支持中途真 cancel。本模块的兜底是:
+1. 设 `cancel_requested=True`
+2. worker 完成时再 check;如果 cancel 了,丢弃结果不展示,状态标为 `cancelled`
+3. history 仍记一条(success=false, error="cancelled")
+
+cancel 后 SQL 仍会在 DB 端跑完(浪费一次资源),但用户不再看到结果。
+
+## 前端 UX
+
+- 顶部增加 ✨「格式化」按钮(快捷键 **Alt + Shift + F**)
+- 「运行」按钮在执行中切换为红色「停止」按钮(底层不支持真中断时仍标记)
+- 顶部「Explain」按钮 → 切到底部 Explain tab 展示 plan 表格
+- 底部新 tab:**Explain**(plan 表格 + explain_sql 显示 + unsupported 友好提示)
+
 
 数据工程师 / DBA 日常跑 SELECT 的工作台。跟现有「数据对比 / 慢 SQL 诊断 / 场景测试沙盒」**平行**,不替代任何模块 —— 它只是更轻的"打开就能查"通道。
 

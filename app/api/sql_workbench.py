@@ -26,15 +26,26 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from pydantic import BaseModel, Field
+
 from app.api._authz import require_datasource_access
 from app.models import User
 from app.services.auth import require_role
 from app.sqlide.executor import execute_sql
+from app.sqlide.explain import explain_sql as _explain_sql
+from app.sqlide.format import format_sql as _format_sql
 from app.sqlide.models import (
     ConsoleCreate,
     ConsoleUpdate,
     ExecuteRequest,
     ExecuteResponse,
+    HistoryEntry,
+)
+from app.sqlide.runtime import (
+    Execution,
+    get_execution,
+    request_cancel,
+    start_execution,
 )
 from app.sqlide.storage import sql_workbench_store
 
@@ -107,7 +118,60 @@ def delete_console(
     return {"ok": True}
 
 
-# ─── execute ───────────────────────────────────────────────────────────────
+# ─── execute (v0.2 异步化 + 可中断) ────────────────────────────────────────
+
+def _execution_envelope(exe: Execution) -> dict[str, Any]:
+    """v0.2 envelope:execution_id + status + (done/failed 时平铺 ExecuteResponse 字段)。
+
+    保留 v0.1 顶层字段(success / columns / rows / row_count / elapsed_ms / truncated /
+    error)兼容 v0.1 客户端 —— 完成的快查询本质 shape 没变,只是多了 execution_id / status。
+    """
+    env: dict[str, Any] = {
+        "execution_id": exe.id,
+        "status": exe.status,
+        "cancel_requested": exe.cancel_requested,
+    }
+    if exe.result is not None:
+        env.update(exe.result.model_dump(mode="json"))
+    elif exe.error:
+        env["error"] = exe.error
+        env["success"] = False
+    return env
+
+
+def _append_history_for_execution(exe: Execution, ds_name: str, project_id: str, username: str) -> None:
+    """worker 完成时落 history。cancelled 也记一条标识。"""
+    if exe.result is not None:
+        success = exe.result.success
+        elapsed_ms = exe.result.elapsed_ms
+        row_count = exe.result.row_count
+        truncated = exe.result.truncated
+        error = exe.result.error
+    else:
+        success = False
+        elapsed_ms = 0
+        row_count = 0
+        truncated = False
+        error = exe.error or ("cancelled" if exe.status == "cancelled" else None)
+    entry = HistoryEntry(
+        id=uuid.uuid4().hex,
+        datasource_id=exe.datasource_id,
+        datasource_name=ds_name,
+        sql=exe.sql,
+        executed_by=username,
+        project_id=project_id,
+        executed_at=exe.finished_at or _now(),
+        success=success,
+        elapsed_ms=elapsed_ms,
+        row_count=row_count,
+        truncated=truncated,
+        error=error,
+    )
+    try:
+        sql_workbench_store.append_history(entry)
+    except Exception:  # pragma: no cover
+        logger.exception("history append failed")
+
 
 @router.post("/api/sql-workbench/execute")
 def execute(
@@ -116,37 +180,139 @@ def execute(
 ) -> dict[str, Any]:
     ds = require_datasource_access(current, payload.datasource_id)
 
-    # datasource.allow_select fail-safe:默认 True,但 admin 可显式关掉(防 prod 误查)
     if not getattr(ds, "allow_select", True):
         raise HTTPException(
             status_code=403,
             detail=f"数据源 {ds.name} 已禁用 SELECT(allow_select=false)",
         )
 
-    response = execute_sql(ds, payload.sql, max_rows=payload.max_rows)
+    ds_name = ds.name
+    project_id = ds.project_id or ""
+    username = current.username
 
-    # 不管成败都落 history(失败也要追踪) —— ring buffer cap 防膨胀
-    from app.sqlide.models import HistoryEntry
-    history_entry = HistoryEntry(
-        id=uuid.uuid4().hex,
-        datasource_id=ds.id,
-        datasource_name=ds.name,
+    def _on_finish(exe: Execution) -> None:
+        _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
+
+    # 提交执行(线程池跑),sync_wait 内能完成则直接返 done;否则返 running + execution_id
+    exe = start_execution(
+        user_id=current.id,
+        datasource=ds,
         sql=payload.sql,
-        executed_by=current.username,
-        project_id=ds.project_id or "",
-        executed_at=_now(),
-        success=response.success,
-        elapsed_ms=response.elapsed_ms,
-        row_count=response.row_count,
-        truncated=response.truncated,
-        error=response.error,
+        max_rows=payload.max_rows,
+        console_id=payload.console_id,
     )
-    try:
-        sql_workbench_store.append_history(history_entry)
-    except Exception:  # pragma: no cover —— history 落盘失败不阻塞用户查询
-        logger.exception("history append failed")
+    # 注册 on_finish:这里手动 wrap —— start_execution 没接 callback,我们在
+    # _execution_envelope 返回后,若 status 还是 running,前端会 poll 拿状态;
+    # history 写入由 cancel/poll 路径里检测 finished 时触发。但更稳是 worker
+    # 完成时自己写 history —— 因 worker 完成时 caller 已没 ds_name/username
+    # 上下文。把 callback 改成显式 on-finish 注入更优雅:
+    from app.sqlide import runtime as _runtime
+    with _runtime._lock:  # type: ignore[attr-defined]
+        # 若已经 done(快查询在 sync_wait 内完成),直接 append history
+        if exe.status in ("done", "failed", "cancelled"):
+            _runtime._executions[exe.id]._already_history = True  # type: ignore[attr-defined]
+            _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
+        else:
+            # 还在跑,挂在 exe 上当 metadata,poll 路径里读取并消费
+            exe.__dict__["_history_ctx"] = (ds_name, project_id, username)
 
-    return response.model_dump(mode="json")
+    return _execution_envelope(exe)
+
+
+@router.get("/api/sql-workbench/executions/{execution_id}")
+def get_execution_status(
+    execution_id: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    exe = get_execution(execution_id)
+    if exe is None:
+        raise HTTPException(status_code=404, detail="execution 不存在或已过期")
+    if exe.user_id != current.id:
+        raise HTTPException(status_code=403, detail="无权查看他人的 execution")
+    # 检测 worker 完成且 history 还没 append → append 一次
+    if exe.status != "running":
+        ctx = exe.__dict__.get("_history_ctx")
+        if ctx and not exe.__dict__.get("_already_history"):
+            exe.__dict__["_already_history"] = True
+            ds_name, project_id, username = ctx
+            _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
+    return _execution_envelope(exe)
+
+
+@router.post("/api/sql-workbench/executions/{execution_id}/cancel")
+def cancel_execution(
+    execution_id: str,
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    ok, reason = request_cancel(execution_id, user_id=current.id)
+    if not ok:
+        # execution 不存在/无权 → 404;状态不对 → 409
+        if "不存在" in reason:
+            raise HTTPException(status_code=404, detail=reason)
+        if "无权" in reason:
+            raise HTTPException(status_code=403, detail=reason)
+        raise HTTPException(status_code=409, detail=reason)
+    return {"ok": True, "execution_id": execution_id, "cancel_requested": True}
+
+
+# ─── format (v0.2) ─────────────────────────────────────────────────────────
+
+class FormatRequest(BaseModel):
+    datasource_id: str = ""   # 可选,空表示走默认 mysql 方言
+    sql: str = Field(..., min_length=1)
+
+
+@router.post("/api/sql-workbench/format")
+def format_endpoint(
+    payload: FormatRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    db_type = ""
+    if payload.datasource_id:
+        ds = require_datasource_access(current, payload.datasource_id)
+        db_type = getattr(ds.db_type, "value", str(ds.db_type or ""))
+    result = _format_sql(payload.sql, db_type=db_type)
+    if not result.success:
+        # 200 + success=false envelope —— 前端能优雅展示错误而不覆盖原 SQL
+        return {
+            "success": False,
+            "formatted_sql": "",
+            "dialect": result.dialect,
+            "error": result.error,
+        }
+    return {
+        "success": True,
+        "formatted_sql": result.formatted_sql,
+        "dialect": result.dialect,
+    }
+
+
+# ─── explain (v0.2) ────────────────────────────────────────────────────────
+
+class ExplainRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    sql: str = Field(..., min_length=1)
+
+
+@router.post("/api/sql-workbench/explain")
+def explain_endpoint(
+    payload: ExplainRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    ds = require_datasource_access(current, payload.datasource_id)
+    if not getattr(ds, "allow_select", True):
+        raise HTTPException(status_code=403, detail=f"数据源 {ds.name} 已禁用 SELECT")
+    result = _explain_sql(ds, payload.sql)
+    return {
+        "success": result.success,
+        "dialect": result.dialect,
+        "columns": result.columns,
+        "rows": result.rows,
+        "explain_sql": result.explain_sql,
+        "elapsed_ms": result.elapsed_ms,
+        "unsupported": result.unsupported,
+        "error": result.error,
+    }
 
 
 # ─── history ───────────────────────────────────────────────────────────────

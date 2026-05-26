@@ -66,9 +66,11 @@ describe('useSqlWorkbenchStore', () => {
     expect(store.activeConsoleId).toBe('c2')
   })
 
-  it('execute 把 result 存进按 console_id 索引的 map + reload history', async () => {
+  it('execute 把 result 存进按 console_id 索引的 map + reload history (v0.2 envelope)', async () => {
     const store = useSqlWorkbenchStore()
+    // v0.2:envelope 顶层有 execution_id + status,done 时平铺 success/columns/rows
     apiJson.mockResolvedValueOnce({
+      execution_id: 'exe-1', status: 'done',
       success: true, columns: ['x'], rows: [[1]],
       row_count: 1, elapsed_ms: 5, truncated: false,
     })
@@ -76,7 +78,8 @@ describe('useSqlWorkbenchStore', () => {
 
     const ret = await store.execute('c1', { datasource_id: 'ds-1', sql: 'SELECT 1' })
     expect(ret.success).toBe(true)
-    expect(store.results.c1).toEqual(ret)
+    expect(store.results.c1.success).toBe(true)
+    expect(store.results.c1.columns).toEqual(['x'])
     expect(store.running.c1).toBe(false)
   })
 
@@ -86,10 +89,60 @@ describe('useSqlWorkbenchStore', () => {
     apiJson.mockImplementationOnce(() => new Promise(r => { resolvePending = r }))
     const p = store.execute('cx', { datasource_id: 'd', sql: 'SELECT 1' })
     expect(store.running.cx).toBe(true)
-    resolvePending({ success: true, columns: [], rows: [], row_count: 0, elapsed_ms: 0, truncated: false })
+    resolvePending({ execution_id: 'exe-x', status: 'done', success: true, columns: [], rows: [], row_count: 0, elapsed_ms: 0, truncated: false })
     apiGet.mockResolvedValueOnce({ items: [] })
     await p
     expect(store.running.cx).toBe(false)
+  })
+
+  it('execute running → poll → done (v0.2 异步)', async () => {
+    const store = useSqlWorkbenchStore()
+    // 第 1 次:返 running
+    apiJson.mockResolvedValueOnce({ execution_id: 'exe-r', status: 'running' })
+    // poll(apiGet):返 done
+    apiGet.mockResolvedValueOnce({
+      execution_id: 'exe-r', status: 'done',
+      success: true, columns: ['x'], rows: [[1]], row_count: 1, elapsed_ms: 12, truncated: false,
+    })
+    // 异步刷历史
+    apiGet.mockResolvedValueOnce({ items: [] })
+
+    const ret = await store.execute('cy', { datasource_id: 'd', sql: 'SELECT 1' })
+    expect(ret).not.toBeNull()
+    expect(ret.success).toBe(true)
+    expect(store.results.cy.row_count).toBe(1)
+  })
+
+  it('cancelExecution POST cancel endpoint', async () => {
+    const store = useSqlWorkbenchStore()
+    // 注入一个 in-flight 的 console
+    store.currentExecutionId['cz'] = 'exe-cancel'
+    apiJson.mockResolvedValueOnce({ ok: true })
+    await store.cancelExecution('cz')
+    expect(apiJson).toHaveBeenCalledWith(
+      '/api/sql-workbench/executions/exe-cancel/cancel', 'POST', {},
+    )
+  })
+
+  it('formatSql POST format endpoint', async () => {
+    const store = useSqlWorkbenchStore()
+    apiJson.mockResolvedValueOnce({ success: true, formatted_sql: 'SELECT 1', dialect: 'mysql' })
+    const r = await store.formatSql('select 1', 'ds-1')
+    expect(r.formatted_sql).toBe('SELECT 1')
+    expect(apiJson).toHaveBeenCalledWith('/api/sql-workbench/format', 'POST', {
+      datasource_id: 'ds-1', sql: 'select 1',
+    })
+  })
+
+  it('explain 把 result 存进 explainResults map', async () => {
+    const store = useSqlWorkbenchStore()
+    apiJson.mockResolvedValueOnce({
+      success: true, dialect: 'mysql', columns: ['id'], rows: [[1]],
+      explain_sql: 'EXPLAIN SELECT 1', elapsed_ms: 3, unsupported: false,
+    })
+    const r = await store.explain('ce', { datasource_id: 'd', sql: 'SELECT 1' })
+    expect(r.success).toBe(true)
+    expect(store.explainResults.ce.dialect).toBe('mysql')
   })
 
   it('loadHistory 接 datasource_id query', async () => {
