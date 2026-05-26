@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 > nul
 
 REM DataOps Studio 离线安装脚本
 REM 在目标机器上执行：创建 venv，装 wheels 目录里的离线依赖

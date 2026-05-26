@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+chcp 65001 > nul
 
 REM ============================================================
 REM DataOps Studio 启动脚本(离线模式)
