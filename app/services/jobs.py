@@ -271,7 +271,14 @@ def _run_job(job_id: str, task_id: str) -> None:
                     error="",
                     retry_count=retry_count,
                 )
-                result = run_task(task_id, status_callback=update)
+                # Wave 3 #13:把 job 上下文透传给 runner,让 run_index 能反查
+                with _lock:
+                    job_meta = dict(_jobs.get(job_id) or {})
+                result = run_task(
+                    task_id, status_callback=update,
+                    owner_user_id=str(job_meta.get("owner_user_id") or ""),
+                    job_id=job_id,
+                )
                 if _is_cancel_requested(job_id):
                     raise JobCancelled("job cancelled")
                 _patch_job(

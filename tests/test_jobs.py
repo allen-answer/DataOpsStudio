@@ -59,7 +59,7 @@ def test_cleanup_jobs_prunes_only_expired_terminal_jobs(isolated_storage):
 def test_submit_task_run_retries_failed_attempt_once(monkeypatch, isolated_storage):
     attempts = {"count": 0}
 
-    def fake_run_task(task_id, status_callback=None):
+    def fake_run_task(task_id, status_callback=None, **kwargs):
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise RuntimeError("temporary database error")
@@ -84,7 +84,7 @@ def test_submit_task_run_retries_failed_attempt_once(monkeypatch, isolated_stora
 def test_submit_task_run_without_retry_fails_after_first_attempt(monkeypatch, isolated_storage):
     attempts = {"count": 0}
 
-    def fake_run_task(task_id, status_callback=None):
+    def fake_run_task(task_id, status_callback=None, **kwargs):
         attempts["count"] += 1
         raise RuntimeError("permanent failure")
 
@@ -132,7 +132,7 @@ class _FakeResultWithRunId:
 
 def test_submit_task_run_captures_owner_and_project(monkeypatch, isolated_storage):
     """submit_task_run 接收 owner_user_id + project_id,落 job dict 供 audit / authz 直接读"""
-    def fake_run_task(task_id, status_callback=None):
+    def fake_run_task(task_id, status_callback=None, **kwargs):
         return _FakeResultWithRunId("run-xyz", task_id)
     monkeypatch.setattr(jobs, "run_task", fake_run_task)
 
@@ -151,7 +151,7 @@ def test_submit_task_run_captures_owner_and_project(monkeypatch, isolated_storag
 
 def test_submit_task_run_defaults_blank_owner_when_not_passed(monkeypatch, isolated_storage):
     """老 caller(scheduler 外 / 测试)不传 owner/project,字段默认空串向后兼容"""
-    def fake_run_task(task_id, status_callback=None):
+    def fake_run_task(task_id, status_callback=None, **kwargs):
         return _FakeResultWithRunId("run-abc", task_id)
     monkeypatch.setattr(jobs, "run_task", fake_run_task)
 

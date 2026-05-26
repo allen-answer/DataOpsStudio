@@ -343,40 +343,23 @@ def queue_snapshot(
 
 
 def _project_disk_usage_mb(project_id: str) -> float:
-    """扫 results/ 下所有 run(json 单文件 + parquet 目录)对应 task → 反查
-    project_id 累积字节折成 MB。Phase 14 per-project 配额用。
+    """Wave 3 #13 起改读 run_index `disk_bytes` SUM —— 不再扫文件系统。
 
-    实现成本说明:reservation per file 走 stat() —— results 目录 100 个 run /
-    每个 ~50 文件 ≈ 5000 次 stat,在 SSD 上 < 50ms。caller 在 guard.evaluate
-    入口调一次,不在 hot loop,可接受。失败吞掉返 0(measurement 失败不该误拦)。
+    优点:
+    - 时间戳 run_id(Phase 12+)也能正确归属 project(老逻辑要靠 run_id 前缀
+      猜 task_id,新格式直接失效)
+    - O(1) SQL 查询 vs 老路径 O(N files) stat()
+    - 跨 wave 一致:reservation 时就登记 project_id,删 run 时标 deleted
+
+    失败 fallback 到 0(measurement 失败不该误拦真任务)。
     """
+    if not project_id:
+        return 0.0
     try:
-        from app.services.repositories import task_store
-
-        # 建 task_id → project_id 索引
-        task_to_proj: dict[str, str] = {
-            t.id: (t.project_id or "") for t in task_store.list()
-        }
-        total_bytes = 0
-        # results/<run_id>.json 形态:run_id 前缀是 task_id;parquet 也用同 prefix
-        for entry in RESULTS_DIR.iterdir():
-            run_id = entry.name
-            # 老 run 用 task_id_<uuid>;Phase 12 起 run_id 用时间戳格式,跟 task
-            # 解耦 → 这种 run 无法反查 project,跳过(配额 best-effort 不强求 100%)
-            task_id = run_id.split("_")[0] if "_" in run_id else run_id
-            if task_to_proj.get(task_id) != project_id:
-                continue
-            try:
-                if entry.is_file():
-                    total_bytes += entry.stat().st_size
-                elif entry.is_dir():
-                    total_bytes += sum(
-                        f.stat().st_size for f in entry.rglob("*") if f.is_file()
-                    )
-            except (OSError, ValueError):
-                continue
-        return round(total_bytes / (1024 ** 2), 2)
+        from app.services.run_index import project_disk_used_mb as _pdm
+        return round(_pdm(project_id), 2)
     except Exception:
+        logger.warning("project disk usage measurement via run_index failed; returning 0", exc_info=True)
         return 0.0
 
 

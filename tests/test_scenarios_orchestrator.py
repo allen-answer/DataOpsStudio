@@ -65,7 +65,7 @@ def _mock_run_task_with_summary(monkeypatch, isolated_storage, summary: dict[str
     """mock runner.run_task：返回 CompareResult + 同时落 history JSON 让 verifier 能查到。"""
     from app.services import runner as runner_mod
 
-    def fake(task_id, status_callback=None):
+    def fake(task_id, status_callback=None, **kwargs):
         run_id = f"run-{task_id[:8]}"
         # 写一份 history 让 verifier 找到
         (isolated_storage["results"] / f"{run_id}.json").write_text(json.dumps({
@@ -137,7 +137,7 @@ def test_run_task_failure_does_not_short_circuit(isolated_storage, monkeypatch):
 
     from app.services import runner as runner_mod
 
-    def fake_run(task_id, status_callback=None):
+    def fake_run(task_id, status_callback=None, **kwargs):
         raise RuntimeError("compare engine crashed")
 
     monkeypatch.setattr(runner_mod, "run_task", fake_run)

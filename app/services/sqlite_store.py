@@ -204,6 +204,43 @@ def _init_schema(conn: sqlite3.Connection) -> None:
           ON slow_sql_plans(scenario_id, workload_name, ts DESC);
         CREATE INDEX IF NOT EXISTS slow_sql_plans_ts_idx
           ON slow_sql_plans(ts DESC);
+
+        -- Wave 3 #13: run_index — 所有 compare run 的统一持久化记录
+        -- 替代「扫文件系统 + 从 run_id 猜 task_id」的脆弱逻辑(Phase 12 起 run_id
+        -- 时间戳格式让反查失效)。给 resource_guard 算 per-project disk quota
+        -- 一个可靠的事实来源,也给 Phase 5 metrics 提供 peak_rss / disk_bytes 数据
+        --
+        -- 生命周期:reserved(admission ok 但 worker 还没开始) → running(worker
+        -- 拿到线程) → success | failed | cancelled | aborted_guard(mid-run guard
+        -- 中止) → deleted(run 文件被删,保留行做审计)
+        CREATE TABLE IF NOT EXISTS run_index (
+            run_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL DEFAULT '',
+            task_id TEXT NOT NULL DEFAULT '',
+            workflow_run_id TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            source_ds_id TEXT NOT NULL DEFAULT '',
+            target_ds_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'reserved',
+            requested_at TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT '',
+            result_format TEXT NOT NULL DEFAULT 'json',
+            stream_compare INTEGER NOT NULL DEFAULT 0,
+            max_rows INTEGER NOT NULL DEFAULT 0,
+            estimated_bytes INTEGER NOT NULL DEFAULT 0,
+            disk_bytes INTEGER NOT NULL DEFAULT 0,
+            peak_rss_mb REAL NOT NULL DEFAULT 0,
+            guard_reason TEXT NOT NULL DEFAULT '',
+            result_path TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS run_index_project_idx ON run_index(project_id, status);
+        CREATE INDEX IF NOT EXISTS run_index_owner_idx ON run_index(owner_user_id, status);
+        CREATE INDEX IF NOT EXISTS run_index_task_idx ON run_index(task_id, requested_at DESC);
+        CREATE INDEX IF NOT EXISTS run_index_status_idx ON run_index(status);
+        CREATE INDEX IF NOT EXISTS run_index_requested_idx ON run_index(requested_at DESC);
     """)
 
 

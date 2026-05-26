@@ -47,18 +47,100 @@ from app.utils.paths import RESULTS_DIR
 logger = logging.getLogger(__name__)
 
 
-def run_task(task_id: str, status_callback: Any | None = None) -> CompareResult:
+def run_task(
+    task_id: str,
+    status_callback: Any | None = None,
+    *,
+    owner_user_id: str = "",
+    workflow_run_id: str = "",
+    job_id: str = "",
+) -> CompareResult:
+    """统一 compare 入口(Wave 3 #13)。
+
+    所有路径(sync API / async job / workflow node)都从这进入,函数内统一:
+    - 提前分配 run_id 并 run_index.reserve() —— 进入 admission 即登记
+    - mark_running 在 worker 真正开始时
+    - finally finalize 确保终态写回(success / failed / aborted_guard)
+    """
+    from app.services import run_index as _run_index_mod
+
     start = time.perf_counter()
     started_at = datetime.now()
     task = task_store.get(task_id)
     if task is None:
         raise KeyError(f"Task not found: {task_id}")
 
-    # Phase 13:单任务 query_timeout 覆盖。task.limits.query_timeout_seconds 显
-    # 式设了就 push 进 ContextVar,下游 fetch_rows / iter_rows 路径自动取这个
-    # 值而非全局 env。None / 不设 → 走 env 默认(行为不变)。
-    with query_timeout_override(task.limits.query_timeout_seconds):
-        return _run_task_inner(task, started_at, start, status_callback)
+    # 提前分配 run_id + reservation。run_id 形态保留时间戳 + 8 hex 兼容老代码,
+    # 但通过 run_index.task_id 字段可靠反查(不再靠时间戳 prefix 猜 task)。
+    run_id = f"{started_at.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    _run_index_mod.reserve(
+        run_id=run_id,
+        task_id=task.id,
+        job_id=job_id,
+        workflow_run_id=workflow_run_id,
+        project_id=task.project_id or "",
+        owner_user_id=owner_user_id,
+        source_ds_id=task.source_id or "",
+        target_ds_id=task.target_id or "",
+        result_format=task.limits.result_format,
+        stream_compare=task.limits.stream_compare,
+        max_rows=task.limits.max_rows,
+    )
+
+    try:
+        # Phase 13:单任务 query_timeout 覆盖。task.limits.query_timeout_seconds 显
+        # 式设了就 push 进 ContextVar,下游 fetch_rows / iter_rows 路径自动取这个
+        # 值而非全局 env。None / 不设 → 走 env 默认(行为不变)。
+        with query_timeout_override(task.limits.query_timeout_seconds):
+            _run_index_mod.mark_running(run_id)
+            result = _run_task_inner(task, started_at, start, status_callback, run_id=run_id)
+        # 成功 finalize
+        _run_index_mod.finalize(
+            run_id, status="success",
+            disk_bytes=_safe_run_disk_bytes(run_id),
+            result_path=str(RESULTS_DIR / run_id),
+        )
+        return result
+    except (DiskWatermarkExceeded, RunQuotaExceeded) as exc:
+        _run_index_mod.finalize(
+            run_id, status="aborted_guard",
+            guard_reason=type(exc).__name__,
+            error=str(exc),
+            disk_bytes=_safe_run_disk_bytes(run_id),
+        )
+        raise
+    except Exception as exc:
+        _run_index_mod.finalize(
+            run_id, status="failed",
+            error=str(exc)[:1000],
+            disk_bytes=_safe_run_disk_bytes(run_id),
+        )
+        raise
+
+
+def _safe_run_disk_bytes(run_id: str) -> int:
+    """run_id 对应 results 目录 / 文件累计字节,best-effort 不抛错。"""
+    try:
+        from pathlib import Path
+        candidates: list[Path] = []
+        run_dir = RESULTS_DIR / run_id
+        if run_dir.exists():
+            candidates.append(run_dir)
+        for suffix in (".json", ".xlsx"):
+            f = RESULTS_DIR / f"{run_id}{suffix}"
+            if f.exists():
+                candidates.append(f)
+        total = 0
+        for p in candidates:
+            if p.is_file():
+                total += p.stat().st_size
+            else:
+                for f in p.rglob("*"):
+                    if f.is_file():
+                        total += f.stat().st_size
+        return total
+    except Exception:
+        return 0
 
 
 def _run_task_inner(
@@ -66,6 +148,8 @@ def _run_task_inner(
     started_at: datetime,
     start: float,
     status_callback: Any | None,
+    *,
+    run_id: str | None = None,
 ) -> CompareResult:
     logger.info(
         "task start task_id=%s task_name=%s source_id=%s target_id=%s sql_mode=%s keys=%s",
@@ -159,7 +243,10 @@ def _run_task_inner(
         raise
 
     _notify(status_callback, "exporting", "写入结果")
-    run_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    # Wave 3:run_id 由 wrapper(run_task)提前分配 + reserve;此处若 inner 被
+    # 旧路径直接调(目前没有但留兜底)再生成。
+    if run_id is None:
+        run_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
     excel_path = RESULTS_DIR / f"{run_id}.xlsx"
     elapsed_seconds = round(time.perf_counter() - start, 3)
     # payload 不含 buckets —— writer.finalize 时 merge 再写；summary 也推迟到
