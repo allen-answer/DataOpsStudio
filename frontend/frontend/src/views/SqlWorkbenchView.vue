@@ -93,6 +93,33 @@ const currentSearchLoading = computed<boolean>(() => {
   return dsId ? !!searchLoading.value[dsId] : false
 })
 
+// 判断当前 ds 是否已有 tables cache —— 否则搜索注定空,提示用户去展开
+const hasAnyTableCache = computed<boolean>(() => {
+  const meta = currentMeta.value
+  if (!meta?.schemas?.length) return false
+  return meta.schemas.some(s => Array.isArray(s.tables) && s.tables.length > 0)
+})
+
+// 聚焦搜索框时,若 schemas 还没拉过 → lazy 触发一次,让用户在搜索时至少有 schemas 可见
+function onSearchFocus() {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  const meta = metadataByDs.value[dsId]
+  if (!meta || !meta.schemas.length) {
+    store.loadSchemas(dsId).catch(() => {})
+  }
+}
+
+// 点搜索结果:切到 metadata tab + 跳转高亮(复用之前的 jump 函数);
+// 如果是 table/view 结果,顺便打开表详情让用户立刻看字段
+function onPickSearchResult(r: any) {
+  jumpToSearchResult(r)
+  if (r.kind === 'table' || r.kind === 'view') {
+    openTableDetail(r.schema, r.table)
+  }
+  searchQuery.value = ''
+}
+
 async function jumpToSearchResult(r: any) {
   const dsId = activeConsole.value?.datasource_id
   if (!dsId) return
@@ -618,6 +645,60 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
             </button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 全局对象搜索条(v0.3)—— 跨 table/column/view 搜元数据,不依赖底部 tab。
+         结果以浮层 dropdown 出现在 input 下方,点击跳到元数据树并展开高亮。 -->
+    <div v-if="activeConsole?.datasource_id" class="relative mx-3">
+      <div class="relative">
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="搜表 / 列 / 视图 —— 空格分隔 AND 命中(基于元数据缓存,先展开 schema 触发)"
+          class="w-full pl-9 pr-9 text-xs sql-font"
+          @focus="onSearchFocus"
+        />
+        <button
+          v-if="searchQuery"
+          class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+          title="清空"
+          @click="searchQuery = ''"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <!-- dropdown -->
+      <div
+        v-if="searchQuery.trim()"
+        class="absolute left-0 right-0 top-full mt-1 z-20 max-h-80 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg"
+      >
+        <div v-if="currentSearchLoading" class="py-4 text-center text-[11px] text-slate-400">搜索中…</div>
+        <div v-else-if="!currentSearchResults.length" class="py-4 text-center text-[11px] text-slate-400 px-3">
+          <div>无匹配。</div>
+          <div v-if="!hasAnyTableCache" class="mt-2 text-status-warning">
+            ⚠ 元数据 cache 为空 —— 请先点底部「元数据」tab,展开几个 schema 触发缓存后再搜。
+            <button class="ml-1 underline hover:text-primary" @click="bottomTab = 'metadata'">打开元数据 →</button>
+          </div>
+        </div>
+        <button
+          v-for="r in currentSearchResults"
+          :key="r.kind + '::' + r.schema + '::' + r.table + '::' + (r.column || r.view || '')"
+          class="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-primary-light/40 group"
+          @click="onPickSearchResult(r)"
+        >
+          <span
+            class="rounded px-1 py-0.5 text-[9px] font-bold uppercase shrink-0"
+            :class="{
+              'bg-tag-source-bg text-tag-source': r.kind === 'table',
+              'bg-tag-intermediate-bg text-tag-intermediate': r.kind === 'column',
+              'bg-tag-reference-bg text-tag-reference': r.kind === 'view',
+            }"
+          >{{ r.kind }}</span>
+          <span class="sql-font text-xs text-slate-700 truncate flex-1" :title="r.snippet">{{ r.snippet }}</span>
+          <span v-if="r.data_type" class="text-[10px] text-slate-400 sql-font shrink-0">{{ r.data_type }}</span>
+        </button>
       </div>
     </div>
 
