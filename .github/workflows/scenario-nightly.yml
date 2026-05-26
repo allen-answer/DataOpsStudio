@@ -22,7 +22,7 @@ jobs:
     name: run-all → verify (against demo MySQL)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       # app + demo MySQL（compose profile demo-db）。镜像本地多阶段 build，
       # 前端在 node:20-alpine 阶段构建打入 —— 不受 runner 环境影响。

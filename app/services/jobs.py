@@ -159,27 +159,44 @@ def cancel_job(job_id: str) -> dict[str, Any]:
 def active_job_counts() -> dict[str, int]:
     """活跃（非终态）job 计数 —— 供 resource_guard 构建 QueueState。
 
-    活跃 = status 不在 `_TERMINAL_STATUSES`（即 queued / running / cancelling）。
-    返回 `{compare_running, export_running, active_total}`。compare 同时计入
-    历史命名的 `task` kind；excel_export 单独计。
+    #14:running 与 queued 语义拆开
+    - `compare_running` / `export_running` —— 真正在执行(status="running")
+    - `compare_queued` / `export_queued` —— queued + cancelling(非终态但未在 cursor 上)
+    - `active_total` —— 全部非终态总和(向后兼容)
+
+    旧字段 `compare_running` 之前包含 queued+running+cancelling,造成 guard
+    `compare_cap` 误判把任务提前判 queue。
     """
     with _lock:
         jobs = list(_jobs.values())
     compare_running = 0
+    compare_queued = 0
     export_running = 0
+    export_queued = 0
     active_total = 0
     for job in jobs:
-        if job.get("status") in _TERMINAL_STATUSES:
+        status = job.get("status") or ""
+        if status in _TERMINAL_STATUSES:
             continue
         active_total += 1
         kind = job.get("kind") or ""
-        if kind in ("compare", "task"):
-            compare_running += 1
-        elif kind == "excel_export":
-            export_running += 1
+        is_compare = kind in ("compare", "task")
+        is_export = kind == "excel_export"
+        if status == "running":
+            if is_compare:
+                compare_running += 1
+            elif is_export:
+                export_running += 1
+        else:  # queued / cancelling
+            if is_compare:
+                compare_queued += 1
+            elif is_export:
+                export_queued += 1
     return {
         "compare_running": compare_running,
+        "compare_queued": compare_queued,
         "export_running": export_running,
+        "export_queued": export_queued,
         "active_total": active_total,
     }
 

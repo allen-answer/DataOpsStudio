@@ -59,8 +59,13 @@ class HostSnapshot(BaseModel):
 
 
 class QueueState(BaseModel):
+    # #14:running 与 queued 拆开,compare_cap 决策只看 running(老字段含 queued
+    # 导致提前判 queue)。两个 queued 字段当前 informational,Wave 3 后用于
+    # depth 判断更精准
     compare_running: int = 0
+    compare_queued: int = 0
     export_running: int = 0
+    export_queued: int = 0
     queue_depth: int = 0
     # 相对当前任务的 scope：与它同项目 / 同数据源 / 同 owner 的活跃对比作业数。
     per_project_running: int = 0
@@ -100,6 +105,14 @@ class GuardDecision(BaseModel):
 # ─── 配置（每次从 env 读，便于 dry-run 切换与单测 monkeypatch）────────────────
 
 
+def _default_enforce_for_env() -> bool:
+    """#14:生产模式默认 enforce(从 dry-run 升级为真保护器);
+    dev/test 仍 observe,可通过 DATAOPS_GUARD_ENFORCE=true 显式开。"""
+    if os.getenv("DATAOPS_ENV", "").strip().lower() in {"prod", "production"}:
+        return True
+    return _env_bool("DATAOPS_GUARD_ENFORCE", False)
+
+
 @dataclass(frozen=True)
 class GuardConfig:
     enforce: bool = False
@@ -120,7 +133,7 @@ class GuardConfig:
     @classmethod
     def from_env(cls) -> "GuardConfig":
         return cls(
-            enforce=_env_bool("DATAOPS_GUARD_ENFORCE", False),
+            enforce=_default_enforce_for_env(),
             max_compare_jobs=_env_int("DATAOPS_MAX_COMPARE_JOBS", 2),
             max_export_jobs=_env_int("DATAOPS_MAX_EXPORT_JOBS", 1),
             max_jobs_per_project=_env_int("DATAOPS_MAX_JOBS_PER_PROJECT", 2),
@@ -318,7 +331,9 @@ def queue_snapshot(
         project_disk_mb = _project_disk_usage_mb(project_id)
     return QueueState(
         compare_running=counts["compare_running"],
+        compare_queued=counts.get("compare_queued", 0),
         export_running=counts["export_running"],
+        export_queued=counts.get("export_queued", 0),
         queue_depth=counts["active_total"],
         per_project_running=per_project,
         per_datasource_running=per_datasource,

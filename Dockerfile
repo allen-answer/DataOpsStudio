@@ -40,5 +40,15 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 COPY . .
 COPY --from=frontend /src/static/spa /app/static/spa
 
+# #18:非 root 运行 —— 降低容器逃逸面 + 误写宿主机 volume 风险。
+# uid 1000 是 Linux 常见首个非 root 用户,跟 host volume 拥有者通常一致。
+# /app 整个目录 chown 让运行时写 config/results/logs 等有权限。
+RUN groupadd --system --gid 1000 dataops \
+    && useradd --system --uid 1000 --gid dataops --home-dir /app --shell /sbin/nologin dataops \
+    && mkdir -p /app/config /app/results /app/logs \
+    && chown -R dataops:dataops /app
+
+USER dataops
+
 EXPOSE 8010
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8010"]

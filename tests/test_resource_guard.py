@@ -212,7 +212,9 @@ def test_queue_snapshot_counts_per_project_and_datasource(isolated_storage):
     snap = queue_snapshot(project_id="pA", datasource_ids=("dsX",))
     assert snap.per_project_running == 2     # t1 + t2 都属 pA
     assert snap.per_datasource_running == 1  # 只有 t1 用 dsX
-    assert snap.compare_running == 2
+    # #14 起 compare_running 只算真 running;compare_queued 计 queued+cancelling
+    assert snap.compare_running == 1  # 只 j1 真 running
+    assert snap.compare_queued == 1   # j2 queued
 
 
 # ─── 决策优先级：deny 压过 queue ────────────────────────────────────────────

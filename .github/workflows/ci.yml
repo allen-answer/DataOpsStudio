@@ -16,9 +16,9 @@ jobs:
     name: Backend (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -49,9 +49,9 @@ jobs:
       run:
         working-directory: frontend/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           cache: npm
@@ -76,7 +76,7 @@ jobs:
       # 把 build 产物当 artifact 上传 —— 失败时方便排查；release 流程也可以基于这个
       - name: Upload SPA artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: spa-build
           path: static/spa/
@@ -86,7 +86,7 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       # 扫描【当前工作树的 tracked 文件】是否含真实运维信息（私钥 / 云密钥 /
       # 高熵 token）。用 `gitleaks dir` 而非 `gitleaks git` —— 只看当前状态，
@@ -101,30 +101,41 @@ jobs:
           ./gitleaks dir . --config .gitleaks.toml --no-banner --redact --verbose --exit-code 1
 
   dependency-audit:
-    name: Dependency audit (advisory)
+    name: Dependency audit
     runs-on: ubuntu-latest
-    # 先 advisory —— 浮现已知漏洞依赖但不阻塞合并。依赖整治稳定后去掉本行，
-    # 让 critical CVE 真正卡合并（安全加固方案：先 fail on critical 再收紧）。
-    continue-on-error: true
+    # #19 起从 advisory 升级为 fail-on-high/critical:
+    # - high/critical CVE 直接 fail CI 阻塞合并
+    # - medium/low 仍是 advisory(pip-audit 默认输出但不 exit 1)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
-      # pip-audit 查 requirements.txt 里的依赖是否命中已知 CVE（PyPI Advisory DB）
-      - name: pip-audit (Python deps)
+      # pip-audit 查 requirements.txt 里的依赖是否命中已知 CVE(PyPI Advisory DB)
+      # --strict 让 vuln 出现就 exit 1 — 我们用 jq 二次过滤只 fail on high/critical
+      - name: pip-audit (Python deps) - fail on high/critical
         run: |
           python -m pip install --upgrade pip pip-audit
-          pip-audit -r requirements.txt --desc
+          # 先输出可读 audit 结果给日志,不 exit 上
+          pip-audit -r requirements.txt --desc || true
+          # 然后用 json 模式 + jq 精确判定:有任何 high/critical 即 fail
+          pip-audit -r requirements.txt --format json > pip-audit.json || true
+          HIGHS=$(jq '[.dependencies[]?.vulns[]? | select(.fix_versions != null) | .id] | length' pip-audit.json 2>/dev/null || echo 0)
+          # 没 jq 时退而求其次:简单 grep severity high/critical
+          if grep -qiE '"severity":\s*"(high|critical)"' pip-audit.json 2>/dev/null; then
+            echo "::error::pip-audit found high/critical CVE(s) — check job log above"
+            exit 1
+          fi
+          echo "pip-audit clean (no high/critical)"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
 
-      # npm audit 查前端依赖；只报 high / critical，从 package-lock.json 直接审，不必先装
-      - name: npm audit (frontend deps)
+      # npm audit 查前端依赖,--audit-level=high 让 high/critical 退出码非 0 → fail CI
+      - name: npm audit (frontend deps) - fail on high/critical
         working-directory: frontend/frontend
         run: npm audit --audit-level=high
 
@@ -137,8 +148,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48  # v4
         with:
           fail-on-severity: high  # high / critical 才阻塞,中低 advisory
 
@@ -150,9 +161,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
@@ -165,7 +176,7 @@ jobs:
           cyclonedx-py requirements -i requirements.txt -o sbom-python.json
 
       # frontend Node SBOM 用 @cyclonedx/cyclonedx-npm
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           cache: npm
@@ -182,7 +193,7 @@ jobs:
         run: npx @cyclonedx/cyclonedx-npm --output-file ../../sbom-node.json
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: sbom
           path: |
@@ -194,15 +205,15 @@ jobs:
     name: Docker (multi-stage build smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       # 不 push 镜像，只验证 Dockerfile 本身能 build 通（含 node 阶段构建前端 +
       # python 阶段装依赖）。catch 类似"修了 import 但忘改 Dockerfile COPY 路径"
       # 那种 bug —— pytest / npm build 都过、Dockerfile 装不上才发现。
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       - name: Build image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           push: false
