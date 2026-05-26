@@ -128,17 +128,27 @@ def _execution_envelope(exe: Execution) -> dict[str, Any]:
 
     保留 v0.1 顶层字段(success / columns / rows / row_count / elapsed_ms / truncated /
     error)兼容 v0.1 客户端 —— 完成的快查询本质 shape 没变,只是多了 execution_id / status。
+
+    v0.5+:加 cancel_reason / timeout_seconds 给前端用("已超时取消" vs "已取消")。
     """
     env: dict[str, Any] = {
         "execution_id": exe.id,
         "status": exe.status,
         "cancel_requested": exe.cancel_requested,
+        "timeout_seconds": getattr(exe, "timeout_seconds", None),
     }
+    cancel_reason = getattr(exe, "cancel_reason", "")
+    if cancel_reason:
+        env["cancel_reason"] = cancel_reason
     if exe.result is not None:
         env.update(exe.result.model_dump(mode="json"))
     elif exe.error:
         env["error"] = exe.error
         env["success"] = False
+    elif exe.status == "cancelled":
+        # cancelled 时无 result 也无 error,给前端兜底的 error 文案
+        env["success"] = False
+        env["error"] = "已超时取消" if cancel_reason == "timeout" else "已取消"
     return env
 
 
