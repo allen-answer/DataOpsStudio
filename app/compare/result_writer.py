@@ -33,6 +33,29 @@ _BUCKET_NAMES: tuple[str, ...] = ("only_source", "only_target", "diff", "same")
 PARQUET_FORMAT_VERSION = 1
 
 
+def _estimate_row_bytes(row: dict[str, Any]) -> int:
+    """近似估算一行序列化字节(给 #16 双阈值 flush 用)。
+
+    不追求精确,只要单调上升即可:value 转 str 后取 len(utf-8) + 16 字节 per
+    key 的容器 overhead。None / int / float 等都 str 化。`bytes` 直接 len()。
+    """
+    total = 32  # 字典本身基础开销
+    for k, v in row.items():
+        total += len(str(k)) + 16
+        if v is None:
+            total += 4
+        elif isinstance(v, (bytes, bytearray)):
+            total += len(v)
+        elif isinstance(v, (int, float, bool)):
+            total += 8
+        else:
+            try:
+                total += len(str(v))
+            except Exception:
+                total += 64
+    return total
+
+
 @dataclass
 class ResultManifest:
     """`writer.finalize()` 返回值 —— runner 拿这个拼 `CompareResult` 响应。
@@ -164,6 +187,9 @@ class ParquetResultWriter:
     """
 
     DEFAULT_BATCH_SIZE = 5000
+    # #16 Wave 4:除了固定行数,加按字节阈值 flush。宽行 / 大文本场景下 5000 行
+    # 可能 = 几 GB,单批次内存峰值不可控。env 可配。
+    DEFAULT_FLUSH_BYTES = 16 * 1024 * 1024  # 16 MiB
 
     def __init__(
         self,
@@ -174,6 +200,7 @@ class ParquetResultWriter:
         persist_same_bucket: bool = False,
         same_sample_rows: int = 100,
         batch_size: int | None = None,
+        flush_bytes: int | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.excel_path = excel_path        # placeholder（本 writer 不写）
@@ -181,6 +208,11 @@ class ParquetResultWriter:
         self._persist_same = persist_same_bucket
         self._sample_rows = same_sample_rows
         self._batch_size = max(int(batch_size or self.DEFAULT_BATCH_SIZE), 1)
+        import os as _os
+        env_bytes = int(_os.getenv("DATAOPS_COMPARE_WRITER_FLUSH_BYTES", "0") or 0)
+        self._flush_bytes = max(
+            int(flush_bytes or env_bytes or self.DEFAULT_FLUSH_BYTES), 64 * 1024,  # 至少 64KB
+        )
 
         # 每桶状态：buffer 是当前未 flush 的 batch；writer 是 lazy 打开的
         # ParquetWriter；schema 是首批推出的 pyarrow.Schema；count 是总行数。
@@ -188,6 +220,8 @@ class ParquetResultWriter:
         self._bucket_buffers: dict[str, list[dict[str, Any]]] = {
             name: [] for name in _BUCKET_NAMES
         }
+        # #16:每桶累计字节估算(buffer 内未 flush 部分)。flush 时清零。
+        self._bucket_buffer_bytes: dict[str, int] = {name: 0 for name in _BUCKET_NAMES}
         self._bucket_writers: dict[str, Any] = {name: None for name in _BUCKET_NAMES}
         self._bucket_schemas: dict[str, Any] = {name: None for name in _BUCKET_NAMES}
         self._bucket_counts: dict[str, int] = {name: 0 for name in _BUCKET_NAMES}
@@ -218,10 +252,13 @@ class ParquetResultWriter:
             return
         self._bucket_buffers[bucket].append(row)
         self._bucket_counts[bucket] += 1
+        # #16:估算 row bytes 累计;触发任一阈值即 flush
+        self._bucket_buffer_bytes[bucket] += _estimate_row_bytes(row)
         # 单独捕获 manifest sample，避免被 batch flush 清空
         if len(self._samples[bucket]) < self._sample_rows_for_manifest:
             self._samples[bucket].append(row)
-        if len(self._bucket_buffers[bucket]) >= self._batch_size:
+        if (len(self._bucket_buffers[bucket]) >= self._batch_size
+                or self._bucket_buffer_bytes[bucket] >= self._flush_bytes):
             self._flush_bucket(bucket)
 
     def _flush_bucket(self, bucket: str) -> None:
@@ -253,6 +290,8 @@ class ParquetResultWriter:
                     f"row schema drift in bucket {bucket!r}: {exc}",
                 ) from exc
             self._bucket_writers[bucket].write_table(table)
+        # #16:flush 完清字节计数,准备下一批
+        self._bucket_buffer_bytes[bucket] = 0
         buffer.clear()
 
     def finalize(self) -> ResultManifest:

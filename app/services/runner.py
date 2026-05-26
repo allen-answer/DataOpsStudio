@@ -70,6 +70,11 @@ def run_task(
     if task is None:
         raise KeyError(f"Task not found: {task_id}")
 
+    # #17 Wave 4:大任务自动 promote 到 stream_compare + parquet。基于估算输入
+    # 字节(max_rows × 估算列宽 256B)做 admission decision。env 阈值可配:
+    # DATAOPS_COMPARE_AUTO_STREAM_BYTES(默认 1 GiB → promote);超 5 GiB 直接 deny。
+    task, promote_reason = _maybe_promote_large_task(task)
+
     # 提前分配 run_id + reservation。run_id 形态保留时间戳 + 8 hex 兼容老代码,
     # 但通过 run_index.task_id 字段可靠反查(不再靠时间戳 prefix 猜 task)。
     run_id = f"{started_at.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -86,6 +91,24 @@ def run_task(
         stream_compare=task.limits.stream_compare,
         max_rows=task.limits.max_rows,
     )
+    if promote_reason:
+        # 把 promote 原因记进 run_index.guard_reason(终态 finalize 时再 setattr 会覆盖,
+        # 这里走 update_disk_bytes 不影响,直接 update guard_reason 字段)
+        try:
+            from app.services.sqlite_store import connect as _sqc
+            with _sqc() as _conn:
+                _conn.execute(
+                    "UPDATE run_index SET guard_reason=? WHERE run_id=?",
+                    (promote_reason, run_id),
+                )
+        except Exception:
+            pass
+
+    # #15 Wave 4:run 级 memory guard。observe/enforce 模式都会在关键点采
+    # 样 RSS;enforce 模式达 hard_ratio 即抛 MemoryBudgetExceeded → finalize
+    # 走 aborted_guard 路径 + guard_reason='memory_hard_limit'。
+    from app.services.memory_guard import MemoryGuard, MemoryBudgetExceeded
+    mem_guard = MemoryGuard()
 
     try:
         # Phase 13:单任务 query_timeout 覆盖。task.limits.query_timeout_seconds 显
@@ -93,20 +116,34 @@ def run_task(
         # 值而非全局 env。None / 不设 → 走 env 默认(行为不变)。
         with query_timeout_override(task.limits.query_timeout_seconds):
             _run_index_mod.mark_running(run_id)
-            result = _run_task_inner(task, started_at, start, status_callback, run_id=run_id)
+            result = _run_task_inner(
+                task, started_at, start, status_callback,
+                run_id=run_id, mem_guard=mem_guard,
+            )
         # 成功 finalize
         _run_index_mod.finalize(
             run_id, status="success",
             disk_bytes=_safe_run_disk_bytes(run_id),
+            peak_rss_mb=mem_guard.peak_rss_mb(),
             result_path=str(RESULTS_DIR / run_id),
         )
         return result
+    except MemoryBudgetExceeded as exc:
+        _run_index_mod.finalize(
+            run_id, status="aborted_guard",
+            guard_reason="memory_hard_limit",
+            error=str(exc),
+            disk_bytes=_safe_run_disk_bytes(run_id),
+            peak_rss_mb=mem_guard.peak_rss_mb(),
+        )
+        raise
     except (DiskWatermarkExceeded, RunQuotaExceeded) as exc:
         _run_index_mod.finalize(
             run_id, status="aborted_guard",
             guard_reason=type(exc).__name__,
             error=str(exc),
             disk_bytes=_safe_run_disk_bytes(run_id),
+            peak_rss_mb=mem_guard.peak_rss_mb(),
         )
         raise
     except Exception as exc:
@@ -114,8 +151,60 @@ def run_task(
             run_id, status="failed",
             error=str(exc)[:1000],
             disk_bytes=_safe_run_disk_bytes(run_id),
+            peak_rss_mb=mem_guard.peak_rss_mb(),
         )
         raise
+
+
+# #17 Wave 4:估算列宽近似(每列平均 256 字节,文本 / JSON 列偏宽场景偏低估,
+# int / 短字符串场景偏高估 —— 用于 admission 量级判断,不追求精确)
+_ESTIMATED_ROW_BYTES = 256
+
+
+def _maybe_promote_large_task(task: CompareTask) -> tuple[CompareTask, str]:
+    """根据 task.limits.max_rows 估算输入字节,大任务自动促级。
+
+    阈值(env 可配,默认):
+    - `< auto_stream_bytes`(1 GiB) → 不动
+    - `auto_stream_bytes ~ deny_bytes`(1 GiB ~ 5 GiB):若非 stream+parquet,强制切换
+    - `>= deny_bytes`(5 GiB) → raise ValueError(超出 run_budget,拒绝执行)
+
+    返回 (新 task, promote_reason)。reason 空 = 没动。
+    """
+    import os as _os
+    auto_stream_bytes = int(_os.getenv("DATAOPS_COMPARE_AUTO_STREAM_BYTES", str(1 << 30)))
+    deny_bytes = int(_os.getenv("DATAOPS_COMPARE_DENY_BYTES", str(5 * (1 << 30))))
+
+    estimated = max(0, int(task.limits.max_rows)) * _ESTIMATED_ROW_BYTES
+
+    if estimated >= deny_bytes:
+        raise ValueError(
+            f"Task estimated input {estimated / (1 << 30):.1f}GiB exceeds run budget "
+            f"{deny_bytes / (1 << 30):.1f}GiB. Lower max_rows or split task. "
+            f"(env: DATAOPS_COMPARE_DENY_BYTES)"
+        )
+
+    if estimated < auto_stream_bytes:
+        return task, ""
+
+    # 已经是 stream + parquet → 无需 promote
+    if task.limits.stream_compare and task.limits.result_format == "parquet":
+        return task, ""
+
+    new_limits = task.limits.model_copy(update={
+        "stream_compare": True,
+        "result_format": "parquet",
+    })
+    new_task = task.model_copy(update={"limits": new_limits})
+    reason = (
+        f"auto_streaming_promoted(estimated={estimated // (1 << 20)}MiB,"
+        f"threshold={auto_stream_bytes // (1 << 20)}MiB)"
+    )
+    logger.warning(
+        "task %s promoted to stream_compare+parquet due to estimated input size: %s",
+        task.id, reason,
+    )
+    return new_task, reason
 
 
 def _safe_run_disk_bytes(run_id: str) -> int:
@@ -150,6 +239,7 @@ def _run_task_inner(
     status_callback: Any | None,
     *,
     run_id: str | None = None,
+    mem_guard: Any | None = None,
 ) -> CompareResult:
     logger.info(
         "task start task_id=%s task_name=%s source_id=%s target_id=%s sql_mode=%s keys=%s",
@@ -216,12 +306,17 @@ def _run_task_inner(
                 chunk_size=task.limits.fetch_chunk_size,
                 progress_callback=progress("source"),
             )
+            # #15 在 source 加载完后采样一次 — 这是 fetch_all 路径首个 OOM 高峰点
+            if mem_guard is not None:
+                mem_guard.check(stage="fetch_all.source", rows=len(source_rows) if source_rows else 0)
             _notify(status_callback, "querying_target", "读取目标数据")
             target_rows = target_reader.fetch_all(
                 max_rows=task.limits.max_rows,
                 chunk_size=task.limits.fetch_chunk_size,
                 progress_callback=progress("target"),
             )
+            if mem_guard is not None:
+                mem_guard.check(stage="fetch_all.target", rows=len(target_rows) if target_rows else 0)
             schema_report = build_schema_report(
                 list(source_rows[0]) if source_rows else [],
                 list(target_rows[0]) if target_rows else [],
