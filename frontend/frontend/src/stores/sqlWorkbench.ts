@@ -55,6 +55,8 @@ export interface ExplainResponse {
   elapsed_ms: number
   unsupported: boolean
   error?: string | null
+  // v0.5:即使 unsupported / failed,只要 SQL 文本能拿到就有 4 条静态规则提示
+  hints?: { code: string; severity: string; message: string }[]
 }
 
 export interface HistoryEntry {

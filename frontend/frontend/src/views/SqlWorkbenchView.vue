@@ -19,6 +19,7 @@ import { useSqlTemplatesStore, type SQLTemplate } from '../stores/sqlTemplates'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
 import SqlEditor from '../components/SqlEditor.vue'
+import ExplainPanel from '../components/sql/ExplainPanel.vue'
 import { setSqlTransfer } from '../utils/sqlTransfer'
 
 const router = useRouter()
@@ -668,6 +669,14 @@ function formatElapsed(ms: number): string {
   return `${(ms / 1000).toFixed(2)} s`
 }
 
+// v0.5:慢 SQL 阈值。超过即给 banner / chip 提示用户"考虑优化"。
+// 3 秒是经验值 —— 单条 OLTP SELECT 跑 > 3s 通常说明缺索引或全表扫。
+const SLOW_THRESHOLD_MS = 3000
+
+function isSlow(ms: number | undefined | null): boolean {
+  return !!ms && ms >= SLOW_THRESHOLD_MS
+}
+
 // ─── Phase 4:发送当前 SQL 到血缘 / 对比 / 诊断 ─────────────────────────
 
 const showSendMenu = ref(false)
@@ -679,7 +688,22 @@ function sendTo(target: 'lineage' | 'compare' | 'diagnosis', sql?: string, dsId?
     return
   }
   const finalDs = dsId ?? activeConsole.value?.datasource_id ?? ''
-  setSqlTransfer({ sql: finalSql, datasourceId: finalDs, source: 'sql-workbench' })
+  // v0.5:把 console / 数据源 / 上次执行耗时 一并打包,优化工作台 UI
+  // 顶部展示"来源信息卡",用户知道这条 SQL 从哪里来 + 历史执行多慢
+  const c = activeConsole.value
+  const ds = (datasources.value || []).find((d: any) => d.id === finalDs)
+  const result = c ? results.value[c.id] : null
+  setSqlTransfer({
+    sql: finalSql,
+    datasourceId: finalDs,
+    datasourceName: ds?.name,
+    datasourceDbType: ds?.db_type,
+    source: 'sql-workbench',
+    consoleId: c?.id,
+    consoleName: c?.name,
+    elapsedMs: result?.elapsed_ms,
+    executedAt: result?.success ? new Date().toISOString() : undefined,
+  })
   showSendMenu.value = false
   const path = {
     lineage: '/lineage',
@@ -691,7 +715,23 @@ function sendTo(target: 'lineage' | 'compare' | 'diagnosis', sql?: string, dsId?
 
 function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis', evt: Event) {
   evt.stopPropagation()  // 不要触发行的 "load 到当前 console"
-  sendTo(target, entry.sql, entry.datasource_id)
+  // 来自 history 的发送也带上 history 行已知的元数据(耗时 / 执行时间)
+  const ds = (datasources.value || []).find((d: any) => d.id === entry.datasource_id)
+  setSqlTransfer({
+    sql: entry.sql,
+    datasourceId: entry.datasource_id,
+    datasourceName: ds?.name || entry.datasource_name,
+    datasourceDbType: ds?.db_type,
+    source: 'sql-workbench-history',
+    elapsedMs: entry.elapsed_ms,
+    executedAt: entry.executed_at,
+  })
+  const path = {
+    lineage: '/lineage',
+    compare: '/data-compare',
+    diagnosis: '/sql-diagnosis',
+  }[target]
+  router.push(path)
 }
 </script>
 
@@ -1006,6 +1046,22 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
 
       <!-- result -->
       <div v-if="bottomTab === 'result'" class="flex-1 min-h-0 overflow-auto">
+        <!-- v0.5 慢 SQL 提示条:执行成功 + 耗时 ≥ 3s 才显示 -->
+        <div
+          v-if="currentResult?.success && isSlow(currentResult.elapsed_ms)"
+          class="mx-3 mt-3 flex items-center justify-between gap-3 rounded-md border border-status-warning/40 bg-status-warning-bg px-3 py-2 text-xs"
+        >
+          <span class="text-slate-700">
+            ⚡ 本次执行耗时 <strong>{{ formatElapsed(currentResult.elapsed_ms) }}</strong>,SQL 可能需要优化。
+          </span>
+          <button
+            class="inline-flex items-center gap-1 rounded bg-primary px-2.5 py-1 text-white text-[11px] hover:bg-primary-hover"
+            @click="sendTo('diagnosis')"
+          >
+            <Microscope class="h-3 w-3" />
+            发送到优化工作台 →
+          </button>
+        </div>
         <div v-if="!currentResult" class="px-4 py-10 text-center text-sm text-slate-400">
           点击「运行」执行 SQL,结果将显示在这里
         </div>
@@ -1033,39 +1089,9 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         </div>
       </div>
 
-      <!-- explain panel (v0.2) -->
+      <!-- explain panel(v0.5 抽到独立组件,加 hints + 复制按钮) -->
       <div v-else-if="bottomTab === 'explain'" class="flex-1 min-h-0 overflow-auto">
-        <div v-if="!currentExplain" class="px-4 py-10 text-center text-sm text-slate-400">
-          点击「Explain」查看执行计划
-        </div>
-        <div v-else-if="currentExplain.unsupported" class="m-3 rounded border border-status-warning/30 bg-status-warning-bg p-3 text-xs text-status-warning">
-          <div class="font-bold mb-1">⚠ {{ currentExplain.dialect }} 暂不支持 EXPLAIN</div>
-          <p class="text-slate-700">{{ currentExplain.error }}</p>
-        </div>
-        <div v-else-if="!currentExplain.success" class="m-3 rounded border border-status-error/30 bg-status-error-bg p-3 text-xs text-status-error">
-          <div class="font-bold mb-1">Explain 失败</div>
-          <pre class="sql-font whitespace-pre-wrap break-all">{{ currentExplain.error }}</pre>
-        </div>
-        <div v-else>
-          <div class="px-3 py-1.5 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-500 sql-font">
-            {{ currentExplain.explain_sql }}
-          </div>
-          <table class="text-xs">
-            <thead class="bg-slate-50 sticky top-0">
-              <tr>
-                <th v-for="col in currentExplain.columns" :key="col" class="text-left whitespace-nowrap">{{ col }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, i) in currentExplain.rows" :key="i" class="hover:bg-slate-50">
-                <td v-for="(cell, j) in row" :key="j" class="sql-font whitespace-nowrap" :title="String(cell ?? '')">
-                  <span v-if="cell === null" class="italic text-slate-400">NULL</span>
-                  <template v-else>{{ cell }}</template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <ExplainPanel :explain="currentExplain" />
       </div>
 
       <!-- metadata tree -->
@@ -1334,7 +1360,16 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
                   class="rounded px-1.5 py-0.5 text-[10px] font-bold"
                 >{{ h.success ? '✓' : '✗' }}</span>
               </td>
-              <td class="text-slate-500">{{ formatElapsed(h.elapsed_ms) }}</td>
+              <td class="text-slate-500">
+                <span :class="isSlow(h.elapsed_ms) ? 'text-status-warning font-semibold' : ''">
+                  {{ formatElapsed(h.elapsed_ms) }}
+                </span>
+                <span
+                  v-if="isSlow(h.elapsed_ms)"
+                  class="ml-1 rounded bg-status-warning-bg text-status-warning px-1 py-0.5 text-[9px] font-bold"
+                  title="慢 SQL — 耗时 ≥ 3 秒"
+                >⚡SLOW</span>
+              </td>
               <td class="text-slate-500">{{ h.row_count }}</td>
               <td class="sql-font text-slate-700 max-w-xl truncate relative">
                 {{ h.sql }}

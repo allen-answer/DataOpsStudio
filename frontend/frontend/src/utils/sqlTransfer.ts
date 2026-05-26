@@ -17,6 +17,14 @@ export interface SqlTransfer {
   sql: string
   datasourceId?: string
   source?: string  // 'sql-workbench' / 'history' / ...,目的地展示溯源用
+  // v0.5 扩展元数据(全可选,向后兼容):优化工作台用来在顶部展示
+  //   "来源: SQL 工作台 · console: 月报查询 · MySQL · 耗时 3.2s"
+  consoleId?: string
+  consoleName?: string
+  datasourceName?: string
+  datasourceDbType?: string
+  elapsedMs?: number
+  executedAt?: string  // ISO 8601
 }
 
 export function setSqlTransfer(data: SqlTransfer): void {

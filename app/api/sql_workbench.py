@@ -32,6 +32,7 @@ from app.api._authz import require_datasource_access
 from app.models import User
 from app.services.auth import require_role
 from app.sqlide.executor import execute_sql
+from app.sqlide import sql_hints as _sql_hints
 from app.sqlide.explain import explain_sql as _explain_sql
 from app.sqlide.format import format_sql as _format_sql
 from app.sqlide.models import (
@@ -303,6 +304,9 @@ def explain_endpoint(
     if not getattr(ds, "allow_select", True):
         raise HTTPException(status_code=403, detail=f"数据源 {ds.name} 已禁用 SELECT")
     result = _explain_sql(ds, payload.sql)
+    # v0.5:无论 success / unsupported / error,都附 4 条静态文本 hints —— 即使
+    # plan 跑不通(Oracle/DM unsupported),用户也能看到"SELECT * 提醒"等。
+    hints = _sql_hints.lint_sql(payload.sql)
     return {
         "success": result.success,
         "dialect": result.dialect,
@@ -312,6 +316,7 @@ def explain_endpoint(
         "elapsed_ms": result.elapsed_ms,
         "unsupported": result.unsupported,
         "error": result.error,
+        "hints": hints,
     }
 
 
