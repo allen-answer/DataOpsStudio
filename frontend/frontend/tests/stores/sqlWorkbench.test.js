@@ -212,6 +212,173 @@ describe('useSqlWorkbenchStore', () => {
     })
   })
 
+  // ─── metadata cache:cached_at 字段透传 + refresh 路径(v0.3) ─────────
+  describe('metadata cache v0.3', () => {
+    it('loadSchemas 把 cached_at 写进 metadataByDs.schemasCachedAt', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({
+        items: [{ name: 'public' }],
+        cached_at: '2026-05-26T03:00:00+00:00',
+        source: 'cache',
+      })
+      await store.loadSchemas('ds-1')
+      expect(store.metadataByDs['ds-1'].schemasCachedAt).toBe('2026-05-26T03:00:00+00:00')
+      expect(store.metadataByDs['ds-1'].schemas).toHaveLength(1)
+    })
+
+    it('loadSchemas refresh=true 时 URL 带 refresh=true', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [], cached_at: null, source: 'live' })
+      await store.loadSchemas('ds-1', true)
+      expect(apiGet).toHaveBeenCalledWith(expect.stringContaining('refresh=true'))
+    })
+
+    it('loadTables 把 cached_at 写到 schema.tablesCachedAt', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }], cached_at: '2026-05-26T03:00:00+00:00' })
+      await store.loadSchemas('ds-1')
+      apiGet.mockResolvedValueOnce({
+        items: [{ name: 'users', schema: 'public' }],
+        cached_at: '2026-05-26T03:05:00+00:00',
+        source: 'cache',
+      })
+      await store.loadTables('ds-1', 'public')
+      const sch = store.metadataByDs['ds-1'].schemas[0]
+      expect(sch.tablesCachedAt).toBe('2026-05-26T03:05:00+00:00')
+      expect(sch.tables).toEqual([{ name: 'users', schema: 'public' }])
+    })
+
+    it('loadTables stale + 旧值非空时保留旧值', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }] })
+      await store.loadSchemas('ds-1')
+      // 第一次拉成功
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'users', schema: 'public' }] })
+      await store.loadTables('ds-1', 'public')
+      // 第二次 refresh:后端 stale + 返旧值
+      apiGet.mockResolvedValueOnce({
+        items: [{ name: 'users', schema: 'public' }],
+        source: 'stale',
+        error: 'db down',
+      })
+      await store.loadTables('ds-1', 'public', true)
+      const sch = store.metadataByDs['ds-1'].schemas[0]
+      expect(sch.tables).toEqual([{ name: 'users', schema: 'public' }])
+    })
+
+    it('refreshAllMetadata 调 POST refresh + 重拉 schemas', async () => {
+      const store = useSqlWorkbenchStore()
+      // 先 load schemas + tables 一次
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }], cached_at: 'x' })
+      await store.loadSchemas('ds-1')
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'users', schema: 'public' }] })
+      await store.loadTables('ds-1', 'public')
+      // 执行 refreshAll
+      apiJson.mockResolvedValueOnce({ ok: true })
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'public' }], cached_at: 'new-time' })
+      await store.refreshAllMetadata('ds-1')
+      expect(apiJson).toHaveBeenCalledWith(
+        '/api/sql-workbench/metadata/refresh', 'POST',
+        { datasource_id: 'ds-1', scope: 'all' },
+      )
+      // 重拉后 schemas 的 tables 字段被清空(因为后端 cache 被清,等用户再展开才重拉)
+      const sch = store.metadataByDs['ds-1'].schemas[0]
+      expect(sch.tables).toBeUndefined()
+    })
+
+    it('loadCacheSummary 写回 scopes', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({
+        datasource_id: 'ds-1',
+        scopes: { schemas: '2026-05-26T03:00:00+00:00', tables: null, columns: null, indexes: null, views: null },
+      })
+      await store.loadCacheSummary('ds-1')
+      expect(store.metadataByDs['ds-1'].cacheSummary.schemas).toBeTruthy()
+      expect(store.metadataByDs['ds-1'].cacheSummary.tables).toBeNull()
+    })
+  })
+
+  // ─── 对象搜索 ─────────────────────────────────────────────────────────
+  describe('searchMetadata', () => {
+    it('打 /metadata/search 端点 + 写回 searchResults', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({
+        items: [
+          { kind: 'table', schema: 'public', table: 'users', score: 50, snippet: 'public.users' },
+        ],
+        count: 1,
+      })
+      const r = await store.searchMetadata('ds-1', 'users')
+      expect(r).toHaveLength(1)
+      expect(r[0].kind).toBe('table')
+      expect(store.searchResults['ds-1']).toEqual(r)
+      expect(apiGet).toHaveBeenCalledWith(expect.stringContaining('/api/sql-workbench/metadata/search'))
+      expect(apiGet).toHaveBeenCalledWith(expect.stringContaining('q=users'))
+    })
+
+    it('空 query 直接返 [],不打后端', async () => {
+      const store = useSqlWorkbenchStore()
+      const r = await store.searchMetadata('ds-1', '')
+      expect(r).toEqual([])
+      expect(apiGet).not.toHaveBeenCalled()
+    })
+
+    it('kinds 参数透传到 query string', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [], count: 0 })
+      await store.searchMetadata('ds-1', 'foo', 'table,column')
+      expect(apiGet).toHaveBeenCalledWith(expect.stringContaining('kinds=table%2Ccolumn'))
+    })
+
+    it('searchLoading 在调用中标 true,完成后 false', async () => {
+      const store = useSqlWorkbenchStore()
+      let resolvePending = () => {}
+      apiGet.mockImplementationOnce(() => new Promise(r => { resolvePending = r }))
+      const p = store.searchMetadata('ds-1', 'foo')
+      expect(store.searchLoading['ds-1']).toBe(true)
+      resolvePending({ items: [], count: 0 })
+      await p
+      expect(store.searchLoading['ds-1']).toBe(false)
+    })
+  })
+
+  // ─── 表详情 ─────────────────────────────────────────────────────────
+  describe('loadTableDetail', () => {
+    it('并发拉 columns + indexes + ddl', async () => {
+      const store = useSqlWorkbenchStore()
+      // 3 个 apiGet 调用并发
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'id', data_type: 'INT' }] })  // columns
+      apiGet.mockResolvedValueOnce({ items: [{ index_name: 'PRIMARY', column_name: 'id', non_unique: 0, seq_in_index: 1, index_type: 'BTREE' }] })  // indexes
+      apiGet.mockResolvedValueOnce({ supported: true, ddl: 'CREATE TABLE users (id INT);' })  // ddl
+      const detail = await store.loadTableDetail('ds-1', 'public', 'users')
+      expect(detail.columns).toHaveLength(1)
+      expect(detail.indexes).toHaveLength(1)
+      expect(detail.ddl).toBe('CREATE TABLE users (id INT);')
+      expect(detail.ddlSupported).toBe(true)
+    })
+
+    it('DDL 不支持时 ddlSupported=false', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [] })
+      apiGet.mockResolvedValueOnce({ items: [] })
+      apiGet.mockResolvedValueOnce({ supported: false, ddl: null, error: '不支持' })
+      const detail = await store.loadTableDetail('ds-1', 'public', 'users')
+      expect(detail.ddlSupported).toBe(false)
+      expect(detail.ddl).toBeNull()
+    })
+
+    it('某个子请求挂掉不影响其他', async () => {
+      const store = useSqlWorkbenchStore()
+      apiGet.mockResolvedValueOnce({ items: [{ name: 'id' }] })
+      apiGet.mockRejectedValueOnce(new Error('indexes endpoint failed'))
+      apiGet.mockResolvedValueOnce({ supported: true, ddl: 'CREATE TABLE x ()' })
+      const detail = await store.loadTableDetail('ds-1', 'public', 'users')
+      expect(detail.columns).toHaveLength(1)
+      expect(detail.indexes).toEqual([])
+      expect(detail.ddl).toBe('CREATE TABLE x ()')
+    })
+  })
+
   // ─── 列名补全:loadColumns 写回 metadata ─────────────────────────────
   describe('loadColumns', () => {
     it('拉某表列名并写回 metadata.schemas[].tables[].columns', async () => {

@@ -89,6 +89,47 @@ class OracleDialect(Dialect):
             options["tcp_connect_timeout"] = source.extra["tcp_connect_timeout"]
         return driver.connect(user=source.username, password=source.password, dsn=dsn, **options)
 
+    def list_indexes_sql(self, schema: str, table: str) -> str | None:
+        # all_indexes + all_ind_columns 联合,一行一(索引,列)。
+        # UNIQUENESS = 'UNIQUE' / 'NONUNIQUE'(原始字符串),前端转 non_unique flag。
+        if schema:
+            return (
+                "SELECT i.INDEX_NAME AS index_name, c.COLUMN_NAME AS column_name, "
+                "CASE WHEN i.UNIQUENESS = 'UNIQUE' THEN 0 ELSE 1 END AS non_unique, "
+                "c.COLUMN_POSITION AS seq_in_index, i.INDEX_TYPE AS index_type "
+                "FROM all_indexes i "
+                "JOIN all_ind_columns c "
+                "  ON c.INDEX_OWNER = i.OWNER AND c.INDEX_NAME = i.INDEX_NAME "
+                f"WHERE i.TABLE_OWNER = UPPER('{schema}') "
+                f"  AND i.TABLE_NAME = UPPER('{table}') "
+                "ORDER BY i.INDEX_NAME, c.COLUMN_POSITION"
+            )
+        return (
+            "SELECT i.INDEX_NAME AS index_name, c.COLUMN_NAME AS column_name, "
+            "CASE WHEN i.UNIQUENESS = 'UNIQUE' THEN 0 ELSE 1 END AS non_unique, "
+            "c.COLUMN_POSITION AS seq_in_index, i.INDEX_TYPE AS index_type "
+            "FROM all_indexes i "
+            "JOIN all_ind_columns c "
+            "  ON c.INDEX_OWNER = i.OWNER AND c.INDEX_NAME = i.INDEX_NAME "
+            f"WHERE i.TABLE_NAME = UPPER('{table}') "
+            "ORDER BY i.TABLE_OWNER, i.INDEX_NAME, c.COLUMN_POSITION"
+        )
+
+    def list_views_sql(self, schema: str) -> str | None:
+        if schema:
+            return (
+                "SELECT VIEW_NAME AS name FROM all_views "
+                f"WHERE OWNER = UPPER('{schema}') ORDER BY VIEW_NAME"
+            )
+        return (
+            "SELECT VIEW_NAME AS name FROM user_views ORDER BY VIEW_NAME"
+        )
+
+    # Oracle DDL 走 DBMS_METADATA.GET_DDL 返 CLOB,驱动 LOB 处理复杂(需 outputtypehandler
+    # 配置),且需要 EXECUTE 权限 + SELECT_CATALOG_ROLE,生产环境失败率高。
+    # 暂留 None(继承 base),前端会显示「该方言不支持 DDL,请在 DB 客户端工具查看」。
+    # 若未来真要,可基于 ALL_TAB_COLUMNS / ALL_CONSTRAINTS / ALL_INDEXES 拼合成 DDL。
+
     def introspect_columns_sql(self, schema: str, table: str) -> str:
         # NULLABLE 是 'Y' / 'N'；comments 在 all_col_comments 里需 join
         # Oracle 标识符默认大写 → 用 UPPER() 包 schema/table

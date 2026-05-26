@@ -77,6 +77,8 @@ export interface MetadataSchema {
   loading?: boolean
   expanded?: boolean
   tables?: MetadataTable[]
+  // 后端返的 tables 列表带 cached_at,塞这里给 UI 显示「缓存于 HH:MM」
+  tablesCachedAt?: string | null
 }
 
 export interface MetadataTable {
@@ -85,6 +87,30 @@ export interface MetadataTable {
   // columns 是惰性的:用户点表头才拉,拉过的写回这里供补全用
   columns?: string[]
   columnsLoading?: boolean
+}
+
+export interface MetadataResponse<T> {
+  items: T
+  cached_at?: string | null
+  source?: 'cache' | 'live' | 'stale'
+  error?: string | null
+}
+
+export interface CacheSummary {
+  datasource_id: string
+  scopes: Record<string, string | null>
+}
+
+// ─── 搜索结果项 ───────────────────────────────────────────────────────
+export interface MetadataSearchResult {
+  kind: 'table' | 'column' | 'view'
+  schema: string
+  table: string
+  column?: string
+  view?: string
+  data_type?: string
+  score: number
+  snippet: string
 }
 
 // 本地草稿的 localStorage key 前缀。每个 console 独立一份,
@@ -103,7 +129,19 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   const loadingConsoles = ref(false)
 
   // metadata tree —— 按 datasource_id 缓存,切换数据源时复用
-  const metadataByDs = reactive<Record<string, { schemas: MetadataSchema[]; loading: boolean; error: string }>>({})
+  const metadataByDs = reactive<Record<string, {
+    schemas: MetadataSchema[]
+    loading: boolean
+    error: string
+    // schemas 那个 GET 端点返的 cached_at,树头部显示「缓存于 HH:MM」
+    schemasCachedAt?: string | null
+    // 全 scope 概览,refresh 按钮 hover 时展开看每维度刷新时间
+    cacheSummary?: Record<string, string | null>
+  }>>({})
+
+  // 搜索结果(每 ds 一份,不跨 ds 串味)
+  const searchResults = reactive<Record<string, MetadataSearchResult[]>>({})
+  const searchLoading = reactive<Record<string, boolean>>({})
 
   // v0.2:每个 console 当前 in-flight execution_id(用于 cancel)
   const currentExecutionId = reactive<Record<string, string>>({})
@@ -267,7 +305,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
 
   // ─── metadata tree ────────────────────────────────────────────────────
 
-  async function loadSchemas(datasourceId: string): Promise<void> {
+  async function loadSchemas(datasourceId: string, refresh: boolean = false): Promise<void> {
     if (!datasourceId) return
     if (!metadataByDs[datasourceId]) {
       metadataByDs[datasourceId] = { schemas: [], loading: false, error: '' }
@@ -275,34 +313,53 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     metadataByDs[datasourceId].loading = true
     metadataByDs[datasourceId].error = ''
     try {
-      const resp = await apiGet<{ items: { name: string }[]; error?: string }>(
-        `/api/sql-workbench/metadata/schemas?datasource_id=${encodeURIComponent(datasourceId)}`,
-      )
-      metadataByDs[datasourceId].schemas = (resp.items || []).map(s => ({
-        name: s.name, expanded: false, loading: false, tables: undefined,
-      }))
+      const url = `/api/sql-workbench/metadata/schemas?datasource_id=${encodeURIComponent(datasourceId)}${refresh ? '&refresh=true' : ''}`
+      const resp = await apiGet<MetadataResponse<{ name: string }[]>>(url)
+      const oldSchemas = metadataByDs[datasourceId].schemas
+      // 失败保留旧 cache:source=stale + error 时不覆盖 schemas(items 是旧值仍可显示)
+      metadataByDs[datasourceId].schemas = (resp.items || []).map(s => {
+        // 保留旧 schema 的 expanded / tables 状态,避免 refresh 后用户体验崩
+        const prev = oldSchemas.find(x => x.name === s.name)
+        return {
+          name: s.name,
+          expanded: prev?.expanded ?? false,
+          loading: false,
+          tables: prev?.tables,
+          tablesCachedAt: prev?.tablesCachedAt,
+        }
+      })
+      metadataByDs[datasourceId].schemasCachedAt = resp.cached_at || null
       if (resp.error) metadataByDs[datasourceId].error = resp.error
     } catch (e: unknown) {
+      // 网络错误:保留旧 schemas 不动,只标 error
       metadataByDs[datasourceId].error = (e as Error)?.message || String(e)
     } finally {
       metadataByDs[datasourceId].loading = false
     }
   }
 
-  async function loadTables(datasourceId: string, schema: string): Promise<void> {
+  async function loadTables(datasourceId: string, schema: string, refresh: boolean = false): Promise<void> {
     const meta = metadataByDs[datasourceId]
     if (!meta) return
     const target = meta.schemas.find(s => s.name === schema)
     if (!target) return
-    if (target.tables !== undefined) return  // 已加载过,不重复打
+    if (!refresh && target.tables !== undefined) return  // 已加载过且不强刷,不重复打
     target.loading = true
     try {
-      const resp = await apiGet<{ items: { name: string; schema: string }[]; error?: string }>(
-        `/api/sql-workbench/metadata/tables?datasource_id=${encodeURIComponent(datasourceId)}&schema=${encodeURIComponent(schema)}`,
-      )
-      target.tables = resp.items || []
-    } catch (e: unknown) {
-      target.tables = []
+      const url = `/api/sql-workbench/metadata/tables?datasource_id=${encodeURIComponent(datasourceId)}&schema=${encodeURIComponent(schema)}${refresh ? '&refresh=true' : ''}`
+      const resp = await apiGet<MetadataResponse<{ name: string; schema: string }[]>>(url)
+      // 失败保留旧 tables(stale 时 items 仍是旧值,不要覆盖成空)
+      if (resp.source === 'stale' && target.tables !== undefined) {
+        // 后端在 stale 时仍返旧 items —— 这里直接用 items 而不是保留 target.tables,
+        // 但保险起见:items 可能为空时 target.tables 不动
+        if (resp.items && resp.items.length > 0) target.tables = resp.items
+      } else {
+        target.tables = resp.items || []
+      }
+      target.tablesCachedAt = resp.cached_at || null
+    } catch {
+      // 网络错误:保留旧 tables,不破坏 UI(若是首次拉就 target.tables 仍 undefined)
+      if (target.tables === undefined) target.tables = []
     } finally {
       target.loading = false
     }
@@ -319,28 +376,115 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     }
   }
 
-  async function loadColumns(datasourceId: string, schema: string, table: string): Promise<string[]> {
+  async function loadColumns(datasourceId: string, schema: string, table: string, refresh: boolean = false): Promise<string[]> {
     const meta = metadataByDs[datasourceId]
     if (!meta) return []
     const sch = meta.schemas.find(s => s.name === schema)
     if (!sch || !sch.tables) return []
     const t = sch.tables.find(x => x.name === table)
     if (!t) return []
-    if (Array.isArray(t.columns)) return t.columns
-    if (t.columnsLoading) return []
+    if (!refresh && Array.isArray(t.columns)) return t.columns
+    if (t.columnsLoading) return t.columns || []
     t.columnsLoading = true
     try {
       const qs = new URLSearchParams({ datasource_id: datasourceId, table, schema })
-      const resp = await apiGet<{ items: { name: string }[]; error?: string }>(
+      if (refresh) qs.set('refresh', 'true')
+      const resp = await apiGet<MetadataResponse<{ name: string }[]>>(
         `/api/sql-workbench/metadata/columns?${qs.toString()}`,
       )
-      t.columns = (resp.items || []).map(c => c.name)
+      // stale + 旧 items 非空 → 保留;否则用 resp
+      if (resp.source === 'stale' && resp.items && resp.items.length > 0) {
+        t.columns = resp.items.map(c => c.name)
+      } else {
+        t.columns = (resp.items || []).map(c => c.name)
+      }
       return t.columns
     } catch {
-      t.columns = []
-      return []
+      // 网络挂:保留旧值
+      if (!Array.isArray(t.columns)) t.columns = []
+      return t.columns
     } finally {
       t.columnsLoading = false
+    }
+  }
+
+  // ─── 手动刷新 cache(POST /metadata/refresh,清完前端重拉) ──────────
+  async function refreshAllMetadata(datasourceId: string): Promise<void> {
+    if (!datasourceId) return
+    try {
+      await apiJson(`/api/sql-workbench/metadata/refresh`, 'POST', {
+        datasource_id: datasourceId, scope: 'all',
+      })
+    } catch {
+      // refresh endpoint 失败也不阻塞 —— 后续 loadSchemas(refresh=true) 仍会从 cache miss 走 live
+    }
+    // 重拉 schemas;tables/columns 因为 cache 已被清,用户展开 schema 时会触发 live
+    const meta = metadataByDs[datasourceId]
+    if (meta) {
+      for (const s of meta.schemas) {
+        s.tables = undefined
+        s.tablesCachedAt = null
+      }
+    }
+    await loadSchemas(datasourceId, true)
+  }
+
+  async function loadCacheSummary(datasourceId: string): Promise<void> {
+    if (!datasourceId) return
+    try {
+      const resp = await apiGet<CacheSummary>(
+        `/api/sql-workbench/metadata/cache-summary?datasource_id=${encodeURIComponent(datasourceId)}`,
+      )
+      if (!metadataByDs[datasourceId]) {
+        metadataByDs[datasourceId] = { schemas: [], loading: false, error: '' }
+      }
+      metadataByDs[datasourceId].cacheSummary = resp.scopes || {}
+    } catch {
+      // 不阻塞 —— 头部"缓存于 X"显示不出来不致命
+    }
+  }
+
+  // ─── 对象搜索 ────────────────────────────────────────────────────────
+  async function searchMetadata(datasourceId: string, q: string, kinds: string = ''): Promise<MetadataSearchResult[]> {
+    if (!datasourceId || !q.trim()) {
+      searchResults[datasourceId] = []
+      return []
+    }
+    searchLoading[datasourceId] = true
+    try {
+      const qs = new URLSearchParams({ datasource_id: datasourceId, q })
+      if (kinds) qs.set('kinds', kinds)
+      const resp = await apiGet<{ items: MetadataSearchResult[]; count: number }>(
+        `/api/sql-workbench/metadata/search?${qs.toString()}`,
+      )
+      searchResults[datasourceId] = resp.items || []
+      return searchResults[datasourceId]
+    } catch {
+      searchResults[datasourceId] = []
+      return []
+    } finally {
+      searchLoading[datasourceId] = false
+    }
+  }
+
+  // ─── 表详情(字段+索引+DDL) ─────────────────────────────────────────
+  async function loadTableDetail(datasourceId: string, schema: string, table: string): Promise<{
+    columns: { name: string; data_type?: string; nullable?: string; comment?: string }[]
+    indexes: { index_name: string; column_name: string; non_unique: number; seq_in_index: number; index_type?: string }[]
+    ddl: string | null
+    ddlSupported: boolean
+  }> {
+    const qsBase = new URLSearchParams({ datasource_id: datasourceId, table, schema })
+    const [colResp, idxResp, ddlResp] = await Promise.all([
+      apiGet<MetadataResponse<any[]>>(`/api/sql-workbench/metadata/columns?${qsBase.toString()}`).catch(() => ({ items: [] })),
+      apiGet<MetadataResponse<any[]>>(`/api/sql-workbench/metadata/indexes?${qsBase.toString()}`).catch(() => ({ items: [] })),
+      apiGet<{ supported: boolean; ddl: string | null; error?: string }>(`/api/sql-workbench/metadata/table-ddl?${qsBase.toString()}`).catch(() => ({ supported: false, ddl: null })),
+    ])
+    return {
+      columns: colResp.items || [],
+      indexes: idxResp.items || [],
+      ddl: ddlResp.ddl,
+      ddlSupported: !!ddlResp.supported,
     }
   }
 
@@ -386,9 +530,12 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     consoles, activeConsoleId, activeConsole,
     results, running, history, loadingConsoles,
     metadataByDs, currentExecutionId, explainResults,
+    searchResults, searchLoading,
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, cancelExecution, loadHistory, setActive,
     loadSchemas, loadTables, toggleSchema, loadColumns,
+    refreshAllMetadata, loadCacheSummary,
+    searchMetadata, loadTableDetail,
     formatSql, explain,
     saveDraft, loadDraft, clearDraft,
   }

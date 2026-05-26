@@ -13,7 +13,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
 import { useBootstrapStore } from '../stores/bootstrap'
 import { useNoticeStore } from '../stores/notice'
@@ -25,7 +25,7 @@ const router = useRouter()
 const store = useSqlWorkbenchStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
-const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults } = storeToRefs(store)
+const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading } = storeToRefs(store)
 const { state: bootstrapState } = bootstrap
 
 const ACTIVE_ID_KEY = 'dataops.sqlWorkbench.activeId'
@@ -44,9 +44,120 @@ watch(() => activeConsole.value?.datasource_id, (dsId) => {
 function refreshMetadata() {
   const dsId = activeConsole.value?.datasource_id
   if (!dsId) return
-  // 清缓存重拉
-  delete metadataByDs.value[dsId]
-  store.loadSchemas(dsId).catch(() => {})
+  // v0.3:走后端 cache 失效接口,然后重拉。本地内存里的 schemas 不立即清,
+  // store.refreshAllMetadata 内部会保留树展开状态,刷出新 cached_at。
+  store.refreshAllMetadata(dsId).catch(() => {})
+}
+
+// 格式化缓存时间:ISO → 本地 HH:MM,跨日加日期
+function formatCacheTime(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  if (sameDay) return d.toTimeString().slice(0, 5)
+  return d.toISOString().slice(5, 16).replace('T', ' ')
+}
+
+// ─── 对象搜索 ─────────────────────────────────────────────────────────
+const searchQuery = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(searchQuery, (q) => {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  if (searchTimer) clearTimeout(searchTimer)
+  if (!q.trim()) {
+    // 清空搜索结果
+    if (searchResults.value[dsId]) searchResults.value[dsId] = []
+    return
+  }
+  searchTimer = setTimeout(() => {
+    store.searchMetadata(dsId, q).catch(() => {})
+  }, 200)
+})
+
+// 切 ds 清空搜索
+watch(() => activeConsole.value?.datasource_id, () => {
+  searchQuery.value = ''
+})
+
+const currentSearchResults = computed<any[]>(() => {
+  const dsId = activeConsole.value?.datasource_id || ''
+  return dsId ? (searchResults.value[dsId] || []) : []
+})
+
+const currentSearchLoading = computed<boolean>(() => {
+  const dsId = activeConsole.value?.datasource_id || ''
+  return dsId ? !!searchLoading.value[dsId] : false
+})
+
+async function jumpToSearchResult(r: any) {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  bottomTab.value = 'metadata'
+  // 确保 schema 已展开 + tables 已加载,这样目标节点可见
+  const meta = metadataByDs.value[dsId]
+  if (!meta) return
+  const sch = meta.schemas.find(s => s.name === r.schema)
+  if (sch) {
+    if (!sch.expanded) sch.expanded = true
+    if (sch.tables === undefined) {
+      await store.loadTables(dsId, r.schema).catch(() => {})
+    }
+  }
+  // 滚动 / 高亮在 template 通过 :data-table-key + 类名实现
+  highlightedTableKey.value = `${r.schema}::${r.table}`
+  // 4 秒后清高亮
+  setTimeout(() => {
+    if (highlightedTableKey.value === `${r.schema}::${r.table}`) {
+      highlightedTableKey.value = ''
+    }
+  }, 4000)
+  // 列结果:顺手加载列,供后续 SQL 编辑器补全
+  if (r.kind === 'column') {
+    store.loadColumns(dsId, r.schema, r.table).catch(() => {})
+  }
+}
+
+const highlightedTableKey = ref('')
+
+// ─── 表详情 drawer ─────────────────────────────────────────────────────
+const tableDetail = ref<null | {
+  schema: string
+  table: string
+  loading: boolean
+  columns: any[]
+  indexes: any[]
+  ddl: string | null
+  ddlSupported: boolean
+  detailTab: 'columns' | 'indexes' | 'ddl'
+}>(null)
+
+async function openTableDetail(schema: string, table: string) {
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  tableDetail.value = {
+    schema, table, loading: true,
+    columns: [], indexes: [], ddl: null, ddlSupported: false,
+    detailTab: 'columns',
+  }
+  try {
+    const data = await store.loadTableDetail(dsId, schema, table)
+    if (tableDetail.value && tableDetail.value.schema === schema && tableDetail.value.table === table) {
+      tableDetail.value.columns = data.columns
+      tableDetail.value.indexes = data.indexes
+      tableDetail.value.ddl = data.ddl
+      tableDetail.value.ddlSupported = data.ddlSupported
+    }
+  } finally {
+    if (tableDetail.value) tableDetail.value.loading = false
+  }
+}
+
+function closeTableDetail() {
+  tableDetail.value = null
 }
 
 function onTableClick(schema: string, table: string) {
@@ -586,14 +697,33 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
             · {{ currentExplain.rows.length }} 行 · {{ formatElapsed(currentExplain.elapsed_ms) }}
           </span>
         </button>
-        <button
+        <!-- metadata 缓存时间徽章 + 刷新按钮 -->
+        <span
           v-if="bottomTab === 'metadata' && activeConsole?.datasource_id"
-          class="ml-auto inline-flex items-center gap-1 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-          title="刷新元数据"
-          @click="refreshMetadata"
+          class="ml-auto flex items-center gap-2"
         >
-          <RefreshCw class="h-3 w-3" />
-        </button>
+          <span
+            v-if="currentMeta?.schemasCachedAt"
+            class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 sql-font"
+            :title="'缓存于 ' + currentMeta.schemasCachedAt"
+          >
+            缓存于 {{ formatCacheTime(currentMeta.schemasCachedAt) }}
+          </span>
+          <span
+            v-else
+            class="rounded bg-status-warning-bg px-1.5 py-0.5 text-[10px] text-status-warning"
+            title="未缓存,首次加载会从数据库拉"
+          >
+            未缓存
+          </span>
+          <button
+            class="inline-flex items-center gap-1 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            title="刷新元数据(清缓存重拉)"
+            @click="refreshMetadata"
+          >
+            <RefreshCw class="h-3 w-3" />
+          </button>
+        </span>
       </div>
 
       <!-- result -->
@@ -665,44 +795,108 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         <div v-if="!activeConsole?.datasource_id" class="py-10 text-center text-sm text-slate-400">
           请先选择数据源
         </div>
-        <div v-else-if="currentMeta?.loading" class="py-10 text-center text-sm text-slate-400">
-          加载中…
-        </div>
-        <div v-else-if="currentMeta?.error" class="rounded border border-status-error/30 bg-status-error-bg p-3 text-xs text-status-error">
-          <div class="font-bold mb-1">元数据加载失败</div>
-          <pre class="sql-font whitespace-pre-wrap break-all">{{ currentMeta.error }}</pre>
-        </div>
-        <div v-else-if="!currentMeta?.schemas?.length" class="py-10 text-center text-sm text-slate-400">
-          无 schema(或当前数据库不支持元数据查询)
-        </div>
-        <div v-else class="text-xs space-y-0.5">
-          <div v-for="s in currentMeta.schemas" :key="s.name">
+        <template v-else>
+          <!-- 搜索框(v0.3)-->
+          <div class="relative mb-3">
+            <Search class="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="搜表 / 列 / 视图(空格分隔多关键字 AND 命中)"
+              class="w-full pl-7 pr-7 text-xs sql-font"
+            />
             <button
-              class="flex items-center gap-1.5 w-full rounded px-1.5 py-1 hover:bg-slate-100 text-left"
-              @click="store.toggleSchema(activeConsole.datasource_id, s.name)"
+              v-if="searchQuery"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+              title="清空"
+              @click="searchQuery = ''"
             >
-              <ChevronDown v-if="s.expanded" class="h-3 w-3 text-slate-400" />
-              <ChevronRight v-else class="h-3 w-3 text-slate-400" />
-              <FolderTree class="h-3.5 w-3.5 text-amber-500" />
-              <span class="sql-font font-semibold text-slate-700">{{ s.name }}</span>
-              <span v-if="s.tables" class="text-[10px] text-slate-400">({{ s.tables.length }})</span>
+              <X class="h-3 w-3" />
             </button>
-            <div v-if="s.expanded" class="ml-5 mt-0.5 space-y-0.5">
-              <div v-if="s.loading" class="text-[11px] text-slate-400 py-1">加载表…</div>
-              <div v-else-if="!s.tables?.length" class="text-[11px] text-slate-400 py-1 italic">空 schema</div>
-              <button
-                v-for="t in s.tables"
-                :key="t.name"
-                class="flex items-center gap-1.5 w-full rounded px-1.5 py-0.5 hover:bg-primary-light/40 text-left group"
-                :title="'点击插入 SELECT * FROM ' + s.name + '.' + t.name"
-                @click="onTableClick(s.name, t.name)"
-              >
-                <Table2 class="h-3 w-3 text-slate-400 group-hover:text-primary" />
-                <span class="sql-font text-slate-700 group-hover:text-primary">{{ t.name }}</span>
-              </button>
-            </div>
           </div>
-        </div>
+
+          <!-- 搜索结果列表(searchQuery 非空时盖在树上) -->
+          <div v-if="searchQuery.trim()" class="space-y-0.5">
+            <div v-if="currentSearchLoading" class="py-4 text-center text-[11px] text-slate-400">搜索中…</div>
+            <div v-else-if="!currentSearchResults.length" class="py-4 text-center text-[11px] text-slate-400">
+              无匹配。<span v-if="!currentMeta?.schemasCachedAt">先展开几个 schema,搜索基于缓存。</span>
+            </div>
+            <button
+              v-for="r in currentSearchResults"
+              :key="r.kind + '::' + r.schema + '::' + r.table + '::' + (r.column || r.view || '')"
+              class="flex items-center gap-2 w-full rounded px-1.5 py-1 text-left hover:bg-primary-light/40 group"
+              @click="jumpToSearchResult(r)"
+            >
+              <span
+                class="rounded px-1 py-0.5 text-[9px] font-bold uppercase"
+                :class="{
+                  'bg-tag-source-bg text-tag-source': r.kind === 'table',
+                  'bg-tag-intermediate-bg text-tag-intermediate': r.kind === 'column',
+                  'bg-tag-reference-bg text-tag-reference': r.kind === 'view',
+                }"
+              >{{ r.kind }}</span>
+              <span class="sql-font text-xs text-slate-700 truncate flex-1" :title="r.snippet">{{ r.snippet }}</span>
+              <span v-if="r.data_type" class="text-[10px] text-slate-400 sql-font">{{ r.data_type }}</span>
+            </button>
+          </div>
+
+          <!-- 树状视图(无搜索时)-->
+          <template v-else>
+            <div v-if="currentMeta?.loading" class="py-10 text-center text-sm text-slate-400">
+              加载中…
+            </div>
+            <div v-else-if="currentMeta?.error" class="rounded border border-status-error/30 bg-status-error-bg p-3 text-xs text-status-error">
+              <div class="font-bold mb-1">元数据加载失败</div>
+              <pre class="sql-font whitespace-pre-wrap break-all">{{ currentMeta.error }}</pre>
+            </div>
+            <div v-else-if="!currentMeta?.schemas?.length" class="py-10 text-center text-sm text-slate-400">
+              无 schema(或当前数据库不支持元数据查询)
+            </div>
+            <div v-else class="text-xs space-y-0.5">
+              <div v-for="s in currentMeta.schemas" :key="s.name">
+                <button
+                  class="flex items-center gap-1.5 w-full rounded px-1.5 py-1 hover:bg-slate-100 text-left"
+                  @click="store.toggleSchema(activeConsole.datasource_id, s.name)"
+                >
+                  <ChevronDown v-if="s.expanded" class="h-3 w-3 text-slate-400" />
+                  <ChevronRight v-else class="h-3 w-3 text-slate-400" />
+                  <FolderTree class="h-3.5 w-3.5 text-amber-500" />
+                  <span class="sql-font font-semibold text-slate-700">{{ s.name }}</span>
+                  <span v-if="s.tables" class="text-[10px] text-slate-400">({{ s.tables.length }})</span>
+                  <span v-if="s.tablesCachedAt" class="ml-1 text-[10px] text-slate-300 sql-font" :title="'tables 缓存于 ' + s.tablesCachedAt">
+                    · {{ formatCacheTime(s.tablesCachedAt) }}
+                  </span>
+                </button>
+                <div v-if="s.expanded" class="ml-5 mt-0.5 space-y-0.5">
+                  <div v-if="s.loading" class="text-[11px] text-slate-400 py-1">加载表…</div>
+                  <div v-else-if="!s.tables?.length" class="text-[11px] text-slate-400 py-1 italic">空 schema</div>
+                  <div
+                    v-for="t in s.tables"
+                    :key="t.name"
+                    class="flex items-center gap-1.5 w-full rounded px-1.5 py-0.5 hover:bg-primary-light/40 text-left group transition"
+                    :class="highlightedTableKey === s.name + '::' + t.name ? 'bg-primary-light ring-1 ring-primary' : ''"
+                  >
+                    <button
+                      class="flex items-center gap-1.5 flex-1 text-left"
+                      :title="'点击插入 SELECT * FROM ' + s.name + '.' + t.name"
+                      @click="onTableClick(s.name, t.name)"
+                    >
+                      <Table2 class="h-3 w-3 text-slate-400 group-hover:text-primary" />
+                      <span class="sql-font text-slate-700 group-hover:text-primary">{{ t.name }}</span>
+                    </button>
+                    <button
+                      class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200"
+                      :title="'打开表详情(字段/索引/DDL)'"
+                      @click.stop="openTableDetail(s.name, t.name)"
+                    >
+                      <Info class="h-3 w-3 text-slate-400 hover:text-primary" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </template>
       </div>
 
       <!-- history -->
@@ -750,6 +944,123 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 表详情 drawer(v0.3)—— 右侧浮层,显示字段 / 索引 / DDL 三 tab -->
+    <div
+      v-if="tableDetail"
+      class="fixed inset-0 z-30 bg-slate-900/30"
+      @click.self="closeTableDetail"
+    >
+      <div class="absolute right-0 top-0 bottom-0 w-[640px] max-w-full bg-white shadow-2xl flex flex-col">
+        <!-- header -->
+        <div class="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
+          <div class="flex items-center gap-2">
+            <Table2 class="h-4 w-4 text-primary" />
+            <span class="sql-font font-semibold text-slate-800">
+              {{ tableDetail.schema ? tableDetail.schema + '.' : '' }}{{ tableDetail.table }}
+            </span>
+          </div>
+          <button class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" @click="closeTableDetail">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <!-- tabs -->
+        <div class="flex items-center gap-1 border-b border-slate-100 px-3 py-1.5">
+          <button
+            class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+            :class="tableDetail.detailTab === 'columns' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+            @click="tableDetail.detailTab = 'columns'"
+          >
+            <Columns3 class="h-3 w-3" /> 字段 ({{ tableDetail.columns.length }})
+          </button>
+          <button
+            class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+            :class="tableDetail.detailTab === 'indexes' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+            @click="tableDetail.detailTab = 'indexes'"
+          >
+            <Eye class="h-3 w-3" /> 索引 ({{ tableDetail.indexes.length }})
+          </button>
+          <button
+            class="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs"
+            :class="tableDetail.detailTab === 'ddl' ? 'bg-primary-light text-primary font-semibold' : 'text-slate-500 hover:bg-slate-50'"
+            @click="tableDetail.detailTab = 'ddl'"
+          >
+            <FileText class="h-3 w-3" /> DDL
+          </button>
+        </div>
+
+        <!-- body -->
+        <div class="flex-1 min-h-0 overflow-auto">
+          <div v-if="tableDetail.loading" class="py-10 text-center text-sm text-slate-400">
+            加载中…
+          </div>
+
+          <!-- columns tab -->
+          <table v-else-if="tableDetail.detailTab === 'columns'" class="text-xs w-full">
+            <thead class="bg-slate-50 sticky top-0">
+              <tr>
+                <th class="text-left whitespace-nowrap w-8">#</th>
+                <th class="text-left whitespace-nowrap">字段名</th>
+                <th class="text-left whitespace-nowrap">类型</th>
+                <th class="text-left whitespace-nowrap w-16">可空</th>
+                <th class="text-left whitespace-nowrap">注释</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!tableDetail.columns.length"><td colspan="5" class="text-center py-6 text-slate-400">无字段信息</td></tr>
+              <tr v-for="(c, i) in tableDetail.columns" :key="c.name + i" class="hover:bg-slate-50">
+                <td class="text-slate-400 sql-font">{{ c.ordinal || i + 1 }}</td>
+                <td class="sql-font text-slate-700 font-semibold">{{ c.name }}</td>
+                <td class="sql-font text-slate-600">{{ c.data_type }}</td>
+                <td class="text-slate-500">{{ c.nullable === 'Y' || c.nullable === 'YES' ? '是' : '否' }}</td>
+                <td class="text-slate-500 max-w-xs truncate" :title="c.comment">{{ c.comment }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- indexes tab -->
+          <div v-else-if="tableDetail.detailTab === 'indexes'">
+            <table class="text-xs w-full">
+              <thead class="bg-slate-50 sticky top-0">
+                <tr>
+                  <th class="text-left whitespace-nowrap">索引名</th>
+                  <th class="text-left whitespace-nowrap">列</th>
+                  <th class="text-left whitespace-nowrap w-12">序</th>
+                  <th class="text-left whitespace-nowrap w-16">唯一</th>
+                  <th class="text-left whitespace-nowrap">类型</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!tableDetail.indexes.length"><td colspan="5" class="text-center py-6 text-slate-400">无索引信息(或方言不支持)</td></tr>
+                <tr v-for="(idx, i) in tableDetail.indexes" :key="idx.index_name + idx.column_name + i" class="hover:bg-slate-50">
+                  <td class="sql-font text-slate-700">{{ idx.index_name }}</td>
+                  <td class="sql-font text-slate-700 font-semibold">{{ idx.column_name }}</td>
+                  <td class="text-slate-500">{{ idx.seq_in_index }}</td>
+                  <td>
+                    <span
+                      class="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                      :class="idx.non_unique === 0 ? 'bg-status-success-bg text-status-success' : 'bg-slate-100 text-slate-500'"
+                    >
+                      {{ idx.non_unique === 0 ? 'UNIQUE' : '普通' }}
+                    </span>
+                  </td>
+                  <td class="text-slate-500 sql-font">{{ idx.index_type }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- ddl tab -->
+          <div v-else class="p-3">
+            <div v-if="!tableDetail.ddlSupported" class="rounded border border-status-warning/30 bg-status-warning-bg p-3 text-xs text-status-warning">
+              该方言暂不支持 DDL 抽取。MySQL 走 SHOW CREATE TABLE,Oracle/DM 需 DBA 权限走 DBMS_METADATA(后续切片)。
+            </div>
+            <pre v-else class="sql-font text-xs text-slate-700 bg-slate-50 rounded p-3 whitespace-pre-wrap break-all">{{ tableDetail.ddl }}</pre>
+          </div>
+        </div>
       </div>
     </div>
   </section>

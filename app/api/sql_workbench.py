@@ -332,43 +332,92 @@ def list_history(
     return {"items": [h.model_dump(mode="json") for h in items]}
 
 
-# ─── metadata (Phase 3 真实接 datasource_introspect / sqlide.metadata) ────
+# ─── metadata (v0.3 加 cache + refresh + indexes/views/DDL) ──────────────
 
 from app.sqlide import metadata as _metadata
+from app.sqlide import metadata_cache as _meta_cache
+from app.sqlide import search as _meta_search
 
 
-def _metadata_error(exc: Exception) -> dict[str, Any]:
-    """统一 200 + items=[] + error 字段,前端能优雅 fallback。"""
-    return {"items": [], "error": str(exc)}
+def _cached_or_live(
+    ds_id: str,
+    scope: str,
+    key: str | None,
+    live_fn,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """三段逻辑:
+      1. 不强刷 + cache 有命中 → 返 cache,source='cache'
+      2. 强刷 / cache miss → 跑 live_fn,成功写回 cache,source='live'
+      3. live_fn 失败 + cache 有旧值 → 返旧值,source='stale' + error 字段(stale-while-error)
+      4. live_fn 失败 + cache 也空 → source='live' + items=[] + error
+
+    `key=None` 表示该 scope 的 items 是 list(schemas / views_当前schema);
+    `key='public'` 表示 items 是 dict,只 pluck 该 key(tables / columns / indexes / views_多schema)。
+    """
+    cache = _meta_cache.load_cache(ds_id)
+    items, fetched_at = _meta_cache.get_scope(cache, scope)  # type: ignore[arg-type]
+
+    if key is None:
+        existing = items if isinstance(items, list) else None
+    else:
+        existing = items.get(key) if isinstance(items, dict) else None
+
+    if not refresh and existing is not None:
+        return {"items": existing, "cached_at": fetched_at, "source": "cache"}
+
+    try:
+        live_items = live_fn()
+    except Exception as exc:
+        logger.warning("metadata live fetch ds=%s scope=%s key=%s failed: %s",
+                       ds_id, scope, key, exc)
+        if existing is not None:
+            return {
+                "items": existing,
+                "cached_at": fetched_at,
+                "source": "stale",
+                "error": str(exc),
+            }
+        return {"items": [], "cached_at": None, "source": "live", "error": str(exc)}
+
+    # 成功:写回 cache 时,multi-key 维度要保留同维度其他 key 的旧值
+    if key is None:
+        new_cache = _meta_cache.save_scope(ds_id, scope, live_items)  # type: ignore[arg-type]
+    else:
+        merged = dict(items) if isinstance(items, dict) else {}
+        merged[key] = live_items
+        new_cache = _meta_cache.save_scope(ds_id, scope, merged)  # type: ignore[arg-type]
+    fresh_at = new_cache[scope]["fetched_at"] if isinstance(new_cache.get(scope), dict) else None
+    return {"items": live_items, "cached_at": fresh_at, "source": "live"}
 
 
 @router.get("/api/sql-workbench/metadata/schemas")
 def list_schemas(
     datasource_id: str = Query(..., min_length=1),
+    refresh: bool = Query(default=False),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
     ds = require_datasource_access(current, datasource_id)
-    try:
-        items = _metadata.list_schemas(ds)
-    except Exception as exc:
-        logger.warning("list_schemas failed: %s", exc)
-        return _metadata_error(exc)
-    return {"items": items}
+    return _cached_or_live(
+        datasource_id, "schemas", None,
+        lambda: _metadata.list_schemas(ds),
+        refresh=refresh,
+    )
 
 
 @router.get("/api/sql-workbench/metadata/tables")
 def list_tables(
     datasource_id: str = Query(..., min_length=1),
     schema: str = Query(default=""),
+    refresh: bool = Query(default=False),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
     ds = require_datasource_access(current, datasource_id)
-    try:
-        items = _metadata.list_tables(ds, schema=schema)
-    except Exception as exc:
-        logger.warning("list_tables failed: %s", exc)
-        return _metadata_error(exc)
-    return {"items": items}
+    return _cached_or_live(
+        datasource_id, "tables", schema or "__default__",
+        lambda: _metadata.list_tables(ds, schema=schema),
+        refresh=refresh,
+    )
 
 
 @router.get("/api/sql-workbench/metadata/columns")
@@ -376,12 +425,116 @@ def list_columns(
     datasource_id: str = Query(..., min_length=1),
     table: str = Query(..., min_length=1),
     schema: str = Query(default=""),
+    refresh: bool = Query(default=False),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
     ds = require_datasource_access(current, datasource_id)
+    # key 含 schema + table,确保不同 schema 同名表互不污染
+    key = f"{schema}.{table}" if schema else table
+    return _cached_or_live(
+        datasource_id, "columns", key,
+        lambda: _metadata.list_columns(ds, table=table, schema=schema),
+        refresh=refresh,
+    )
+
+
+@router.get("/api/sql-workbench/metadata/indexes")
+def list_indexes(
+    datasource_id: str = Query(..., min_length=1),
+    table: str = Query(..., min_length=1),
+    schema: str = Query(default=""),
+    refresh: bool = Query(default=False),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    ds = require_datasource_access(current, datasource_id)
+    key = f"{schema}.{table}" if schema else table
+    return _cached_or_live(
+        datasource_id, "indexes", key,
+        lambda: _metadata.list_indexes(ds, table=table, schema=schema),
+        refresh=refresh,
+    )
+
+
+@router.get("/api/sql-workbench/metadata/views")
+def list_views(
+    datasource_id: str = Query(..., min_length=1),
+    schema: str = Query(default=""),
+    refresh: bool = Query(default=False),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    ds = require_datasource_access(current, datasource_id)
+    return _cached_or_live(
+        datasource_id, "views", schema or "__default__",
+        lambda: _metadata.list_views(ds, schema=schema),
+        refresh=refresh,
+    )
+
+
+@router.get("/api/sql-workbench/metadata/table-ddl")
+def get_table_ddl(
+    datasource_id: str = Query(..., min_length=1),
+    table: str = Query(..., min_length=1),
+    schema: str = Query(default=""),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """表的 CREATE TABLE DDL。Oracle/DM/DB2 暂不支持,返 supported=false。
+    不缓存(DDL 内容相对少访问,且文本较长不值得 cache 一份单独 scope)。"""
+    ds = require_datasource_access(current, datasource_id)
     try:
-        items = _metadata.list_columns(ds, table=table, schema=schema)
+        ddl = _metadata.get_table_ddl(ds, table=table, schema=schema)
     except Exception as exc:
-        logger.warning("list_columns failed: %s", exc)
-        return _metadata_error(exc)
-    return {"items": items}
+        logger.warning("get_table_ddl failed: %s", exc)
+        return {"supported": False, "ddl": None, "error": str(exc)}
+    if ddl is None:
+        return {"supported": False, "ddl": None, "error": "该方言暂不支持 DDL 抽取"}
+    return {"supported": True, "ddl": ddl}
+
+
+@router.get("/api/sql-workbench/metadata/cache-summary")
+def cache_summary(
+    datasource_id: str = Query(..., min_length=1),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """返每 scope 的 fetched_at。前端用来在 UI 标"缓存于 HH:MM"。"""
+    require_datasource_access(current, datasource_id)
+    return {"datasource_id": datasource_id, "scopes": _meta_cache.cache_summary(datasource_id)}
+
+
+class _RefreshRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    scope: str = Field(default="all", description="all / schemas / tables / columns / indexes / views")
+
+
+@router.get("/api/sql-workbench/metadata/search")
+def search_objects(
+    datasource_id: str = Query(..., min_length=1),
+    q: str = Query(..., min_length=1),
+    kinds: str = Query(default="", description="逗号分隔:table,column,view;空=全部"),
+    limit: int = Query(default=50, ge=1, le=200),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """跨 metadata cache 搜 table / column / view。完全 cache-only,搜不出来时
+    前端应该提示用户"先展开 schema 触发缓存"。"""
+    require_datasource_access(current, datasource_id)
+    kind_list = [k.strip() for k in kinds.split(",") if k.strip()] if kinds else None
+    items = _meta_search.search_metadata(
+        datasource_id, q=q, kinds=kind_list, limit=limit,
+    )
+    return {"items": items, "query": q, "count": len(items)}
+
+
+@router.post("/api/sql-workbench/metadata/refresh")
+def refresh_metadata(
+    payload: _RefreshRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """手动失效 cache。前端在用户点"刷新"按钮时调,然后用普通 GET ?refresh=true
+    重新拉。这里**只清不拉**,避免大数据源刷新阻塞 HTTP 长连接。"""
+    require_datasource_access(current, payload.datasource_id)
+    if payload.scope == "all":
+        _meta_cache.clear_cache(payload.datasource_id, None)
+    elif payload.scope in _meta_cache.SCOPES:
+        _meta_cache.clear_cache(payload.datasource_id, payload.scope)  # type: ignore[arg-type]
+    else:
+        raise HTTPException(400, f"unknown scope: {payload.scope}")
+    return {"ok": True, "datasource_id": payload.datasource_id, "scope": payload.scope}

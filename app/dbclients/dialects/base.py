@@ -85,6 +85,39 @@ class Dialect(ABC):
         """
         return None
 
+    def list_indexes_sql(self, schema: str, table: str) -> str | None:
+        """返回查"某表所有索引(含列级)"的 SQL,不支持的方言返 None。
+
+        约定:
+        - schema / table 已被 caller `_validate_identifier` 校验,可直接 inline
+        - 返回结果至少包含:index_name, column_name, non_unique (0/1), seq_in_index,
+          index_type(各方言原始字符串,UI 透传)
+        - 同一索引多个列展开为多行(seq_in_index 排序)
+
+        默认 None。MySQL / Oracle / DM 子类覆盖,DB2 留 None。
+        """
+        return None
+
+    def list_views_sql(self, schema: str) -> str | None:
+        """返回查"某 schema 下所有视图"的 SQL,不支持的方言返 None。
+
+        - 至少含 view_name 字段。schema 为空时按方言默认 (current_schema / user)。
+        默认 None。MySQL / Oracle / DM 子类覆盖。
+        """
+        return None
+
+    def show_create_table_sql(self, schema: str, table: str) -> str | None:
+        """返回查"基础建表 DDL"的 SQL,不支持的方言返 None。
+
+        约定:执行后取第一行最后一列作为 DDL 文本。
+        - MySQL:`SHOW CREATE TABLE \\`s\\`.\\`t\\`` 返 (Table, Create Table) 两列
+        - Oracle/DM:DBMS_METADATA.GET_DDL 返 CLOB,驱动 LOB 处理复杂,暂留 None
+        - DB2 留 None
+
+        默认 None。
+        """
+        return None
+
     @abstractmethod
     def connect(self, source: DataSource, module_name: str) -> Any:
         """新建一个 DB 连接对象。

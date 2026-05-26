@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from app.dbclients import factory as dbclients_factory
+from app.dbclients.dialects import get_dialect
 from app.services.datasource_introspect import _validate_identifier, introspect_columns
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,86 @@ def list_columns(source: Any, table: str, schema: str = "") -> list[dict[str, An
     """复用既有 introspect_columns;表名 'schema.table' 也接受。"""
     full = f"{schema}.{table}" if schema and "." not in table else table
     return introspect_columns(source.id, full)
+
+
+def list_indexes(source: Any, table: str, schema: str = "") -> list[dict[str, Any]]:
+    """返 [{index_name, column_name, non_unique, seq_in_index, index_type}],
+    按 (index_name, seq_in_index) 升序。同一索引多列展开为多行。
+
+    不支持的方言(目前 DB2)返 [],不抛。
+    """
+    _validate_identifier(table)
+    if schema:
+        _validate_identifier(schema)
+    dialect = get_dialect(source.db_type)
+    sql = dialect.list_indexes_sql(schema, table)
+    if sql is None:
+        return []
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=1000)
+    return [_normalize_index_row(r) for r in rows]
+
+
+def list_views(source: Any, schema: str = "") -> list[dict[str, str]]:
+    """返 [{name, schema}]。schema 空时按方言默认(MySQL: DATABASE(),Oracle: USER)。
+    不支持的方言返 []。"""
+    if schema:
+        _validate_identifier(schema)
+    dialect = get_dialect(source.db_type)
+    sql = dialect.list_views_sql(schema)
+    if sql is None:
+        return []
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=2000)
+    items: list[dict[str, str]] = []
+    for r in rows:
+        name = _pick(r, ["name", "NAME"]) or ""
+        name_str = str(name).strip()
+        if not name_str:
+            continue
+        items.append({"name": name_str, "schema": schema})
+    return items
+
+
+def get_table_ddl(source: Any, table: str, schema: str = "") -> str | None:
+    """返表的 CREATE TABLE 文本;不支持的方言或失败返 None。
+
+    约定:取结果第一行最后一列(MySQL SHOW CREATE TABLE 第 2 列就是 DDL)。
+    Oracle/DM 暂不支持(留 None),前端提示「该方言不支持 DDL 抽取」。
+    """
+    _validate_identifier(table)
+    if schema:
+        _validate_identifier(schema)
+    dialect = get_dialect(source.db_type)
+    sql = dialect.show_create_table_sql(schema, table)
+    if sql is None:
+        return None
+    try:
+        rows = dbclients_factory.fetch_rows(source, sql, max_rows=1)
+    except Exception as exc:
+        logger.warning("get_table_ddl failed: %s", exc)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    # MySQL `SHOW CREATE TABLE` 返列名是 "Create Table"(含空格),取倒数最后一个
+    # 字符串值最稳健 —— 多方言通用。
+    values = list(row.values())
+    if not values:
+        return None
+    ddl = values[-1]
+    if ddl is None:
+        return None
+    return str(ddl)
+
+
+def _normalize_index_row(row: dict) -> dict[str, Any]:
+    """统一索引行字段名,小写化。"""
+    return {
+        "index_name": str(_pick(row, ["index_name", "INDEX_NAME", "Index_name", "Key_name"]) or "").strip(),
+        "column_name": str(_pick(row, ["column_name", "COLUMN_NAME", "Column_name"]) or "").strip(),
+        "non_unique": int(_pick(row, ["non_unique", "NON_UNIQUE", "Non_unique"]) or 0),
+        "seq_in_index": int(_pick(row, ["seq_in_index", "SEQ_IN_INDEX", "Seq_in_index"]) or 0),
+        "index_type": str(_pick(row, ["index_type", "INDEX_TYPE", "Index_type"]) or "").strip(),
+    }
 
 
 def _pick(row: dict, candidates: list[str]) -> Any:
