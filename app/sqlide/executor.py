@@ -35,10 +35,16 @@ def execute_sql(
     sql: str,
     *,
     max_rows: int = 1000,
+    _execution: Any = None,
 ) -> ExecuteResponse:
     """Run SELECT/WITH SQL against the given datasource.
 
     返回 ExecuteResponse 统一 envelope。任何错都落 error 字段不向外抛。
+
+    `_execution`:可选 Execution 对象,runtime 层注入。当前 v0.5 仅占位 —— 后续
+    用来在 borrow conn 后写 exe.connection_id(MySQL KILL QUERY 用)。现在保持
+    None,driver-level KILL 跳过(KILL 是 stub),完成后 cancel_requested check
+    + 丢弃结果是主路径。
     """
     max_rows = max(1, min(int(max_rows or 1000), _MAX_ROWS_HARD_CAP))
 

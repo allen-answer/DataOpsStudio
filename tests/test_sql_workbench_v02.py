@@ -164,9 +164,10 @@ def test_execute_returns_execution_id_and_status(client_admin, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert "execution_id" in body
-    assert body["status"] in ("done", "running")  # 通常 done(快查),理论上 running
+    # v0.5:status 闭集 pending/running/success/failed/cancelled
+    assert body["status"] in ("success", "running", "pending")
     # 快查询 sync_wait 内完成 —— body 会平铺含 success/columns/rows
-    if body["status"] == "done":
+    if body["status"] == "success":
         assert body["success"] is True
         assert body["columns"] == ["x"]
 
@@ -189,8 +190,8 @@ def test_get_execution_status_after_done(client_admin, monkeypatch):
     assert r2.status_code == 200
     body = r2.json()
     assert body["execution_id"] == exe_id
-    assert body["status"] in ("done", "running")
-    if body["status"] == "done":
+    assert body["status"] in ("success", "running", "pending")
+    if body["status"] == "success":
         assert body.get("success") is True
 
 
@@ -290,3 +291,118 @@ def test_history_written_after_execution_completes(client_admin, monkeypatch):
     client_admin.get(f"/api/sql-workbench/executions/{exe_id}")  # trigger history write
     h = client_admin.get("/api/sql-workbench/history").json()["items"]
     assert any(e["sql"] == "SELECT 42" for e in h)
+
+
+# ─── v0.5 状态机闭集 + timeout + 长查询 cancel ──────────────────────────
+
+
+def test_status_enum_v05_closed_set(client_admin, monkeypatch):
+    """v0.5 status 闭集只能是 pending / running / success / failed / cancelled。"""
+    ds_id = _create_ds(client_admin)
+    monkeypatch.setattr(
+        "app.sqlide.executor.fetch_rows_with_schema",
+        lambda *a, **kw: QueryRows(rows=[{"x": 1}], columns=["x"], raw_columns=["x"], warnings=[]),
+    )
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 1",
+    })
+    body = r.json()
+    assert body["status"] in ("pending", "running", "success", "failed", "cancelled")
+    # done 在 v0.5 不再产生
+    assert body["status"] != "done"
+
+
+def test_long_query_cancel_yields_cancelled_with_reason_user(client_admin, monkeypatch):
+    """长查询期间用户主动 cancel → status=cancelled + reason=user。"""
+    ds_id = _create_ds(client_admin)
+
+    def _slow(*a, **kw):
+        # 真实长查询 —— 但 worker 内部已经 check cancel_requested,所以一旦标
+        # cancel,即使 fetch 仍跑完也丢弃结果
+        time.sleep(1.0)
+        return QueryRows(rows=[], columns=[], raw_columns=[], warnings=[])
+    monkeypatch.setattr("app.sqlide.executor.fetch_rows_with_schema", _slow)
+
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 1",
+    })
+    exe_id = r.json()["execution_id"]
+    # 立即 cancel
+    time.sleep(0.1)
+    rc = client_admin.post(f"/api/sql-workbench/executions/{exe_id}/cancel")
+    assert rc.status_code == 200
+    # 等 worker 完成
+    time.sleep(1.2)
+    r2 = client_admin.get(f"/api/sql-workbench/executions/{exe_id}")
+    body = r2.json()
+    assert body["status"] == "cancelled"
+    assert body.get("cancel_reason") == "user"
+
+
+def test_timeout_seconds_triggers_auto_cancel_with_reason_timeout(client_admin, monkeypatch):
+    """timeout_seconds 到时后端自动 cancel + reason=timeout。"""
+    ds_id = _create_ds(client_admin)
+
+    def _slow(*a, **kw):
+        time.sleep(2.0)  # 故意比 timeout 长
+        return QueryRows(rows=[], columns=[], raw_columns=[], warnings=[])
+    monkeypatch.setattr("app.sqlide.executor.fetch_rows_with_schema", _slow)
+
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 1",
+        "timeout_seconds": 1,   # 1 秒超时
+    })
+    assert r.status_code == 200
+    exe_id = r.json()["execution_id"]
+    # 等超时触发 + worker 完成
+    time.sleep(2.5)
+    r2 = client_admin.get(f"/api/sql-workbench/executions/{exe_id}")
+    body = r2.json()
+    assert body["status"] == "cancelled", body
+    assert body.get("cancel_reason") == "timeout"
+    assert body.get("timeout_seconds") == 1
+
+
+def test_timeout_seconds_clamped_to_max_3600(client_admin, monkeypatch):
+    """timeout_seconds 超过 3600 时返 422(Pydantic 验证)。"""
+    ds_id = _create_ds(client_admin)
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 1",
+        "timeout_seconds": 9999,
+    })
+    assert r.status_code == 422
+
+
+def test_timeout_seconds_must_be_positive(client_admin, monkeypatch):
+    """timeout_seconds=0 / 负数返 422。"""
+    ds_id = _create_ds(client_admin)
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 1",
+        "timeout_seconds": 0,
+    })
+    assert r.status_code == 422
+
+
+def test_history_records_cancel_reason(client_admin, monkeypatch):
+    """cancelled 走 history,error 字段含 reason(user / timeout)。"""
+    ds_id = _create_ds(client_admin)
+
+    def _slow(*a, **kw):
+        time.sleep(2.0)
+        return QueryRows(rows=[], columns=[], raw_columns=[], warnings=[])
+    monkeypatch.setattr("app.sqlide.executor.fetch_rows_with_schema", _slow)
+
+    # 1 秒 timeout → 自动 cancel
+    r = client_admin.post("/api/sql-workbench/execute", json={
+        "datasource_id": ds_id, "sql": "SELECT 'timeout_test'",
+        "timeout_seconds": 1,
+    })
+    exe_id = r.json()["execution_id"]
+    time.sleep(2.5)
+    client_admin.get(f"/api/sql-workbench/executions/{exe_id}")  # trigger history write
+
+    h = client_admin.get("/api/sql-workbench/history").json()["items"]
+    matched = [e for e in h if "timeout_test" in e["sql"]]
+    assert matched, "history missing cancelled entry"
+    assert "cancelled" in (matched[0].get("error") or "")
+    assert "timeout" in (matched[0].get("error") or "")

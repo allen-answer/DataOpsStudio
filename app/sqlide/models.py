@@ -59,6 +59,9 @@ class ExecuteRequest(BaseModel):
     max_rows: int = Field(default=1000, ge=1, le=10_000)
     # 可选:绑哪个 console(让 history 关联回 console 视角)
     console_id: str = ""
+    # v0.5:单查询硬超时(秒),到点自动 cancel + 标 cancel_reason='timeout'
+    # 服务端再 clamp [1, 3600]
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
 
 class ExecuteResponse(BaseModel):

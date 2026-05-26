@@ -153,7 +153,12 @@ def _append_history_for_execution(exe: Execution, ds_name: str, project_id: str,
         elapsed_ms = 0
         row_count = 0
         truncated = False
-        error = exe.error or ("cancelled" if exe.status == "cancelled" else None)
+        # v0.5:cancelled 时把 reason 一起带进 history,user / timeout 两种用户能区分
+        if exe.status == "cancelled":
+            reason = getattr(exe, "cancel_reason", "") or "user"
+            error = f"cancelled ({reason})"
+        else:
+            error = exe.error
     entry = HistoryEntry(
         id=uuid.uuid4().hex,
         datasource_id=exe.datasource_id,
@@ -194,13 +199,14 @@ def execute(
     def _on_finish(exe: Execution) -> None:
         _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
 
-    # 提交执行(线程池跑),sync_wait 内能完成则直接返 done;否则返 running + execution_id
+    # 提交执行(线程池跑),sync_wait 内能完成则直接返 success;否则返 pending/running + execution_id
     exe = start_execution(
         user_id=current.id,
         datasource=ds,
         sql=payload.sql,
         max_rows=payload.max_rows,
         console_id=payload.console_id,
+        timeout_seconds=payload.timeout_seconds,
     )
     # 注册 on_finish:这里手动 wrap —— start_execution 没接 callback,我们在
     # _execution_envelope 返回后,若 status 还是 running,前端会 poll 拿状态;
@@ -210,7 +216,9 @@ def execute(
     from app.sqlide import runtime as _runtime
     with _runtime._lock:  # type: ignore[attr-defined]
         # 若已经 done(快查询在 sync_wait 内完成),直接 append history
-        if exe.status in ("done", "failed", "cancelled"):
+        # v0.5:status 闭集改 pending/running/success/failed/cancelled。
+        # 兼容老 "done"(理论上 v0.5 后不再产生,留作 paranoid 兜底)。
+        if exe.status in ("success", "done", "failed", "cancelled"):
             _runtime._executions[exe.id]._already_history = True  # type: ignore[attr-defined]
             _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
         else:
@@ -231,7 +239,8 @@ def get_execution_status(
     if exe.user_id != current.id:
         raise HTTPException(status_code=403, detail="无权查看他人的 execution")
     # 检测 worker 完成且 history 还没 append → append 一次
-    if exe.status != "running":
+    # 终态判断:不在 pending/running 即已完成
+    if exe.status not in ("pending", "running"):
         ctx = exe.__dict__.get("_history_ctx")
         if ctx and not exe.__dict__.get("_already_history"):
             exe.__dict__["_already_history"] = True

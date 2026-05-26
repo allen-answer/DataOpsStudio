@@ -35,8 +35,12 @@ export interface ExecuteResponse {
 
 export interface ExecutionEnvelope extends Partial<ExecuteResponse> {
   execution_id: string
-  status: 'running' | 'done' | 'failed' | 'cancelled'
+  // v0.5 闭集对齐:pending(入列等线程)/ running / success / failed / cancelled
+  // 老 'done' 保留兼容(理论上 v0.5+ 不再产生,但旧 cache 可能还在)
+  status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'done'
   cancel_requested?: boolean
+  cancel_reason?: 'user' | 'timeout' | string
+  timeout_seconds?: number
 }
 
 export interface FormatResponse {
@@ -211,10 +215,17 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
    * v0.2:execute 改成异步路径 —— 立刻拿 execution_id + status;running 时
    * 客户端 poll 直到 done/failed/cancelled。中间 running 期间用户可点"停止"。
    */
+  // v0.5:status 闭集对齐 pending/running/success/failed/cancelled
+  // 兼容老 'done'(理论上 v0.5+ 不产生,但旧后端 / 缓存可能仍发)
+  function _isTerminal(status: string): boolean {
+    return status === 'success' || status === 'done' || status === 'failed' || status === 'cancelled'
+  }
+
   async function execute(consoleId: string, payload: {
     datasource_id: string
     sql: string
     max_rows?: number
+    timeout_seconds?: number
   }): Promise<ExecuteResponse | null> {
     running[consoleId] = true
     try {
@@ -223,22 +234,24 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
         sql: payload.sql,
         max_rows: payload.max_rows || 1000,
         console_id: consoleId,
+        timeout_seconds: payload.timeout_seconds || 300,
       })
       currentExecutionId[consoleId] = env.execution_id
 
       // 已完成:envelope 平铺含 success/columns/rows
-      if (env.status === 'done' || env.status === 'failed') {
+      if (env.status === 'success' || env.status === 'done' || env.status === 'failed') {
         const r = _envelopeToResult(env)
         results[consoleId] = r
         loadHistory().catch(() => {})
         return r
       }
       if (env.status === 'cancelled') {
-        results[consoleId] = { success: false, columns: [], rows: [], row_count: 0, elapsed_ms: 0, truncated: false, error: '已取消' }
+        const reason = env.cancel_reason === 'timeout' ? '已超时取消' : '已取消'
+        results[consoleId] = { success: false, columns: [], rows: [], row_count: 0, elapsed_ms: 0, truncated: false, error: reason }
         return results[consoleId]
       }
 
-      // running:poll 直到 finished
+      // pending / running:poll 直到 finished
       const final = await _pollExecution(env.execution_id)
       const r = _envelopeToResult(final)
       results[consoleId] = r
@@ -254,7 +267,8 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise(r => setTimeout(r, intervalMs))
       const env = await apiGet<ExecutionEnvelope>(`/api/sql-workbench/executions/${executionId}`)
-      if (env.status !== 'running') return env
+      // pending / running 之外即终态
+      if (_isTerminal(env.status)) return env
     }
     return { execution_id: executionId, status: 'failed', error: 'poll timeout' } as ExecutionEnvelope
   }
@@ -267,7 +281,9 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
       row_count: env.row_count ?? 0,
       elapsed_ms: env.elapsed_ms ?? 0,
       truncated: env.truncated ?? false,
-      error: env.error ?? (env.status === 'cancelled' ? '已取消' : null),
+      error: env.error ?? (env.status === 'cancelled'
+        ? (env.cancel_reason === 'timeout' ? '已超时取消' : '已取消')
+        : null),
     }
   }
 

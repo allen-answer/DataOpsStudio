@@ -10,8 +10,8 @@
  * 持久化: 用户每改 SQL / 切 datasource → debounced PUT 到后端 console。
  *         刷新页面 → loadConsoles() 恢复全部 tab + 上次激活的 tab(本地存)。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info, Bookmark, BookmarkPlus, Upload, Download, Trash2, Pencil } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
@@ -35,6 +35,13 @@ const { state: bootstrapState } = bootstrap
 const ACTIVE_ID_KEY = 'dataops.sqlWorkbench.activeId'
 const bottomTab = ref<'result' | 'history' | 'metadata' | 'explain' | 'templates'>('result')
 const maxRows = ref(1000)
+// v0.5:单查询超时(秒)。到时后端自动 cancel + 标 reason='timeout'。
+// 持久到 localStorage,刷新页面仍保留。
+const TIMEOUT_KEY = 'dataops.sqlWorkbench.timeoutSeconds'
+const timeoutSeconds = ref<number>(Number(localStorage.getItem(TIMEOUT_KEY)) || 300)
+watch(timeoutSeconds, (v) => {
+  if (v && v > 0) localStorage.setItem(TIMEOUT_KEY, String(v))
+})
 
 // metadata:切 datasource 自动拉一次
 watch(() => activeConsole.value?.datasource_id, (dsId) => {
@@ -557,6 +564,7 @@ async function onRun() {
       datasource_id: c.datasource_id,
       sql: c.sql,
       max_rows: maxRows.value,
+      timeout_seconds: timeoutSeconds.value,
     })
     bottomTab.value = 'result'
   } catch (e: unknown) {
@@ -673,6 +681,41 @@ function formatElapsed(ms: number): string {
 // 3 秒是经验值 —— 单条 OLTP SELECT 跑 > 3s 通常说明缺索引或全表扫。
 const SLOW_THRESHOLD_MS = 3000
 
+// v0.5:统计当前有几个 console 在跑(running map 中 true 的数量)
+const runningCount = computed<number>(() => {
+  return Object.values(running.value).filter(v => v).length
+})
+
+// 浏览器原生关页 / 刷新拦截。only 在有 in-flight 查询时触发,
+// 否则用户每次离开都被骚扰会很烦。
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (runningCount.value > 0) {
+    e.preventDefault()
+    // 大多数浏览器会用自己固定的"未保存"文案,不会用我们 returnValue 的字符串,
+    // 但仍需要 set 非空让 prompt 显示
+    e.returnValue = `还有 ${runningCount.value} 个查询正在执行,离开会丢失结果。`
+    return e.returnValue
+  }
+}
+
+// Vue Router 内部跳转拦截(切到别的 view)
+onBeforeRouteLeave((to, from, next) => {
+  if (runningCount.value > 0) {
+    const ok = confirm(`还有 ${runningCount.value} 个查询正在执行,离开 SQL 工作台会让客户端丢失结果(后端仍会跑完,但结果不再展示)。是否继续?`)
+    next(ok)
+  } else {
+    next()
+  }
+})
+
+onMounted(() => {
+  window.addEventListener('beforeunload', onBeforeUnload)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+})
+
 function isSlow(ms: number | undefined | null): boolean {
   return !!ms && ms >= SLOW_THRESHOLD_MS
 }
@@ -783,6 +826,11 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         <div class="flex items-center gap-1 text-[11px] text-slate-500">
           limit
           <input v-model.number="maxRows" type="number" min="1" max="10000" class="w-16 text-xs" />
+        </div>
+        <!-- v0.5 超时(秒)。到时后端自动 cancel + reason='timeout' -->
+        <div class="flex items-center gap-1 text-[11px] text-slate-500" title="单查询超时,到时自动取消(秒,1-3600)">
+          timeout
+          <input v-model.number="timeoutSeconds" type="number" min="1" max="3600" class="w-14 text-xs" />
         </div>
         <!-- v0.2 运行 / 停止 双态按钮 —— 执行中显示停止 -->
         <button
