@@ -43,13 +43,33 @@ watch(timeoutSeconds, (v) => {
   if (v && v > 0) localStorage.setItem(TIMEOUT_KEY, String(v))
 })
 
-// metadata:切 datasource 自动拉一次
-watch(() => activeConsole.value?.datasource_id, (dsId) => {
+// metadata:切 datasource 自动拉一次 + 后台预热所有 schemas 的 tables
+// 让 SQL 编辑器键入 `schema.` 时立即有 table 补全(不再要求用户先点元数据树展开)。
+// columns 太大仍按需拉(用户点表名 / 点表详情时)。
+async function _prewarmSchemaTables(dsId: string) {
+  const meta = metadataByDs.value[dsId]
+  if (!meta?.schemas?.length) return
+  // 并发但加 throttle:最多 4 个同时跑,避免几十个 schema 时打爆后端
+  const concurrency = 4
+  const queue = meta.schemas.filter(s => s.tables === undefined).map(s => s.name)
+  async function worker() {
+    while (queue.length) {
+      const name = queue.shift()!
+      try { await store.loadTables(dsId, name) } catch { /* tolerate */ }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+}
+
+watch(() => activeConsole.value?.datasource_id, async (dsId) => {
   if (!dsId) return
   // 没缓存才拉(避免每次切 tab 都重打)
   if (!metadataByDs.value[dsId]) {
-    store.loadSchemas(dsId).catch(() => {})
+    try { await store.loadSchemas(dsId) } catch { /* tolerate */ }
   }
+  // 总是尝试预热未加载的 schema tables —— loadTables 内置去重,已加载过的不会
+  // 重打后端(走 metadata cache);只首次切到 ds 时真正触发网络
+  _prewarmSchemaTables(dsId)
 }, { immediate: true })
 
 function refreshMetadata() {
