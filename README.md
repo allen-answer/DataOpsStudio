@@ -44,7 +44,15 @@ cd DataOpsStudio
 docker compose --profile demo-db up -d --build
 ```
 
-打开 <http://localhost:8010>,用初始管理员账号登录(首次启动会在 `config/users.json` 看到打印的默认密码,登录后立刻在「用户管理」改掉)。
+打开 <http://localhost:8010>,默认管理员账号 **admin / admin**(dev 默认值),登录后立刻在「用户管理」改掉。
+
+> **生产部署必须显式配置 4 个 env**,否则启动失败(详见 [SECURITY.md](SECURITY.md)):
+> ```bash
+> DATAOPS_ENV=prod
+> DATAOPS_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(64))')
+> DATAOPS_BOOTSTRAP_ADMIN_ONCE=true
+> DATAOPS_ADMIN_PASSWORD=<strong-password>
+> ```
 
 `--profile demo-db` 会顺带起一个内置 MySQL 8 样例库(端口 3307),里面有 `users / users_archive`、`orders / orders_v2` 等带预置差异的表,直接拿来玩对比 / 血缘 / 作业流 demo。
 

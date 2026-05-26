@@ -96,12 +96,25 @@ def bootstrap(project_id: str = "", current: User = Depends(get_current_user)):
 
 @router.get("/results/{filename:path}")
 def download_result(filename: str, current: User = Depends(get_current_user)):
-    """支持子目录的下载：/results/workflow_runs/<run>/exports/<file>.xlsx 也走这里。
-    path traversal 防御：解析后必须仍位于 RESULTS_DIR 之下。
+    """**[已默认关停]** 老式登录态直下接口。
 
-    项目级隔离：不能只看登录态 —— 把文件解析回它所属项目（compare result
-    走 task / workflow 产物走 workflow），用户对该项目无权 → 403。无法归属的
-    文件（上传文件 / 未知）回落到仅登录态。见 docs/PROJECT_AUTHORIZATION.md。"""
+    #11:默认 410 Gone,引导用户走签名下载 `POST /api/runs/<id>/download-token`
+    + `GET /api/downloads/<token>`。生命周期短 + 一次性 nonce + HMAC 防篡改,
+    详见 docs/SIGNED_DOWNLOAD.md。
+
+    紧急排查时可临时设 `DATAOPS_DISABLE_LEGACY_RESULT_PATH=false` 打开。
+    """
+    import os as _os
+    if _os.getenv("DATAOPS_DISABLE_LEGACY_RESULT_PATH", "true").strip().lower() in {"1", "true", "yes"}:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Legacy /results/* path is disabled by default for security. "
+                "Use signed download: POST /api/runs/<id>/download-token then "
+                "GET /api/downloads/<token>. To temporarily re-enable, set "
+                "DATAOPS_DISABLE_LEGACY_RESULT_PATH=false."
+            ),
+        )
     path = (RESULTS_DIR / filename).resolve()
     if RESULTS_DIR.resolve() not in path.parents or not path.exists():
         raise HTTPException(status_code=404, detail="Result not found")

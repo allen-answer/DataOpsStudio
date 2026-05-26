@@ -32,10 +32,24 @@ logger = logging.getLogger(__name__)
 # 容，会在任意短密码上 raise "password cannot be longer than 72 bytes"）。
 # bcrypt 本身硬性 72-byte 上限，超出截断 —— 用户应该是 ASCII 密码就够。
 
+# ── 生产模式 fail-fast (#8 / #9) ──
+# DATAOPS_ENV=prod / production 时:
+#   - 缺 DATAOPS_JWT_SECRET → RuntimeError(避免 dev key 上线)
+#   - 空 users.json 默认自举 admin/admin 被禁(需 DATAOPS_BOOTSTRAP_ADMIN_ONCE=true
+#     + DATAOPS_ADMIN_PASSWORD=<显式> 才放行)
+IS_PROD = os.getenv("DATAOPS_ENV", "").strip().lower() in {"prod", "production"}
+
 # ── JWT ──
-JWT_SECRET = os.getenv("DATAOPS_JWT_SECRET", "")
+JWT_SECRET = os.getenv("DATAOPS_JWT_SECRET", "").strip()
 JWT_ALG = "HS256"
 JWT_TTL_SECONDS = int(os.getenv("DATAOPS_JWT_TTL_SECONDS", str(8 * 3600)))
+
+if IS_PROD and not JWT_SECRET:
+    raise RuntimeError(
+        "DATAOPS_JWT_SECRET is required in production (DATAOPS_ENV=prod). "
+        "Set a strong random secret via env, e.g.\n"
+        "  export DATAOPS_JWT_SECRET=$(python -c 'import secrets;print(secrets.token_urlsafe(64))')"
+    )
 
 if not JWT_SECRET:
     JWT_SECRET = "dev-only-jwt-secret-change-me-in-prod"
@@ -77,9 +91,28 @@ def bootstrap_default_admin() -> None:
 
     用 user_store.path 而不是 module-level USERS_FILE —— 后者顶层 import 时锁定，
     测试 monkeypatch 改不了。
+
+    生产模式硬规则(#9):
+    - DATAOPS_ENV=prod 且空 users.json + 无 DATAOPS_BOOTSTRAP_ADMIN_ONCE=true → RuntimeError
+    - DATAOPS_BOOTSTRAP_ADMIN_ONCE=true 但缺 DATAOPS_ADMIN_PASSWORD → RuntimeError
+    - 两个 env 都给 → 用显式密码创建一次,后续重启不会重复触发(users.json 已非空)
     """
     if user_store.list():
         return
+    if IS_PROD:
+        bootstrap_once = os.getenv("DATAOPS_BOOTSTRAP_ADMIN_ONCE", "").strip().lower() in {"1", "true", "yes"}
+        if not bootstrap_once:
+            raise RuntimeError(
+                "Refusing to auto-bootstrap admin in production (DATAOPS_ENV=prod). "
+                "To create the initial admin once, set:\n"
+                "  DATAOPS_BOOTSTRAP_ADMIN_ONCE=true\n"
+                "  DATAOPS_ADMIN_PASSWORD=<strong-explicit-password>"
+            )
+        if not os.getenv("DATAOPS_ADMIN_PASSWORD"):
+            raise RuntimeError(
+                "DATAOPS_ADMIN_PASSWORD is required for production bootstrap "
+                "(set an explicit strong password, do not rely on default 'admin')"
+            )
     default_password = os.getenv("DATAOPS_ADMIN_PASSWORD", "admin")
     user = User(
         id=uuid.uuid4().hex,

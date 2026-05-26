@@ -15,6 +15,14 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+@pytest.fixture(autouse=True)
+def _allow_legacy_results_path(monkeypatch):
+    """这个文件测 /results/{path} 老式直下的 project-level 鉴权。
+    Wave 1 之后该路径默认 410(#11);测试通过 env 显式 opt-in 老行为。
+    新默认行为由 test_production_hardening.py 覆盖。"""
+    monkeypatch.setenv("DATAOPS_DISABLE_LEGACY_RESULT_PATH", "false")
+
+
 # ─── 辅助 ─────────────────────────────────────────────────────────────────────
 
 

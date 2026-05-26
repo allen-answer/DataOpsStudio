@@ -261,10 +261,14 @@ def test_workflow_lineage_node_accepts_uploaded_zip(client, isolated_storage):
 
 # --- excel_export 链路 + artifact 下载 ---
 
-def test_workflow_with_excel_export_produces_artifact_and_downloads(client, isolated_storage):
+def test_workflow_with_excel_export_produces_artifact_and_downloads(client, isolated_storage, monkeypatch):
     """params → excel_export 同步跑：run.artifacts 里有 1 个 excel artifact，
     通过 /results/<relative_path> 能拉到合法 .xlsx 二进制 + 正确 mimetype.
+
+    Wave 1 起 /results/* 默认 410 收紧(#11),此用例显式 opt-in 老路径继续覆盖
+    workflow artifact 下载链路。
     """
+    monkeypatch.setenv("DATAOPS_DISABLE_LEGACY_RESULT_PATH", "false")
     # 1. 建 workflow（params + excel_export）
     payload = {
         "name": "e2e-export",

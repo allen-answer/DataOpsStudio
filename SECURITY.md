@@ -4,6 +4,34 @@ DataOps Studio 处理数据库连接、SQL 执行、对比结果文件等敏感�
 
 ---
 
+## 生产部署必需 env 清单
+
+`DATAOPS_ENV=prod` / `production` 时,**以下 env 缺失或配置错误会让应用启动失败**(fail-fast):
+
+| Env | 用途 | 失败后果 |
+|---|---|---|
+| `DATAOPS_ENV=prod` | 激活生产模式 | (开关) |
+| `DATAOPS_JWT_SECRET=<random>` | JWT 签名密钥 | 缺 → `RuntimeError`,避免用 dev 默认 key 上线 |
+| `DATAOPS_BOOTSTRAP_ADMIN_ONCE=true` | 首次显式自举 admin(空 users.json 时) | 空 users.json 且缺此 flag → `RuntimeError`,避免自动 admin/admin |
+| `DATAOPS_ADMIN_PASSWORD=<strong>` | 自举 admin 密码 | once flag 开了但缺此 → `RuntimeError` |
+
+可选硬化(默认值已足够安全,改 env 可放宽兼容老客户端):
+
+| Env | 默认 | 用途 |
+|---|---|---|
+| `DATAOPS_RETURN_REFRESH_TOKEN_IN_BODY` | `false` | 改 `true` 才在 JSON 响应体返 refresh_token(老 CLI 兼容,默认 cookie-only) |
+| `DATAOPS_DISABLE_LEGACY_RESULT_PATH` | `true` | 改 `false` 才打开 `/results/{path}` 老式直下(默认 410,引导走签名下载) |
+| `DATAOPS_GUARD_ENFORCE` | 生产 `true`/开发 `false` | resource_guard 强制拦截 |
+| `DATAOPS_CONFIG_SECRET=<random>` | 缺省生成本地 key | 多实例 / 滚动重建必须显式提供 |
+
+**生成 secret**:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(64))'
+```
+
+---
+
 ## 支持的版本
 
 | 版本 | 安全更新 |

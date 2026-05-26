@@ -1,10 +1,15 @@
 """refresh token rotation 测试 —— service 层 + login/refresh/logout 端点 +
 关键的 reuse detection 性质。
+
+Wave 1 之后,默认 body 不返 refresh_token(HttpOnly cookie-only,#10)。
+这个文件保留测「旧 body 返 token」路径的兼容(env 显式 opt-in)。
+新默认 cookie-only 由 test_production_hardening.py 覆盖。
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from jose import jwt
 
 from app.services.refresh import (
@@ -17,6 +22,12 @@ from app.services.refresh import (
     rotate_refresh_token,
     verify_refresh_token,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_body_refresh_for_legacy_tests(monkeypatch):
+    """这个文件的端点测试用 body['refresh_token'] 语义,需要 env 显式 opt-in。"""
+    monkeypatch.setenv("DATAOPS_RETURN_REFRESH_TOKEN_IN_BODY", "true")
 
 
 # ─── issue / verify ────────────────────────────────────────────────────────

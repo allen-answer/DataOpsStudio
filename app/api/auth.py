@@ -51,6 +51,21 @@ router = APIRouter()
 # - Max-Age:跟 refresh TTL 一致;过期自然失效
 _REFRESH_COOKIE_NAME = "dataops_refresh"
 
+# #10: refresh_token 默认不再返 JSON body(HttpOnly cookie-only)。
+# 老 CLI / 自动化客户端要兼容时设 DATAOPS_RETURN_REFRESH_TOKEN_IN_BODY=true。
+# env 每次调用都重读,而非模块加载时一次定 —— 否则 test monkeypatch 不生效。
+import os as _os
+
+
+def _refresh_for_body(refresh_tok: str, refresh_ttl: int) -> tuple[str, int]:
+    """根据 env 决定是否在响应体返 refresh_token。默认空字符串 + ttl=0。"""
+    enabled = _os.getenv(
+        "DATAOPS_RETURN_REFRESH_TOKEN_IN_BODY", "false"
+    ).strip().lower() in {"1", "true", "yes"}
+    if enabled:
+        return refresh_tok, refresh_ttl
+    return "", 0
+
 
 def _is_secure_request(request: Request) -> bool:
     """判 cookie Secure 属性该开还是关。
@@ -165,13 +180,14 @@ def login(payload: LoginRequest, request: Request, response: Response):
         extra={"role": user.role},
     )
     logger.info("auth login user_id=%s username=%s role=%s", user.id, user.username, user.role)
+    body_refresh, body_refresh_ttl = _refresh_for_body(refresh_tok, refresh_ttl)
     return LoginResponse(
         access_token=token,
         token_type="bearer",
         expires_in=ttl,
         user=_redact(user),
-        refresh_token=refresh_tok,
-        refresh_expires_in=refresh_ttl,
+        refresh_token=body_refresh,
+        refresh_expires_in=body_refresh_ttl,
     )
 
 
@@ -214,13 +230,14 @@ def refresh_token_endpoint(request: Request, response: Response, payload: dict =
     from app.services.audit import record_auth_event
     record_auth_event("refresh_rotation", username=user.username, user_id=user.id)
     logger.info("auth refresh rotation user_id=%s username=%s", user.id, user.username)
+    body_refresh, body_refresh_ttl = _refresh_for_body(new_refresh, refresh_ttl)
     return LoginResponse(
         access_token=access,
         token_type="bearer",
         expires_in=access_ttl,
         user=_redact(user),
-        refresh_token=new_refresh,
-        refresh_expires_in=refresh_ttl,
+        refresh_token=body_refresh,
+        refresh_expires_in=body_refresh_ttl,
     )
 
 
@@ -286,13 +303,14 @@ def mfa_challenge(request: Request, response: Response, payload: dict = Body(...
         extra={"factor": "recovery_code" if recovery_code else "totp"},
     )
     logger.info("auth mfa challenge ok user_id=%s username=%s", user.id, user.username)
+    body_refresh, body_refresh_ttl = _refresh_for_body(refresh_tok, refresh_ttl)
     return LoginResponse(
         access_token=token,
         token_type="bearer",
         expires_in=ttl,
         user=_redact(user),
-        refresh_token=refresh_tok,
-        refresh_expires_in=refresh_ttl,
+        refresh_token=body_refresh,
+        refresh_expires_in=body_refresh_ttl,
     )
 
 
