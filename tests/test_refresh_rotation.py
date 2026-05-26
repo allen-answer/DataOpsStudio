@@ -95,32 +95,74 @@ def test_rotate_issues_new_pair_and_marks_old(isolated_storage):
 # ─── REUSE DETECTION（refresh rotation 的核心安全性质）──────────────────────
 
 
-def test_reuse_detection_revokes_entire_chain(isolated_storage):
-    """rotate 过一次的 old token 再被用 → 视为盗用,整条用户 refresh 链 revoke。"""
+def test_reuse_detection_revokes_only_this_branch(isolated_storage):
+    """rotate 过一次的 old token 再被用 → 视为盗用,**只** revoke 这条 chain,
+    同用户的其他独立 chain(多设备 / 多 tab / Playwright verify 等场景)不动。
+
+    向前 + 向后传播:从被重放的 jti 出发,顺 replaced_by 链 + 找 predecessor,
+    把整条 chain 上的 jti 全部 revoke,但不杀 user 名下别的 root chain。
+    """
     from app.services import sqlite_store
-    # u-1 同时有两个 active refresh（模拟同时多设备 / 多 tab 登录）
+    # u-1 同时有两个 active refresh chain(模拟同账号两个独立 session
+    # 比如桌面浏览器 + Playwright verify)
     old_tok, old_jti, _ = issue_refresh_token("u-1")
     other_tok, other_jti, _ = issue_refresh_token("u-1")
 
-    # 正常 rotation：old → new
+    # session A 正常 rotation:old → new
     rotated = rotate_refresh_token(old_tok)
     assert rotated is not None
+    _, _, new_jti, _ = rotated
 
     # 攻击者用 old 再 rotate → 应被识别为重放
     assert rotate_refresh_token(old_tok) is None
 
-    # 关键：用户名下所有 active refresh 都被 revoke（包括 other）
+    # 这条 chain(old → new)都被 revoke
     with sqlite_store.connect() as conn:
         rows = conn.execute(
             "SELECT jti, revoked_at FROM refresh_tokens WHERE user_id = ?", ("u-1",),
         ).fetchall()
     revoked = {r[0]: r[1] for r in rows}
-    assert revoked[other_jti] is not None
-    # 新签发的也被 revoke 了 —— 整条链全死
-    assert all(v is not None for v in revoked.values())
+    assert revoked[old_jti] is not None, "重放的 jti 应被 revoke"
+    assert revoked[new_jti] is not None, "顺向 chain 的后继也应被 revoke"
 
-    # 现在所有 token 都不能用
-    assert verify_refresh_token(other_tok) is None
+    # **关键**:other(独立 chain)**不受影响**,仍能 verify + 继续用
+    assert revoked[other_jti] is None
+    assert verify_refresh_token(other_tok) is not None
+    # 还能 rotate 出新对
+    assert rotate_refresh_token(other_tok) is not None
+
+
+def test_revoke_branch_walks_both_directions(isolated_storage):
+    """revoke_refresh_branch 从中间节点出发,向前 + 向后 + 全 revoke。"""
+    from app.services import refresh
+    from app.services import sqlite_store
+    # 制造 chain: A → B → C(三代)
+    a_tok, a_jti, _ = issue_refresh_token("u-1")
+    rotated_b = rotate_refresh_token(a_tok)  # A → B
+    assert rotated_b is not None
+    _, b_tok, b_jti, _ = rotated_b
+    rotated_c = rotate_refresh_token(b_tok)  # B → C
+    assert rotated_c is not None
+    _, _, c_jti, _ = rotated_c
+
+    # 另一条独立 chain
+    other_tok, other_jti, _ = issue_refresh_token("u-1")
+
+    # 从 chain 中间(B)出发 revoke branch
+    n = refresh.revoke_refresh_branch(b_jti)
+    assert n >= 1
+
+    with sqlite_store.connect() as conn:
+        rows = conn.execute(
+            "SELECT jti, revoked_at FROM refresh_tokens WHERE user_id = ?", ("u-1",),
+        ).fetchall()
+    rev = {r[0]: r[1] is not None for r in rows}
+    # A/B/C 整条 chain 都 revoke
+    assert rev[a_jti] is True
+    assert rev[b_jti] is True
+    assert rev[c_jti] is True
+    # 另一条独立 chain 不动
+    assert rev[other_jti] is False
 
 
 def test_verify_revoked_token_returns_none(isolated_storage):

@@ -4,10 +4,17 @@
 - login 签短 access (默认 8h) + 长 refresh (默认 7 天)
 - access 临过期前 / 已过期 401 时,前端调 POST /api/auth/refresh 拿新对
 - 每次 rotation：旧 refresh 标 replaced_by=新jti,新 refresh 写入 DB
-- **重放检测**：若 replaced_by 非空的 refresh 又被使用 → 视为盗用,整条
-  用户 refresh 链 revoke,强制重新登录。这是 OAuth2 refresh rotation 的
-  标志性安全性质（RFC 6749 Sec 10.4 + RFC 8252 OAuth2 BCP）。
-- logout 一并 revoke 用户全部 active refresh。
+- **重放检测**：若 replaced_by 非空的 refresh 又被使用 → 视为盗用,**只
+  revoke 这条被重放的 chain**(顺 replaced_by 向后传播,**不波及同用户
+  的其他独立 chain**)。这是 OAuth2 refresh rotation 的标志性安全性质
+  (RFC 6749 Sec 10.4 + RFC 8252 OAuth2 BCP)。
+
+  **为什么不杀整个 user**:用户在多设备 / 多浏览器 / 自动化(Playwright
+  verify、CI 跑)场景下,会同一账号同时持有多条独立 chain。一条 chain
+  被怀疑盗用时杀全部会**误踢**其他正常 session。OAuth2 BCP 在重放检测
+  上的核心要求是"让被盗的 chain 失效",并未要求杀该 user 所有 chain;
+  我们按 chain 粒度 revoke 同时保住安全语义和体验。
+- logout 一并 revoke 用户全部 active refresh(用户主动场景,所以杀全部)。
 
 refresh token 是 JWT,密钥从 JWT_SECRET sha256 派生（跟登录 token / mfa
 challenge / download token 各自独立的派生路径,purpose claim 区分用途）。
@@ -115,12 +122,13 @@ def verify_refresh_token(token: str) -> tuple[str, str] | None:
     if revoked_at:
         return None
     if replaced_by:
-        # 重放！已被 rotation 替换过的 refresh 又被用 —— 视为盗用,整条 revoke
+        # 重放！已被 rotation 替换过的 refresh 又被用 —— 视为盗用,**只 revoke
+        # 这条 chain**(顺 replaced_by 向后传播),不波及同用户其他独立 chain。
         logger.warning(
-            "refresh reuse detected user_id=%s jti=%s replaced_by=%s —— revoking chain",
+            "refresh reuse detected user_id=%s jti=%s replaced_by=%s —— revoking this chain only",
             user_id, jti, replaced_by,
         )
-        revoke_refresh_chain(user_id)
+        revoke_refresh_branch(jti)
         return None
     return (user_id, jti)
 
@@ -152,7 +160,8 @@ def rotate_refresh_token(old_token: str) -> tuple[str, str, str, int] | None:
 def revoke_refresh_chain(user_id: str) -> int:
     """把 user 名下所有 active(未 revoke 未 replaced) refresh 全 revoke。
 
-    logout 或重放检出时调。返回 revoke 数量。
+    logout 主动场景调,**不要**在重放检测里用(会误踢其他独立 chain)。
+    返回 revoke 数量。
     """
     if not user_id:
         return 0
@@ -164,6 +173,58 @@ def revoke_refresh_chain(user_id: str) -> int:
             "UPDATE refresh_tokens SET revoked_at = ? "
             "WHERE user_id = ? AND revoked_at IS NULL",
             (now_iso, user_id),
+        )
+        return cur.rowcount
+
+
+def revoke_refresh_branch(start_jti: str) -> int:
+    """从 start_jti 起,顺 replaced_by 向后 + 向前传播 revoke 整条 chain。
+
+    重放检测专用 —— 只杀这一条被盗用的 chain,不波及同用户其他独立 chain
+    (多设备 / 多浏览器 / verify 自动化常见)。
+
+    向前传播:从 start_jti 向上找 root(谁 replaced_by 指向 start_jti)
+    向后传播:从 start_jti 顺着 replaced_by 链条到底
+    把整条访问到的 jti 全部 revoke。返回 revoke 数量。
+    """
+    if not start_jti:
+        return 0
+    from app.services import sqlite_store
+
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    visited: set[str] = set()
+    to_visit: list[str] = [start_jti]
+
+    with sqlite_store.connect() as conn:
+        # BFS chain edges
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            # 向后(this row.replaced_by → next)
+            row = conn.execute(
+                "SELECT replaced_by FROM refresh_tokens WHERE jti = ?",
+                (current,),
+            ).fetchone()
+            if row and row[0] and row[0] not in visited:
+                to_visit.append(row[0])
+            # 向前(谁 replaced_by = current → predecessor)
+            preds = conn.execute(
+                "SELECT jti FROM refresh_tokens WHERE replaced_by = ?",
+                (current,),
+            ).fetchall()
+            for (pred_jti,) in preds:
+                if pred_jti not in visited:
+                    to_visit.append(pred_jti)
+
+        if not visited:
+            return 0
+        placeholders = ",".join("?" * len(visited))
+        cur = conn.execute(
+            f"UPDATE refresh_tokens SET revoked_at = ? "
+            f"WHERE jti IN ({placeholders}) AND revoked_at IS NULL",
+            (now_iso, *visited),
         )
         return cur.rowcount
 
