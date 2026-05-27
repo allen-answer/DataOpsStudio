@@ -25,6 +25,31 @@ const { actionStatus } = useNoticeStore()
 // 结果 bucket 筛选 —— 默认显示全部，点击可切到单 bucket
 const activeBucket = ref('all')
 
+// previewOutput 是个 string,可能是:
+//   - sql/assist 返回 (含 readonly_ok / formatted_sql / output_columns / key_candidates)
+//   - 错误信息(纯文本)
+//   - "执行中..." 类提示
+// 优先识别 sql_assist 渲染成可读卡片;不是的就回退 raw <pre>。
+const previewParsed = computed(() => {
+  const raw = previewOutput.value
+  if (!raw || typeof raw !== 'string') return null
+  if (!raw.trim().startsWith('{')) return null
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && 'readonly_ok' in obj && 'formatted_sql' in obj) {
+      return {
+        kind: 'sql_assist',
+        readonly_ok: obj.readonly_ok,
+        readonly_error: obj.readonly_error || '',
+        formatted_sql: obj.formatted_sql || '',
+        output_columns: Array.isArray(obj.output_columns) ? obj.output_columns : [],
+        key_candidates: Array.isArray(obj.key_candidates) ? obj.key_candidates : [],
+      }
+    }
+  } catch { /* JSON parse 失败回退 raw */ }
+  return null
+})
+
 const visibleBuckets = computed(() => {
   if (!compareResult.value) return []
   if (activeBucket.value === 'all') return compareBuckets
@@ -190,7 +215,54 @@ const cardClass = (tone) => ({
       </div>
     </div>
 
-    <!-- 异步状态 / 预览输出 -->
+    <!-- SQL 校验信息卡片(sql/assist 返回) -->
+    <div v-else-if="previewParsed?.kind === 'sql_assist'" class="card space-y-3">
+      <div class="flex items-center gap-2">
+        <CheckCircle2 v-if="previewParsed.readonly_ok" class="h-5 w-5 text-status-success" />
+        <AlertCircle v-else class="h-5 w-5 text-status-error" />
+        <h3 class="text-base font-semibold text-slate-800">SQL 校验</h3>
+        <span
+          class="rounded-full px-2 py-0.5 text-[10px] font-bold"
+          :class="previewParsed.readonly_ok ? 'bg-status-success-bg text-status-success' : 'bg-status-error-bg text-status-error'"
+        >
+          {{ previewParsed.readonly_ok ? '只读 SQL ✓' : '校验失败' }}
+        </span>
+      </div>
+
+      <p v-if="!previewParsed.readonly_ok" class="text-xs text-status-error">
+        {{ previewParsed.readonly_error || 'SQL 含禁止关键字(DML/DDL),无法执行对比' }}
+      </p>
+
+      <div v-if="previewParsed.output_columns.length">
+        <h4 class="mb-1 text-xs font-semibold text-slate-700">输出字段 ({{ previewParsed.output_columns.length }})</h4>
+        <div class="flex flex-wrap gap-1.5">
+          <span
+            v-for="col in previewParsed.output_columns"
+            :key="col"
+            class="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-700"
+          >{{ col }}</span>
+        </div>
+      </div>
+
+      <div v-if="previewParsed.key_candidates.length">
+        <h4 class="mb-1 text-xs font-semibold text-slate-700">推断主键候选</h4>
+        <div class="flex flex-wrap gap-1.5">
+          <span
+            v-for="col in previewParsed.key_candidates"
+            :key="col"
+            class="rounded border border-primary/30 bg-primary-light/40 px-2 py-0.5 font-mono text-[11px] text-primary"
+          >{{ col }}</span>
+        </div>
+        <p class="muted mt-1 text-[10px]">如果对比时报 "duplicate key",说明主键不够区分行 — 把更多列加进 key_columns(如时间/流水号)。</p>
+      </div>
+
+      <details v-if="previewParsed.formatted_sql">
+        <summary class="cursor-pointer text-xs font-semibold text-slate-600">已格式化 SQL</summary>
+        <pre class="mt-2 max-h-64 overflow-auto rounded bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-100">{{ previewParsed.formatted_sql }}</pre>
+      </details>
+    </div>
+
+    <!-- 异步状态 / 其他原文预览(错误信息 / 执行中提示) -->
     <pre
       v-else-if="previewOutput || asyncStatus"
       class="card max-h-[420px] resize-y overflow-auto bg-slate-950 p-4 text-xs text-slate-100"
