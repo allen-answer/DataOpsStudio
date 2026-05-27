@@ -36,6 +36,14 @@ services:
       # 设计本意（RFC 6749 §1.5）—— XSS / 中间人捞到 token 也只有 30 分钟窗口。
       DATAOPS_JWT_TTL_SECONDS: "1800"
       # Refresh TTL 默认 7 天不动 —— 太短=每周强制重登,太长=被盗后续命太久
+      #
+      # 生产模式开关:从工作目录的 .env 文件注入。.env 入 .gitignore,
+      # 本地 dev 不写 = 默认 dev 模式;云端 prod 部署在 .env 写:
+      #   DATAOPS_ENV=prod
+      #   DATAOPS_JWT_SECRET=<64-byte random,python -c "import secrets; print(secrets.token_urlsafe(64))">
+      # 详见 docs/CONFIG_REFERENCE.md
+      DATAOPS_ENV: "${DATAOPS_ENV:-}"
+      DATAOPS_JWT_SECRET: "${DATAOPS_JWT_SECRET:-}"
     ports:
       - "8010:8010"
     volumes:

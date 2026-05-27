@@ -71,6 +71,9 @@ config/metadata_cache/
 config/sql_templates.json
 # 统一 yml 配置(每个部署环境自己一份,example 跟踪)
 config/config.yml
+# docker-compose .env(secret 类配置,每个部署环境一份,从不入 git)
+.env
+!.env.example
 frontend.zip
 *.tmp
 *.bak

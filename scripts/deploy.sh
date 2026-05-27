@@ -113,6 +113,8 @@ RSYNC_FLAGS=(
   --exclude='*.bundle'
   --exclude='.openapi.json'
   --exclude='__pycache__/'
+  # 云端 .env(secret 配置)绝不能被本地空 .env / 不存在的文件覆盖
+  --exclude='.env'
 )
 $DRY_RUN && RSYNC_FLAGS+=(--dry-run)
 
