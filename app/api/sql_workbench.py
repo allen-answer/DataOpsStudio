@@ -428,6 +428,66 @@ def format_endpoint(
     }
 
 
+# ─── expand SELECT * (v0.7) ────────────────────────────────────────────────
+
+class ExpandStarRequest(BaseModel):
+    datasource_id: str = Field(..., min_length=1)
+    sql: str = Field(..., min_length=1)
+
+
+@router.post("/api/sql-workbench/expand-star")
+def expand_star_endpoint(
+    payload: ExpandStarRequest = Body(...),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """把 SQL 里的 SELECT * / SELECT t.* 展开成显式列名.
+
+    columns 来源:
+    - 先查 metadata cache(columns-bulk scope per schema → fallback columns scope per table)
+    - 都 miss 时直接拉 DB(list_columns 走 information_schema / all_tab_columns)
+    - 失败的表在 response.warnings 列出,*** 保留不动让用户感知 ***
+    """
+    from app.services.sql_tools import expand_select_star
+    from app.sqlide import metadata as _md
+    from app.sqlide import metadata_cache as _meta_cache_mod
+
+    ds = require_datasource_access(current, payload.datasource_id)
+    cache = _meta_cache_mod.load_cache(payload.datasource_id)
+    bulk_scope = cache.get("columns-bulk") or {}
+    bulk_items = bulk_scope.get("items") if isinstance(bulk_scope, dict) else None
+
+    def _lookup(schema: str, table: str) -> list[str] | None:
+        # 优先 columns-bulk cache(快)
+        if isinstance(bulk_items, dict) and schema:
+            schema_dict = bulk_items.get(schema) or bulk_items.get(schema.upper()) or bulk_items.get(schema.lower())
+            if isinstance(schema_dict, dict):
+                cols = schema_dict.get(table) or schema_dict.get(table.upper()) or schema_dict.get(table.lower())
+                if isinstance(cols, list) and cols:
+                    return [str(c.get("name") or c) for c in cols if c]
+        # cache miss → 真去 DB 拉
+        try:
+            cols = _md.list_columns(ds, table=table, schema=schema)
+            if cols:
+                return [str(c.get("name", "")) for c in cols if c.get("name")]
+        except Exception:
+            pass
+        return None
+
+    dialect_name = getattr(ds.db_type, "value", str(ds.db_type or "")).lower()
+    sqlglot_dialect = {"dm": "oracle", "ob_oracle": "oracle", "ob_mysql": "mysql"}.get(dialect_name, dialect_name)
+
+    rewritten, warnings = expand_select_star(
+        payload.sql,
+        dialect=sqlglot_dialect or None,
+        columns_lookup=_lookup,
+    )
+    return {
+        "sql": rewritten,
+        "changed": rewritten != payload.sql,
+        "warnings": warnings,
+    }
+
+
 # ─── explain (v0.2) ────────────────────────────────────────────────────────
 
 class ExplainRequest(BaseModel):

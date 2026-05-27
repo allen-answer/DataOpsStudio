@@ -273,6 +273,148 @@ def _needs_alias_injection(expression: Any) -> bool:
     return not isinstance(expression, (exp.Alias, exp.Column, exp.Star))
 
 
+def expand_select_star(
+    sql: str,
+    *,
+    dialect: str | None = None,
+    columns_lookup,
+) -> tuple[str, list[dict[str, Any]]]:
+    """把 SQL 里的 `SELECT *` / `SELECT t.*` 展开成显式列名列表.
+
+    用户想"查所有字段但不写 *"时点编辑器工具栏的"展开 *"按钮触发此函数.
+
+    Args:
+        sql: 用户写的 SELECT
+        dialect: sqlglot 方言
+        columns_lookup: `(schema: str, table: str) -> list[str] | None` callable;
+            返回该表的列名顺序列表; None 表示找不到(cache miss / 表不存在).
+            通常从 metadata cache 取,cache miss 时 caller 可选择 fallback 真 DB 拉.
+
+    Returns:
+        (rewritten_sql, warnings)
+        warnings 形如 [{"code": "table_not_in_cache", "table": "ks.his_done", "message": "..."}, ...]
+        无 * 可展开时 rewritten_sql == sql,warnings 含 code='no_star' 提示.
+        parse 失败返原 SQL + code='parse_failed' warning.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    warnings: list[dict[str, Any]] = []
+    try:
+        statements = sqlglot.parse(sql, read=dialect or None)
+    except Exception as exc:
+        warnings.append({"code": "parse_failed", "message": str(exc)})
+        return sql, warnings
+
+    any_star = False
+    changed = False
+
+    for statement in statements:
+        if statement is None:
+            continue
+        for select in statement.find_all(exp.Select):
+            # 收集本 SELECT 的 FROM 中 (alias_or_name, schema_qualified_table)
+            # alias_map: alias → (schema, table)
+            alias_map: dict[str, tuple[str, str]] = {}
+            tables_in_order: list[tuple[str, str, str]] = []  # (alias, schema, table)
+            for table_node in select.find_all(exp.Table):
+                # 只看属于本 select 直接 FROM 的(不挖进 subquery / CTE)
+                # 用 find_ancestor(Select) 判定
+                parent_sel = table_node.find_ancestor(exp.Select)
+                if parent_sel is not select:
+                    continue
+                schema = (table_node.db or "").strip("\"`[]") or ""
+                tname = (table_node.name or "").strip("\"`[]") or ""
+                if not tname:
+                    continue
+                alias = table_node.alias or tname
+                alias_map[alias.lower()] = (schema, tname)
+                tables_in_order.append((alias, schema, tname))
+
+            new_expressions = []
+            for expression in select.expressions:
+                # 处理 SELECT *(无 qualifier)
+                if isinstance(expression, exp.Star):
+                    any_star = True
+                    if not tables_in_order:
+                        warnings.append({"code": "star_without_from", "message": "SELECT * 无 FROM,无法展开"})
+                        new_expressions.append(expression)
+                        continue
+                    # 展开为所有表的所有列(多表 JOIN 时全部列出,加 alias 防歧义)
+                    multi_table = len(tables_in_order) > 1
+                    expanded = []
+                    for alias, schema, tname in tables_in_order:
+                        cols = columns_lookup(schema, tname)
+                        if not cols:
+                            warnings.append({
+                                "code": "table_not_in_cache",
+                                "table": f"{schema}.{tname}" if schema else tname,
+                                "message": f"表 {schema}.{tname} 没拉到字段缓存,无法展开 — 先点 [全量] 按钮重新加载",
+                            })
+                            continue
+                        for col in cols:
+                            if multi_table:
+                                expanded.append(exp.column(col, table=alias))
+                            else:
+                                expanded.append(exp.column(col))
+                    if expanded:
+                        new_expressions.extend(expanded)
+                        changed = True
+                    else:
+                        new_expressions.append(expression)  # 没拉到列,保留 *
+                # 处理 SELECT t.*(有 qualifier)
+                elif isinstance(expression, exp.Column) and isinstance(expression.this, exp.Star):
+                    any_star = True
+                    table_ref = (expression.table or "").strip("\"`[]") or ""
+                    if not table_ref:
+                        new_expressions.append(expression)
+                        continue
+                    info = alias_map.get(table_ref.lower())
+                    if info is None:
+                        warnings.append({
+                            "code": "alias_not_found",
+                            "table": table_ref,
+                            "message": f"找不到表别名 {table_ref} 对应的 FROM 表",
+                        })
+                        new_expressions.append(expression)
+                        continue
+                    schema, tname = info
+                    cols = columns_lookup(schema, tname)
+                    if not cols:
+                        warnings.append({
+                            "code": "table_not_in_cache",
+                            "table": f"{schema}.{tname}" if schema else tname,
+                            "message": f"表 {schema}.{tname} 没拉到字段缓存,无法展开 — 先点 [全量] 按钮",
+                        })
+                        new_expressions.append(expression)
+                        continue
+                    for col in cols:
+                        new_expressions.append(exp.column(col, table=table_ref))
+                    changed = True
+                else:
+                    new_expressions.append(expression)
+
+            select.set("expressions", new_expressions)
+
+    if not any_star:
+        warnings.append({"code": "no_star", "message": "SQL 里没有 * 可展开"})
+        return sql, warnings
+
+    if not changed:
+        return sql, warnings
+
+    try:
+        rewritten = ";\n".join(
+            stmt.sql(dialect=dialect or None, pretty=False)
+            for stmt in statements
+            if stmt is not None
+        )
+        return rewritten, warnings
+    except Exception as exc:
+        warnings.append({"code": "serialize_failed", "message": str(exc)})
+        return sql, warnings
+
+
 def _key_candidates(columns: list[str]) -> list[str]:
     preferred = []
     for column in columns:

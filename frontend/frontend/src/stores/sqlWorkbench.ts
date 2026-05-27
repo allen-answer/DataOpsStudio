@@ -406,6 +406,12 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     })
   }
 
+  async function expandStar(sql: string, datasourceId: string): Promise<{ sql: string; changed: boolean; warnings: Array<{ code: string; message?: string; table?: string }> }> {
+    return await apiJson('/api/sql-workbench/expand-star', 'POST', {
+      datasource_id: datasourceId, sql,
+    })
+  }
+
   async function explain(consoleId: string, payload: { datasource_id: string; sql: string }): Promise<ExplainResponse> {
     const resp = await apiJson<ExplainResponse>('/api/sql-workbench/explain', 'POST', payload)
     explainResults[consoleId] = resp
@@ -776,7 +782,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     refreshAllMetadata, reloadAllMetadata, reloadProgress, loadCacheSummary,
     searchMetadata, loadTableDetail,
     exportResult,
-    formatSql, explain,
+    formatSql, expandStar, explain,
     saveDraft, loadDraft, clearDraft,
   }
 })

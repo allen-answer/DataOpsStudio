@@ -13,7 +13,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info, Bookmark, BookmarkPlus, Upload, Download, Trash2, Pencil } from 'lucide-vue-next'
+import { Play, Plus, X, Save, ChevronDown, ChevronRight, Database, History as HistoryIcon, Table2, FolderTree, RefreshCw, Send, GitBranch, GitCompareArrows, Microscope, Sparkles, BarChart3, Square, FileText, Search, Columns3, Eye, Info, Bookmark, BookmarkPlus, Upload, Download, Trash2, Pencil, Asterisk } from 'lucide-vue-next'
 import { useSqlWorkbenchStore } from '../stores/sqlWorkbench'
 import { useSqlTemplatesStore, type SQLTemplate } from '../stores/sqlTemplates'
 import { useBootstrapStore } from '../stores/bootstrap'
@@ -675,6 +675,34 @@ async function onFormat() {
   }
 }
 
+async function onExpandStar() {
+  const c = activeConsole.value
+  if (!c?.sql?.trim() || !c.datasource_id) {
+    notice.setNotice('请先选数据源 + 输入 SQL')
+    return
+  }
+  try {
+    const resp = await store.expandStar(c.sql, c.datasource_id)
+    if (resp.changed) {
+      c.sql = resp.sql
+      notice.setNotice('已展开 * 为完整列名')
+      nextTick(() => _scheduleSave())
+    } else {
+      // 没改 — 可能是 no_star 或所有 cache miss
+      const reason = resp.warnings?.[0]
+      if (reason?.code === 'no_star') {
+        notice.setNotice('SQL 里没有 * 可展开')
+      } else if (reason?.code === 'table_not_in_cache') {
+        notice.setNotice('字段缓存不全 — 先点 sidebar 的 [全量] 按钮重新加载')
+      } else {
+        notice.setNotice('展开失败: ' + (reason?.message || '未知'))
+      }
+    }
+  } catch (e: unknown) {
+    notice.setNotice('展开失败: ' + ((e as Error)?.message || String(e)))
+  }
+}
+
 async function onStop() {
   const c = activeConsole.value
   if (!c) return
@@ -1005,6 +1033,15 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
         >
           <BarChart3 class="h-3.5 w-3.5" />
           Explain
+        </button>
+        <!-- v0.7 展开 * 按钮 -->
+        <button
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+          title="把 SELECT * 展开成完整列名(从字段缓存读取;cache miss 会自动拉一次)"
+          @click="onExpandStar"
+        >
+          <Asterisk class="h-3.5 w-3.5" />
+          展开 *
         </button>
         <button
           class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
