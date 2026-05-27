@@ -157,5 +157,20 @@ class OracleDialect(Dialect):
             "ORDER BY c.OWNER, c.COLUMN_ID"
         )
 
+    def bulk_columns_sql(self, schema: str) -> str | None:
+        if not schema:
+            return None
+        return (
+            "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS name, "
+            "c.DATA_TYPE AS data_type, c.NULLABLE AS nullable, "
+            "cc.COMMENTS AS comment, c.COLUMN_ID AS ordinal "
+            "FROM all_tab_columns c "
+            "LEFT JOIN all_col_comments cc ON cc.OWNER = c.OWNER "
+            "  AND cc.TABLE_NAME = c.TABLE_NAME "
+            "  AND cc.COLUMN_NAME = c.COLUMN_NAME "
+            f"WHERE c.OWNER = UPPER('{schema}') "
+            "ORDER BY c.TABLE_NAME, c.COLUMN_ID"
+        )
+
 
 register(DatabaseType.ORACLE, OracleDialect())

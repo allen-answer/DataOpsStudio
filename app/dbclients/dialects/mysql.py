@@ -147,5 +147,18 @@ class MysqlDialect(Dialect):
             "ORDER BY TABLE_SCHEMA, ORDINAL_POSITION"
         )
 
+    def bulk_columns_sql(self, schema: str) -> str | None:
+        """一次拉一个 schema 全部表的字段。schema 是必填(MySQL 没 default schema 概念)。"""
+        if not schema:
+            return None
+        return (
+            "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS name, "
+            "DATA_TYPE AS data_type, IS_NULLABLE AS nullable, "
+            "COLUMN_COMMENT AS comment, ORDINAL_POSITION AS ordinal "
+            "FROM information_schema.COLUMNS "
+            f"WHERE TABLE_SCHEMA = '{schema}' "
+            "ORDER BY TABLE_NAME, ORDINAL_POSITION"
+        )
+
 
 register(DatabaseType.MYSQL, MysqlDialect())

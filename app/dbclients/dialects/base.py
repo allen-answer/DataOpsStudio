@@ -40,6 +40,19 @@ class Dialect(ABC):
         """
         raise NotImplementedError
 
+    def bulk_columns_sql(self, schema: str) -> str | None:
+        """一次拉一个 schema 全部表的字段(给 SQL 编辑器补全做批量预热)。
+
+        约定:
+        - 返回的列至少包含 `table_name` + `name` + `data_type` + `nullable` + `ordinal`
+        - 按 (table_name, ordinal) 排序,caller groupby table_name 即可
+        - 不支持的方言返 None,caller fallback 到逐表 introspect_columns_sql
+
+        默认 None —— 子类按需重载。bulk 优势在大 schema(几百张表)预热时把
+        N 个 round trip 折成 1 次。
+        """
+        return None
+
     @abstractmethod
     def connection_test_sql(self) -> str:
         """连接探活 SQL（`test_connection` 用）。

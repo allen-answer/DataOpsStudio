@@ -118,5 +118,16 @@ class Db2Dialect(Dialect):
             "ORDER BY COLNO"
         )
 
+    def bulk_columns_sql(self, schema: str) -> str | None:
+        if not schema:
+            return None
+        return (
+            "SELECT TBNAME AS table_name, NAME AS name, COLTYPE AS data_type, "
+            "NULLS AS nullable, REMARKS AS comment, COLNO AS ordinal "
+            "FROM SYSIBM.SYSCOLUMNS "
+            f"WHERE TBCREATOR = UPPER('{schema}') "
+            "ORDER BY TBNAME, COLNO"
+        )
+
 
 register(DatabaseType.DB2, Db2Dialect())

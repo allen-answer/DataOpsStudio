@@ -43,9 +43,8 @@ watch(timeoutSeconds, (v) => {
   if (v && v > 0) localStorage.setItem(TIMEOUT_KEY, String(v))
 })
 
-// metadata:切 datasource 自动拉一次 + 后台预热所有 schemas 的 tables
-// 让 SQL 编辑器键入 `schema.` 时立即有 table 补全(不再要求用户先点元数据树展开)。
-// columns 太大仍按需拉(用户点表名 / 点表详情时)。
+// metadata:切 datasource 自动拉一次 + 后台预热所有 schemas 的 tables + columns
+// 让 SQL 编辑器键入 `schema.` / `table.` 时立即有 table / column 补全。
 async function _prewarmSchemaTables(dsId: string) {
   const meta = metadataByDs.value[dsId]
   if (!meta?.schemas?.length) return
@@ -56,6 +55,32 @@ async function _prewarmSchemaTables(dsId: string) {
     while (queue.length) {
       const name = queue.shift()!
       try { await store.loadTables(dsId, name) } catch { /* tolerate */ }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  // tables 拉完后,后台静默拉 columns bulk —— 一次 SQL 拉一个 schema 全部字段(N→1)
+  // 不阻塞 UI(没 await,fire-and-forget),拉完后 completionSchema reactive 自动更新
+  _prewarmSchemaColumns(dsId)
+}
+
+async function _prewarmSchemaColumns(dsId: string) {
+  /**
+   * Bulk 拉每个 schema 的字段(给 SQL 编辑器字段补全做预热)。
+   * 写 SQL 时键入 `users.` 立即有字段提示,不再要求先点 metadata 里的表。
+   *
+   * 跟逐表拉相比 — 1000 张表的 schema 从 1000 HTTP + 1000 information_schema 查询
+   * 减为 1 HTTP + 1 SQL。
+   */
+  const meta = metadataByDs.value[dsId]
+  if (!meta?.schemas?.length) return
+  const concurrency = 2  // 字段量大,并发别开太高
+  const queue = meta.schemas
+    .filter(s => Array.isArray(s.tables) && s.tables.length > 0)
+    .map(s => s.name)
+  async function worker() {
+    while (queue.length) {
+      const name = queue.shift()!
+      try { await store.loadColumnsBulk(dsId, name) } catch { /* tolerate */ }
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker))

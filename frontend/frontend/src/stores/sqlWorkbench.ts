@@ -475,6 +475,40 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     }
   }
 
+  async function loadColumnsBulk(datasourceId: string, schema: string, refresh: boolean = false): Promise<void> {
+    /**
+     * 一次拉一个 schema 全部表的字段(N→1 减压),写进各 table 的 columns 字段。
+     * 给 SQL 编辑器字段补全做预热 —— 拉完后用户写到 `users.` 立即有字段提示。
+     *
+     * 跟逐表 loadColumns 相比:
+     * - 1 个 HTTP + 1 个 information_schema 查询 vs N 个
+     * - 失败 silent(预热是 best-effort,不能阻塞 UI)
+     * - 不强刷已有 columns(避免覆盖用户已点表展开的精细 columns 数据)
+     */
+    const meta = metadataByDs[datasourceId]
+    if (!meta) return
+    const target = meta.schemas.find(s => s.name === schema)
+    if (!target || !target.tables) return
+    try {
+      const qs = new URLSearchParams({ datasource_id: datasourceId, schema })
+      if (refresh) qs.set('refresh', 'true')
+      const resp = await apiGet<{ items: Record<string, { name: string }[]>; source: string }>(
+        `/api/sql-workbench/metadata/columns-bulk?${qs.toString()}`,
+      )
+      const grouped = resp.items || {}
+      // 把字段名写进对应 table.columns;refresh 时覆盖,否则只填空缺
+      for (const t of target.tables) {
+        const cols = grouped[t.name]
+        if (!Array.isArray(cols)) continue
+        if (refresh || !Array.isArray(t.columns) || t.columns.length === 0) {
+          t.columns = cols.map(c => c.name)
+        }
+      }
+    } catch {
+      // 预热失败静默 —— 单表 loadColumns 路径仍可用,只是补全不预热
+    }
+  }
+
   async function loadColumns(datasourceId: string, schema: string, table: string, refresh: boolean = false): Promise<string[]> {
     const meta = metadataByDs[datasourceId]
     if (!meta) return []
@@ -632,7 +666,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     searchResults, searchLoading, exporting,
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, cancelExecution, loadHistory, setActive,
-    loadSchemas, loadTables, toggleSchema, loadColumns,
+    loadSchemas, loadTables, toggleSchema, loadColumns, loadColumnsBulk,
     refreshAllMetadata, loadCacheSummary,
     searchMetadata, loadTableDetail,
     exportResult,

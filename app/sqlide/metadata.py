@@ -123,6 +123,45 @@ def list_columns(source: Any, table: str, schema: str = "") -> list[dict[str, An
     return introspect_columns(source.id, full)
 
 
+def list_columns_bulk(source: Any, schema: str) -> dict[str, list[dict[str, Any]]]:
+    """一次拉一个 schema 全部表的字段(N→1 减压);给前端字段补全做预热。
+
+    返回 `{ "<table_name>": [{ name, data_type, nullable, comment, ordinal }, ...], ... }`。
+
+    方言不支持 bulk(`bulk_columns_sql` 返 None)时返空 dict —— caller fallback 到
+    逐表 `list_columns`。
+
+    schema 必填,因为 MySQL / Oracle / DB2 没"默认 schema"概念(走 USER / 当前 DB)。
+    标识符 caller 校验。
+    """
+    if not schema:
+        return {}
+    _validate_identifier(schema)
+    dialect = get_dialect(source.db_type)
+    sql = dialect.bulk_columns_sql(schema)
+    if sql is None:
+        return {}
+    # 单 schema 可能 1 万列(几百表 × 50 列),max_rows 给 50000 防 cap;真超也算正常使用
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=50000, raise_on_overflow=False)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        tbl = r.get("table_name") or r.get("TABLE_NAME")
+        if not tbl:
+            continue
+        tbl_str = str(tbl)
+        col = {
+            "name": r.get("name") or r.get("NAME"),
+            "data_type": r.get("data_type") or r.get("DATA_TYPE"),
+            "nullable": r.get("nullable") or r.get("NULLABLE"),
+            "comment": r.get("comment") or r.get("COMMENT") or "",
+            "ordinal": r.get("ordinal") or r.get("ORDINAL"),
+        }
+        if not col["name"]:
+            continue
+        grouped.setdefault(tbl_str, []).append(col)
+    return grouped
+
+
 def list_indexes(source: Any, table: str, schema: str = "") -> list[dict[str, Any]]:
     """返 [{index_name, column_name, non_unique, seq_in_index, index_type}],
     按 (index_name, seq_in_index) 升序。同一索引多列展开为多行。

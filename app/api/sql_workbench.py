@@ -643,6 +643,26 @@ def list_columns(
     )
 
 
+@router.get("/api/sql-workbench/metadata/columns-bulk")
+def list_columns_bulk(
+    datasource_id: str = Query(..., min_length=1),
+    schema: str = Query(..., min_length=1, description="schema 必填(无默认 schema 概念)"),
+    refresh: bool = Query(default=False),
+    current: User = Depends(require_role("editor")),
+) -> dict[str, Any]:
+    """一次拉一个 schema 全部表的字段(N→1 减压) —— 给前端字段补全做预热。
+
+    response.items 是 `{ "<table_name>": [col,...], ... }` dict 形态(跟单表 columns
+    的 list 形态不同),前端按 table 写进各 schemas[i].tables[j].columns。
+    """
+    ds = require_datasource_access(current, datasource_id)
+    return _cached_or_live(
+        datasource_id, "columns-bulk", schema,
+        lambda: _metadata.list_columns_bulk(ds, schema=schema),
+        refresh=refresh,
+    )
+
+
 @router.get("/api/sql-workbench/metadata/indexes")
 def list_indexes(
     datasource_id: str = Query(..., min_length=1),
