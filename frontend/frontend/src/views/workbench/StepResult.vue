@@ -44,11 +44,26 @@ const previewParsed = computed(() => {
         formatted_sql: obj.formatted_sql || '',
         output_columns: Array.isArray(obj.output_columns) ? obj.output_columns : [],
         key_candidates: Array.isArray(obj.key_candidates) ? obj.key_candidates : [],
+        rewritten_sql: obj.rewritten_sql || '',
+        alias_injected: !!obj.alias_injected,
       }
     }
   } catch { /* JSON parse 失败回退 raw */ }
   return null
 })
+
+// 应用 SQL 改写建议 — 把 rewritten_sql 写回 taskDraft.source_sql / target_sql
+async function applyRewrittenSql() {
+  const rewritten = previewParsed.value?.rewritten_sql
+  if (!rewritten) return
+  // 默认改源 SQL — task 设计里复合表达式 SUM/COUNT 多出现在源 SQL
+  // 用户如果要改目标 SQL 同样道理但当前不暴露选择 UI
+  const { useTaskStore } = await import('../../stores/task')
+  const taskStore = useTaskStore()
+  taskStore.taskDraft.source_sql = rewritten
+  const { useNoticeStore } = await import('../../stores/notice')
+  useNoticeStore().setActionStatus('success', 'SQL 已应用别名建议', '已自动注入 AS alias,可重新预览')
+}
 
 const visibleBuckets = computed(() => {
   if (!compareResult.value) return []
@@ -232,6 +247,36 @@ const cardClass = (tone) => ({
       <p v-if="!previewParsed.readonly_ok" class="text-xs text-status-error">
         {{ previewParsed.readonly_error || 'SQL 含禁止关键字(DML/DDL),无法执行对比' }}
       </p>
+
+      <!-- 自动 alias 建议(无 alias 复合表达式被注入短别名) -->
+      <div
+        v-if="previewParsed.alias_injected"
+        class="rounded-md border border-status-warning/30 bg-status-warning-bg/30 p-3"
+      >
+        <div class="mb-2 flex items-start gap-2">
+          <AlertCircle class="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
+          <div class="flex-1">
+            <p class="text-xs font-semibold text-slate-800">SQL 自动改写建议</p>
+            <p class="muted text-[11px]">
+              检测到 SUM / CASE / CAST 等复合表达式没写 AS 别名 — DB 执行时这些列名
+              不可预测(部分 driver 返序号 6/7/8 / 部分返长 SQL 文本),会让 column_mappings 跟实际不一致.
+              建议应用下面的改写,自动添加短别名:
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-primary h-7 shrink-0 gap-1 px-2 py-1 text-[11px]"
+            title="把改写后的 SQL 写回源 SQL,可重新预览验证"
+            @click="applyRewrittenSql"
+          >
+            应用建议
+          </button>
+        </div>
+        <details>
+          <summary class="cursor-pointer text-[11px] font-semibold text-slate-600">查看改写后 SQL</summary>
+          <pre class="mt-1 max-h-48 overflow-auto rounded bg-slate-950 p-2 text-[11px] leading-relaxed text-slate-100">{{ previewParsed.rewritten_sql }}</pre>
+        </details>
+      </div>
 
       <div v-if="previewParsed.output_columns.length">
         <h4 class="mb-1 text-xs font-semibold text-slate-700">输出字段 ({{ previewParsed.output_columns.length }})</h4>

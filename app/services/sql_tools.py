@@ -18,9 +18,14 @@ def sql_assist(sql: str, dialect: str | None = None, target_dialect: str | None 
     formatted = _format_sql(sql, dialect)
     converted = _convert_sql(sql, dialect, target_dialect) if target_dialect else ""
     lineage = analyze_sql_lineage(sql, dialect)
-    output_columns = _extract_output_columns(sql, dialect)
+
+    # 自动给无 alias 的复合表达式注入短别名 — UI 显示用 labels,SQL 跑也用
+    # rewritten_sql 让 DB cursor.description 跟列名对得上(避免 OceanBase 返 6/7/8)
+    rewritten_sql, output_columns, alias_injected = rewrite_sql_inject_aliases(sql, dialect)
     if not output_columns:
         output_columns = _unique_strings(item["output_column"] for item in lineage["columns"])
+        rewritten_sql = sql
+        alias_injected = False
     return {
         "readonly_ok": not readonly_error,
         "readonly_error": readonly_error,
@@ -28,6 +33,11 @@ def sql_assist(sql: str, dialect: str | None = None, target_dialect: str | None 
         "converted_sql": converted,
         "output_columns": output_columns,
         "key_candidates": _key_candidates(output_columns),
+        # 新增:**自动注入 alias 后的 SQL**(同语义,但聚合/CASE 等都加了 AS)
+        # 前端可弹"应用建议"按钮,让用户用 rewritten_sql 替换原 sql
+        # alias_injected=False 时 rewritten_sql 等于原 sql,前端不需要弹提示
+        "rewritten_sql": rewritten_sql,
+        "alias_injected": alias_injected,
     }
 
 
@@ -170,6 +180,97 @@ def _make_unique(base: str, taken: set[str]) -> str:
     candidate = f"{base}_{suffix}"
     taken.add(candidate.lower())
     return candidate
+
+
+def rewrite_sql_inject_aliases(
+    sql: str,
+    dialect: str | None = None,
+) -> tuple[str, list[str], bool]:
+    """**核心 API**:自动给 SELECT 里没 alias 的复合表达式注入短 AS alias.
+
+    用法:
+      rewritten, labels, changed = rewrite_sql_inject_aliases(
+          "SELECT id, SUM(amt) FROM t GROUP BY id"
+      )
+      # rewritten = "SELECT id, SUM(amt) AS sum_amt FROM t GROUP BY id"
+      # labels    = ["id", "sum_amt"]
+      # changed   = True  (SQL 实际有改动)
+
+    规则:
+      - exp.Alias / exp.Column / exp.Star -> 不改(已有 alias / 普通列 / SELECT *)
+      - 其他复合表达式 -> 注入 AS <auto_alias>
+      - auto_alias 沿用 _column_label 规则 (sum_amt / count_all / case_N / expr_N)
+      - 防冲突: case-insensitive 跟同 SELECT 已有列名 / 之前生成的别名比对,冲突加 _2 _3
+
+    嵌套 SELECT (CTE 内层 / Subquery / UNION 各分支) **都会**被改写 -
+    sqlglot.find_all(exp.Select) 会遍历所有 Select 节点.
+
+    parse 失败 -> 直接返原 SQL,changed=False (不让改写挂掉用户原本能跑的 SQL).
+
+    Returns:
+        (rewritten_sql, top_select_labels, changed)
+        labels 仅含顶层 SELECT 的列名(给 column_mappings / 字段映射 UI 用),
+        changed 标识 SQL 是否真的有改动(UI 可据此提示用户).
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        statements = sqlglot.parse(sql, read=dialect or None)
+    except Exception:
+        # parse 不了的 SQL — 返原值 + 空 labels,不挂
+        return sql, [], False
+
+    top_labels: list[str] = []
+    changed = False
+
+    for statement in statements:
+        if statement is None:
+            continue
+        first_select_in_stmt = True
+        for select in statement.find_all(exp.Select):
+            taken: set[str] = set()  # 每个 SELECT 独立 taken,内外层别名不互串
+            expr_seq = 0
+            new_expressions = []
+            for expression in select.expressions:
+                expr_seq += 1
+                label = _column_label(expression, taken, expr_seq)
+                if first_select_in_stmt:
+                    top_labels.append(label)
+                # 决定要不要注入 alias
+                if _needs_alias_injection(expression):
+                    new_expressions.append(exp.alias_(expression.copy(), label))
+                    changed = True
+                else:
+                    new_expressions.append(expression)
+            select.set("expressions", new_expressions)
+            first_select_in_stmt = False
+
+    if not changed:
+        return sql, top_labels, False
+
+    try:
+        rewritten = ";\n".join(
+            stmt.sql(dialect=dialect or None, pretty=False)
+            for stmt in statements
+            if stmt is not None
+        )
+        return rewritten, top_labels, True
+    except Exception:
+        # serialize 失败兜底 — 返原 SQL,不让用户 SQL 跑不了
+        return sql, top_labels, False
+
+
+def _needs_alias_injection(expression: Any) -> bool:
+    """判断该 SELECT 单项是否需要注入 alias.
+
+    - exp.Alias  -> 已有 alias,不动
+    - exp.Column -> 普通列 t.id,DB 直接返列名,不需要 alias
+    - exp.Star   -> SELECT * / t.*,展开后是真列名,不动
+    - 其它(Func/Case/Cast/Binary/Subquery/...) -> 需要 alias
+    """
+    from sqlglot import exp
+    return not isinstance(expression, (exp.Alias, exp.Column, exp.Star))
 
 
 def _key_candidates(columns: list[str]) -> list[str]:

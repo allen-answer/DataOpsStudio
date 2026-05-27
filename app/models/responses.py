@@ -76,13 +76,17 @@ class PreviewColumnsResponse(BaseModel):
 class SqlAssistResponse(BaseModel):
     """POST /api/sql/assist 返回。`readonly_ok` 反映 sql_guard 的判定，
     便于前端给只读保护的 SQL 标个绿勾；`converted_sql` 仅当请求带
-    `target_dialect` 时才填，否则空串。"""
+    `target_dialect` 时才填，否则空串。`rewritten_sql` 给没 alias 的复合
+    表达式(SUM/CASE 等)自动注入 AS 别名后的 SQL — 前端可弹"应用建议"
+    让用户用此 SQL 替换原 SQL,这样 DB cursor.description 跟 output_columns 对得上。"""
     readonly_ok: bool = True
     readonly_error: str = ""
     formatted_sql: str = ""
     converted_sql: str = ""
     output_columns: list[str] = Field(default_factory=list)
     key_candidates: list[str] = Field(default_factory=list)
+    rewritten_sql: str = ""
+    alias_injected: bool = False
 
 
 class ExcelUploadResponse(BaseModel):
