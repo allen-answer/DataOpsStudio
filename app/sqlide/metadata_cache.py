@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CACHE_DIR = Path("config/metadata_cache")
 _cache_dir: Path = _DEFAULT_CACHE_DIR
 
-Scope = Literal["schemas", "tables", "columns", "indexes", "views"]
-SCOPES: tuple[Scope, ...] = ("schemas", "tables", "columns", "indexes", "views")
+Scope = Literal["schemas", "tables", "columns", "columns-bulk", "indexes", "views"]
+SCOPES: tuple[Scope, ...] = ("schemas", "tables", "columns", "columns-bulk", "indexes", "views")
 
 # per-ds 锁。dict 本身需要再加一把 guard,防止 lock 字典并发 race。
 _locks: dict[str, threading.RLock] = {}

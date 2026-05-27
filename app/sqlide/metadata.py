@@ -106,7 +106,10 @@ def list_tables(source: Any, schema: str = "") -> list[dict[str, str]]:
     else:
         return []
 
-    rows = dbclients_factory.fetch_rows(source, sql, max_rows=5000)
+    # max_rows 给 50000 + raise_on_overflow=False:大 schema(几万张表)不报错,
+    # 截到 50000 仍可用。原 5000 cap 见过用户 schema 含 5000+ 表直接拉取失败,
+    # sidebar 看不到任何表。
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=50000, raise_on_overflow=False)
     items: list[dict[str, str]] = []
     for r in rows:
         name = _pick(r, ["name", "NAME"]) or ""
@@ -175,7 +178,7 @@ def list_indexes(source: Any, table: str, schema: str = "") -> list[dict[str, An
     sql = dialect.list_indexes_sql(schema, table)
     if sql is None:
         return []
-    rows = dbclients_factory.fetch_rows(source, sql, max_rows=1000)
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=5000, raise_on_overflow=False)
     return [_normalize_index_row(r) for r in rows]
 
 
@@ -188,7 +191,7 @@ def list_views(source: Any, schema: str = "") -> list[dict[str, str]]:
     sql = dialect.list_views_sql(schema)
     if sql is None:
         return []
-    rows = dbclients_factory.fetch_rows(source, sql, max_rows=2000)
+    rows = dbclients_factory.fetch_rows(source, sql, max_rows=10000, raise_on_overflow=False)
     items: list[dict[str, str]] = []
     for r in rows:
         name = _pick(r, ["name", "NAME"]) or ""
