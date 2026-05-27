@@ -54,8 +54,37 @@ def _extract_output_columns(sql: str, dialect: str | None) -> list[str]:
             continue
         for select in statement.find_all(exp.Select):
             for expression in select.expressions:
-                columns.append(expression.alias_or_name or expression.sql())
+                columns.append(_column_label(expression))
     return _unique_strings(columns)
+
+
+def _column_label(expression: Any) -> str:
+    """返回 SELECT 单列在 UI 上展示的列名.
+
+    - `t.id` -> "id" (Column 节点 .alias_or_name 是 "id")
+    - `SUM(amt)` -> "SUM(amt)" (Func 没 alias 时 alias_or_name 可能返序号字符串 "6"
+       甚至空,绝不能当列名;直接用 expression.sql())
+    - `SUM(amt) AS total` -> "total" (Alias 节点 .alias 是 "total")
+    - `CASE WHEN x THEN 1 ELSE 0 END` -> 该 CASE 表达式的 SQL 形式
+
+    核心规则:**只有 exp.Column 和 exp.Alias 能信任 alias_or_name**,其他类型
+    (Func / Case / Cast / Binary / Subquery 等) 一律 fallback 到 expression.sql()
+    避免出现数字编号 / 空字符串这种迷惑列名.
+    """
+    from sqlglot import exp
+
+    if isinstance(expression, exp.Alias):
+        # AS alias 优先
+        alias = expression.alias
+        if alias:
+            return alias
+        return expression.sql()
+    if isinstance(expression, exp.Column):
+        # 普通列引用,alias_or_name 是 column name(去掉 table prefix)
+        return expression.alias_or_name or expression.sql()
+    # Func / Case / Cast / Math / 其他复合表达式:用原 SQL 文本
+    # alias_or_name 在 sqlglot 里对 Func 等可能返序号,绝不当列名
+    return expression.sql()
 
 
 def _key_candidates(columns: list[str]) -> list[str]:
