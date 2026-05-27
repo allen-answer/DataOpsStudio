@@ -205,7 +205,22 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
   ): Promise<Console> {
     const updated = await apiJson<Console>(`/api/sql-workbench/consoles/${id}`, 'PUT', patch)
     const idx = consoles.value.findIndex(c => c.id === id)
-    if (idx >= 0) consoles.value[idx] = updated
+    if (idx >= 0) {
+      // **重要**:不能整体替换 local console.sql,否则用户正在键入的字符会被"回退".
+      //
+      // 场景:debounced save 触发 PUT 时 sql='from',300ms 网络往返后返回 sql='from'.
+      // 用户这 300ms 内又键入了 ' select',本地 sql='from select'.
+      // 如果用 server response 整体覆盖 -> activeConsole.sql 变回 'from' ->
+      // v-model 传 'from' 进 SqlEditor -> watch(modelValue) 替换 doc -> 光标重置到 0.
+      //
+      // 修法:其他字段(name/datasource_id/updated_at 等都是一次性改,不存在 debounce 窗口
+      // 内继续编辑)用 server response;**只**保留 local sql 防 race.
+      const local = consoles.value[idx]
+      consoles.value[idx] = {
+        ...updated,
+        sql: local.sql,
+      }
+    }
     return updated
   }
 

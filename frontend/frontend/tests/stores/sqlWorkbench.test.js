@@ -41,14 +41,26 @@ describe('useSqlWorkbenchStore', () => {
     expect(store.activeConsoleId).toBe('new')
   })
 
-  it('updateConsole 替换列表中的对应 console', async () => {
+  it('updateConsole 用 server response 覆盖 name / datasource_id,但保留 local.sql 防 race', async () => {
+    /**
+     * 真实场景:caller 先把 local sql 改成 'SELECT 1',然后 debounced 发 PUT.
+     * server 300ms 后返 sql='SELECT 1'. 这时如果用户又继续在键入(local 已变成
+     * 'SELECT 1 FROM t'),不能用 server 的 'SELECT 1' 覆盖回去 — 否则光标重置.
+     * 修法是 store 永远保留 local.sql.
+     */
     const store = useSqlWorkbenchStore()
-    apiGet.mockResolvedValueOnce({ items: [{ id: 'c1', name: 'old', datasource_id: '', sql: '', project_id: '', owner_user_id: 'u', created_at: '', updated_at: '' }] })
+    apiGet.mockResolvedValueOnce({ items: [{ id: 'c1', name: 'old', datasource_id: '', sql: 'SELECT 1', project_id: '', owner_user_id: 'u', created_at: '', updated_at: '' }] })
     await store.loadConsoles()
+    // 模拟 caller 已经先把 local sql 改成了用户最新输入
+    store.consoles[0].sql = 'SELECT 1 FROM t'
+    // server PUT 处理的是稍早 patch (sql='SELECT 1'),返回也是这个
     apiJson.mockResolvedValueOnce({ id: 'c1', name: 'new', datasource_id: 'ds-1', sql: 'SELECT 1', project_id: '', owner_user_id: 'u', created_at: '', updated_at: '' })
     await store.updateConsole('c1', { name: 'new', sql: 'SELECT 1', datasource_id: 'ds-1' })
+    // name / datasource_id 用 server response 更新
     expect(store.consoles[0].name).toBe('new')
-    expect(store.consoles[0].sql).toBe('SELECT 1')
+    expect(store.consoles[0].datasource_id).toBe('ds-1')
+    // 但 sql 保留 local 最新值,不被回退
+    expect(store.consoles[0].sql).toBe('SELECT 1 FROM t')
   })
 
   it('deleteConsole 移除并切到剩下的第一个', async () => {

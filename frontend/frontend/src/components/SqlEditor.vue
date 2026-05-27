@@ -219,9 +219,19 @@ onUnmounted(() => {
 })
 
 watch(() => props.modelValue, (val) => {
-  if (view && val !== view.state.doc.toString()) {
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: val } })
-  }
+  if (!view) return
+  const current = view.state.doc.toString()
+  if (val === current) return
+  // 外部修改了 doc(切 console / "应用 SQL 改写建议" 等). 整体替换时
+  // CodeMirror 默认会把 selection clamp 到 doc 末尾,不影响新光标体验.
+  // 但如果新旧 doc 高度相似(diff < 1KB,典型是 debounced save race condition),
+  // 保留原 selection 让用户继续在原位置编辑.
+  const prevSel = view.state.selection
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: val },
+    // selection 保留 — 但要 clamp 到新 doc 范围内防止越界
+    selection: { anchor: Math.min(prevSel.main.anchor, val.length), head: Math.min(prevSel.main.head, val.length) },
+  })
 })
 
 // dialect / completionSchema / snippets 变化时,reconfigure 语言扩展而不重建编辑器。
