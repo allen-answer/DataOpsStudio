@@ -150,6 +150,39 @@ auth_rate_limit_hits_total = Counter(
     ["endpoint", "key_type"],
 )
 
+# Wave 5 #22:compare 通道核心指标。数据源:`run_index` 表 + memory_guard 实时
+# 采样。`label decision` 含:success/failed/cancelled/aborted_guard;
+# `guard_reason` 区分中止原因(disk/memory/quota/promote)。
+compare_runs_total = Counter(
+    "dataops_compare_runs_total",
+    "Compare runs by terminal status (success/failed/cancelled/aborted_guard)",
+    ["status"],
+)
+compare_guard_aborts_total = Counter(
+    "dataops_compare_guard_aborts_total",
+    "Compare runs aborted by guard, by reason (memory_hard_limit / DiskWatermarkExceeded / RunQuotaExceeded / auto_streaming_promoted)",
+    ["reason"],
+)
+compare_disk_bytes = Histogram(
+    "dataops_compare_disk_bytes",
+    "Compare run disk_bytes histogram (per-run final size)",
+    ["result_format"],
+    buckets=(
+        16 * 1024 * 1024,        # 16 MB
+        64 * 1024 * 1024,        # 64 MB
+        256 * 1024 * 1024,       # 256 MB
+        1024 * 1024 * 1024,      # 1 GB
+        4 * 1024 * 1024 * 1024,  # 4 GB
+        16 * 1024 * 1024 * 1024, # 16 GB
+    ),
+)
+compare_peak_rss_mb = Histogram(
+    "dataops_compare_peak_rss_mb",
+    "Compare run peak RSS in MB (from memory_guard sampling)",
+    ["result_format"],
+    buckets=(64, 256, 512, 1024, 2048, 4096, 8192),
+)
+
 
 def _lineage_table_count() -> int:
     try:
@@ -176,10 +209,37 @@ def _ai_jobs_inflight() -> int:
         return 0
 
 
+def _compare_runs_active() -> int:
+    """Wave 5 #22:run_index 非终态 compare(reserved + running)。"""
+    try:
+        from app.services.sqlite_store import connect
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM run_index WHERE status IN ('reserved','running')"
+            ).fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _compare_runs_reserved() -> int:
+    try:
+        from app.services.sqlite_store import connect
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM run_index WHERE status='reserved'"
+            ).fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
 _GAUGES = [
     Gauge("lineage_index_table_count", "Tables aggregated in global lineage index", _lineage_table_count),
     Gauge("lineage_index_edge_count", "Edges aggregated in global lineage index", _lineage_edge_count),
     Gauge("ai_jobs_inflight", "AI enrichment / inference jobs currently running", _ai_jobs_inflight),
+    Gauge("dataops_compare_runs_active", "Compare runs in reserved+running state (run_index)", _compare_runs_active),
+    Gauge("dataops_compare_runs_reserved", "Compare runs in reserved state (admitted but not started)", _compare_runs_reserved),
 ]
 
 
@@ -190,6 +250,10 @@ _COUNTERS_HISTOGRAMS = [
     ai_usage_tokens_total,
     guard_decisions_total,
     auth_rate_limit_hits_total,
+    compare_runs_total,
+    compare_guard_aborts_total,
+    compare_disk_bytes,
+    compare_peak_rss_mb,
 ]
 
 

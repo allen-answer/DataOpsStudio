@@ -24,8 +24,13 @@ ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     PIP_TRUSTED_HOST=mirrors.aliyun.com \
     PIP_DEFAULT_TIMEOUT=120 \
     PIP_RETRIES=5
-COPY requirements.txt .
-RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels
+# Wave 5 #20:优先用 lock 文件(可复现);未入仓时回退 requirements.txt
+COPY requirements.txt requirements.in* requirements.lock.txt* ./
+RUN if [ -f requirements.lock.txt ]; then \
+      pip wheel --no-cache-dir -r requirements.lock.txt -w /wheels; \
+    else \
+      pip wheel --no-cache-dir -r requirements.txt -w /wheels; \
+    fi
 
 
 FROM python:3.12-slim
@@ -33,8 +38,12 @@ WORKDIR /app
 ENV LD_LIBRARY_PATH="/usr/local/lib/python3.12/site-packages/dmssl:/usr/local/lib/python3.12/site-packages/dmpython.libs:${LD_LIBRARY_PATH}"
 
 COPY --from=python-builder /wheels /wheels
-COPY requirements.txt .
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt && rm -rf /wheels
+COPY requirements.txt requirements.in* requirements.lock.txt* ./
+RUN if [ -f requirements.lock.txt ]; then \
+      pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.lock.txt; \
+    else \
+      pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt; \
+    fi && rm -rf /wheels
 
 # 拷后端源码，再用前端 build 产物覆盖 static/spa（确保不会带上宿主机的 dirty 产物）。
 COPY . .

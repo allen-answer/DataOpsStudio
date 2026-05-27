@@ -1,0 +1,29 @@
+# Wave 5 #20:requirements.in 是顶层意图清单(人类可读 + 版本范围)。
+# 生成 requirements.lock.txt(含 SHA256 hash + 精确版本):
+#   bash scripts/regenerate-lock.sh   # 需 Docker;在 python:3.12-slim 容器内跑
+# CI / Dockerfile 优先用 lock(若存在),缺失时回退到 .in(老路径)。
+fastapi>=0.110
+uvicorn[standard]>=0.27
+jinja2>=3.1
+python-multipart>=0.0.9
+pydantic>=2.6
+pandas>=2.2
+openpyxl>=3.1
+pyarrow>=14.0  # ParquetReader 后端；pandas DataFrame 的 parquet IO 也走它
+sqlglot>=26.0
+pyyaml>=6.0  # config/lineage_group_rules.yml 解析；JSON 格式仍可用，YAML 仅在文件后缀是 .yml/.yaml 时需要
+bcrypt>=4.0  # 用户口令 hash（直接用 bcrypt 库，passlib 1.7.4 + bcrypt 5.x 兼容性差）
+python-jose[cryptography]>=3.3  # JWT 编解码
+pyotp>=2.9  # TOTP / MFA 第二因子（admin 二步验证）
+faker>=24.0  # Phase 14: ai_filler v3 locale-aware fallback(provider=off 时仍能生成业务样本)
+pytest>=8.0
+httpx>=0.27   # TestClient 依赖：starlette.testclient 通过 httpx 驱动
+APScheduler>=3.10
+tzdata>=2024.1; sys_platform == "win32"  # Windows 没系统 zoneinfo（Linux 有 /usr/share/zoneinfo）,APScheduler 启动时 Asia/Shanghai 时区会找不到
+
+# Optional database drivers. Install only the drivers needed by your environment.
+dmPython
+pymysql
+cryptography  # Required by PyMySQL for MySQL 8 caching_sha2_password authentication.
+# oracledb
+# ibm_db

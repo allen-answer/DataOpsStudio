@@ -110,6 +110,9 @@ def run_task(
     from app.services.memory_guard import MemoryGuard, MemoryBudgetExceeded
     mem_guard = MemoryGuard()
 
+    # #22 Wave 5:compare 通道 metrics(终态时打点)
+    from app.services import metrics as _metrics
+
     try:
         # Phase 13:单任务 query_timeout 覆盖。task.limits.query_timeout_seconds 显
         # 式设了就 push 进 ContextVar,下游 fetch_rows / iter_rows 路径自动取这个
@@ -121,30 +124,43 @@ def run_task(
                 run_id=run_id, mem_guard=mem_guard,
             )
         # 成功 finalize
+        final_disk = _safe_run_disk_bytes(run_id)
+        peak_mb = mem_guard.peak_rss_mb()
         _run_index_mod.finalize(
             run_id, status="success",
-            disk_bytes=_safe_run_disk_bytes(run_id),
-            peak_rss_mb=mem_guard.peak_rss_mb(),
+            disk_bytes=final_disk,
+            peak_rss_mb=peak_mb,
             result_path=str(RESULTS_DIR / run_id),
         )
+        # #22 metric
+        _metrics.compare_runs_total.inc(status="success")
+        _metrics.compare_disk_bytes.observe(float(final_disk), result_format=task.limits.result_format)
+        _metrics.compare_peak_rss_mb.observe(peak_mb, result_format=task.limits.result_format)
         return result
     except MemoryBudgetExceeded as exc:
+        peak_mb = mem_guard.peak_rss_mb()
         _run_index_mod.finalize(
             run_id, status="aborted_guard",
             guard_reason="memory_hard_limit",
             error=str(exc),
             disk_bytes=_safe_run_disk_bytes(run_id),
-            peak_rss_mb=mem_guard.peak_rss_mb(),
+            peak_rss_mb=peak_mb,
         )
+        _metrics.compare_runs_total.inc(status="aborted_guard")
+        _metrics.compare_guard_aborts_total.inc(reason="memory_hard_limit")
         raise
     except (DiskWatermarkExceeded, RunQuotaExceeded) as exc:
+        peak_mb = mem_guard.peak_rss_mb()
+        reason = type(exc).__name__
         _run_index_mod.finalize(
             run_id, status="aborted_guard",
-            guard_reason=type(exc).__name__,
+            guard_reason=reason,
             error=str(exc),
             disk_bytes=_safe_run_disk_bytes(run_id),
-            peak_rss_mb=mem_guard.peak_rss_mb(),
+            peak_rss_mb=peak_mb,
         )
+        _metrics.compare_runs_total.inc(status="aborted_guard")
+        _metrics.compare_guard_aborts_total.inc(reason=reason)
         raise
     except Exception as exc:
         _run_index_mod.finalize(
@@ -153,6 +169,7 @@ def run_task(
             disk_bytes=_safe_run_disk_bytes(run_id),
             peak_rss_mb=mem_guard.peak_rss_mb(),
         )
+        _metrics.compare_runs_total.inc(status="failed")
         raise
 
 

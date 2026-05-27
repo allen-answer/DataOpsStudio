@@ -25,9 +25,14 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
+        # Wave 5 #20:优先 lock,缺失回退 .txt(老路径)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.lock.txt ]; then
+            pip install -r requirements.lock.txt
+          else
+            pip install -r requirements.txt
+          fi
 
       # 编译期 syntax 检查 —— 防止 import-time SyntaxError 漏到运行时才暴露
       - name: Compile-check all Python sources

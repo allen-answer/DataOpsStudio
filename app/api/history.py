@@ -40,6 +40,69 @@ def result_history_api(
     )
 
 
+@router.get("/api/runs/index")
+def runs_index_api(
+    project_id: str = "",
+    status: str = Query("", description="reserved/running/success/failed/cancelled/aborted_guard/deleted;空 = 不过滤"),
+    limit: int = Query(100, ge=1, le=1000),
+    current: User = Depends(get_current_user),
+):
+    """Wave 5 #21:直接从 run_index 表读 — O(1) SQL,跟 /api/history 的扫文件
+    路径互补。给前端 dashboard / quota 监控 / guard abort 审计页用。
+
+    用户级项目隔离:非 admin 仅能看 accessible_project_ids 内的 run。
+    admin 不传 project_id 时看全部。
+    """
+    from app.services import run_index as _run_index_mod
+    accessible = accessible_project_ids(current)
+
+    if project_id:
+        if accessible is not None and project_id not in accessible:
+            raise HTTPException(status_code=403, detail="无权查看该项目")
+        rows = _run_index_mod.list_by_project(project_id, status=status or None, limit=limit)
+    elif accessible is None:
+        # admin:跨所有 project
+        # 暂未提供 list_all,简化为按状态过滤汇总(后续 P3 enhancement 再扩)
+        from app.services.sqlite_store import connect as _sqc
+        sql = "SELECT * FROM run_index"
+        params: list = []
+        if status:
+            sql += " WHERE status=?"
+            params.append(status)
+        sql += " ORDER BY requested_at DESC LIMIT ?"
+        params.append(limit)
+        with _sqc() as conn:
+            cur = conn.execute(sql, tuple(params))
+            rows = [_run_index_mod._row_to_record(r) for r in cur.fetchall()]
+    else:
+        # 非 admin 不传 project_id 时遍历自己可访问的项目
+        rows = []
+        for pid in accessible:
+            rows.extend(_run_index_mod.list_by_project(pid, status=status or None, limit=limit))
+        rows.sort(key=lambda r: r.requested_at, reverse=True)
+        rows = rows[:limit]
+
+    return {
+        "items": [
+            {
+                "run_id": r.run_id, "task_id": r.task_id, "job_id": r.job_id,
+                "workflow_run_id": r.workflow_run_id,
+                "project_id": r.project_id, "owner_user_id": r.owner_user_id,
+                "source_ds_id": r.source_ds_id, "target_ds_id": r.target_ds_id,
+                "status": r.status,
+                "requested_at": r.requested_at, "started_at": r.started_at,
+                "finished_at": r.finished_at,
+                "result_format": r.result_format, "stream_compare": r.stream_compare,
+                "max_rows": r.max_rows,
+                "disk_bytes": r.disk_bytes, "peak_rss_mb": r.peak_rss_mb,
+                "guard_reason": r.guard_reason, "error": r.error,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
 @router.delete("/api/history/{run_id}", response_model=OkResponse)
 def delete_history_api(run_id: str, current: User = Depends(require_role("editor"))):
     # 能解析出归属项目就校验；孤儿 run（无法归属）回落到仅 editor 角色门槛。
