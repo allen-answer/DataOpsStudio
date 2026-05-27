@@ -1,11 +1,11 @@
 <script setup>
 import { defineAsyncComponent, computed } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Code2, FileSpreadsheet, Sparkles, Eye, ListTree } from 'lucide-vue-next'
+import { Code2, FileSpreadsheet, FileText, FileType2, Sparkles, Eye, ListTree } from 'lucide-vue-next'
 import { useTaskStore } from '../../stores/task'
 import { useNoticeStore } from '../../stores/notice'
 
-// 源 / 目标 数据来源面板：SQL 编辑器或 Excel 上传 + 字段提取 + 预览
+// 源 / 目标 数据来源面板:SQL / Excel / CSV / Parquet 四选一 + 字段提取 + 预览
 const SqlEditor = defineAsyncComponent(() => import('../../components/SqlEditor.vue'))
 
 const props = defineProps({
@@ -20,7 +20,7 @@ const {
   sourceFields, targetFields,
   sourceFieldWarnings, targetFieldWarnings,
 } = storeToRefs(taskStore)
-const { extractFields, previewTask, formatSql, uploadExcel } = taskStore
+const { extractFields, previewTask, formatSql, uploadExcel, uploadCsv, uploadParquet } = taskStore
 const { copyField } = useNoticeStore()
 
 // 一组以 side 派生的字段访问器
@@ -31,6 +31,15 @@ const headerRow = computed({
   get: () => taskDraft[`${props.side}_header_row`],
   set: v => taskDraft[`${props.side}_header_row`] = v,
 })
+const csvDelimiter = computed({
+  get: () => taskDraft[`${props.side}_csv_delimiter`] || ',',
+  set: v => taskDraft[`${props.side}_csv_delimiter`] = v,
+})
+const fileEncoding = computed({
+  get: () => taskDraft[`${props.side}_file_encoding`] || 'utf-8-sig',
+  set: v => taskDraft[`${props.side}_file_encoding`] = v,
+})
+const filePath = computed(() => taskDraft[`${props.side}_file_path`])
 const excelFilename = computed(() => taskDraft[`${props.side}_excel_filename`])
 const excelSheets   = computed(() => taskDraft[`${props.side}_excel_sheets`] || [])
 const fields        = computed(() => props.side === 'source' ? sourceFields.value : targetFields.value)
@@ -38,7 +47,10 @@ const fieldWarnings = computed(() => props.side === 'source' ? sourceFieldWarnin
 const previewData   = computed(() => props.side === 'source' ? sourcePreviewData.value : targetPreviewData.value)
 const previewColumns = computed(() => previewData.value?.columns?.length ? previewData.value.columns : Object.keys(previewData.value?.rows?.[0] ?? {}))
 
-const isSql = computed(() => kind.value === 'sql')
+const isSql     = computed(() => kind.value === 'sql')
+const isExcel   = computed(() => kind.value === 'excel')
+const isCsv     = computed(() => kind.value === 'csv')
+const isParquet = computed(() => kind.value === 'parquet')
 
 const accentClass = computed(() => props.side === 'source' ? 'bg-blue-500' : 'bg-orange-500')
 const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
@@ -51,7 +63,7 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
         <span class="h-2 w-2 rounded-full" :class="accentClass" />
         <span class="text-xs font-bold uppercase tracking-wider text-slate-600">{{ sideLabel }}</span>
 
-        <!-- SQL / Excel 切换 -->
+        <!-- SQL / Excel / CSV / Parquet 切换 -->
         <div class="ml-2 inline-flex rounded-md bg-slate-100 p-0.5 text-[11px] font-bold">
           <button
             class="flex items-center gap-1 rounded px-2 py-1 transition"
@@ -62,10 +74,24 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
           </button>
           <button
             class="flex items-center gap-1 rounded px-2 py-1 transition"
-            :class="!isSql ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            :class="isExcel ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
             @click="kind = 'excel'"
           >
             <FileSpreadsheet class="h-3 w-3" /> Excel
+          </button>
+          <button
+            class="flex items-center gap-1 rounded px-2 py-1 transition"
+            :class="isCsv ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            @click="kind = 'csv'"
+          >
+            <FileText class="h-3 w-3" /> CSV
+          </button>
+          <button
+            class="flex items-center gap-1 rounded px-2 py-1 transition"
+            :class="isParquet ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            @click="kind = 'parquet'"
+          >
+            <FileType2 class="h-3 w-3" /> Parquet
           </button>
         </div>
       </div>
@@ -103,7 +129,7 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
     </template>
 
     <!-- Excel 模式 -->
-    <template v-else>
+    <template v-else-if="isExcel">
       <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-sm">
         <input
           type="file"
@@ -128,6 +154,67 @@ const sideLabel = computed(() => props.side === 'source' ? 'SOURCE' : 'TARGET')
           <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">表头行</span>
           <input v-model="headerRow" type="number" min="1" class="bg-slate-50">
         </label>
+      </div>
+    </template>
+
+    <!-- CSV 模式 -->
+    <template v-else-if="isCsv">
+      <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-sm">
+        <input
+          type="file"
+          accept=".csv,.txt,.tsv"
+          class="block w-full text-xs"
+          @change="uploadCsv(side, $event.target.files[0])"
+        >
+        <p v-if="excelFilename" class="mt-2 text-xs text-slate-600">
+          已上传:<strong class="text-slate-800">{{ excelFilename }}</strong>
+          <span class="ml-2 text-slate-400">{{ filePath }}</span>
+        </p>
+        <p v-else class="mt-2 text-xs text-slate-400">支持 .csv / .txt / .tsv;上传后选分隔符 / 编码 / 表头行。</p>
+      </div>
+      <div class="grid grid-cols-3 gap-2.5">
+        <label>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">分隔符</span>
+          <select v-model="csvDelimiter" class="bg-slate-50">
+            <option value=",">,(逗号)</option>
+            <option value=";">;(分号)</option>
+            <option value="	">Tab</option>
+            <option value="|">|(竖线)</option>
+          </select>
+        </label>
+        <label>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">编码</span>
+          <select v-model="fileEncoding" class="bg-slate-50">
+            <option value="utf-8-sig">UTF-8(含 BOM)</option>
+            <option value="utf-8">UTF-8</option>
+            <option value="gbk">GBK / GB2312</option>
+            <option value="gb18030">GB18030</option>
+            <option value="latin-1">Latin-1</option>
+          </select>
+        </label>
+        <label>
+          <span class="muted mb-1 block text-[10px] font-bold uppercase tracking-wider">表头行</span>
+          <input v-model="headerRow" type="number" min="1" class="bg-slate-50">
+        </label>
+      </div>
+    </template>
+
+    <!-- Parquet 模式 -->
+    <template v-else-if="isParquet">
+      <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-sm">
+        <input
+          type="file"
+          accept=".parquet"
+          class="block w-full text-xs"
+          @change="uploadParquet(side, $event.target.files[0])"
+        >
+        <p v-if="excelFilename" class="mt-2 text-xs text-slate-600">
+          已上传:<strong class="text-slate-800">{{ excelFilename }}</strong>
+          <span class="ml-2 text-slate-400">{{ filePath }}</span>
+        </p>
+        <p v-else class="mt-2 text-xs text-slate-400">
+          支持 .parquet 二进制列式格式;schema 信息内嵌在文件里,自动识别字段。
+        </p>
       </div>
     </template>
 

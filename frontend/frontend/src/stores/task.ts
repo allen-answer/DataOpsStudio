@@ -509,6 +509,44 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  async function uploadCsv(side: CompareTaskSide, file: File | null): Promise<void> {
+    const notice = useNoticeStore()
+    if (!file) return
+    notice.setActionStatus('running', `上传 ${side === 'source' ? '源' : '目标'} CSV`, file.name)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await apiForm<{ path: string; filename: string }>('/api/uploads/csv', form)
+      const prefix = side === 'source' ? 'source' : 'target'
+      taskDraft[`${prefix}_file_path`] = response.path
+      taskDraft[`${prefix}_excel_filename`] = response.filename  // 复用字段做 UI 显示
+      // 默认编码 / 分隔符
+      if (!taskDraft[`${prefix}_file_encoding`]) taskDraft[`${prefix}_file_encoding`] = 'utf-8-sig'
+      if (!taskDraft[`${prefix}_csv_delimiter`]) taskDraft[`${prefix}_csv_delimiter`] = ','
+      if (!taskDraft[`${prefix}_header_row`]) taskDraft[`${prefix}_header_row`] = 1
+      notice.setActionStatus('success', 'CSV 已上传', response.filename)
+    } catch (error) {
+      notice.setActionStatus('error', 'CSV 上传失败', _toErrorMessage(error))
+    }
+  }
+
+  async function uploadParquet(side: CompareTaskSide, file: File | null): Promise<void> {
+    const notice = useNoticeStore()
+    if (!file) return
+    notice.setActionStatus('running', `上传 ${side === 'source' ? '源' : '目标'} Parquet`, file.name)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await apiForm<{ path: string; filename: string }>('/api/uploads/parquet', form)
+      const prefix = side === 'source' ? 'source' : 'target'
+      taskDraft[`${prefix}_file_path`] = response.path
+      taskDraft[`${prefix}_excel_filename`] = response.filename
+      notice.setActionStatus('success', 'Parquet 已上传', response.filename)
+    } catch (error) {
+      notice.setActionStatus('error', 'Parquet 上传失败', _toErrorMessage(error))
+    }
+  }
+
   async function runTask(): Promise<void> {
     const notice = useNoticeStore()
     const bootstrap = useBootstrapStore()
@@ -757,6 +795,6 @@ export const useTaskStore = defineStore('task', () => {
     selectTask, saveTask, deleteTask, copyTask,
     runTask, runAsync, cancelAsync, previewTask,
     extractFields, recommendKey, formatSql,
-    uploadExcel,
+    uploadExcel, uploadCsv, uploadParquet,
   }
 })
