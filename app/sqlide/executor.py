@@ -14,6 +14,7 @@ from typing import Any
 
 from app.dbclients.factory import DbClientError, fetch_rows_with_schema
 from app.models import DataSource
+from app.sqlide.limit_injector import inject_limit, needs_injection
 from app.sqlide.models import ExecuteResponse
 from app.utils.sql_guard import validate_readonly_sql
 
@@ -67,12 +68,25 @@ def execute_sql(
     except ValueError as exc:
         return ExecuteResponse(success=False, error=str(exc))
 
-    # 2) 拉数据(拉 max_rows + 1 检测 truncated)
+    # 2) Preview 路径强制注入 LIMIT —— pymysql 默认 buffered cursor 在 execute
+    # 那一刻就把整个结果集拉到 client 内存,`max_rows + 1` 截断根本来不及触发。
+    # 在 SQL 出门前注入 LIMIT 让 server 端只返 max_rows + 1 行(多 1 行检测
+    # truncated),client 内存恒定 O(max_rows × 单行)。
+    # 已带 LIMIT/FETCH FIRST/ROWNUM 的 SQL 不动 —— 尊重用户显式意图。
+    db_type_str = source.db_type.value if hasattr(source.db_type, "value") else str(source.db_type)
+    effective_sql = sql
+    limit_injected = False
+    if needs_injection(sql, max_rows=max_rows + 1):
+        effective_sql = inject_limit(sql, max_rows=max_rows + 1, db_type=db_type_str)
+        limit_injected = True
+        logger.info("preview limit injected max_rows=%d db_type=%s", max_rows, db_type_str)
+
+    # 3) 拉数据(拉 max_rows + 1 检测 truncated)
     start = time.perf_counter()
     try:
         result = fetch_rows_with_schema(
             source,
-            sql,
+            effective_sql,
             max_rows=max_rows + 1,
             raise_on_overflow=False,
         )

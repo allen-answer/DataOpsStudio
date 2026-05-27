@@ -232,24 +232,54 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     format: 'csv' | 'excel' | 'json' | 'sql'
     title?: string
     max_rows?: number
-  }): Promise<{ ok: boolean; download_url?: string; file_name?: string; error?: string; row_count?: number }> {
+    // 包 A A.2:后端检测到 "SELECT * 无 WHERE 无 LIMIT" 等全表扫描风险时返
+    // requires_confirmation=true;caller 弹确认框后带 confirm_full_scan=true 重提。
+    confirm_full_scan?: boolean
+  }): Promise<{
+    ok: boolean
+    download_url?: string
+    file_name?: string
+    error?: string
+    row_count?: number
+    requires_confirmation?: boolean
+    warnings?: string[]
+    risk_level?: string
+  }> {
     exporting[consoleId] = true
     try {
       const env = await apiJson<{
-        export_id: string
-        status: 'pending' | 'running' | 'success' | 'failed'
+        // 正常 export 路径
+        export_id?: string
+        status: 'pending' | 'running' | 'success' | 'failed' | 'requires_confirmation'
         download_url?: string
         file_name?: string
         row_count?: number
         truncated?: boolean
         error?: string | null
+        // 全表扫描确认路径
+        requires_confirmation?: boolean
+        warnings?: string[]
+        risk_level?: string
+        message?: string
       }>('/api/sql-workbench/export', 'POST', {
         datasource_id: payload.datasource_id,
         sql: payload.sql,
         format: payload.format,
         title: payload.title || '',
         max_rows: payload.max_rows || 100_000,
+        confirm_full_scan: payload.confirm_full_scan === true,
       })
+
+      // 后端检测到全表扫描风险 —— 让 caller 弹确认框
+      if (env.status === 'requires_confirmation' || env.requires_confirmation === true) {
+        return {
+          ok: false,
+          requires_confirmation: true,
+          warnings: env.warnings || [],
+          risk_level: env.risk_level || 'warn',
+          error: env.message || '检测到全表扫描风险,请确认后重试',
+        }
+      }
       let final = env
       if (env.status === 'pending' || env.status === 'running') {
         // poll up to 10 min (export 比 execute 慢得多;主要是大结果场景)
@@ -259,6 +289,8 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
           if (final.status !== 'pending' && final.status !== 'running') break
         }
       }
+      // 走到这里 final 应当是 terminal:success / failed / cancelled
+      // requires_confirmation 状态不会从 poll 拿到,只在首次 POST 时返
       if (final.status !== 'success' || !final.download_url) {
         return { ok: false, error: final.error || `导出失败: status=${final.status}` }
       }

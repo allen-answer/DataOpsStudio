@@ -158,6 +158,126 @@ def _fetch_with_dbapi(
         # connection 由 pool.borrow context manager 接管 release/close
 
 
+@contextmanager
+def stream_rows(
+    source: DataSource,
+    sql: str,
+    *,
+    max_rows: int | None = None,
+    chunk_size: int = 1000,
+):
+    """流式拉 SELECT 结果。专给 Export / 大查询用,避免 pymysql 默认 buffered cursor
+    在 execute 那一刻把整个结果集拉到 client 内存的 OOM 风险。
+
+    Yields:
+        (columns, chunk_iterator) 元组。columns 是 unique 列名列表;chunk_iterator
+        每次 yield 一个 list[dict] (本批行)。caller for chunk in iter 边拉边写文件,
+        client 内存恒定 O(chunk_size × 单行)。
+
+    各方言策略:
+    - MySQL pymysql → SSCursor (unbuffered server-side cursor),边拉边发,client 不缓存
+    - Oracle / DM / DB2 → 普通 cursor + fetchmany(chunk_size),driver 内置 batch buffer 较小
+      (cx_Oracle/oracledb arraysize 默认 100,dmPython 类似,ibm_db 默认行级 cursor)
+
+    **重要约束** (SSCursor 限制):
+    - SSCursor 期间该连接不能再跑其他 SQL,必须 close 当前 cursor 才能下一个 execute
+    - SSCursor 在 server 端持有 result set 锁,长时间 idle 会让 server 资源占用,
+      caller 应尽快消费完 + close cursor + release connection
+
+    Args:
+        source: DataSource
+        sql: SELECT 语句(已过 readonly check / 已注入安全策略)
+        max_rows: 总行数上限。None 表示不限,拉到表尾;到达上限后 generator 自动停止
+            (cursor 仍 close + connection release,SSCursor 不会泄漏)
+        chunk_size: 每批拉多少行。默认 1000,大行少列可调到 5000;宽表(几十列大文本)
+            可降到 200 减少单批内存
+    """
+    module_name = first_available_module(source.db_type)
+    if not module_name:
+        raise RuntimeError(f"{source.db_type.value} driver is not installed")
+
+    start = time.perf_counter()
+    logger.info(
+        "stream query start datasource=%s db_type=%s sql=%s chunk=%d max_rows=%s",
+        source.name, source.db_type.value, _short_sql(sql), chunk_size, max_rows,
+    )
+
+    with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
+        cursor = None
+        try:
+            try:
+                cursor = _create_streaming_cursor(connection, module_name)
+            except Exception as exc:
+                raise DbClientError(f"create streaming cursor failed: {exc}") from exc
+
+            _apply_statement_timeout(cursor, source.db_type, connection)
+            try:
+                cursor.execute(sql)
+            except Exception as exc:
+                raise DbClientError(f"execute SQL failed: {exc}; SQL={_short_sql(sql)}") from exc
+
+            raw_columns = [desc[0] for desc in cursor.description or []]
+            columns = uniquify_columns(raw_columns)
+
+            def _iter_chunks():
+                fetched = 0
+                while True:
+                    try:
+                        rows_tuples = cursor.fetchmany(chunk_size)
+                    except Exception as exc:
+                        # streaming 中段失败:可能是 server-side cursor 超时 / network 断
+                        raise DbClientError(
+                            f"stream fetch failed at row {fetched}: {exc}; SQL={_short_sql(sql)}"
+                        ) from exc
+                    if not rows_tuples:
+                        break
+                    # SSCursor / 普通 cursor 都返 tuple,转 dict by columns
+                    chunk = [dict(zip(columns, r)) for r in rows_tuples]
+                    if max_rows is not None:
+                        remaining = max_rows - fetched
+                        if remaining <= 0:
+                            break
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+                            fetched += len(chunk)
+                            yield chunk
+                            break
+                    fetched += len(chunk)
+                    yield chunk
+                logger.info(
+                    "stream query done datasource=%s rows=%d elapsed=%.3fs",
+                    source.name, fetched, time.perf_counter() - start,
+                )
+
+            yield (columns, _iter_chunks())
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
+
+def _create_streaming_cursor(connection: Any, module_name: str) -> Any:
+    """根据 driver 选择最适合 streaming 的 cursor 实现。
+
+    - MySQL pymysql → SSCursor (server-side cursor,真正 unbuffered)
+    - 其他 driver → 普通 cursor (driver-level batch buffer 已小,fetchmany 即为 chunk 流式)
+
+    SSCursor 创建失败时 fallback 普通 cursor —— 不让 driver 兼容问题挂掉整个 export
+    (代价是该路径可能 OOM,但 caller 仍有 max_rows 兜底)。
+    """
+    if module_name == "pymysql":
+        try:
+            import pymysql.cursors  # type: ignore[import-untyped]
+            return connection.cursor(pymysql.cursors.SSCursor)
+        except Exception as exc:
+            logger.warning("pymysql SSCursor unavailable, fallback to default cursor: %s", exc)
+            return connection.cursor()
+    # cx_Oracle / oracledb / dmPython / ibm_db 默认 cursor 已经是合理的 streaming 行为
+    return connection.cursor()
+
+
 def fetch_columns(source: DataSource, sql: str) -> list[str]:
     """Return column names for `sql` without materializing rows. Uses
     `cursor.description` so empty result sets still yield the schema."""

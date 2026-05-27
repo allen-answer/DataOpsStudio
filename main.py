@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-import mimetypes
-from contextlib import asynccontextmanager
+# 必须最早 load config.yml —— 后面 import 的 service module 在 module-level
+# 就 os.getenv 读 JWT_SECRET / RATELIMIT_ENFORCE 等,晚于此处加载会拿不到 yml 值。
+# env var 仍优先于 yml(docker compose env / CI / 启动脚本 set 的不会被覆盖)。
+from app.config_loader import load_config  # noqa: E402
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
-from starlette.types import Scope
+load_config()
 
-from app.api.routes import router
-from app.services.scheduler import DEFAULT_ENABLED, start_scheduler, stop_scheduler
-from app.utils.logging_config import setup_logging
-from app.utils.paths import BASE_DIR, ensure_dirs
+import mimetypes  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from starlette.responses import Response  # noqa: E402
+from starlette.types import Scope  # noqa: E402
+
+from app.api.routes import router  # noqa: E402
+from app.services.scheduler import DEFAULT_ENABLED, start_scheduler, stop_scheduler  # noqa: E402
+from app.utils.logging_config import setup_logging  # noqa: E402
+from app.utils.paths import BASE_DIR, ensure_dirs  # noqa: E402
 
 
 # 注册 Office / 数据相关扩展名的 mimetype。python:3.12-slim 镜像没装

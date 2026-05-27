@@ -743,7 +743,16 @@ function isSlow(ms: number | undefined | null): boolean {
 // ─── v0.5+ 结果导出 ────────────────────────────────────────────────
 const showExportMenu = ref(false)
 
-async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql') {
+// 全表扫描风险确认弹窗状态(包 A.2)。后端检测到 SELECT * 无 WHERE 无 LIMIT 等
+// 风险时返 requires_confirmation,前端弹框让用户决定是否继续。confirm 时带
+// confirm_full_scan=true 重新提交;cancel 直接放弃导出。
+const fullScanConfirm = ref<{
+  visible: boolean
+  format: 'csv' | 'excel' | 'json' | 'sql' | null
+  warnings: string[]
+}>({ visible: false, format: null, warnings: [] })
+
+async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql', confirmFullScan = false) {
   const c = activeConsole.value
   if (!c || !c.datasource_id || !c.sql.trim()) {
     notice.setNotice('请先选数据源 + 输入 SQL')
@@ -757,7 +766,19 @@ async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql') {
     format,
     title: c.name || '',
     max_rows: 100_000,
+    confirm_full_scan: confirmFullScan,
   })
+
+  // 全表扫描风险 —— 弹确认框,用户点"继续"后带 confirm_full_scan=true 重提
+  if (r.requires_confirmation) {
+    fullScanConfirm.value = {
+      visible: true,
+      format,
+      warnings: r.warnings || [],
+    }
+    return
+  }
+
   if (r.ok && r.download_url) {
     // 关键 fix:不用 window.location.href(浏览器原生导航不带 Bearer token 直接 401)。
     // 改走 apiDownload —— fetch + Authorization header 拿 blob,然后 a.click() 触发下载。
@@ -771,6 +792,21 @@ async function exportAs(format: 'csv' | 'excel' | 'json' | 'sql') {
   } else {
     notice.setNotice(`导出失败: ${r.error || '未知错误'}`)
   }
+}
+
+function confirmFullScanExport() {
+  const fmt = fullScanConfirm.value.format
+  fullScanConfirm.value.visible = false
+  if (fmt) {
+    exportAs(fmt, true)
+  }
+}
+
+function cancelFullScanExport() {
+  fullScanConfirm.value.visible = false
+  fullScanConfirm.value.format = null
+  fullScanConfirm.value.warnings = []
+  notice.setNotice('已取消导出')
 }
 
 const isExporting = computed<boolean>(() => {
@@ -1692,6 +1728,52 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <button class="inline-flex items-center gap-1 rounded-md bg-primary text-white px-3 py-1.5 text-xs font-bold hover:bg-primary-hover" @click="onSubmitSaveTemplate">
             <Save class="h-3 w-3" />
             {{ saveTemplateDraft.id ? '更新' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 包 A.2:全表扫描风险确认弹窗 —— 后端检测到 SELECT * 无 WHERE 无 LIMIT
+         等情况时返 requires_confirmation,弹此框让用户决定是否继续。继续 → 带
+         confirm_full_scan=true 重提;取消 → 放弃 export -->
+    <div
+      v-if="fullScanConfirm.visible"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      @click.self="cancelFullScanExport"
+    >
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-5">
+        <div class="flex items-start gap-3 mb-4">
+          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+            <span class="text-amber-600 text-xl">⚠</span>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-base font-bold text-slate-900 mb-1">全表扫描风险确认</h3>
+            <p class="text-xs text-slate-600">
+              系统检测到该 SQL 可能扫描全表,导出数据量可能非常大,确认继续?
+            </p>
+          </div>
+        </div>
+        <div class="bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
+          <ul class="text-xs text-amber-800 space-y-1">
+            <li v-for="(w, i) in fullScanConfirm.warnings" :key="i">• {{ w }}</li>
+          </ul>
+        </div>
+        <p class="text-xs text-slate-500 mb-4">
+          建议:加 <code class="bg-slate-100 px-1 rounded">WHERE</code> 过滤或
+          <code class="bg-slate-100 px-1 rounded">LIMIT N</code> 限行后再导出。
+        </p>
+        <div class="flex justify-end gap-2">
+          <button
+            class="px-3 py-1.5 text-xs rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50"
+            @click="cancelFullScanExport"
+          >
+            取消
+          </button>
+          <button
+            class="px-3 py-1.5 text-xs rounded-md bg-amber-600 text-white font-bold hover:bg-amber-700"
+            @click="confirmFullScanExport"
+          >
+            继续导出
           </button>
         </div>
       </div>

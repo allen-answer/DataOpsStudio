@@ -38,7 +38,26 @@ def _create_ds(client, **overrides) -> str:
 
 
 def _mock_rows(monkeypatch, rows: list[dict], columns: list[str] | None = None):
+    """Mock 数据返回。
+
+    A.3 改造后 sql_export 走 stream_rows context manager,需要 patch 它而不是
+    fetch_rows_with_schema。fetch_rows_with_schema 路径仍保留(其它地方在用)。
+    """
+    from contextlib import contextmanager
     cols = columns or (list(rows[0].keys()) if rows else [])
+
+    @contextmanager
+    def fake_stream_rows(source, sql, *, max_rows=None, chunk_size=1000):
+        def _iter():
+            # 单批返全部 rows;到 max_rows 截断
+            if not rows:
+                return
+            limited = rows[:max_rows] if max_rows is not None else rows
+            yield limited
+        yield (cols, _iter())
+
+    monkeypatch.setattr("app.services.sql_export.stream_rows", fake_stream_rows)
+    # 兼容老 fetch_rows_with_schema 路径(其它 caller 还在用)
     monkeypatch.setattr(
         "app.services.sql_export.fetch_rows_with_schema",
         lambda *a, **kw: QueryRows(rows=rows, columns=cols, raw_columns=cols, warnings=[]),
@@ -228,13 +247,17 @@ def test_export_blocks_dml(client_admin, monkeypatch):
 
 
 def test_export_async_path_yields_pending_then_success(client_admin, monkeypatch):
-    """大结果场景:fetch_rows 慢 → 短同步内未完成 → 返 running/pending → poll 成功。"""
+    """大结果场景:stream_rows 慢 → 短同步内未完成 → 返 running/pending → poll 成功。"""
+    from contextlib import contextmanager
     ds_id = _create_ds(client_admin)
 
-    def _slow(*a, **kw):
+    @contextmanager
+    def _slow_stream(source, sql, *, max_rows=None, chunk_size=1000):
         time.sleep(1.0)
-        return QueryRows(rows=[{"id": 1}], columns=["id"], raw_columns=["id"], warnings=[])
-    monkeypatch.setattr("app.services.sql_export.fetch_rows_with_schema", _slow)
+        def _iter():
+            yield [{"id": 1}]
+        yield (["id"], _iter())
+    monkeypatch.setattr("app.services.sql_export.stream_rows", _slow_stream)
 
     r = client_admin.post("/api/sql-workbench/export", json={
         "datasource_id": ds_id, "sql": "SELECT 1", "format": "csv", "title": "big",

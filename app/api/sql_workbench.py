@@ -286,6 +286,9 @@ class ExportRequest(BaseModel):
     format: str = Field(..., description="csv | excel | json | sql")
     title: str = Field(default="", max_length=80)
     max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
+    # 若服务端检测到"SELECT * 无 WHERE 无 LIMIT"等高风险全表扫描,首次请求返
+    # requires_confirmation=True + warnings,前端弹确认后带这个 flag 重提才真正执行
+    confirm_full_scan: bool = Field(default=False)
 
 
 _EXPORT_MIME = {
@@ -313,6 +316,24 @@ def submit_export(
     ds = require_datasource_access(current, payload.datasource_id)
     if not getattr(ds, "allow_select", True):
         raise HTTPException(status_code=403, detail=f"数据源 {ds.name} 已禁用 SELECT")
+
+    # Full-scan 风险检测 —— SELECT * 无 WHERE 无 LIMIT 等情况首次请求要求二次确认,
+    # 避免用户手滑导出全表(几千万行 CSV 把磁盘 + 内存爆掉)。前端弹框确认后带
+    # confirm_full_scan=true 重提即可。
+    from app.utils.sql_safety import analyze_safety  # 局部 import 避免循环
+    safety = analyze_safety(payload.sql)
+    if safety.risk_level == "warn" and not payload.confirm_full_scan:
+        logger.warning(
+            "export blocked pending confirmation user=%s ds=%s warnings=%s",
+            current.id, ds.id, safety.warnings,
+        )
+        return {
+            "status": "requires_confirmation",
+            "requires_confirmation": True,
+            "warnings": safety.warnings,
+            "risk_level": safety.risk_level,
+            "message": "检测到全表扫描风险,请确认是否继续导出",
+        }
 
     ex = _sql_export.start_export(
         user_id=current.id,

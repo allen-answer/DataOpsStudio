@@ -69,6 +69,8 @@ config/scenarios/*.yml
 config/metadata_cache/
 # SQL 工作台用户模板(每个 clone 自己,内置 example 仍跟踪)
 config/sql_templates.json
+# 统一 yml 配置(每个部署环境自己一份,example 跟踪)
+config/config.yml
 frontend.zip
 *.tmp
 *.bak

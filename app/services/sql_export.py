@@ -36,7 +36,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from app.dbclients.factory import DbClientError, fetch_rows_with_schema
+from app.dbclients.factory import DbClientError, fetch_rows_with_schema, stream_rows
 from app.utils.paths import SQL_EXPORTS_DIR
 from app.utils.sql_guard import validate_readonly_sql
 
@@ -216,13 +216,25 @@ def _write_csv(file_path: Path, columns: list[str], rows: Iterable[list[Any]]) -
 
 
 def _write_json(file_path: Path, columns: list[str], rows: Iterable[list[Any]]) -> tuple[int, int]:
-    """写 JSON 数组 —— 每行 dict {col: value}。NULL → null,日期 → ISO。"""
-    obj_list = []
+    """写 JSON 数组 —— 每行 dict {col: value}。
+
+    **流式实现**:不在内存里 build 完整 obj_list 再 dump,改成增量写
+    `[\\n  {...},\\n  {...}\\n]` 格式。1000 万行导出内存恒定 O(单行)。
+    """
     count = 0
-    for row in rows:
-        obj_list.append({col: _serialize_for_json(val) for col, val in zip(columns, row)})
-        count += 1
-    file_path.write_text(json.dumps(obj_list, ensure_ascii=False, indent=2), encoding="utf-8")
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("[\n")
+        first = True
+        for row in rows:
+            obj = {col: _serialize_for_json(val) for col, val in zip(columns, row)}
+            line = json.dumps(obj, ensure_ascii=False)
+            if first:
+                f.write("  " + line)
+                first = False
+            else:
+                f.write(",\n  " + line)
+            count += 1
+        f.write("\n]\n" if count > 0 else "]\n")
     return count, file_path.stat().st_size
 
 
@@ -319,23 +331,42 @@ def start_export(
         try:
             # sql_guard 拦 DML/DDL —— 跟 execute 一个口径
             validate_readonly_sql(sql)
-            # 拉数据(多拉 1 行检测 truncated)
-            result = fetch_rows_with_schema(
-                datasource, sql, max_rows=max_rows + 1, raise_on_overflow=False,
-            )
-            columns = list(result.columns)
-            raw_rows = result.rows
-            truncated = len(raw_rows) > max_rows
-            if truncated:
-                raw_rows = raw_rows[:max_rows]
-            # dict-rows → list-rows(按 columns 顺序)
-            list_rows = [[r.get(c) for c in columns] for r in raw_rows]
 
-            # 派发到 writer
-            if fmt == "sql":
-                row_count, file_size = _write_sql_inserts(file_path, columns, list_rows, title or "data")
-            else:
-                row_count, file_size = _WRITERS[fmt](file_path, columns, list_rows)
+            # **流式拉数据 + 流式写盘**:不再用 fetch_rows_with_schema(那个会把
+            # 全表先拉到 client 内存),改 stream_rows context manager —— MySQL 走
+            # SSCursor unbuffered,Oracle/DM/DB2 走普通 cursor + fetchmany,driver
+            # 内存恒定 O(chunk_size)。
+            # 多拉 1 行检测 truncated:max_rows + 1 让 server 多返一行,遇到说明结果集
+            # > max_rows,标 truncated=True
+            truncated = False
+            row_count = 0
+            with stream_rows(
+                datasource, sql,
+                max_rows=max_rows + 1,
+                chunk_size=1000,
+            ) as (columns, chunk_iter):
+
+                def _row_stream():
+                    """把 chunk 摊平成行 iterator;到 max_rows 自动停 + 标 truncated。"""
+                    nonlocal truncated, row_count
+                    for chunk in chunk_iter:
+                        for row_dict in chunk:
+                            if row_count >= max_rows:
+                                truncated = True
+                                return
+                            yield [row_dict.get(c) for c in columns]
+                            row_count += 1
+
+                if fmt == "sql":
+                    row_count_w, file_size = _write_sql_inserts(
+                        file_path, columns, _row_stream(), title or "data",
+                    )
+                else:
+                    row_count_w, file_size = _WRITERS[fmt](
+                        file_path, columns, _row_stream(),
+                    )
+                # writer 内部数的 count 可能比我们 nonlocal 准(early break 时差 0/1 行),取 writer 的
+                row_count = row_count_w
 
             with _lock:
                 ex.status = "success"
@@ -343,6 +374,10 @@ def start_export(
                 ex.file_size = file_size
                 ex.truncated = truncated
                 ex.finished_at = _now()
+            logger.info(
+                "sql export streaming complete export_id=%s fmt=%s rows=%d size=%d truncated=%s",
+                eid, fmt, row_count, file_size, truncated,
+            )
         except ValueError as exc:
             # sql_guard 拦截
             with _lock:

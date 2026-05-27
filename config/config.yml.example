@@ -1,0 +1,154 @@
+# DataOpsStudio 统一配置文件 - 示例模板
+#
+# 用法: 复制本文件为 config/config.yml,按需调整。config/config.yml 已 gitignore,
+# 不会进版本控制 -- 每个部署环境维护自己一份。
+#
+# 优先级: 环境变量 > config.yml > 代码内默认值
+#   - 已通过 docker compose env / CI / start.bat / export 等设的 env var 仍是最高优先级
+#   - yml 只在 env var 没设时填默认值
+#
+# 阈值调优参考: docs/CONFIG_REFERENCE.md
+#
+# 所有键都是可选 -- 不写就走代码内默认值。下面列的是常用项,完整映射表见
+# app/config_loader.py 的 _SCHEMA。
+
+# ============ 运行模式 ============
+# dev: dry-run guard(超阈值只 log warning,任务继续跑) + 允许 dev JWT key
+# prod: enforce guard(超阈值直接 abort) + JWT secret 必须显式配置否则拒启动
+env: dev
+
+# 日志格式: plain (彩色) 或 json (结构化,便于 ELK / Loki 采集)
+log_format: plain
+
+# ============ 认证 ============
+auth:
+  # 生产必填!生成方式: python -c "import secrets; print(secrets.token_urlsafe(64))"
+  # env=prod 模式下没配则启动 RuntimeError(Wave 1 P0-1 fail-fast)
+  jwt_secret: ""
+
+  # JWT access token 有效期(秒),默认 8 小时
+  jwt_ttl_seconds: 28800
+
+  # Refresh token 有效期(秒),默认 7 天
+  refresh_ttl_seconds: 604800
+
+  # 首次启动建立 admin 账号的密码。
+  # bootstrap_admin_once=true 时,users.json 已存在的 admin 不会被覆盖
+  admin_password: "admin"
+  bootstrap_admin_once: true
+
+  # 配置加密 key(给 datasource password / AI api_key 落盘加密用)
+  # 不配则启动时自动生成一份存 config/.dataops_secret.key
+  # config_secret: ""
+
+# ============ 资源 Guard(磁盘 / 行数 / 任务超时) ============
+guard:
+  # 磁盘剩余空间下限(GB) - 低于此值拒接新任务
+  results_min_free_gb: 5
+
+  # 磁盘使用率上限(%) - 超过此值拒接新任务
+  results_max_disk_usage_percent: 85
+
+  # 对比任务结果集自动切换流式模式的字节阈值(默认 1GB = 1<<30)
+  # 超过此值不再走内存路径,直接走 parquet streaming
+  compare_auto_stream_bytes: 1073741824
+
+  # 对比任务结果集拒跑阈值(默认 5GB = 5<<30)
+  # 超过此值直接拒绝执行 - 调高即可支持更大对比任务
+  compare_deny_bytes: 5368709120
+
+  # 单个 SQL 语句超时(秒) - 防止单个 SELECT 卡死整个连接
+  db_statement_timeout_seconds: 900
+
+  # SQL preflight 是否 enforce(EXPLAIN 检查后拒跑高代价查询)
+  sql_preflight_enforce: false
+
+  # 老结果路径(/results/<id>.json)是否禁用 -- 推荐 true
+  disable_legacy_result_path: true
+
+# ============ 内存 Guard ============
+memory:
+  # off / warn / enforce - prod 模式下默认 enforce
+  guard_mode: warn
+
+  # 进程内存软限制(MB) - 超过此值开始 log warning + 拒接新任务
+  soft_limit_mb: 2048
+
+  # 进程内存硬限制(MB) - 超过此值任务强制中止
+  hard_limit_mb: 4096
+
+# ============ Rate Limit ============
+rate_limit:
+  enforce: true
+
+  # 登录接口限流(次/分钟)
+  login_per_min: 10
+
+  # 单用户操作限流(次/分钟,针对敏感 endpoint)
+  user_per_min: 5
+
+# ============ 调度器 ============
+scheduler:
+  enabled: true
+
+  # workflow cron 同步间隔(秒)
+  interval_seconds: 60
+
+  # 失败任务自动重试次数
+  max_retries: 0
+
+  # Sensor 轮询间隔
+  sensor_interval_seconds: 60
+
+  # Sensor 触发后冷却时间(秒) - 防止文件 sensor 短时间反复触发
+  sensor_cooldown_seconds: 300
+
+# ============ 异步任务 ============
+jobs:
+  # JobInfo 在内存中保留时间(秒),默认 24 小时
+  ttl_seconds: 86400
+
+  # 失败重试次数
+  max_retries: 0
+
+# ============ 下载 token ============
+download:
+  # 预签名下载 URL 有效期(秒),默认 5 分钟
+  url_ttl_seconds: 300
+
+# ============ 通知(workflow run 完成时推送) ============
+# 三 channel 任意配一个就启用,都不配则不发通知
+# notify:
+#   timeout_seconds: 5
+#   webhook_url: "https://your-webhook.example.com/notify"
+#   wecom_webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+#   email_to: "ops@example.com,dba@example.com"
+#   smtp_host: "smtp.example.com"
+#   smtp_port: 587
+#   smtp_from: "dataops@example.com"
+#   smtp_user: "dataops"
+#   smtp_password: ""
+#   smtp_tls: true
+
+# ============ OpenLineage 集成 ============
+# 把每次 workflow run 转成 OpenLineage event 推到 Marquez / DataHub
+# openlineage:
+#   webhook_url: ""              # 通用 webhook
+#   marquez_url: ""              # Marquez API base url
+#   datahub_url: ""              # DataHub GMS url
+#   datahub_token: ""
+#   namespace: "dataops-studio"
+#   timeout_seconds: 5
+
+# ============ Lineage AI ============
+# AI provider: off / mock / openai_compatible / anthropic / ollama
+# ai:
+#   provider: off
+#   api_key: ""                  # 实际 api key(也可走 admin 视图存到 lineage_ai.json)
+#   model: "gpt-4o-mini"
+#   base_url: "https://api.openai.com/v1"
+#   timeout_seconds: 60
+#   max_tokens: 4096
+#   include_raw: false           # 把 LLM 原始响应附在 result(debug 用)
+#   enable_inference: false      # AI 兜底推断(parse_error / dynamic_sql / column_attr)
+#   enable_auto_translation: false   # 5xx / 4xx 错误自动翻译
