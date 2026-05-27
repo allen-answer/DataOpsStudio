@@ -145,6 +145,15 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     cacheSummary?: Record<string, string | null>
   }>>({})
 
+  // 全量重新加载进度(per-ds);reload 期间 UI 显示进度条 + 当前正拉的 schema 名
+  const reloadProgress = reactive<Record<string, {
+    active: boolean
+    done: number
+    total: number
+    currentSchema: string
+    failedSchemas: string[]
+  }>>({})
+
   // 搜索结果(每 ds 一份,不跨 ds 串味)
   const searchResults = reactive<Record<string, MetadataSearchResult[]>>({})
   const searchLoading = reactive<Record<string, boolean>>({})
@@ -543,15 +552,16 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
 
   // ─── 手动刷新 cache(POST /metadata/refresh,清完前端重拉) ──────────
   async function refreshAllMetadata(datasourceId: string): Promise<void> {
+    /**
+     * 兼容老调用 — 只重拉 schemas,tables 留给用户展开时触发(老行为)
+     * 新代码应该用 reloadAllMetadata,DataGrip 风格全量加载 + 进度
+     */
     if (!datasourceId) return
     try {
       await apiJson(`/api/sql-workbench/metadata/refresh`, 'POST', {
         datasource_id: datasourceId, scope: 'all',
       })
-    } catch {
-      // refresh endpoint 失败也不阻塞 —— 后续 loadSchemas(refresh=true) 仍会从 cache miss 走 live
-    }
-    // 重拉 schemas;tables/columns 因为 cache 已被清,用户展开 schema 时会触发 live
+    } catch { /* tolerate */ }
     const meta = metadataByDs[datasourceId]
     if (meta) {
       for (const s of meta.schemas) {
@@ -560,6 +570,87 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
       }
     }
     await loadSchemas(datasourceId, true)
+  }
+
+  async function reloadAllMetadata(datasourceId: string): Promise<void> {
+    /**
+     * DataGrip 风格全量重新加载:
+     *  1. 后端清 metadata cache(all scope)
+     *  2. 前端 schemas[i].tables = undefined
+     *  3. 重拉 schemas
+     *  4. **并发 4 worker** 拉每个 schema 的 tables
+     *  5. tables 拉完后,并发 2 worker 拉每个 schema 的 columns-bulk(字段补全用)
+     *  6. 进度通过 reloadProgress reactive state 暴露给 UI
+     *
+     * 完成后:search / 字段补全立刻可用,不再要用户手动展开每个 schema
+     */
+    if (!datasourceId) return
+    const meta = metadataByDs[datasourceId]
+    if (!meta) return
+
+    reloadProgress[datasourceId] = { active: true, done: 0, total: 0, currentSchema: '初始化...', failedSchemas: [] }
+    try {
+      // 1. 清后端 cache
+      try {
+        await apiJson(`/api/sql-workbench/metadata/refresh`, 'POST', {
+          datasource_id: datasourceId, scope: 'all',
+        })
+      } catch { /* tolerate */ }
+
+      // 2. 前端 schemas 标 dirty
+      for (const s of meta.schemas) {
+        s.tables = undefined
+        s.tablesCachedAt = null
+      }
+
+      // 3. 重拉 schemas 列表
+      reloadProgress[datasourceId].currentSchema = '加载 schemas 列表...'
+      await loadSchemas(datasourceId, true)
+
+      const schemas = meta.schemas.map(s => s.name)
+      // total = schemas 数 × 2(tables 阶段 + columns 阶段)
+      reloadProgress[datasourceId].total = schemas.length * 2
+      reloadProgress[datasourceId].done = 0
+
+      // 4. 并发 4 worker 拉每个 schema 的 tables
+      const tablesQueue = [...schemas]
+      const tablesWorker = async () => {
+        while (tablesQueue.length) {
+          const name = tablesQueue.shift()!
+          reloadProgress[datasourceId].currentSchema = `tables: ${name}`
+          try {
+            await loadTables(datasourceId, name, true)
+          } catch {
+            reloadProgress[datasourceId].failedSchemas.push(`tables:${name}`)
+          }
+          reloadProgress[datasourceId].done += 1
+        }
+      }
+      await Promise.all([tablesWorker(), tablesWorker(), tablesWorker(), tablesWorker()])
+
+      // 5. 并发 2 worker 拉每个 schema 的 columns-bulk(字段补全)
+      const colsQueue = [...schemas]
+      const colsWorker = async () => {
+        while (colsQueue.length) {
+          const name = colsQueue.shift()!
+          reloadProgress[datasourceId].currentSchema = `columns: ${name}`
+          try {
+            await loadColumnsBulk(datasourceId, name, true)
+          } catch {
+            reloadProgress[datasourceId].failedSchemas.push(`columns:${name}`)
+          }
+          reloadProgress[datasourceId].done += 1
+        }
+      }
+      await Promise.all([colsWorker(), colsWorker()])
+
+      reloadProgress[datasourceId].currentSchema = '完成'
+    } finally {
+      // 留 active=true 让 UI 显示完成 banner 一下,1.5s 后清掉
+      setTimeout(() => {
+        if (reloadProgress[datasourceId]) reloadProgress[datasourceId].active = false
+      }, 1500)
+    }
   }
 
   async function loadCacheSummary(datasourceId: string): Promise<void> {
@@ -667,7 +758,7 @@ export const useSqlWorkbenchStore = defineStore('sqlWorkbench', () => {
     loadConsoles, createConsole, updateConsole, deleteConsole,
     execute, cancelExecution, loadHistory, setActive,
     loadSchemas, loadTables, toggleSchema, loadColumns, loadColumnsBulk,
-    refreshAllMetadata, loadCacheSummary,
+    refreshAllMetadata, reloadAllMetadata, reloadProgress, loadCacheSummary,
     searchMetadata, loadTableDetail,
     exportResult,
     formatSql, explain,

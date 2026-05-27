@@ -28,7 +28,7 @@ const store = useSqlWorkbenchStore()
 const templatesStore = useSqlTemplatesStore()
 const bootstrap = useBootstrapStore()
 const notice = useNoticeStore()
-const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading, exporting } = storeToRefs(store)
+const { consoles, activeConsole, activeConsoleId, results, running, history, metadataByDs, currentExecutionId, explainResults, searchResults, searchLoading, exporting, reloadProgress } = storeToRefs(store)
 const { templates, loading: templatesLoading, filters: templateFilters } = storeToRefs(templatesStore)
 const { state: bootstrapState } = bootstrap
 
@@ -104,6 +104,24 @@ function refreshMetadata() {
   // store.refreshAllMetadata 内部会保留树展开状态,刷出新 cached_at。
   store.refreshAllMetadata(dsId).catch(() => {})
 }
+
+function reloadAllObjects() {
+  /** DataGrip 风格全量重新加载 — 清 cache + 拉全部 schemas + tables + columns.
+   *  完成后 search / 字段补全立刻可用,不再要用户手动展开每个 schema. */
+  const dsId = activeConsole.value?.datasource_id
+  if (!dsId) return
+  if (reloadProgress.value[dsId]?.active) return  // 已在加载中,防重复点
+  notice.setNotice('开始重新加载所有对象...')
+  store.reloadAllMetadata(dsId).catch((e: Error) => {
+    notice.setNotice('重新加载失败: ' + (e?.message || String(e)))
+  })
+}
+
+// 当前 ds 的 reload 进度,UI 通过 v-if 控制进度条显示
+const currentReloadProgress = computed(() => {
+  const dsId = activeConsole.value?.datasource_id
+  return dsId ? (reloadProgress.value[dsId] || null) : null
+})
 
 // 格式化缓存时间:ISO → 本地 HH:MM,跨日加日期
 function formatCacheTime(iso: string | null | undefined): string {
@@ -1226,12 +1244,43 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           </span>
           <button
             class="inline-flex items-center gap-1 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            title="刷新元数据(清缓存重拉)"
+            title="刷新元数据(只刷 schemas 列表,tables 留给展开时按需拉 - 老行为)"
             @click="refreshMetadata"
           >
             <RefreshCw class="h-3 w-3" />
           </button>
+          <button
+            class="inline-flex items-center gap-1 rounded p-1 text-primary hover:bg-primary-light"
+            title="重新加载所有对象 (清缓存 + 拉所有 schemas/tables/字段,DataGrip 风格)"
+            :disabled="currentReloadProgress?.active"
+            @click="reloadAllObjects"
+          >
+            <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': currentReloadProgress?.active }" />
+            <span class="text-[10px] font-bold">全量</span>
+          </button>
         </span>
+      </div>
+
+      <!-- 全量重新加载进度条 -->
+      <div
+        v-if="currentReloadProgress?.active"
+        class="mb-2 rounded-md border border-primary/30 bg-primary-light/40 p-2 text-[11px]"
+      >
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <span class="font-semibold text-primary">
+            正在重新加载 ({{ currentReloadProgress.done }}/{{ currentReloadProgress.total }})
+          </span>
+          <span class="text-primary/70 truncate">{{ currentReloadProgress.currentSchema }}</span>
+        </div>
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
+          <div
+            class="h-full bg-primary transition-all"
+            :style="{ width: currentReloadProgress.total ? `${Math.round(currentReloadProgress.done / currentReloadProgress.total * 100)}%` : '0%' }"
+          ></div>
+        </div>
+        <div v-if="currentReloadProgress.failedSchemas.length" class="mt-1 text-[10px] text-status-warning">
+          失败: {{ currentReloadProgress.failedSchemas.join(', ') }}
+        </div>
       </div>
 
       <!-- result -->
