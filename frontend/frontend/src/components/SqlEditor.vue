@@ -127,19 +127,34 @@ function deriveAliasMap(sqlText) {
 // 合并 base schema + alias derived columns。
 // base 形如 { 'ods.users': ['id', 'name'], 'public.orders': [...] }
 // 输出在 base 基础上,把每个 alias 当 key 指向同样的 columns 列表。
+//
+// **大小写不敏感扩展**(Oracle / DM / DB2 默认 unquoted identifier 大写存):
+// 把 baseSchema 的每个 key 同时存大小写副本,让用户输任意大小写都能 lookup:
+//   `KS.HIS_DONE` -> 同时存为 `KS.HIS_DONE` + `ks.his_done`
+// CodeMirror lang-sql 的 schema 字典 lookup 是字面 case-sensitive,所以
+// 必须显式塞两份才能让 `ks.` 和 `KS.` 都触发 dropdown.
 function buildAliasAwareSchema(baseSchema, sqlText) {
   if (!baseSchema || typeof baseSchema !== 'object') return baseSchema
+
+  // step 1: case-insensitive 扩展 — 每 key 塞大小写副本(指向同一 columns list)
+  const result = {}
+  for (const [k, cols] of Object.entries(baseSchema)) {
+    result[k] = cols
+    const lower = k.toLowerCase()
+    const upper = k.toUpperCase()
+    if (lower !== k && !(lower in result)) result[lower] = cols
+    if (upper !== k && !(upper in result)) result[upper] = cols
+  }
+
+  // step 2: alias 推导
   const aliasMap = deriveAliasMap(sqlText)
-  if (Object.keys(aliasMap).length === 0) return baseSchema
-  const result = { ...baseSchema }
-  // baseSchema 的 key 可能是 'schema.table' 或 'table' 形式;tableRef 也可能
-  // 是这两种之一。做一次 case-sensitive + case-insensitive 双轮匹配。
+  if (Object.keys(aliasMap).length === 0) return result
+
   const lcIndex = {}
   for (const k of Object.keys(baseSchema)) lcIndex[k.toLowerCase()] = k
   for (const [alias, tableRef] of Object.entries(aliasMap)) {
     let cols = baseSchema[tableRef]
     if (!cols) cols = baseSchema[lcIndex[tableRef.toLowerCase()]]
-    // tableRef 只给了 table 没给 schema 时,扫 baseSchema 看哪条 'X.table' 匹配
     if (!cols && !tableRef.includes('.')) {
       const lc = tableRef.toLowerCase()
       for (const k of Object.keys(baseSchema)) {
