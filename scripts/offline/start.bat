@@ -56,6 +56,29 @@ if not defined PYEXE (
 
 if not exist logs mkdir logs >nul 2>nul
 
+REM ---- Load .env if present (KEY=VALUE lines, # comments allowed) -------
+REM Same convention as docker-compose .env BUT values must NOT be quoted
+REM (cmd `set "K=V"` already handles spaces in V). Lines starting with #
+REM are skipped. Secret values are NOT echoed.
+set "_ENV_LOADED_COUNT=0"
+if exist ".env" (
+  for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+    set "_KEY=%%A"
+    set "_VAL=%%B"
+    if defined _KEY (
+      set "_FIRST=!_KEY:~0,1!"
+      if not "!_FIRST!"=="#" (
+        set "!_KEY!=!_VAL!"
+        set /a "_ENV_LOADED_COUNT+=1"
+      )
+    )
+  )
+  set "_KEY="
+  set "_VAL="
+  set "_FIRST="
+  echo Loaded !_ENV_LOADED_COUNT! env var^(s^) from .env
+)
+
 REM Locale-agnostic timestamp via WMIC (fallback to %date%/%time%)
 for /f "tokens=2 delims==" %%I in ('wmic os get LocalDateTime /value 2^>nul ^| find "="') do set "DT=%%I"
 if defined DT (
