@@ -52,6 +52,11 @@ services:
       - ./config:/app/config
       - ./results:/app/results
       - ./logs:/app/logs
+      # SQLite 数据库 —— audit_logs / jobs / asset_aspects / refresh_tokens /
+      # run_index 等关键表都在 dataops.db。**必须 mount 持久化**,否则
+      # docker compose up --build 时容器重建会让历史治理数据(PII/SLA tag /
+      # 审计流水 / 任务运行索引)全丢。
+      - ./data:/app/data
     restart: unless-stopped
     # 健康检查：调 /api/drivers 兜底 —— 公开端点（无 auth），命中即说明 FastAPI
     # 路由 + Python import 都正常；也间接覆盖 RequestIdMiddleware /
