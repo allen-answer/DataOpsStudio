@@ -113,7 +113,7 @@ def compare_sorted_row_events(
         if source_row is None:
             return None
         key = _row_key(source_row, key_columns, {}, "source")
-        _ensure_sorted_key(last_source_key, key, "source")
+        _ensure_sorted_key(last_source_key, key, "source", key_columns)
         last_source_key = key
         return key
 
@@ -122,7 +122,7 @@ def compare_sorted_row_events(
         if target_row is None:
             return None
         key = _row_key(target_row, key_columns, rules.column_mappings, "target")
-        _ensure_sorted_key(last_target_key, key, "target")
+        _ensure_sorted_key(last_target_key, key, "target", key_columns)
         last_target_key = key
         return key
 
@@ -230,12 +230,23 @@ def _index_rows(
     side: str,
 ) -> dict[tuple[Any, ...], dict[str, Any]]:
     indexed: dict[tuple[Any, ...], dict[str, Any]] = {}
+    duplicate_locations: dict[tuple[Any, ...], int] = {}
     for row_number, row in enumerate(rows, start=1):
         side_keys = [_target_column_name(column, row, column_mappings) for column in key_columns]
         key = _row_key(row, side_keys, {}, side)
         if key in indexed:
-            raise ValueError(f"{side} has duplicate key: {key}")
+            # 友好错误信息:显示列名 + 重复值 + 第一次/第二次出现行号 + 建议
+            key_repr = ", ".join(f"{col}={val!r}" for col, val in zip(key_columns, key))
+            first_row_n = duplicate_locations.get(key, 1)
+            raise ValueError(
+                f"{side} has duplicate key on row {row_number} (already at row {first_row_n}): "
+                f"{key_repr}. "
+                f"Hint: key_columns {key_columns} 不足以唯一标识一行 — "
+                f"该表可能需要把更多列加进主键(如时间/流水号),"
+                f"或者数据源 SQL 需要 DISTINCT / GROUP BY 去重"
+            )
         indexed[key] = row
+        duplicate_locations[key] = row_number
     return indexed
 
 
@@ -252,10 +263,22 @@ def _row_key(
     return tuple(_normalize_key_value(row[_resolve_column(row, column)], rules=None) for column in side_keys)
 
 
-def _ensure_sorted_key(last_key: tuple[Any, ...] | None, key: tuple[Any, ...], side: str) -> None:
+def _ensure_sorted_key(
+    last_key: tuple[Any, ...] | None,
+    key: tuple[Any, ...],
+    side: str,
+    key_columns: list[str] | None = None,
+) -> None:
     if last_key is None:
         return
     if key == last_key:
+        if key_columns:
+            key_repr = ", ".join(f"{col}={val!r}" for col, val in zip(key_columns, key))
+            raise ValueError(
+                f"{side} has duplicate key (stream mode): {key_repr}. "
+                f"Hint: key_columns {key_columns} 不足以唯一标识一行 — "
+                f"可能需要补主键列(如时间/流水号),或 SQL 加 DISTINCT/GROUP BY 去重"
+            )
         raise ValueError(f"{side} has duplicate key: {key}")
     if key < last_key:
         raise ValueError(f"{side} rows must be sorted by key for stream_compare")
