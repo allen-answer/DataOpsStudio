@@ -117,7 +117,7 @@ echo.
 echo ============================================
 echo  Verify (run portable python):
 echo.
-"!PORTABLE_DIR!\python\python.exe" -c "import importlib; [print('  '+m+': '+('OK' if importlib.util.find_spec(m) else 'MISSING')) for m in ['dmPython','oracledb','ibm_db','ibm_db_dbi','pymysql']]"
+"!PORTABLE_DIR!\python\python.exe" -c "from importlib.util import find_spec; [print('  '+m+': '+('OK' if find_spec(m) else 'MISSING')) for m in ['dmPython','oracledb','ibm_db','ibm_db_dbi','pymysql']]"
 echo.
 echo Next: run start.bat in "!PORTABLE_DIR!"
 echo ============================================
