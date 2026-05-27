@@ -25,8 +25,31 @@ const {
 const sourcePreviewRows = computed(() => sourcePreviewData.value?.rows?.length ?? 0)
 const targetPreviewRows = computed(() => targetPreviewData.value?.rows?.length ?? 0)
 
-function setPrimaryKey(name) {
-  taskDraft.key_columns = name
+// 主键支持多列 — 用 toggle 语义:已选 -> 移除, 未选 -> append.
+// 之前 setPrimaryKey 是整体替换,导致点 A 再点 B 时 A 丢失,用户报 "替换原来的".
+function togglePrimaryKey(name) {
+  const current = (taskDraft.key_columns || '')
+    .split(/\s*,\s*/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  const idx = current.findIndex(k => k.toLowerCase() === name.toLowerCase())
+  if (idx >= 0) {
+    current.splice(idx, 1)
+  } else {
+    current.push(name)
+  }
+  taskDraft.key_columns = current.join(', ')
+}
+
+// 该字段是否已是主键 — 给按钮 highlight 用 (computed 自动跟随 taskDraft.key_columns)
+const keyColumnSet = computed(() => new Set(
+  (taskDraft.key_columns || '')
+    .split(/\s*,\s*/)
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean),
+))
+function isKeyColumn(name) {
+  return keyColumnSet.value.has(name.toLowerCase())
 }
 </script>
 
@@ -124,9 +147,12 @@ function setPrimaryKey(name) {
           {{ row.onSource && row.onTarget ? '双侧' : (row.onSource ? '仅源' : '仅目标') }}
         </span>
         <button
-          class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 hover:bg-primary-light hover:text-primary"
-          title="设为主键"
-          @click="setPrimaryKey(row.name)"
+          class="grid h-6 w-6 shrink-0 place-items-center rounded-md transition"
+          :class="isKeyColumn(row.name)
+            ? 'bg-primary text-white hover:bg-primary-hover'
+            : 'text-slate-400 hover:bg-primary-light hover:text-primary'"
+          :title="isKeyColumn(row.name) ? '点击移除主键(可多列)' : '点击加入主键(支持多列组合)'"
+          @click="togglePrimaryKey(row.name)"
         >
           <KeyRound class="h-3.5 w-3.5" />
         </button>

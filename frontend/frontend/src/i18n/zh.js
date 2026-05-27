@@ -237,7 +237,7 @@ export default {
       sectionLimits: '阈值 & 限额',
       keyColumns: '主键列（逗号分隔）',
       keyPlaceholder: '例：id 或 order_no, line_no',
-      keyHint: '同一行在两侧靠主键归并；多列主键写多个字段名（逗号分隔）。',
+      keyHint: '同一行在两侧靠主键归并；多列主键点字段右侧 🔑 按钮可累加(再点取消),或手动逗号分隔。源/目标字段名不同时用源字段名,字段映射步骤已建立对应关系。',
       ignoreColumns: '忽略字段',
       ignorePlaceholder: '例：etl_time, created_at',
       ignoreHint: '这些字段不参与值比较；主键不能放进忽略字段。',
