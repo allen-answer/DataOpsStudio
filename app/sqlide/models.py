@@ -80,6 +80,9 @@ class ExecuteResponse(BaseModel):
     elapsed_ms: int = 0
     truncated: bool = False
     error: str | None = None
+    # P2-4: EXPLAIN 预估警告(非阻断)。结构 [{"code": "...", "message": "...", "estimated_rows": N}]
+    # 前端在结果上方显示 amber banner 提示"该 SQL 估算扫描 100 万行,可能慢"
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ─── History ───────────────────────────────────────────────────────────────

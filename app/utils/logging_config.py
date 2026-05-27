@@ -177,3 +177,11 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(file_handler)
     root.addHandler(console_handler)
+
+    # P2-1: APScheduler 内部 tick 日志降级 —— 每分钟一次的 "Added job" /
+    # "Running job" / "Removed job" 当 INFO 太吵,只在异常时(WARNING+)看。
+    # 应用层 scheduler.py 自己的 logger.exception 仍正常输出。
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.jobstores").setLevel(logging.WARNING)

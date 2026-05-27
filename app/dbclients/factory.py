@@ -13,9 +13,19 @@ from app.dbclients.drivers import first_available_module
 from app.dbclients import pool as _pool
 from app.models import DataSource
 from app.services.compare_schema import column_warnings, uniquify_columns
+from app.utils.sql_log_sanitizer import format_sql_for_log, sanitize_sql_for_log
 
 
 class DbClientError(RuntimeError):
+    pass
+
+
+class RowOverflowError(DbClientError):
+    """**预期错** —— caller 主动设 raise_on_overflow=True 时,行数超 max_rows 抛此错。
+
+    跟其他 DbClientError 区分,因为这是用户参数选择的结果,不是底层异常。caller
+    层捕获时**不应该打 traceback**(P1-2):应当走 warning 级日志 + 转 4xx 响应。
+    """
     pass
 
 
@@ -66,30 +76,44 @@ def fetch_rows_with_schema(
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
 
     start = time.perf_counter()
+    # 结构化日志:sql_hash + sql_preview(prod 模式脱敏)+ sql_length 通过 extra
+    # 传给 JsonLogFormatter;message 里只打元数据(datasource / db_type),避免重复。
+    sql_meta = format_sql_for_log(sql)
     logger.info(
-        "query start datasource=%s db_type=%s host=%s port=%s sql=%s",
-        source.name,
-        source.db_type.value,
-        source.host,
-        source.port,
-        _short_sql(sql),
+        "query start datasource=%s db_type=%s host=%s port=%s",
+        source.name, source.db_type.value, source.host, source.port,
+        extra=sql_meta,
     )
     try:
         with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
             result = _fetch_with_dbapi(connection, source.db_type, sql, max_rows, raise_on_overflow, chunk_size, progress_callback)
         logger.info(
             "query success datasource=%s db_type=%s rows=%s elapsed=%.3fs",
-            source.name,
-            source.db_type.value,
-            len(result.rows),
-            time.perf_counter() - start,
+            source.name, source.db_type.value, len(result.rows), time.perf_counter() - start,
+            extra={"sql_hash": sql_meta["sql_hash"], "row_count": len(result.rows)},
         )
         return result
+    except RowOverflowError as exc:
+        # P1-2:预期错,warning 级,不打 traceback
+        logger.warning(
+            "query row overflow datasource=%s db_type=%s detail=%s",
+            source.name, source.db_type.value, exc,
+            extra={"sql_hash": sql_meta["sql_hash"]},
+        )
+        raise
     except DbClientError:
-        logger.exception("query failed datasource=%s db_type=%s", source.name, source.db_type.value)
+        logger.exception(
+            "query failed datasource=%s db_type=%s",
+            source.name, source.db_type.value,
+            extra={"sql_hash": sql_meta["sql_hash"]},
+        )
         raise
     except Exception as exc:
-        logger.exception("query failed datasource=%s db_type=%s", source.name, source.db_type.value)
+        logger.exception(
+            "query failed datasource=%s db_type=%s",
+            source.name, source.db_type.value,
+            extra={"sql_hash": sql_meta["sql_hash"]},
+        )
         raise DbClientError(f"{source.name}({source.db_type.value}) query failed: {exc}") from exc
 
 
@@ -197,9 +221,11 @@ def stream_rows(
         raise RuntimeError(f"{source.db_type.value} driver is not installed")
 
     start = time.perf_counter()
+    sql_meta = format_sql_for_log(sql)
     logger.info(
-        "stream query start datasource=%s db_type=%s sql=%s chunk=%d max_rows=%s",
-        source.name, source.db_type.value, _short_sql(sql), chunk_size, max_rows,
+        "stream query start datasource=%s db_type=%s chunk=%d max_rows=%s",
+        source.name, source.db_type.value, chunk_size, max_rows,
+        extra=sql_meta,
     )
 
     with _pool.borrow(source, lambda: _connect(source, module_name)) as connection:
@@ -247,6 +273,7 @@ def stream_rows(
                 logger.info(
                     "stream query done datasource=%s rows=%d elapsed=%.3fs",
                     source.name, fetched, time.perf_counter() - start,
+                    extra={"sql_hash": sql_meta["sql_hash"], "row_count": fetched},
                 )
 
             yield (columns, _iter_chunks())
@@ -466,8 +493,11 @@ def _iter_with_dbapi(
 
 
 def _short_sql(sql: str) -> str:
-    compact = " ".join(sql.split())
-    return compact[:500] + ("..." if len(compact) > 500 else "")
+    """SQL 日志展示用 —— 走 sanitize_sql_for_log,自动按 DATAOPS_ENV 切 prod/dev 行为。
+
+    dev 模式:折叠空白 + 截 500;prod 模式:字面值 → ?,截 80。详见 sql_log_sanitizer。
+    """
+    return sanitize_sql_for_log(sql, max_chars=500)
 
 
 def _extract_driver_error_detail(connection: Any, cursor: Any) -> str:
@@ -544,5 +574,7 @@ def _fetch_rows_in_chunks(
         if progress_callback is not None:
             progress_callback(len(result))
     if max_rows is not None and raise_on_overflow and len(result) > max_rows:
-        raise DbClientError(f"query returned more than max_rows={max_rows}")
+        # 预期错(caller 主动开 raise_on_overflow);上层 catch 后用 warning 级
+        # 处理,不打 traceback。详见 RowOverflowError docstring。
+        raise RowOverflowError(f"query returned more than max_rows={max_rows}")
     return result[:max_rows] if max_rows is not None and not raise_on_overflow else result

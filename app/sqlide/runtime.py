@@ -25,8 +25,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from app.services.query_concurrency import release as _qc_release, try_acquire as _qc_try_acquire
 from app.sqlide.executor import execute_sql
 from app.sqlide.models import ExecuteResponse
+from app.utils.threading_ctx import submit_with_context
+
+
+class QueryConcurrencyExceeded(RuntimeError):
+    """Re-raised by start_execution when (user, datasource) in-flight 超阈值。
+    上层 API 接到后转 429,不打 traceback(P1-2 + P1-3 同口径)。"""
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +168,14 @@ def start_execution(
     timeout_seconds:到时自动 request_cancel + 标 cancel_reason='timeout'。
     """
     timeout_s = max(1, min(int(timeout_seconds or DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS))
+
+    # P1-3: 同用户 × 同数据源并发上限 —— 防 Workbench 多 tab 把 dbclients pool 打爆。
+    # 此处主线程同步 check,失败立即抛(上层转 429);通过则 counter 已加,worker
+    # finally 调 release。这样 acquire / release 不依赖 worker 是否拿到线程,语义清晰。
+    ok, reason = _qc_try_acquire(user_id, datasource.id)
+    if not ok:
+        raise QueryConcurrencyExceeded(reason)
+
     exe_id = uuid.uuid4().hex
     exe = Execution(
         id=exe_id, user_id=user_id, datasource_id=datasource.id, sql=sql,
@@ -227,8 +242,11 @@ def start_execution(
                 exe._finalized = True
         finally:
             timer.cancel()
+            # P1-3: worker 退出必释放 concurrency slot,否则 counter 漏 release 永远卡
+            _qc_release(user_id, datasource.id)
 
-    _executor.submit(_run)
+    # P0-5: 跨线程传 request_id_ctx,worker 内日志 rid 不为空
+    submit_with_context(_executor, _run)
     timer.start()
 
     # short-poll:等 sync_wait 秒看是否能立刻完成(典型快查 < 100ms 直接返 success)

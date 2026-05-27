@@ -12,11 +12,46 @@ import logging
 import time
 from typing import Any
 
+import os
+
+from app.dbclients.dialects import get_dialect
 from app.dbclients.factory import DbClientError, fetch_rows_with_schema
+from app.dbclients import pool as _pool
+from app.dbclients.drivers import first_available_module
+from app.dbclients.factory import _connect
 from app.models import DataSource
 from app.sqlide.limit_injector import inject_limit, needs_injection
 from app.sqlide.models import ExecuteResponse
 from app.utils.sql_guard import validate_readonly_sql
+
+# P2-4: EXPLAIN 估算阈值 —— 估算扫描行数超此值就在结果加 warning
+_EXPLAIN_WARN_ROWS = int(os.getenv("DATAOPS_PREVIEW_EXPLAIN_WARN_ROWS", "1000000"))
+
+
+def _maybe_explain_warning(source: DataSource, sql: str) -> dict | None:
+    """跑 EXPLAIN 估算行数,超 _EXPLAIN_WARN_ROWS 返 warning dict。
+
+    失败 silent → 返 None(EXPLAIN 不能让正常查询失败;有些方言 EXPLAIN 不
+    支持复杂语法,容忍即可)。
+    """
+    try:
+        dialect = get_dialect(source.db_type)
+        module_name = first_available_module(source.db_type)
+        if not module_name:
+            return None
+        with _pool.borrow(source, lambda: _connect(source, module_name)) as conn:
+            estimated = dialect.estimate_rows_from_explain(conn, sql)
+        if estimated is None:
+            return None
+        if estimated > _EXPLAIN_WARN_ROWS:
+            return {
+                "code": "high_estimated_rows",
+                "message": f"EXPLAIN 估算扫描 {estimated:,} 行(阈值 {_EXPLAIN_WARN_ROWS:,}),查询可能慢",
+                "estimated_rows": int(estimated),
+            }
+    except Exception:
+        logger.debug("preview EXPLAIN estimate failed", exc_info=True)
+    return None
 
 
 logger = logging.getLogger(__name__)
@@ -92,13 +127,26 @@ def execute_sql(
         )
     except DbClientError as exc:
         elapsed = int((time.perf_counter() - start) * 1000)
+        # P2-2: 记录失败 SQL 进统计(慢/失败的 SQL admin 都要看)
+        _record_sql_stat(sql, elapsed, success=False, exe=_execution)
         return ExecuteResponse(success=False, elapsed_ms=elapsed, error=str(exc))
     except Exception as exc:  # pragma: no cover —— 兜底,任何未预期错都不让前端 500
         elapsed = int((time.perf_counter() - start) * 1000)
         logger.exception("sql workbench execute unexpected failure")
+        _record_sql_stat(sql, elapsed, success=False, exe=_execution)
         return ExecuteResponse(success=False, elapsed_ms=elapsed, error=f"unexpected: {exc}")
 
     elapsed = int((time.perf_counter() - start) * 1000)
+    # P2-2: 记录成功执行
+    _record_sql_stat(sql, elapsed, success=True, exe=_execution)
+
+    # P2-4: EXPLAIN 预估警告(非阻断) —— 仅在 DATAOPS_PREVIEW_EXPLAIN_WARN=true 开启
+    # 默认 off 因为每次跑 EXPLAIN 多一次 round trip。生产可酌情开。
+    warnings: list[dict] = []
+    if os.getenv("DATAOPS_PREVIEW_EXPLAIN_WARN", "").strip().lower() in {"1", "true", "yes", "on"}:
+        warn = _maybe_explain_warning(source, effective_sql)
+        if warn:
+            warnings.append(warn)
 
     # 3) 截断 + 列序对齐 + 内存防护
     rows_raw = result.rows
@@ -145,6 +193,7 @@ def execute_sql(
         row_count=len(rows),
         elapsed_ms=elapsed,
         truncated=truncated,
+        warnings=warnings,
         error=(
             f"memory cap reached: result truncated at {len(rows)} rows / "
             f"~{total_bytes // (1024*1024)}MB (cap {_MAX_TOTAL_BYTES // (1024*1024)}MB); "
@@ -152,6 +201,22 @@ def execute_sql(
             if memory_truncated else None
         ),
     )
+
+
+def _record_sql_stat(sql: str, elapsed_ms: int, *, success: bool, exe: Any = None) -> None:
+    """送一次执行到 sql_stats(P2-2)。
+
+    lazy import 避免 module-level 循环。失败 silent 不影响主流程(统计不能拖业务)。
+    """
+    try:
+        from app.services import sql_stats
+        user = ""
+        if exe is not None:
+            user = getattr(exe, "user_id", "") or ""
+        sql_stats.record(sql=sql, elapsed_ms=float(elapsed_ms), success=success, user=user)
+    except Exception:
+        # 统计失败不阻断业务,只 debug log
+        logger.debug("sql_stats.record failed", exc_info=True)
 
 
 def _serialize_cell(value: Any) -> Any:

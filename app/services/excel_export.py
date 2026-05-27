@@ -38,6 +38,7 @@ from app.services.run_result import (
     load_run_meta,
 )
 from app.utils.paths import RESULTS_DIR
+from app.utils.threading_ctx import submit_with_context
 
 
 logger = logging.getLogger(__name__)
@@ -316,7 +317,8 @@ def submit_excel_export(run_id: str) -> dict[str, Any]:
             "cancel_requested": False,
         },
     )
-    future = _executor.submit(_run_excel_export_job, job_id, run_id)
+    # P0-5: 跨线程传递 request_id_ctx 等 ContextVar
+    future = submit_with_context(_executor, _run_excel_export_job, job_id, run_id)
     with _lock:
         _futures[job_id] = future
     from app.services.jobs import get_job

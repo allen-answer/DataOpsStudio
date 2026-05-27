@@ -212,14 +212,19 @@ def execute(
         _append_history_for_execution(exe, ds_name=ds_name, project_id=project_id, username=username)
 
     # 提交执行(线程池跑),sync_wait 内能完成则直接返 success;否则返 pending/running + execution_id
-    exe = start_execution(
-        user_id=current.id,
-        datasource=ds,
-        sql=payload.sql,
-        max_rows=payload.max_rows,
-        console_id=payload.console_id,
-        timeout_seconds=payload.timeout_seconds,
-    )
+    # P1-3:同用户 × 同数据源并发上限 —— start_execution 失败时返 429,不打 traceback
+    from app.sqlide.runtime import QueryConcurrencyExceeded
+    try:
+        exe = start_execution(
+            user_id=current.id,
+            datasource=ds,
+            sql=payload.sql,
+            max_rows=payload.max_rows,
+            console_id=payload.console_id,
+            timeout_seconds=payload.timeout_seconds,
+        )
+    except QueryConcurrencyExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
     # 注册 on_finish:这里手动 wrap —— start_execution 没接 callback,我们在
     # _execution_envelope 返回后,若 status 还是 running,前端会 poll 拿状态;
     # history 写入由 cancel/poll 路径里检测 finished 时触发。但更稳是 worker
@@ -472,6 +477,39 @@ def list_history(
     return {"items": [h.model_dump(mode="json") for h in items]}
 
 
+# ─── SQL 统计 (P2-2) —— admin 看慢查询 / 失败排行榜 ───────────────────────────
+
+@router.get("/api/sql-workbench/stats/slow")
+def list_slow_sql(
+    limit: int = Query(default=20, ge=1, le=200),
+    metric: str = Query(default="avg_ms", description="avg_ms / max_ms / total_ms / count"),
+    min_count: int = Query(default=1, ge=1, le=10_000),
+    current: User = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Top N 慢 SQL —— admin only。
+
+    metric:
+    - avg_ms: 平均耗时(默认,反映 SQL 模板本身)
+    - max_ms: 单次最长耗时
+    - total_ms: 累计耗时(高频 × 中等耗时也会上榜)
+    - count: 执行次数(高频 SQL)
+    """
+    from app.services import sql_stats
+    return {
+        "items": sql_stats.top_slow(limit=limit, metric=metric, min_count=min_count),
+        "summary": sql_stats.get_summary(),
+    }
+
+
+@router.get("/api/sql-workbench/stats/concurrency")
+def list_concurrency_snapshot(
+    current: User = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """当前 in-flight 查询计数(按 user × datasource)—— admin 监控。"""
+    from app.services import query_concurrency
+    return {"in_flight": query_concurrency.get_in_flight_snapshot()}
+
+
 # ─── metadata (v0.3 加 cache + refresh + indexes/views/DDL) ──────────────
 
 from app.services import sql_export as _sql_export
@@ -551,14 +589,40 @@ def list_tables(
     datasource_id: str = Query(..., min_length=1),
     schema: str = Query(default=""),
     refresh: bool = Query(default=False),
+    # P1-1: 大 schema(几万张表)分页 + 搜索 —— 默认 200 条,客户端要更多自己 offset
+    q: str = Query(default="", description="名字模糊过滤(大小写不敏感子串)"),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    limit: int = Query(default=200, ge=1, le=2000),
     current: User = Depends(require_role("editor")),
 ) -> dict[str, Any]:
     ds = require_datasource_access(current, datasource_id)
-    return _cached_or_live(
+    cached = _cached_or_live(
         datasource_id, "tables", schema or "__default__",
         lambda: _metadata.list_tables(ds, schema=schema),
         refresh=refresh,
     )
+    items = cached.get("items") or []
+    total = len(items)
+
+    # 搜索:对 name / schema 子串匹配(从全集筛,再分页)
+    if q:
+        needle = q.strip().lower()
+        items = [
+            t for t in items
+            if needle in str(t.get("name", "")).lower()
+            or needle in str(t.get("schema", "")).lower()
+        ]
+    filtered_total = len(items)
+    items = items[offset:offset + limit]
+
+    return {
+        **cached,
+        "items": items,
+        "total": total,
+        "filtered_total": filtered_total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @router.get("/api/sql-workbench/metadata/columns")

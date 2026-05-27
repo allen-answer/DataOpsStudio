@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from app.utils.threading_ctx import submit_with_context
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as _time, timezone
 from decimal import Decimal
@@ -396,7 +397,9 @@ def start_export(
                 ex.error = f"unexpected: {exc}"
                 ex.finished_at = _now()
 
-    _executor.submit(_run)
+    # P0-5: 用 submit_with_context 把 caller 的 request_id_ctx 等 ContextVar 传给
+    # worker 线程,日志里 rid 才不会为空
+    submit_with_context(_executor, _run)
 
     # 短同步:快导出 < 500ms 直接返 success 让客户端立即下载
     deadline = time.time() + max(0.0, sync_wait)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
+from app.utils.threading_ctx import submit_with_context
 from datetime import datetime, timedelta
 from threading import Lock
 from typing import Any
@@ -67,7 +68,8 @@ def submit_task_run(
             "target_run_id": "",
         },
     )
-    future = _executor.submit(_run_job, job_id, task_id)
+    # P0-5: 跨线程传递 request_id_ctx 等 ContextVar
+    future = submit_with_context(_executor, _run_job, job_id, task_id)
     with _lock:
         _futures[job_id] = future
     return get_job(job_id)
@@ -114,7 +116,9 @@ def submit_workflow_run(
             "from_node_id": from_node_id,
         }
     _set_job(job_id, job_record)
-    future = _executor.submit(
+    # P0-5: 跨线程传递 request_id_ctx 等 ContextVar
+    future = submit_with_context(
+        _executor,
         _run_workflow_job,
         job_id,
         workflow_id,
