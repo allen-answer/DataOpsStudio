@@ -109,6 +109,28 @@ DataOps Studio 是**多数据库数据对比 + SQL 血缘 + 参数化作业流**
 - ✅ v0.5+：结果导出 4 格式 + 公式注入防御（`c2a2e8d`）详见 [SQL_EXPORT.md](SQL_EXPORT.md)
 - ✅ 别名补全 + 6 snippets + 草稿（`b8f5cdf` / `e9383ee`）
 - ✅ OOM 防护（单 cell 64KB / 整结果 64MB，`f5cc265`）
+- ✅ **v0.6 三路径策略**（`d949f37`）：Preview 强制 LIMIT 注入 / Export SSCursor 流式 / Compare streaming
+- ✅ **v0.6 包 B+C**（`b7b9340`）：日志脱敏 prod 模式（SQL 字面值 → `?` + sql_hash）+ rid 跨线程 + 同用户 × ds 并发上限（默认 3）+ 慢 SQL 统计 Top N + metadata 分页搜索
+- ✅ **v0.6+ 字段补全 bulk 预热**（`83c0419`）：一个 schema 一条 SQL 拉所有字段
+- ✅ **v0.6+ P0 三连**（`19ee9dc`）：columns-bulk scope 注册 + DB2 PATH 累积溢出修（幂等）+ list_tables max_rows 5000→50000
+- ✅ **v0.6+ DM dmpython.libs DLL search path**（`33558cc` + `a8edac7`）：drivers.py 加 `add_dm_dll_directories` + import-db-drivers.bat 补复制 .libs
+- ✅ **v0.6+ [全量] 重新加载按钮**（`fa70846`）：DataGrip 风格，清 cache + 并发拉 schemas / tables / columns-bulk + sidebar 进度条
+- ✅ **v0.7 SQL 改写**（`b213051` → `4537646` → `e00e0f1`）：SUM 6/7/8 修 → 自动短别名（`sum_amt` / `case_2`）→ 一键 inject `AS`
+- ✅ **v0.7 step 4 SQL 校验卡片化**（`90c6071`）：readonly / output_columns / key_candidates 替代 raw JSON
+- ✅ **v0.7 主键选择 toggle**（`fc8f037`）：多列累加 + 已选高亮，不再替换
+- ✅ **v0.7 DB2 / Oracle / DM 大小写不敏感补全**（`ea8f63b`）：lang-sql dict key 同时塞大小写副本
+- ✅ **v0.7 SQL 控制台光标跳回修**（`ca4b8c9`）：debounced save race；store 不再用 server response 覆盖 local.sql + SqlEditor watch 保留 selection
+- ✅ **v0.7 duplicate key 错误信息可读化**（`701cbee`）：带列名 + 行号 + hint
+
+### 工程化基础设施
+
+- ✅ **统一配置层**（`d949f37`）：`config/config.yml` loader，yml → env 灌注，env var 优先
+- ✅ **`.env` 注入**（`5714f98`）：docker-compose + portable `start.bat` 共用同语义
+- ✅ **`data/` bind mount**（`c8a8e81`）：修 SQLite 重启丢数据 P0
+- ✅ **portable 升级 5 件套 .bat**（`0d9c94a`）：update / rollback / enable-prod / disable-prod / start v2
+- ✅ **自包含 portable build**（`5da968e`）：`build_portable_windows.ps1` + vendor wheels；详见 [BUILD_PORTABLE.md](BUILD_PORTABLE.md)
+- ✅ **日志离线诊断**（`2b936dc`）：`scripts/log_diagnose.py` 扫 app.log + audit.jsonl 出 markdown 报告
+- ✅ **三档配置场景模板**（`d949f37`）：详见 [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)
 
 ### 离线包工程化
 

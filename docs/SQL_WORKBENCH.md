@@ -16,6 +16,9 @@
 | v0.4 | 模板库 | 跨用户 / 跨数据源的 SQL 模板沉淀(详见 [SQL_TEMPLATES.md](SQL_TEMPLATES.md)) |
 | v0.5 | 慢 SQL 闭环 | Execution 状态机 + KILL QUERY + Explain hints + 慢阈值标记 + 跨视图传透 |
 | v0.5+ | 结果导出 | CSV / Excel / JSON / SQL 导出(详见 [SQL_EXPORT.md](SQL_EXPORT.md)) |
+| v0.6  | OOM 防护 + 三路径 | Preview 强制 LIMIT 注入 / Export SSCursor 流式 / Compare streaming;同用户 × 数据源并发上限 |
+| v0.6+ | 字段补全 + 全量加载 | columns-bulk 预热(1 schema 1 SQL)+ DataGrip 风格 [全量] 按钮 + 进度条;大小写不敏感补全(DB2/Oracle/DM) |
+| v0.7  | SQL 体验 | 复合无 alias 自动短别名(`sum_amt`)+ 一键改写注入 AS;主键 toggle 多列;step 4 SQL 校验卡片化 |
 
 详细 hints + Explain 行为见 [SQL_EXPLAIN_HINTS.md](SQL_EXPLAIN_HINTS.md)。
 
@@ -134,6 +137,33 @@ POST   /api/sql-workbench/format
 - 失败时 `formatted_sql=""`,**不覆盖原 SQL**
 - `datasource_id` 可选,空 → 默认 `mysql`
 
+### SQL 列名提取 + 自动改写 alias(v0.7)
+
+`/api/sql/assist` 返回 `output_columns` / `key_candidates` / `rewritten_sql` / `alias_injected`:
+
+```jsonc
+{
+  "output_columns": ["OCCUR_DATE", "CUST_NO", "sum_done_amt", "sum_commision"],
+  "key_candidates": ["CUST_NO"],
+  "rewritten_sql":  "SELECT OCCUR_DATE, CUST_NO, SUM(DONE_AMT) AS sum_done_amt, SUM(COMMISION) AS sum_commision FROM t",
+  "alias_injected": true
+}
+```
+
+**列名规则**(`_column_label`):
+- `exp.Alias` → 用 alias 字符串
+- `exp.Column` 普通列 → `column_name`(拒纯数字 — sqlglot 对 SUM 返序号字符串 "6"/"7"/"8" 的 bug)
+- `exp.Sum/Count/Avg/Min/Max` → `sum_amt` / `count_all` / `avg_price` 类语义化短名
+- 其它 `exp.Func`(Cast / Coalesce...)→ `<func>_<col>`
+- `exp.Case / Binary / Subquery` → `case_N` / `expr_N`
+- `exp.Star` → `*` 保留
+
+**防冲突**(`_make_unique`):case-insensitive 比对,撞名加 `_2 _3`。
+
+**SQL 改写**(`rewrite_sql_inject_aliases`):用 `exp.alias_(expr.copy(), label)` 给非 Alias / Column / Star 节点注入 AS。嵌套 SELECT(CTE 内层 / Subquery / UNION)全部改写;每个 SELECT 独立 taken set 不互串。parse 失败兜底返原 SQL。
+
+**前端 UX**:`alias_injected=true` 时 step 4 顶部显示橙色警告卡片 + "应用建议" 按钮,点了把 rewritten_sql 写回 `taskDraft.source_sql`,避免 DB cursor.description 返序号 6/7/8 让 column_mappings 对不上。
+
 ### Explain
 
 ```
@@ -166,16 +196,33 @@ ring buffer cap 5000 条防膨胀。按用户隔离,只看自己的执行。
 
 ```
 GET    /api/sql-workbench/metadata/schemas?datasource_id={ds}
-GET    /api/sql-workbench/metadata/tables?datasource_id={ds}&schema={s}
+GET    /api/sql-workbench/metadata/tables?datasource_id={ds}&schema={s}&q={q}&offset=&limit=
 GET    /api/sql-workbench/metadata/columns?datasource_id={ds}&schema={s}&table={t}
+GET    /api/sql-workbench/metadata/columns-bulk?datasource_id={ds}&schema={s}    ← v0.6+ 字段补全预热
+POST   /api/sql-workbench/metadata/refresh   (scope=all 清整 ds cache)
 ```
 
 `app/sqlide/metadata.py` 接 `datasource_introspect` 走 information_schema /
-all_tab_columns,支持 MySQL / Oracle / DM / DB2 全方言。
+all_tab_columns / SYSCAT.COLUMNS,支持 MySQL / Oracle / DM / DB2 全方言。
 
-**缓存层** `app/sqlide/metadata_cache.py`:按 datasource_id 缓存 schemas+tables+columns,
-TTL 300s,可被 admin endpoint 主动失效。预热路径在用户切 datasource 时自动触发,让
-`SELECT * FROM <schema>.` 后的补全立即就绪。
+**缓存层** `app/sqlide/metadata_cache.py`:按 datasource_id 缓存
+schemas + tables + columns + columns-bulk + indexes + views 共 6 个 scope,
+TTL 300s,可被 admin endpoint 主动失效。
+
+**columns-bulk 预热**(v0.6+):一个 schema 的字段一条 SQL 拉完(`SELECT FROM
+information_schema.COLUMNS WHERE TABLE_SCHEMA=?` / `all_tab_columns WHERE OWNER=?`),
+1000 张表的 schema 从 1000 个 round-trip 降到 1。切 datasource 时后台并发 2 预热,
+SqlEditor 写 `users.` 立即出字段。
+
+**[全量] 按钮**(v0.6+):sidebar 顶部紫色按钮,DataGrip 风格 — 一键清 cache + 拉
+schemas + 并发 4 拉 tables + 并发 2 拉 columns-bulk;sidebar 顶部进度条显示
+`(N/M) - schema: a5_sectrade` 实时反馈,完成后 search 立刻可用。
+
+**list_tables / list_columns_bulk cap**(v0.6+ hotfix):max_rows 50000 +
+`raise_on_overflow=False`,大 schema(几千张表)不再被默认 5000 cap 截断报错。
+
+**大小写不敏感补全**(v0.6+):前端 `buildAliasAwareSchema` 把每个 dict key 同时
+塞大小写副本,DB2 / Oracle / DM(默认大写存)用户输 `ks.` 跟 `KS.` 都能 trigger。
 
 ### 对象搜索(v0.3)
 

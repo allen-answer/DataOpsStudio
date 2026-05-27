@@ -80,13 +80,18 @@ docker compose --profile demo-db up -d --build
 
 ### 🛠 SQL 工作台 + 慢 SQL 诊断
 
-- **`/sql-workbench`** —— 多 tab SELECT 工作台,**只读**,18+ endpoint:
-  - 元数据树 + 对象搜索 + 表详情
+- **`/sql-workbench`** —— 多 tab SELECT 工作台,**只读**,20+ endpoint:
+  - 元数据树 + 对象搜索 + 表详情 + **全量重新加载按钮(DataGrip 风格)**:进度条 + 并发预热 schemas / tables / columns
+  - **字段补全 bulk 预热**:切 datasource 自动拉所有 schema 的字段(单 SQL 拉一个 schema,1000 张表 1 个 round-trip),写 `users.` 立即出字段
+  - **大小写不敏感补全**:DB2 / Oracle / DM 输入 `ks.` 跟 `KS.` 都触发
+  - **SQL 自动改写注入 alias**:检测到 `SUM(amt) / CASE WHEN` 等无 alias 复合表达式,自动起短别名(`sum_amt` / `case_2`),前端一键应用,避免 DB cursor 返序号 6/7/8
   - 模板库(跨用户 / 跨数据源沉淀常用 SQL)
-  - 4 格式导出(CSV / Excel / JSON / SQL Insert,含 Excel 公式注入防御)
+  - 4 格式导出(CSV / Excel / JSON / SQL Insert,含 Excel 公式注入防御)+ **SSCursor 流式导出**(千万行不爆内存)
   - Explain + 4 条静态规则(`select_star` / `no_where` / `leading_wildcard` / `order_no_limit`)
-  - **异步执行 + KILL QUERY 中断**(MySQL 真驱动级)
-  - 别名补全 + 6 snippets + 草稿
+  - **三路径策略**:Preview 强制 LIMIT 注入 / Export 流式 / Compare 已有 streaming
+  - **异步执行 + KILL QUERY 中断**(MySQL 真驱动级)+ **同用户 × 数据源并发上限**(默认 3,防 pool 打爆)
+  - **慢 SQL 统计**:按 sql_hash 聚合 count / total / avg / max,admin endpoint Top N 排行
+  - 别名补全(`FROM users u` → `u.` 提示字段) + 6 snippets + 草稿
 - **`/sql-diagnosis`** —— 慢 SQL 深度诊断,方言 EXPLAIN + 规则推断 + AI 复核 + plan diff
 
 ### 🔄 作业流 + 调度
@@ -113,7 +118,9 @@ docker compose --profile demo-db up -d --build
 - **Step-up 再认证** —— AI key / 配置导入 / 用户删除等敏感操作要求重输密码
 - **签名下载 token** + 一次性 nonce
 - **资源防护**:磁盘水位 + per-user / per-project quota + DB 语句超时(4 方言)+ cell 64KB / 总 64MB 内存防护
-- **审计日志** + Prometheus `/metrics` + 结构化 JSON 日志
+- **审计日志** + Prometheus `/metrics` + 结构化 JSON 日志(prod 模式 SQL 字面值自动脱敏 + sql_hash)
+- **统一配置层**:`config/config.yml`(yml → env 灌注)+ `.env`(docker compose / portable .bat 共用)+ env var 优先级最高,所有部署形态一份配置语义
+- **rid 跨线程传递**:ThreadPoolExecutor `submit_with_context` 复制 ContextVar,worker 日志 request_id 不丢
 - **CI 安全**:gitleaks + Dependabot + SBOM + SLSA attestation + dependency-review
 
 ---
@@ -126,9 +133,17 @@ docker compose --profile demo-db up -d --build
 | 生产 / 内部演示 | `docker compose up -d --build` | — |
 | 内置样例库演示 | `docker compose --profile demo-db up -d --build` | — |
 | 一键本地 → 云端 | `bash scripts/deploy.sh` | — |
-| 客户离线现场(Windows) | `scripts/build_offline_windows.ps1` → portable / wheels zip | [`docs/RELEASE_PACKAGES.md`](docs/RELEASE_PACKAGES.md) |
+| 客户离线现场(Windows portable 自包含) | `scripts/build_portable_windows.ps1` → 含 Python embeddable 的 zip | [`docs/BUILD_PORTABLE.md`](docs/BUILD_PORTABLE.md) |
+| 客户离线现场(Windows wheels 包) | `scripts/build_offline_windows.ps1` → 用户机器自带 Python + 离线 wheels | [`docs/RELEASE_PACKAGES.md`](docs/RELEASE_PACKAGES.md) |
 
-**离线 portable 包**:74 MB 内含 Python 3.12 embeddable + 53 wheels + 应用 + SPA build,目标机器解压双击 `start.bat` 即用,**不需要装系统 Python**。
+**离线 portable 包**:~80 MB 内含 Python 3.12 embeddable + 全套 wheels(MySQL/DM/Oracle/DB2)+ 应用 + SPA build,目标机器解压双击 `start.bat` 即用,**不需要装系统 Python**。
+
+**portable 增量升级**:5 件套 .bat 自动化(在仓库 `scripts/offline/`):
+- `update.bat`(代码升级,自动 backup + 替换,保留 config / results / logs / data / python)
+- `rollback.bat`(回滚到最近 backup)
+- `enable-prod.bat`(一键切 prod:生 JWT secret + 写 `.env`)
+- `disable-prod.bat`(退 dev:`.env` → `.env.disabled.<TS>`)
+- `start.bat`(v2 启动前自动加载同目录 `.env`,docker-compose .env 语义)
 
 ---
 
@@ -148,6 +163,8 @@ docs/                  设计文档 / 运维手册 / 模块文档(25 份)
 | 想做什么 | 看这个 |
 |---|---|
 | 部署 / 升级 / 发版前跑冒烟 | [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md) |
+| 调阈值(memory / disk / concurrency 等)按数据规模 | [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md) |
+| 打 Windows 自包含 portable 包(全驱动) | [`docs/BUILD_PORTABLE.md`](docs/BUILD_PORTABLE.md) |
 | 选数据库驱动 / 打离线包 | [`docs/DRIVER_MATRIX.md`](docs/DRIVER_MATRIX.md) |
 | 当下重点 + 这一轮明确不做 | [`docs/ROADMAP.md`](docs/ROADMAP.md) |
 | oncall 备份 / 升级 / 回滚 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
@@ -191,6 +208,8 @@ docs/                  设计文档 / 运维手册 / 模块文档(25 份)
 - [`DRIVER_MATRIX.md`](docs/DRIVER_MATRIX.md) — 驱动选择
 - [`RUNBOOK.md`](docs/RUNBOOK.md) — oncall 手册
 - [`RELEASE_PACKAGES.md`](docs/RELEASE_PACKAGES.md) — 发布包索引 + 选包决策树
+- [`BUILD_PORTABLE.md`](docs/BUILD_PORTABLE.md) — Windows 自包含 portable 打包
+- [`CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md) — 三档场景配置模板(dev / 中型 prod / 大型 prod)
 
 #### 治理
 - [`ROADMAP.md`](docs/ROADMAP.md) — 当下重点 + 不做清单
