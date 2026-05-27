@@ -68,6 +68,17 @@ for %%F in ("!SYS_SP!\dmPython*.pyd") do (
 for /d %%D in ("!SYS_SP!\dmPython-*.dist-info") do (
   xcopy /S /Y /I /Q "%%D"                            "!DST!\%%~nxD"               >nul
 )
+REM **关键**: dmpython.libs / dmPython.libs 兄弟目录 (numpy 风格)
+REM 含 dmsvc.dll / dmcalc.dll 等 native deps. 不复制会让 dmPython.pyd 加载
+REM 时报 'DLL load failed: 找不到指定的模块'.
+if exist "!SYS_SP!\dmpython.libs" (
+  xcopy /S /Y /I /Q "!SYS_SP!\dmpython.libs"        "!DST!\dmpython.libs"        >nul
+  set "FOUND_DM=1"
+)
+if exist "!SYS_SP!\dmPython.libs" (
+  xcopy /S /Y /I /Q "!SYS_SP!\dmPython.libs"        "!DST!\dmPython.libs"        >nul
+  set "FOUND_DM=1"
+)
 REM Some dmPython packages also ship DLLs as top-level files (libdmdpi.dll etc.)
 for %%F in ("!SYS_SP!\..\..\DLLs\dmdpi*.dll" "!SYS_SP!\..\dmdpi*.dll") do (
   if exist "%%F" copy /Y "%%F" "!DST!\" >nul
