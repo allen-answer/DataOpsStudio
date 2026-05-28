@@ -38,11 +38,20 @@ def test_oracle_bulk_sql():
     assert "table_name" in sql.lower()
 
 
-def test_dm_shares_oracle_bulk_sql():
-    """DM 继承 OracleDialect,bulk_columns_sql 应该和 Oracle 一致(数据字典视图同名)。"""
+def test_dm_bulk_sql_does_not_use_left_join():
+    """DM 单独 override bulk_columns_sql, 去掉 LEFT JOIN all_col_comments
+    (DM 某些版本不接 LEFT JOIN ... ON 多列 AND 条件,报 -2007 语法错).
+    comment 字段返空字符串,牺牲注释换 DM 能跑."""
     dm_sql = DmDialect().bulk_columns_sql("ods")
+    assert dm_sql is not None
+    assert "LEFT JOIN" not in dm_sql
+    assert "all_col_comments" not in dm_sql
+    assert "all_tab_columns" in dm_sql
+    assert "'' AS comment" in dm_sql
+    assert "UPPER('ods')" in dm_sql
+    # 跟 Oracle 不再一样
     oracle_sql = OracleDialect().bulk_columns_sql("ods")
-    assert dm_sql == oracle_sql
+    assert dm_sql != oracle_sql
 
 
 def test_db2_bulk_sql():

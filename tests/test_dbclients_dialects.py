@@ -21,17 +21,24 @@ def test_get_dialect_returns_singleton_per_db_type():
     assert a is b  # registry 缓存同一实例
 
 
-def test_dm_inherits_oracle_for_sql_layer():
-    """DM 继承 OracleDialect 共享 introspect_columns_sql / connection_test_sql，
-    但 connect() override 因为 dmPython 驱动签名不一样。"""
+def test_dm_inherits_oracle_for_connection_test_only():
+    """DM 继承 OracleDialect, 共享 connection_test_sql, 但
+    introspect_columns_sql / bulk_columns_sql 被 DM override —
+    DM 某些版本对 LEFT JOIN all_col_comments 多列 ON 解析失败,
+    故 DM 简化不用 JOIN, comment 字段返空."""
     dm = get_dialect(DatabaseType.DM)
     oracle = get_dialect(DatabaseType.ORACLE)
-    assert isinstance(dm, OracleDialect)  # 继承关系成立
-    assert isinstance(dm, DmDialect)  # 但实际是 DmDialect 子类
-    assert dm is not oracle  # 不再共享同一个 instance
-    # SQL 层共享
+    assert isinstance(dm, OracleDialect)
+    assert isinstance(dm, DmDialect)
+    assert dm is not oracle
+    # 探活共享
     assert dm.connection_test_sql() == oracle.connection_test_sql()
-    assert dm.introspect_columns_sql("ods", "t1") == oracle.introspect_columns_sql("ods", "t1")
+    # 但 introspect / bulk 不共享 — DM 简化版不用 LEFT JOIN
+    dm_sql = dm.introspect_columns_sql("ods", "t1")
+    assert "LEFT JOIN" not in dm_sql
+    assert "all_col_comments" not in dm_sql
+    assert "all_tab_columns" in dm_sql
+    assert "'' AS comment" in dm_sql  # 注释字段保留 schema 但返空
 
 
 def test_all_four_db_types_have_dialect():
