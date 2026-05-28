@@ -747,6 +747,17 @@ watch(activeConsoleId, () => {
 // ─── computed ───────────────────────────────────────────────────────────────
 
 const currentResult = computed(() => (activeConsole.value ? results.value[activeConsole.value.id] : null))
+
+// 结果表渲染上限 — 防 1000 行 × 30 列 = 30000+ DOM 节点让 Vue / browser layout 卡死.
+// 1000 行用户实际看完的极少,DBeaver / DataGrip 也是分页 / 虚拟滚动. 这里取折中:
+// 一次渲染 500 行 (覆盖 99% 实际使用),超出提示用户走导出拿完整结果.
+const ROW_RENDER_CAP = 500
+const visibleRows = computed(() => {
+  const rows = currentResult.value?.rows
+  if (!rows || rows.length <= ROW_RENDER_CAP) return rows || []
+  return rows.slice(0, ROW_RENDER_CAP)
+})
+const resultExceedsCap = computed(() => (currentResult.value?.rows?.length ?? 0) > ROW_RENDER_CAP)
 const isRunning = computed(() => (activeConsole.value ? !!running.value[activeConsole.value.id] : false))
 
 const datasources = computed<any[]>(() => bootstrapState.datasources as any[] || [])
@@ -1345,23 +1356,30 @@ function sendHistoryEntry(entry: any, target: 'lineage' | 'compare' | 'diagnosis
           <div class="font-bold mb-1">执行失败</div>
           <pre class="sql-font whitespace-pre-wrap break-all">{{ currentResult.error }}</pre>
         </div>
-        <table v-else-if="currentResult.columns.length" class="text-xs">
+        <table v-else-if="currentResult.columns.length" class="text-xs" style="table-layout: fixed; contain: layout style">
           <thead class="bg-slate-50 sticky top-0">
             <tr>
-              <th v-for="col in currentResult.columns" :key="col" class="text-left whitespace-nowrap">{{ col }}</th>
+              <th v-for="col in currentResult.columns" :key="col" class="text-left whitespace-nowrap max-w-xs truncate" :title="col">{{ col }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, i) in currentResult.rows" :key="i" class="hover:bg-slate-50">
-              <td v-for="(cell, j) in row" :key="j" class="sql-font whitespace-nowrap" :title="String(cell ?? '')">
+            <!-- 性能优化:contain:layout 让 browser 跳过隔离每行布局计算;
+                 max-w-xs + truncate 防止长字符串撑爆,长内容 hover 看全;
+                 渲染上限 _ROW_RENDER_CAP 行 (500),超过的需要分页或导出. -->
+            <tr v-for="(row, i) in visibleRows" :key="i" class="hover:bg-slate-50" style="contain: layout style">
+              <td v-for="(cell, j) in row" :key="j" class="sql-font whitespace-nowrap max-w-xs truncate" :title="String(cell ?? '')">
                 <span v-if="cell === null" class="italic text-slate-400">NULL</span>
                 <template v-else>{{ cell }}</template>
               </td>
             </tr>
           </tbody>
         </table>
+        <!-- 超过渲染上限时提示用户 -->
+        <div v-if="resultExceedsCap" class="px-4 py-2 text-center text-xs text-amber-600 bg-amber-50 border-t border-amber-200">
+          为防 UI 卡顿,前 {{ ROW_RENDER_CAP }} 行已渲染,共 {{ currentResult?.rows?.length ?? 0 }} 行 — 完整结果请点 [导出] 拿文件,或缩小 limit 重跑
+        </div>
         <div v-else class="px-4 py-10 text-center text-sm text-slate-400">
-          {{ currentResult.row_count }} 行(无列输出)
+          {{ currentResult?.row_count ?? 0 }} 行(无列输出)
         </div>
       </div>
 

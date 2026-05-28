@@ -69,14 +69,23 @@ def _columns_sql(db_type: DatabaseType, schema: str, table: str) -> tuple[str, l
 
 
 def _validate_identifier(s: str) -> None:
-    """schema / table 名只允许字母 + 数字 + $ + _ + .。防 SQL 注入。"""
+    """schema / table 名白名单 — 防 SQL 注入。
+
+    允许字符: 字母 / 数字 / $ / _ / . / -
+    `-` 看上去 SQL 不友好,但 MySQL / DB2 / PostgreSQL schema 名实际允许
+    (要双引号包就行,如 `"live-monitor"`),日常环境 schema 名常含 `-`.
+    实际拼 SQL 时已在 dialect.introspect_columns_sql 用双引号 / UPPER() 包,
+    `-` 不会形成 injection 风险.
+
+    禁止:空白 / 引号 / 分号 / 反斜杠 / 括号等 SQL 元字符.
+    """
     if not s:
         raise ValueError("identifier cannot be empty")
     for ch in s:
-        if not (ch.isalnum() or ch in "_$."):
+        if not (ch.isalnum() or ch in "_$.-"):
             raise ValueError(
                 f"identifier {s!r} contains invalid character {ch!r}; "
-                "only alphanumeric / _ / $ / . allowed"
+                "only alphanumeric / _ / $ / . / - allowed"
             )
 
 
