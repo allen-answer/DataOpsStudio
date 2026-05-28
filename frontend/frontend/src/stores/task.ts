@@ -683,6 +683,25 @@ export const useTaskStore = defineStore('task', () => {
         })
         columns = result.columns || []
         warnings = result.warnings || []
+      } else if (kind === 'csv') {
+        // 走 backend csv reader,需要 encoding / delimiter / header_row
+        // 否则 fallback 到 sql/assist 会把 file_path 当 SQL 解析,出 3-5 个虚假字段
+        const result = await apiJson<{ columns?: string[]; warnings?: FieldWarning[] }>('/api/preview/columns', 'POST', {
+          kind: 'csv',
+          file_path: taskDraft[`${side}_file_path`],
+          encoding: taskDraft[`${side}_file_encoding`] || 'utf-8-sig',
+          delimiter: taskDraft[`${side}_csv_delimiter`] || ',',
+          header_row: Number(taskDraft[`${side}_header_row`]) || 1,
+        })
+        columns = result.columns || []
+        warnings = result.warnings || []
+      } else if (kind === 'parquet') {
+        const result = await apiJson<{ columns?: string[]; warnings?: FieldWarning[] }>('/api/preview/columns', 'POST', {
+          kind: 'parquet',
+          file_path: taskDraft[`${side}_file_path`],
+        })
+        columns = result.columns || []
+        warnings = result.warnings || []
       } else {
         const sql = side === 'target' && taskDraft.sql_mode === 'single' ? taskDraft.source_sql : (taskDraft[`${side}_sql`] as string)
         const data = await apiJson<{ output_columns?: string[] }>('/api/sql/assist', 'POST', { sql, dialect: '' })
